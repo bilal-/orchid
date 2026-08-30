@@ -45,12 +45,14 @@ bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
 #
 # This file defers the operator-PATH restore, so lib/common.sh ARMS the
 # stale-root guard and leaves its Git-spending half to this file. But doctor is
-# itself a trust-boundary entry point: when its target is the self-hosted Orchid
-# checkout, firing first would query that unacknowledged target before the
-# machine-local trust lookup had even decided whether a candidate record
-# exists. unattended_trust_inspect makes the constant-size, no-Git denial first;
-# only a present, eligible acknowledgement candidate permits its own target Git
-# work. It prints and writes nothing, so the stale-root gate still sits ahead of
+# itself a trust-boundary entry point: when the checkout it was invoked out of
+# is also the repository it was pointed at -- ORCHID_ROOT is resolved from this
+# file's own $0, so that is the self-hosted case and not merely a matter of
+# where the operator is standing -- firing first would query that unacknowledged
+# target before the machine-local trust lookup had even decided whether a
+# candidate record exists. unattended_trust_inspect makes the constant-size,
+# no-Git denial first; only a present, eligible acknowledgement candidate
+# permits its own target Git work. It prints and writes nothing, so the stale-root gate still sits ahead of
 # doctor's first observable report below.
 #
 # The gate then prevents a diagnosis from being produced BY pre-merge code

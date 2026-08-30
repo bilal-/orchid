@@ -548,8 +548,20 @@ fi
 # could not see it: that scan asks whether a deferring entry point FILE calls a
 # firing site, and this file would still call one, twice, in the arms nobody
 # added. A gate skipped by omission, inside the guard the invariant against
-# gates skipped by omission exists to protect. Here there is no arm to forget,
-# because there is no arm.
+# gates skipped by omission exists to protect. Here there is no ACTING arm to
+# forget, because every one of them is below this line.
+#
+# THE USAGE ARM IS ABOVE IT, and that is a rule rather than this file's own
+# exemption. `-h`, `--help`, `help` and a bare invocation are answered by
+# _svc_usage at the dispatch above and exit without reaching this call --
+# exactly as they do in libexec/orchid-trust, the other entry point that fires
+# this gate itself. The gate belongs AFTER the operator's command has been
+# validated, so a mistyped verb is answered with its own diagnosis instead of a
+# refusal about the checkout; and a usage text names no repository, resolves no
+# record and reports nothing an operator could act on about a target, since at
+# that point `--repo` has not even been read. The two verbs are held to that
+# together -- and to the acting arm that must still refuse out of the same stale
+# root -- by tests/inv/test_INV-15_no_optional_gate.sh section 8.
 orchid_root_stale_gate
 
 case "$sub" in

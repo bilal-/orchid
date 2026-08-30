@@ -93,10 +93,24 @@ ORCHID_BIN="$ROOT/bin/orchid"
 # three directories must call it explicitly.
 #
 # AHEAD OF THE PARSE, not after it, and deliberately unlike libexec/orchid-
-# trust's per-subcommand placement. Every kernel entry point refuses out of a
-# stale checkout before it looks at its own arguments, `--help` included,
-# because the text it would print is the pre-merge tree's own account of
-# itself. What this harness produces is more than a report: anonymized
+# trust's per-subcommand placement. The kernel does not have one answer here,
+# and this comment used to claim it did -- that every kernel entry point
+# refuses before it looks at its own arguments, `--help` included. It is true
+# of the entry points that fire at their operator-PATH restore, which
+# lib/common.sh reaches before their argument loops (libexec/orchid-doctor is
+# the clearest: it refuses ahead of even parsing `--greenfield`). It is NOT
+# true of the two verbs that fire the gate by an explicit call of their own,
+# libexec/orchid-trust and runners/orchid-service: both dispatch on a
+# subcommand first and answer `-h`, `--help`, `help` and a bare invocation with
+# their usage text ABOVE that call, so that a mistyped verb is answered with
+# its own diagnosis rather than a refusal about the checkout. Their rule is
+# that a usage text names no repository, resolves no record, and reports
+# nothing an operator could act on about a target; both are held to it, and to
+# the acting arm that must still refuse, by
+# tests/inv/test_INV-15_no_optional_gate.sh section 8.
+#
+# THIS file is placed ahead of its parse anyway, and on its own footing rather
+# than on that claim, because what it produces is not a usage text: anonymized
 # qualification EVIDENCE an operator decides a beta on and -- unless
 # --no-run-verify is passed -- one in-place run of the target repository's own
 # verify= command. Neither may be produced by a kernel nobody has looked at,

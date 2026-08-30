@@ -47,11 +47,13 @@ source "$(dirname "$0")/../helpers.sh"
 # subject of this file is that satisfying a check by text nothing executes
 # reads, in a log, exactly like satisfying it for real. So:
 #
-#   * section 2 RUNS every shipped gate file against a stub helpers.sh and
-#     requires it to be observed reaching its source line, because "the file
-#     contains a source line" is text and a line's presence is not its
-#     execution -- a source guarded by a variable nothing sets, or written
-#     below an `exit`, satisfies a grep and is never reached.
+#   * section 2 RUNS every file the red-case rule enrols -- the tests/inv/
+#     gates by location and the whole-file proofs helpers.sh names by array,
+#     each at the depth it ships at -- against a stub helpers.sh, and requires
+#     each to be observed reaching its source line, because "the file contains
+#     a source line" is text and a line's presence is not its execution: a
+#     source guarded by a variable nothing sets, or written below an `exit`,
+#     satisfies a grep and is never reached.
 #   * section 6 runs the pump out of a root that really is stale and requires
 #     the refusal to land BEFORE the pump's first write, with the write itself
 #     as the witness -- a gate an entry point reaches only after it has
@@ -71,7 +73,12 @@ source "$(dirname "$0")/../helpers.sh"
 #     operator acts on, so the report is the side effect, and the same run
 #     pins the other edge -- a usage error out of the same stale root is still
 #     answered as a usage error, so the gate sits after the operator's command
-#     has been validated and not in front of a typo.
+#     has been validated and not in front of a typo. It then puts both halves
+#     to the OTHER verb that fires this gate itself, runners/orchid-service:
+#     its usage arm out of that same stale root must be answered, and its
+#     status arm out of it must refuse with the report absent. The one route on
+#     which this gate does not fire has to be the same route in both files, or
+#     it is an omission in one of them wearing the other's justification.
 #   * section 9 runs the shipped `orchid doctor` AND the shipped `orchid trust
 #     show` in the one environment where the order of their two pre-report
 #     gates can be wrong: the target and ORCHID_ROOT the SAME stale integration
@@ -102,7 +109,7 @@ source "$(dirname "$0")/../helpers.sh"
 #     proved deleted from the record -- and the fixture that demonstrates it
 #     is RUN, so the deletion is observed rather than asserted about a shell.
 #
-# RED: twenty-one, each fed to the SAME derivation or the same shipped verb the
+# RED: twenty-three, each fed to the SAME derivation or the same shipped verb the
 #      section runs over the real tree. A ci-local-shaped file whose static
 #      section sits BELOW the `--no-tests` cut (so it is outside the merge
 #      floor and only reaches tasks that opted into the full suite), and a
@@ -140,15 +147,22 @@ source "$(dirname "$0")/../helpers.sh"
 #      `orchid trust unattended` out of that stale root, which must refuse
 #      with its machine-local store still empty, and an `orchid trust show`
 #      out of the same root, which must refuse with not one line of its
-#      report produced. And a gate file whose recorded label carries
+#      report produced, and an `orchid service status` out of that same root,
+#      which must refuse with not one line of ITS report produced -- the other
+#      verb that fires this gate itself, and the one whose call had to be moved
+#      off its arms and above its dispatch. A file shaped like one of the
+#      whole-file proofs tests/helpers.sh enrols BY NAME, probed at the depth
+#      those ship at, whose helpers.sh source line a text scan accepts and a
+#      shell never reaches. And a gate file whose recorded label carries
 #      backticked prose the shell executes, which must be refused -- with the
 #      fixture run first, so the words really are seen to go missing.
 # GREEN: the twins, in this file: the shipped scripts/ci-local.sh, whose
 #      static sections are all above the cut, and two late sections that
 #      really do run a test script and must be left alone; the shipped
-#      tests/inv/ gates, every one of them RUN and observed to reach
-#      helpers.sh, beside a fixture whose only difference from the refused
-#      ones is that its source line is reachable; every shipped file that
+#      tests/inv/ gates AND the whole-file proofs helpers.sh enrols by name,
+#      every one of them RUN at the depth it ships at and observed to reach
+#      helpers.sh, beside two fixtures -- one at each depth -- whose only
+#      difference from the refused ones is that the source line is reachable; every shipped file that
 #      loads lib/common.sh -- across install.sh, bin/, libexec/, runners/,
 #      scripts/ and the bundled plugins, with the scripts/ and plugins/
 #      families each proved non-empty -- reaching a site that really fires the
@@ -180,7 +194,12 @@ source "$(dirname "$0")/../helpers.sh"
 #      acknowledgement out of a root that is not stale, which must write the
 #      record the refusal above proved absent; the same lookup out of that
 #      same root, which must resolve that record and print the report whose
-#      absence the refusal is measured by; and the identical sentence
+#      absence the refusal is measured by; the same `orchid service status`
+#      out of that same root, which must print the report ITS refusal is
+#      measured by; both verbs' usage arms out of the stale root, which must
+#      be answered with their own usage text rather than a refusal, since the
+#      one route this gate does not sit on has to be the same route in both
+#      files; and the identical sentence
 #      single-quoted, in a comment and in a trailing comment, which the label
 #      scan must leave alone.
 
@@ -468,6 +487,18 @@ assert_match 'cut-not-located' "$(ci_local_late_sections "$CI_FIXTURES/nonexiste
 # seen. A file that never reaches its source -- for any reason, including ones
 # no scan of this file anticipated -- fails, and it fails without anybody
 # enumerating the ways a line can go unreached.
+#
+# AND THE ENROLLED SET IS WIDER THAN THE GLOB. tests/helpers.sh's
+# `_proof_enrolled` says yes two ways: by LOCATION, for everything under
+# tests/inv/, and by NAME, for the whole-file proofs it lists in
+# PROOF_ENROLLED_FILES. Both halves carry this section's hazard unchanged -- a
+# file enrolled either way whose recorders no EXIT trap watches is enrolled on
+# paper and enforced nowhere -- and the by-name half carries it with less to
+# fall back on: a gate under tests/inv/ at least has its own path saying what it
+# is, while a top-level proof is enrolled by a list in a different file, and
+# nothing about the file itself would notice the trap being sprung. So the list
+# is READ from helpers.sh rather than restated here, and every entry is probed
+# at the depth it really ships at.
 # ===========================================================================
 INV_GLOB_DIR="$REPO_ROOT/tests/inv"
 
@@ -490,17 +521,20 @@ helpers_missing() {
   printf 'helpers-not-loaded: %s (its red_case/green_case calls satisfy a text linter and are enforced by nothing at run time — tests/helpers.sh is what installs the EXIT trap that requires a case to have actually RUN)\n' "$f"
 }
 
-# The RUN-TIME half. `enrolment_unproven <file>` copies <file> into a probe
-# tree whose `tests/helpers.sh` is a STUB, runs it, and reports unless the stub
-# announced itself -- which happens only if the file's own source line was
-# actually executed.
+# The RUN-TIME half. `enrolment_unproven <file> <relative-dest>` copies <file>
+# into a probe tree whose `tests/helpers.sh` is a STUB, runs it, and reports
+# unless the stub announced itself -- which happens only if the file's own
+# source line was actually executed.
 #
 # Three things make it evidence rather than another text scan:
 #
-#   * The witness is the STUB's, not the file's. Every gate here loads helpers
-#     as `source "$(dirname "$0")/../helpers.sh"`, so a copy placed at
-#     <probe>/tests/inv/ resolves to <probe>/tests/helpers.sh and to nothing in
-#     the real tree. The stub is the first thing the gate executes that could
+#   * The witness is the STUB's, not the file's. A gate under tests/inv/ loads
+#     helpers as `source "$(dirname "$0")/../helpers.sh"` and a top-level proof
+#     as `source "$(dirname "$0")/helpers.sh"`, so the copy has to be placed at
+#     the depth the original ships at -- <relative-dest>, which the caller
+#     derives from the file's own path rather than assuming a family. Placed
+#     there, either spelling resolves to <probe>/tests/helpers.sh and to nothing
+#     in the real tree. The stub is the first thing the gate executes that could
 #     print anything at all.
 #   * The token carries this process's PID, so no file in the tree can contain
 #     it and no gate can print it by accident or on purpose.
@@ -522,15 +556,35 @@ mkdir -p "$ENROL_PROBE/tests/inv"
   printf 'exit 0\n'
 } > "$ENROL_PROBE/tests/helpers.sh"
 
+# ORCHID_HERMETIC_PROOF is unset for the run alongside ORCHID_REQUIRE_RED_CASE,
+# and for a reason worth stating rather than leaving as a flag: this file is
+# itself re-run inside the nested suite tests/test_hermetic_suite.sh launches,
+# and in THAT environment the variable holds that file's own recursion-guard
+# token -- so a copy of it that inherited the token would exit above its source
+# line and be reported here for the environment it was probed in rather than for
+# anything about the file. The question this probe asks is whether the ordinary
+# path through a file reaches its enrolment, so it is asked with the ambient
+# recursion guard cleared. Clearing it costs nothing: the stub exits before the
+# copy's body can run, so nothing is re-launched either way, and the guard's own
+# behaviour is tests/test_hermetic_suite.sh's RED case, not this one's.
 enrolment_unproven() {
-  local f="$1" probe out rc=0
+  local f="$1" dest="$2" probe out rc=0
   if [ ! -f "$f" ]; then
     printf 'no-such-file: %s\n' "$f"
     return 0
   fi
-  probe="$ENROL_PROBE/tests/inv/${f##*/}"
+  # The stub is the only witness this probe has; a target whose own basename
+  # would land on top of it would erase the evidence and then pass for lack of
+  # it, which is this file's subject in miniature.
+  case "${dest##*/}" in
+    helpers.sh)
+      printf 'probe-collision: %s would be copied over the probe stub itself, so its run could prove nothing\n' "$f"
+      return 0 ;;
+  esac
+  probe="$ENROL_PROBE/$dest"
+  mkdir -p "${probe%/*}"
   cp "$f" "$probe"
-  out="$(env -u ORCHID_REQUIRE_RED_CASE "$BASH" "$probe" 2>&1)" || rc=$?
+  out="$(env -u ORCHID_REQUIRE_RED_CASE -u ORCHID_HERMETIC_PROOF "$BASH" "$probe" 2>&1)" || rc=$?
   rm -f "$probe"
   case "$out" in
     *"$ENROL_MARK"*) return 0 ;;
@@ -539,18 +593,49 @@ enrolment_unproven() {
     "$f" "$rc"
 }
 
-inv_seen=0
+ENROLLED_FILES=()
 for inv_file in "$INV_GLOB_DIR"/test_*.sh; do
   [ -e "$inv_file" ] || continue
-  inv_seen=$((inv_seen + 1))
-  inv_out="$(helpers_missing "$inv_file")"
-  [ -z "$inv_out" ] || fail "INV-15: $inv_out"
-  inv_out="$(enrolment_unproven "$inv_file")"
-  [ -z "$inv_out" ] || fail "INV-15: $inv_out"
+  ENROLLED_FILES+=("$inv_file")
 done
+inv_seen="${#ENROLLED_FILES[@]}"
+# The by-name half, taken from helpers.sh's own array. A second copy of that
+# list here would be one more thing to remember to extend, which is the shape
+# this whole file exists to remove. Expanded under a count guard, because this
+# file runs under `set -u`: an empty array expanded bare would kill the shell
+# outright, and an emptied PROOF_ENROLLED_FILES is a finding this section has a
+# message for below rather than a reason to exit with no summary at all.
+if [ "${#PROOF_ENROLLED_FILES[@]}" -gt 0 ]; then
+  for enrol_named in "${PROOF_ENROLLED_FILES[@]}"; do
+    ENROLLED_FILES+=("$REPO_ROOT/$enrol_named")
+  done
+fi
+top_seen=$(( ${#ENROLLED_FILES[@]} - inv_seen ))
+
+# Both halves are proved non-empty BEFORE the set is walked, not after: an
+# empty derivation is the vacuous pass this file exists to make impossible, and
+# under `set -u` an empty array expanded bare would take the shell down before
+# the report could be printed at all.
 [ "$inv_seen" -ge 2 ] \
   || fail "INV-15: only $inv_seen file(s) matched tests/inv/test_*.sh — the invariant gates moved, and this scan is checking an empty set"
-green_case "every one of the $inv_seen shipped tests/inv/ gates was RUN and observed to reach tests/helpers.sh, so the run-time RED/GREEN enforcement really is installed in all of them rather than merely written into them"
+[ "$top_seen" -ge 1 ] \
+  || fail "INV-15: tests/helpers.sh's PROOF_ENROLLED_FILES named nothing, so the by-name half of the enrolled set was probed vacuously — either the whole-file proofs stopped being enrolled that way, or this scan is reading an array that no longer holds them"
+
+if [ "${#ENROLLED_FILES[@]}" -gt 0 ]; then
+  for enrol_target in "${ENROLLED_FILES[@]}"; do
+    enrol_rel="${enrol_target#"$REPO_ROOT/"}"
+    case "$enrol_rel" in
+      /*)
+        fail "INV-15: the enrolled file $enrol_target is not under $REPO_ROOT, so the probe cannot place it at the depth its own helpers.sh source line resolves from — and a copy at the wrong depth would report every file it ran"
+        continue ;;
+    esac
+    inv_out="$(helpers_missing "$enrol_target")"
+    [ -z "$inv_out" ] || fail "INV-15: $inv_out"
+    inv_out="$(enrolment_unproven "$enrol_target" "$enrol_rel")"
+    [ -z "$inv_out" ] || fail "INV-15: $inv_out"
+  done
+fi
+green_case "every one of the $inv_seen shipped tests/inv/ gates and all $top_seen whole-file proofs tests/helpers.sh enrols BY NAME were RUN, each at the depth it ships at, and observed to reach tests/helpers.sh — so the run-time RED/GREEN enforcement really is installed in all of them rather than merely written into them"
 
 # The RED twin, and it is deliberately a file that a TEXT linter accepts. Both
 # halves are demonstrated rather than argued: the fixture carries all four
@@ -637,7 +722,7 @@ for enrol_unreached in test_INV-97_conditionally_enrolled test_INV-96_unreachabl
   enrol_text_out="$(helpers_missing "$enrol_file")"
   [ -z "$enrol_text_out" ] \
     || fail "INV-15: the text scan reported $enrol_unreached ($enrol_text_out), so this fixture no longer demonstrates a source line a grep accepts — the run-time probe below would then be proving a gap that has moved"
-  assert_match 'helpers-not-reached' "$(enrolment_unproven "$enrol_file")" \
+  assert_match 'helpers-not-reached' "$(enrolment_unproven "$enrol_file" "tests/inv/$enrol_unreached.sh")" \
     "INV-15: $enrol_unreached carries a source line that is never executed, and must be refused — 'the file contains the line' is text, and a line's presence is not its execution"
 done
 red_case "two gate files whose helpers.sh source line the text scan ACCEPTED — one guarded by a variable nothing sets, one below an exit that always runs — were both refused once they were run, so enrolment here is observed rather than read"
@@ -653,10 +738,61 @@ red_case "two gate files whose helpers.sh source line the text scan ACCEPTED —
   printf 'red_case "a case a trap really is watching"\n'
   printf 'green_case "a twin a trap really is watching"\n'
 } > "$ENROL/tests/inv/test_INV-95_properly_enrolled.sh"
-enrol_ok_out="$(enrolment_unproven "$ENROL/tests/inv/test_INV-95_properly_enrolled.sh")"
+enrol_ok_out="$(enrolment_unproven "$ENROL/tests/inv/test_INV-95_properly_enrolled.sh" "tests/inv/test_INV-95_properly_enrolled.sh")"
 [ -z "$enrol_ok_out" ] \
   || fail "INV-15: a gate file that sources helpers.sh on its straight-line path was reported anyway ($enrol_ok_out) — a probe that refuses everything would flag the whole shipped set and prove nothing about the two above"
 green_case "the same probe accepted a gate file whose source line differs from the refused one only in being reachable, so the refusals above are unreachability being detected rather than a probe that reports every file it runs"
+
+# ---------------------------------------------------------------------------
+# THE SAME PAIR AT THE TOP LEVEL, where the by-name half of the enrolled set
+# lives.
+#
+# A whole-file proof ships one directory higher than a gate and resolves its
+# enrolment by a different relative path, so the probe's placement arithmetic is
+# a second thing that has to be right and a second thing nothing above would
+# catch being wrong. Both directions of wrong are live. Place the copy too deep
+# and its `$(dirname "$0")/helpers.sh` resolves to nothing: every top-level
+# proof reports `helpers-not-reached` and the scan above fails the shipped tree
+# for the probe's own arithmetic. Get the placement right but leave the probe
+# unable to detect an unreachable source at that depth, and the by-name half is
+# enrolled in this scan on paper and enforced nowhere -- which is, exactly, the
+# trap this section is named for, sprung on the section itself.
+#
+# So both edges are pinned here (lesson L034): a top-level-shaped file whose
+# source line a text scan accepts and a shell never reaches, which must be
+# refused, and its twin differing only in reachability, which must not be.
+ENROL_TOP_UNREACHED="$ENROL/tests/test_INV-94_top_level_unreachably_enrolled.sh"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf '# RED: a top-level proof whose enrolment sits below an exit that always runs\n'
+  printf '# GREEN: ...and whose accepting twin sits below it too\n'
+  printf 'red_case() { :; }\n'
+  printf 'green_case() { :; }\n'
+  printf 'red_case "a case recorded above the source line, one directory up"\n'
+  printf 'green_case "a twin recorded above the source line, one directory up"\n'
+  printf 'exit 0\n'
+  printf 'source "$(dirname "$0")/helpers.sh"\n'
+} > "$ENROL_TOP_UNREACHED"
+enrol_top_text_out="$(helpers_missing "$ENROL_TOP_UNREACHED")"
+[ -z "$enrol_top_text_out" ] \
+  || fail "INV-15: the text scan reported the top-level fixture ($enrol_top_text_out), so it no longer demonstrates a source line a grep accepts — the run-time probe below would then be proving a gap that has moved"
+assert_match 'helpers-not-reached' \
+  "$(enrolment_unproven "$ENROL_TOP_UNREACHED" "tests/test_INV-94_top_level_unreachably_enrolled.sh")" \
+  "INV-15: a file shaped like one of the whole-file proofs helpers.sh enrols BY NAME, carrying a helpers.sh source line that is never executed, must be refused at ITS depth too — enrolment by a list in another file is the half with nothing about the file's own path to fall back on"
+red_case "a top-level-shaped proof whose helpers.sh source line the text scan ACCEPTED, placed at the depth the by-name enrolled files really ship at, was refused once it was run — so the enrolment this scan derives from PROOF_ENROLLED_FILES is observed at that depth and not only at the gates' one"
+
+{
+  printf '#!/usr/bin/env bash\n'
+  printf '# RED: a compliant top-level proof, for the probe to accept\n'
+  printf '# GREEN: ...and its twin\n'
+  printf 'source "$(dirname "$0")/helpers.sh"\n'
+  printf 'red_case "a case a trap really is watching, one directory up"\n'
+  printf 'green_case "a twin a trap really is watching, one directory up"\n'
+} > "$ENROL/tests/test_INV-93_top_level_properly_enrolled.sh"
+enrol_top_ok_out="$(enrolment_unproven "$ENROL/tests/test_INV-93_top_level_properly_enrolled.sh" "tests/test_INV-93_top_level_properly_enrolled.sh")"
+[ -z "$enrol_top_ok_out" ] \
+  || fail "INV-15: a top-level-shaped proof that sources helpers.sh on its straight-line path was reported anyway ($enrol_top_ok_out) — so the refusal above is the probe's placement arithmetic failing at this depth rather than unreachability being detected, and the shipped by-name files are being failed for the same reason"
+green_case "the same probe accepted a top-level-shaped proof whose source line differs from the refused one only in being reachable, so the by-name half of the enrolled set is being probed by something that can tell the two apart at that depth"
 
 # ---------------------------------------------------------------------------
 # AND THE LABEL A GATE RECORDS MUST BE THE LABEL SOMEBODY WROTE.
@@ -1805,21 +1941,25 @@ TRUST_PROOF="$WORK/trust-gate"
 mkdir -p "$TRUST_PROOF"
 
 # The stale root, out of this candidate's own kernel: bin/, lib/ and libexec/
-# are what `orchid trust` loads and dispatches through. `templates/.keep` is
-# what gets staged, so the refusal names a path nothing else in this fixture
-# could have produced.
+# are what `orchid trust` loads and dispatches through, and runners/ is copied
+# with them because the usage-arm comparison at the end of this section runs the
+# OTHER verb that fires this gate itself -- `orchid service`, whose libexec file
+# is a bare handoff into runners/orchid-service. `templates/.keep` is what gets
+# staged, so the refusal names a path nothing else in this fixture could have
+# produced.
 TRUST_ROOT="$TRUST_PROOF/stale-root"
 mkdir -p "$TRUST_ROOT"
-for trust_dir in bin lib libexec; do
+for trust_dir in bin lib libexec runners; do
   cp -R "$REPO_ROOT/$trust_dir" "$TRUST_ROOT/$trust_dir"
 done
-for trust_dir in runners plugins roles skills templates; do
+for trust_dir in plugins roles skills templates; do
   mkdir -p "$TRUST_ROOT/$trust_dir"
   printf 'probe\n' > "$TRUST_ROOT/$trust_dir/.keep"
 done
 printf 'PROTOCOL probe\n' > "$TRUST_ROOT/PROTOCOL.md"
 printf 'integration_branch=%s\n' "$PROBE_INTEG" > "$TRUST_ROOT/orchid.config"
-chmod +x "$TRUST_ROOT/bin/orchid" "$TRUST_ROOT/libexec/orchid-trust"
+chmod +x "$TRUST_ROOT/bin/orchid" "$TRUST_ROOT/libexec/orchid-trust" \
+  "$TRUST_ROOT/libexec/orchid-service" "$TRUST_ROOT/runners/orchid-service"
 git init -q "$TRUST_ROOT"
 git -C "$TRUST_ROOT" symbolic-ref HEAD "refs/heads/$PROBE_INTEG"
 git -C "$TRUST_ROOT" add -A
@@ -1962,6 +2102,89 @@ assert_eq 1 "$trust_rc" \
   "INV-15: 'orchid trust show' with too many arguments must fail (got rc=$trust_rc: $trust_out)"
 assert_match 'usage: orchid trust show' "$trust_out" \
   "INV-15: ...and out of a stale root it must still be the USAGE message. The gate belongs after the operator's command has been validated, not in front of a typo's diagnosis — otherwise every mistyped invocation is answered with a refusal about the checkout instead"
+
+# ---------------------------------------------------------------------------
+# THE USAGE ARM, IN BOTH VERBS THAT FIRE THIS GATE THEMSELVES.
+#
+# `libexec/orchid-trust` and `runners/orchid-service` are the two shipped entry
+# points that hold the fixed bootstrap PATH for their whole run, never reach
+# _orchid_entry_restore_operator_path, and therefore fire the stale-root gate by
+# an explicit call or not at all. Both dispatch on a subcommand first, and both
+# answer -h, --help, help and a bare invocation with their usage text ABOVE that
+# call. That is a route through a trust-boundary entry point on which the gate
+# does not fire, which is precisely this file's subject -- so it may not be an
+# accident in one file and a documented decision in the other. It is one rule,
+# and it is asked of both verbs here.
+#
+# The rule is the floor the too-many-arguments case above establishes: the gate
+# belongs AFTER the operator's command has been validated, so a mistyped
+# invocation is answered with its own diagnosis rather than a refusal about the
+# checkout. A usage text is that same kind of answer -- it is about the command
+# line, it names no repository, resolves no record, and reports nothing an
+# operator could act on about a target, because at that point no target has been
+# resolved. What the gate must precede is the first thing the verb does on its
+# target, and both files place the call exactly there.
+#
+# Which is why the acting arm is run too, out of the SAME root. On its own,
+# "the usage arm was answered" is equally true of a root that is not stale at
+# all; the pair is what makes it an exemption being measured rather than a
+# fixture that refuses nothing. `orchid trust`'s acting arms are covered above,
+# so the one added here is `orchid service status` -- the arm of the other verb
+# that reaches a target without crossing the unattended-trust boundary first,
+# and the file whose gate placement had to be corrected from per-arm to
+# straight-line during this task.
+svc_rc=0
+svc_out=""
+svc_probe() {
+  local root="$1"; shift
+  svc_rc=0
+  svc_out="$(env -u ORCHID_REPO -u ORCHID_EPOCH \
+    HOME="$TRUST_HOME" ORCHID_ALLOW_STALE_ROOT='' \
+    "$root/bin/orchid" "$@" 2>&1)" || svc_rc=$?
+}
+
+# <verb>:<a line only that verb's usage text carries>. The marker is spelled per
+# verb rather than derived from the verb name because the two lay their usage
+# out differently -- `orchid service` puts the whole synopsis on the `usage:`
+# line and `orchid trust` lists its three arms under it -- and a pattern loose
+# enough to match both would also be matched by half the refusals in this file.
+for svc_usage_arm in 'trust:orchid trust unattended' 'service:usage: orchid service'; do
+  svc_verb="${svc_usage_arm%%:*}"
+  svc_want="${svc_usage_arm#*:}"
+  svc_probe "$TRUST_ROOT" "$svc_verb" --help
+  assert_eq 0 "$svc_rc" \
+    "INV-15: 'orchid $svc_verb --help' out of a stale installation root must still print its usage and exit 0 (got rc=$svc_rc: $svc_out). The gate sits after the operator's command has been validated in both of these verbs, and a help text that answers in one and refuses in the other is the same rule being applied twice with two different answers"
+  assert_match "$svc_want" "$svc_out" \
+    "INV-15: ...and what it printed must be that verb's own usage text"
+  case "$svc_out" in
+    *'refusing to run'*)
+      fail "INV-15: 'orchid $svc_verb --help' was answered with the stale-root refusal. The other verb answers the same arm with its usage text, so one of the two is now firing the gate in front of an answer that names no target — and whichever one it is, the two no longer agree about where this gate belongs" ;;
+  esac
+done
+green_case "both entry points that fire the stale-root gate themselves — 'orchid trust' and 'orchid service' — answered their usage arm out of the very installation root that refuses the acting arms below, so the one route on which this gate does not fire is the same route in both files rather than an exemption one of them grew alone"
+
+# The acting arm of the second verb, and the GREEN half runs first for the
+# reason the lookup's did: the RED below is an ABSENCE, and an absence proves
+# nothing until the thing absent is known to happen.
+svc_probe "$REPO_ROOT" service status --repo "$TRUST_REPO"
+assert_eq 0 "$svc_rc" \
+  "INV-15: 'orchid service status' out of this checkout's own kernel must report on the fixture repository (got rc=$svc_rc: $svc_out)"
+assert_match 'orchid service status:' "$svc_out" \
+  "INV-15: ...and it must actually print the status report, which is what the refusal below is measured by the absence of"
+green_case "the status arm of 'orchid service', run out of a root that is NOT stale, printed the report it exists to print — so that report is a side effect which really does happen, and its absence below is caused rather than inherited"
+
+svc_probe "$TRUST_ROOT" service status --repo "$TRUST_REPO"
+assert_eq 1 "$svc_rc" \
+  "INV-15: 'orchid service status' invoked out of a stale installation root must refuse (got rc=$svc_rc: $svc_out)"
+assert_match 'refusing to run: the checkout orchid itself runs from' "$svc_out" \
+  "INV-15: ...and it must be the stale-root refusal, not a usage error or some other failure of the fixture"
+assert_match 'templates/\.keep' "$svc_out" \
+  "INV-15: the refusal must name the staged kernel path — the gate is not merely called in this runner, it ran and it SAW something"
+case "$svc_out" in
+  *'orchid service status:'*)
+    fail "INV-15: the refused 'orchid service status' printed its report anyway, so the gate in runners/orchid-service is reached after the answer it was supposed to precede. This is the file whose gate was written once per arm and had to be moved above the dispatch; a report produced below it is that correction not having taken" ;;
+esac
+red_case "the acting arm of 'orchid service', out of the same stale installation root whose usage arm was answered above, refused before its report — so the usage exemption the two verbs share is bounded to the arm that resolves no target, and the gate really does fire on the arm that does"
 
 # ===========================================================================
 # 9 -- THE SELF-HOSTED ENTRY POINTS, RUN: THE DENIAL COSTS NO TARGET-REPOSITORY
@@ -2616,17 +2839,17 @@ green_case "the identical query, moved to the line after the lookup's verdict, w
 # 10 -- the boundaries of what any of this proves.
 # ===========================================================================
 not_tested "gate-omission-beyond-the-four-families" \
-  "enforcement gates outside the four this file derives — the static sections of scripts/ci-local.sh, the tests/inv/ gate files, the stale-root guard's reach across every shipped file that loads lib/common.sh, and the early-exit matcher shape across the shipped kernel, the bundled plugins and those same gate files. A gate that is none of those (a check living only inside one verb, a hook a plugin installs) is held to the same rule by review. What makes the four checkable is that each has a DISCOVERABLE membership: a banner, a glob, a source line, a syntactic shape. A new gate family belongs here the moment its membership becomes derivable"
+  "enforcement gates outside the four this file derives — the static sections of scripts/ci-local.sh, the files tests/helpers.sh enrols in the red-case rule (by location under tests/inv/ and by name in PROOF_ENROLLED_FILES), the stale-root guard's reach across every shipped file that loads lib/common.sh, and the early-exit matcher shape across the shipped kernel, the bundled plugins and those same gate files. A gate that is none of those (a check living only inside one verb, a hook a plugin installs) is held to the same rule by review. What makes the four checkable is that each has a DISCOVERABLE membership: a banner, a glob plus the array beside it, a source line, a syntactic shape. A new gate family belongs here the moment its membership becomes derivable"
 not_tested "gate-reach-into-code-that-arms-nothing" \
   "shipped code that executes out of \$ORCHID_ROOT without loading lib/common.sh at all. Section 4's universe is every file under install.sh, bin/, libexec/, runners/, scripts/ and plugins/*/*/* that SOURCES the library, because sourcing it is what arms the guard and the question this file asks is whether what was armed is fired. A helper that runs kernel code some other way — a plugin's notify sender that shells to the orchid dispatcher rather than sourcing it, a hook script, anything reached through a subprocess — arms nothing here, so it is neither reported nor cleared. The subprocess case is the benign half: whatever it invokes is itself in the universe and fires the gate on its own account. The case that is not covered is a file that reads and acts on \$ORCHID_ROOT's contents directly without loading the library, which no shipped file does today and which this derivation would not notice arriving"
 not_tested "firing-site-reachability-within-an-entry-point" \
-  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the three sections 6, 8 and 9 execute. Section 4 is textual in that one respect by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call -- or runs past it BEFORE that work -- which it cannot. (What section 4 no longer takes on trust is the OTHER half of that question, whether a call it found fires anything where the file lives: that is answered by running a stub at the file's own path out of a genuinely stale root, so a firing site that is inert at that location is reported rather than counted.) Section 6 answers both questions for runners/orchid-pump, section 8 for libexec/orchid-trust and section 9 for libexec/orchid-doctor, each by running the entry point and weighing its refusal against a side effect that really does happen otherwise; that is three entry points out of the deferring set. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no arm that could forget. libexec/orchid-trust is the one that fires PER SUBCOMMAND, because what the gate must precede is per subcommand, and NO arm of it is exempt any longer: the lookup arm carried an exemption for writing nothing durable, that exemption is gone, and section 8 executes both the acknowledgement, whose side effect is the record it writes, and the lookup, whose side effect is the report an operator acts on. What section 8 does not run is the third arm, revocation, which carries the same call above the same kind of durable mutation. Revocation is also the one arm whose ORDER against the machine-local decision is not covered anywhere: the lookup arm now makes that decision first and section 9 runs it self-hosted, but revocation deliberately makes NO decision to put first -- it is built without inspection so that removal stays available when inspection cannot complete -- so pointed at Orchid's own checkout it still spends the gate's index comparison against what is, in that one environment, the target. That is the availability trade the arm is written for rather than an oversight, and it is stated here instead of tested. So a trust subcommand added tomorrow that acts and forgets the call is caught by nothing: section 4 sees the file's other call sites and is satisfied, and sections 8 and 9 only ever asked about the arms they run. An entry point that guards its call, or that acts before it, belongs to review, and the two questions to put to it are the ones sections 4, 6 and 8 put to those three: on which route is your gate not reached, and what have you already done by the time it is"
+  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the four sections 6, 8 and 9 execute. Section 4 is textual in that one respect by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call -- or runs past it BEFORE that work -- which it cannot. (What section 4 no longer takes on trust is the OTHER half of that question, whether a call it found fires anything where the file lives: that is answered by running a stub at the file's own path out of a genuinely stale root, so a firing site that is inert at that location is reported rather than counted.) Section 6 answers both questions for runners/orchid-pump, section 8 for libexec/orchid-trust and for runners/orchid-service, and section 9 for libexec/orchid-doctor, each by running the entry point and weighing its refusal against a side effect that really does happen otherwise; that is four entry points out of the deferring set. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally on the route to its own work, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no ACTING arm that could forget; section 8 runs its status arm out of a stale root and requires the refusal to land ahead of the report, which is the half a scan of that file cannot answer. libexec/orchid-trust is the one that fires PER SUBCOMMAND, because what the gate must precede is per subcommand, and no ACTING arm of it is exempt any longer: the lookup arm carried an exemption for writing nothing durable, that exemption is gone, and section 8 executes both the acknowledgement, whose side effect is the record it writes, and the lookup, whose side effect is the report an operator acts on. What both files DO have above the call is the usage arm -- -h, --help, help, a bare invocation -- and that is the one route through either of them on which this gate does not fire. It is not left as an omission in one and a decision in the other: section 8 runs both verbs' usage arms out of the same stale root that refuses their acting arms, so the exemption is measured, bounded to the arm that resolves no target and reads no record, and identical in the two files. What is not tested is the claim UNDER it -- that a usage text can never carry anything an operator acts on about a repository -- which is an argument about the content of two here-documents rather than about an ordering, and belongs to review. What section 8 does not run is the third arm, revocation, which carries the same call above the same kind of durable mutation. Revocation is also the one arm whose ORDER against the machine-local decision is not covered anywhere: the lookup arm now makes that decision first and section 9 runs it self-hosted, but revocation deliberately makes NO decision to put first -- it is built without inspection so that removal stays available when inspection cannot complete -- so pointed at Orchid's own checkout it still spends the gate's index comparison against what is, in that one environment, the target. That is the availability trade the arm is written for rather than an oversight, and it is stated here instead of tested. So a trust subcommand added tomorrow that acts and forgets the call is caught by nothing: section 4 sees the file's other call sites and is satisfied, and sections 8 and 9 only ever asked about the arms they run. An entry point that guards its call, or that acts before it, belongs to review, and the two questions to put to it are the ones sections 4, 6 and 8 put to those four: on which route is your gate not reached, and what have you already done by the time it is"
 not_tested "early-exit-matchers-outside-the-kernel-and-the-invariant-gates" \
   "the rest of tests/. Section 5's glob is the shipped kernel, the bundled plugins and tests/inv/test_*.sh, and the last of those was added because an invariant gate deciding its verdict by a race is the same defect the section scans the kernel for. The other test files carry the shape too, in the hundreds, and they are not covered here: converting them is a mechanical sweep of a different size, and the argument for taking the gates first is that a wrong answer there is a wrong answer about the kernel, whereas a wrong answer in a feature test is a flaky test somebody re-runs. The tell is unchanged wherever it appears, and the direction that costs is the negative assertion: a producer piped into an early-exiting grep, then '&& fail', is skipped exactly when the pattern is present. Spelled in words rather than in code, here and in the failure message above, because these two lines are not comments: this file is inside the glob it runs, so a literal instance of the shape on a line of its own prose is a violation of this invariant reported against this file — which is the right answer, and the reason the wording works around it"
 not_tested "early-exit-matchers-other-than-grep-q" \
   "producers killed by an early-exiting consumer that is not grep -q. A head -n1, a sed -n 1q, and a bare read in a pipeline all stop reading before their input ends and all SIGPIPE upstream the same way; section 5 derives exactly one consumer because that is the one the shipped tree used, and the sites that pipe into head today discard the status with an explicit fallback rather than branching on it. The tell is the same wherever it appears: a pipeline under set -o pipefail whose right-hand side can stop reading first, so its exit status may be the producer's death rather than the matcher's verdict"
 not_tested "recorded-label-integrity-outside-the-invariant-gates" \
-  "labels recorded anywhere but tests/inv/test_*.sh, and executing punctuation that is not a backtick. Section 2's label scan reads the gate files, because a gate whose own record says something its author did not write is this file's subject at the smallest scale; the rest of tests/ records labels through the same helpers and is not covered. Two shapes inside the scanned files are outside it as well. A recorder call written inside a heredoc body is read as ordinary code, since the scanner tracks quoting and not here-documents — no shipped gate has one, and a fixture that grows one would be reported rather than missed, which is the safe direction. And '\$( )' is deliberately accepted: labels interpolate the counts that make them non-vacuous, and unlike a backtick in a sentence that spelling is visible as code to whoever types it. What is derived here is the punctuation that has actually shipped three times, not every way a shell can be made to run a word"
+  "labels recorded anywhere but tests/inv/test_*.sh, and executing punctuation that is not a backtick. Section 2's label scan reads the gate files, because a gate whose own record says something its author did not write is this file's subject at the smallest scale; the rest of tests/ records labels through the same helpers and is not covered. That includes the whole-file proofs PROOF_ENROLLED_FILES names, and the asymmetry with the ENROLMENT half of the same section — which does now probe them — is deliberate rather than an oversight: enrolment is what decides whether a file's cases are watched by any trap at all, so an unenrolled proof records nothing anywhere, while a mangled label in one still leaves a case that ran and failed honestly. The narrower loss is left to the same review the rest of tests/ gets. Two shapes inside the scanned files are outside it as well. A recorder call written inside a heredoc body is read as ordinary code, since the scanner tracks quoting and not here-documents — no shipped gate has one, and a fixture that grows one would be reported rather than missed, which is the safe direction. And '\$( )' is deliberately accepted: labels interpolate the counts that make them non-vacuous, and unlike a backtick in a sentence that spelling is visible as code to whoever types it. What is derived here is the punctuation that has actually shipped three times, not every way a shell can be made to run a word"
 not_tested "gate-vacuity-beyond-the-constructed-dimensions" \
   "environment dimensions other than the three this file constructs: '\$ORCHID_ROOT is parked on the configured integration branch' (section 3, the one lesson L036 was paid for), 'the target and ORCHID_ROOT are the SAME checkout' and 'the machine-local store holds no acknowledgement for it' (section 9, the self-hosted doctor and the self-hosted lookup — and, for the lookup only, that same checkout WITH an acknowledgement, which is the dimension that gives the machine-local decision an observable position at all). Other dimensions in which a revalidation environment differs from a deployed one — a machine with no vendor CLI (tests/test_hermetic_suite.sh constructs that one), a repository with no remote, a HOME that is unset rather than empty — are each somebody's own proof to construct, and none of them is covered here. The question to ask of any new gate is the one this file's header asks: in which environment is the condition you branch on false, and is that the environment you test in"
 not_tested "trace-and-output-interleaving-at-sub-line-granularity" \

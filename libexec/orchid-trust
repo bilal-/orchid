@@ -88,7 +88,15 @@ EOF
 #   * AFTER the authorization decision. `orchid trust` is the verb an operator
 #     reaches for to author, read or remove a machine-local acknowledgement;
 #     the decision is the command they typed, so the gate goes after this
-#     file's own argument validation and never in front of a usage error.
+#     file's own argument validation and never in front of a usage error. The
+#     usage arm below -- `-h`, `--help`, `help`, a bare invocation -- therefore
+#     returns above every one of these calls, as the same arm does in
+#     runners/orchid-service, the other entry point that fires this gate itself.
+#     One rule in two files, not an exemption either of them grew: a usage text
+#     names no repository, resolves no record and reports nothing an operator
+#     could act on about a target, because no target has been resolved yet.
+#     tests/inv/test_INV-15_no_optional_gate.sh section 8 runs both verbs' usage
+#     arms out of a stale root, and both verbs' acting arms out of the same one.
 #   * BEFORE any durable write to the machine-local store. That is the side
 #     effect a stale kernel must not be allowed to make -- a record authored,
 #     or an acknowledgement removed, by code nobody has looked at -- and a
@@ -121,13 +129,27 @@ EOF
 #
 # The one Git it can spend is against $ORCHID_ROOT. That was once written here
 # as "never the repository the operator asked about", and that is not true of
-# orchid, which is self-hosted: point any arm of this verb at orchid's own
-# checkout and $ORCHID_ROOT IS the target. So `show`, the arm whose target the
-# operator names and most often names as this checkout, makes the
-# machine-local trust lookup FIRST and fires the gate after it; the argument
-# is at that arm, and INV-15 section 9 runs it. The other two arms name their
-# own targets in the same way, and each carries below the reason its ordering
-# is the one it has.
+# orchid, which is self-hosted -- but it is not untrue for the reason the
+# correction first gave, and the difference decides which environment has to be
+# CONSTRUCTED to see the defect at all.
+#
+# $ORCHID_ROOT is not wherever the operator happens to be standing. It is the
+# INSTALLATION this file resolved from its own $0 a few lines above. So it is
+# the target only when the verb was invoked THROUGH a checkout's own bin/orchid
+# or libexec entry point AND that same checkout is what it was asked about --
+# which is how orchid is developed, how it drives its own repository, and what
+# tests/inv/test_INV-15_no_optional_gate.sh section 9 builds rather than hopes
+# for. Running a separately installed `orchid` while standing inside a checkout
+# is NOT that case: ORCHID_ROOT is then the install prefix, the two are
+# different directories, and the gate's comparison touches neither the target
+# nor anything the operator asked about. That is the environment nearly every
+# invocation is in, and it is why firing first read as harmless for so long.
+#
+# So `show`, the arm whose target the operator names and most often names as
+# the checkout it is itself being run out of, makes the machine-local trust
+# lookup FIRST and fires the gate after it; the argument is at that arm, and
+# INV-15 section 9 runs it. The other two arms name their own targets in the
+# same way, and each carries below the reason its ordering is the one it has.
 sub="${1:-}"; [ "$#" -gt 0 ] && shift
 case "$sub" in
   -h|--help|help|"")
@@ -174,14 +196,16 @@ case "$sub" in
     # in front of it.
     #
     # `orchid trust show <repo>` is the one arm whose target is named by the
-    # operator, and the target it is most often pointed at is orchid's own
-    # checkout. There ORCHID_ROOT and $repo are the SAME directory, so the
+    # operator, and the target it is most often pointed at is an orchid
+    # checkout. When that checkout is also the installation this verb was
+    # invoked out of -- the self-hosted case, which is orchid's own development
+    # and its own runs -- ORCHID_ROOT and $repo are the SAME directory, so the
     # gate's `git diff --cached` against the root is a query against the
     # target repository -- and the unattended-trust contract forbids exactly
-    # that before an acknowledgement for the target has been looked for. In
-    # every other environment the two are different directories, which is why
-    # firing first read as harmless: the one case it is wrong in is the one
-    # case no ordinary run reproduces (lesson L036 again).
+    # that before an acknowledgement for the target has been looked for. Point
+    # an installed orchid at a checkout and the two are different directories
+    # again, which is why firing first read as harmless: the one case it is
+    # wrong in is the one case no ordinary run reproduces (lesson L036 again).
     #
     # unattended_trust_inspect is the constant-size, no-Git denial: with no
     # identity-keyed candidate it returns untrusted having invoked no Git and

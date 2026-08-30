@@ -463,23 +463,39 @@ buying a fresh implementation pass to reach the same tree.
     report an operator acts on. A record authored — or an acknowledgement
     removed — by pre-merge code outlives the process that made it, while a
     `show` report produced by pre-merge code can authorize the operator's next
-    action just as surely. No arm is exempt: the trust lookup first performs
-    its constant-size, no-Git missing-record decision, then the stale-root gate
-    fires before the arm prints its report.
+    action just as surely. No ACTING arm is exempt: the trust lookup first
+    performs its constant-size, no-Git missing-record decision, then the
+    stale-root gate fires before the arm prints its report. The one route that
+    does not reach the gate is the usage arm — `-h`, `--help`, `help`, or a bare
+    invocation — which returns above the dispatch in `libexec/orchid-trust` and
+    in `runners/orchid-service` alike. That is the same rule, not an exemption
+    one of them grew: the gate belongs after the operator's command has been
+    validated, so a mistyped invocation is answered with its own diagnosis
+    rather than a refusal about the checkout, and a usage text resolves no
+    target, reads no record and reports nothing about a repository. Both verbs
+    are held to it together, and to the acting arm that must still refuse out of
+    the same root, in `tests/inv/test_INV-15_no_optional_gate.sh`.
     `libexec/orchid-doctor` draws the same order for the same reason, and the
     two of them are where the order can be observed to matter: each makes the
     machine-local unattended-trust decision first and fires the gate second,
-    both ahead of its first printed line. When the target and `ORCHID_ROOT`
-    are the SAME checkout — which is what self-hosting means, and what anyone
-    running `orchid doctor` from inside an Orchid checkout does, or naming that
-    checkout to `orchid trust show`, which is the question that checkout is
-    most often the subject of — the gate's
-    `git diff --cached` targets the very repository whose acknowledgement has
-    not been looked up yet, so firing it first would spend target-repository
-    Git in front of the denial. Everywhere else those two are different
-    directories and the ordering costs nothing to get wrong, which is exactly
-    why it is proved by RUNNING both verbs in the self-hosted case rather than
-    by reading their source (`tests/inv/test_INV-15_no_optional_gate.sh`). For
+    both ahead of its first printed line. The case that makes the order matter
+    is the one where the target and `ORCHID_ROOT` are the SAME checkout, and
+    `ORCHID_ROOT` is not where the operator is standing: every entry point
+    resolves it from its own `$0`, so the two coincide when a verb is invoked
+    THROUGH a checkout's own `bin/orchid` or `libexec/orchid-*` and that same
+    checkout is what it was asked about. That is what self-hosting means here —
+    orchid developing and driving its own repository, `orchid doctor` run out of
+    a checkout against itself, or that checkout named to its own `orchid trust
+    show`, which is the question it is most often the subject of. Running a
+    separately installed `orchid` while standing inside a checkout is not that
+    case: `ORCHID_ROOT` is then the install prefix. In the self-hosted case the
+    gate's `git diff --cached` targets the very repository whose acknowledgement
+    has not been looked up yet, so firing it first would spend
+    target-repository Git in front of the denial. Everywhere else those two are
+    different directories and the ordering costs nothing to get wrong, which is
+    exactly why it is proved by RUNNING both verbs in a constructed self-hosted
+    case rather than by reading their source
+    (`tests/inv/test_INV-15_no_optional_gate.sh`). For
     the lookup arm that proof also constructs the self-hosted case WITH an
     acknowledgement on file, because only then does the machine-local decision
     spend Git of its own and so acquire a position an observer can read; with
