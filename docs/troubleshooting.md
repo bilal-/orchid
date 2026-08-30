@@ -2371,8 +2371,11 @@ orchid start --refresh-push-guard
 The warning prints both commands with your own repository's path already filled
 in.
 
-Until then, the `orchid merge` warning above is the only local signal you have,
-and a push of run state is refused by nothing on this machine.
+Until then, in a product repository the `orchid merge` warning above is the
+only local signal you have, and a push of run state is refused by nothing on
+this machine. Orchid's physical self-host checkout is deliberately exempt from
+that warning: there is no separate product repository for its run state to
+leak into.
 
 **If your product should not carry run state,** keep the integration branch
 out of the merge chain: take the product changes across on their own (rebase,
@@ -2384,10 +2387,11 @@ anywhere further; history already on a remote is a separate decision, and a
 rewrite of a shared branch is not something to do on a tool's advice.
 
 **If it should** — orchid's own repository is self-hosted and its run state
-*is* part of its history — then nothing here is a defect. Push the ref once
-with `ORCHID_ALLOW_PUSH=1`; every later push of that ref is exempt
-automatically, because the remote's copy already carries run state. The merge
-warning still prints, and is still telling you the truth.
+*is* part of its history — then nothing here is a defect. The local merge
+warning is deliberately suppressed when Orchid and the managed repository are
+the same physical checkout. Push the ref once with `ORCHID_ALLOW_PUSH=1`;
+every later push of that ref is exempt automatically, because the remote's
+copy already carries run state.
 
 **What you must not do** is un-ignore or delete `.orchid/` from `.gitignore`
 to get a verb working again. Excluding `.orchid/` is a supported thing to

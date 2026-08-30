@@ -1526,6 +1526,42 @@ git -C "$r37_g" fetch -q origin || fail "fixture: the fetch materializing the tr
 [ -n "$(git -C "$r37_g" ls-tree refs/remotes/origin/deliberate/tracked -- .orchid)" ] \
   || fail "fixture: the DESTINATION's remote copy must already carry .orchid/, or this is not the cleanup shape at all"
 
+# A sibling destination starts from the identical contaminated baseline. Its
+# suffix is deliberately NOT cleanup-only: one ordinary product commit first
+# inherits `.orchid/` without touching it, and only the following commit
+# deletes the path. A path-limited rev-list sees the deletion but skips the
+# inherited-state commit; testing the trees of only those returned commits then
+# waves the push through as though it were the immediate cleanup below.
+git -C "$r37_g" branch deliberate/inherited deliberate/tracked
+rc=0
+ORCHID_ALLOW_PUSH=1 git -C "$r37_g" push origin deliberate/inherited >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "fixture: the inherited-state destination must be seeded under the deliberate override"
+git -C "$r37_g" fetch -q origin || fail "fixture: the inherited destination's tracking ref must be materialized"
+[ -n "$(git -C "$r37_g" ls-tree refs/remotes/origin/deliberate/inherited -- .orchid)" ] \
+  || fail "fixture: the inherited-state destination baseline must carry .orchid/"
+
+inherit37_wt="$W/r37-gerrit-inherited"
+git -C "$r37_g" worktree add -q "$inherit37_wt" deliberate/inherited
+printf 'ordinary product work while run state remains\n' > "$inherit37_wt/product-after-leak.txt"
+git -C "$inherit37_wt" add product-after-leak.txt
+git -C "$inherit37_wt" commit -q -m "ordinary work while inherited run state remains"
+inherit37_commit="$(git -C "$inherit37_wt" rev-parse HEAD)"
+[ -n "$(git -C "$inherit37_wt" ls-tree "$inherit37_commit" -- .orchid)" ] \
+  || fail "fixture: the ordinary commit must inherit .orchid/ in its tree"
+[ -z "$(git -C "$inherit37_wt" diff-tree --no-commit-id --name-only -r "$inherit37_commit" -- .orchid)" ] \
+  || fail "fixture: the inherited-state commit must not touch .orchid/, or a path-limited walk would already see it"
+git -C "$inherit37_wt" rm -rq .orchid
+git -C "$inherit37_wt" commit -q -m "delete inherited run state before pushing"
+git -C "$r37_g" worktree remove --force "$inherit37_wt"
+[ -z "$(git -C "$r37_g" ls-tree deliberate/inherited -- .orchid)" ] \
+  || fail "fixture: the inherited-state branch tip must be clean, or this tests the tip leg"
+rc=0
+inherit37_out="$(git -C "$r37_g" push origin deliberate/inherited 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a newly reachable commit that inherits run state must be refused even when a later deletion cleans the tip (got: $inherit37_out)"
+assert_match "in the HISTORY this push publishes" "$inherit37_out" \
+  "and the history leg must name the clean-tip inherited-state refusal"
+red_case 'a commit that inherits run state without touching it is still refused before a later deletion'
+
 clean37_wt="$W/r37-gerrit-cleanup"
 git -C "$r37_g" worktree add -q "$clean37_wt" deliberate/tracked
 git -C "$clean37_wt" rm -rq .orchid

@@ -155,9 +155,10 @@ carries_run_state() {
 
 # history_carries_run_state <tip> [<baseline>...] -- true when any commit
 # reachable from <tip> and NOT from any <baseline> CARRIES `.orchid` IN ITS
-# TREE. The path-limited walk is only how the candidates are found cheaply;
-# the tree is what decides, and the difference between those two questions is
-# an entire class of false refusal.
+# TREE. Every newly reachable commit is a candidate. The tree is what decides,
+# and the difference between those two questions is an entire class of false
+# refusal -- and an entire class of false allowance if the walk itself is
+# path-limited.
 #
 # TOUCHING THE PATH IS NOT PUBLISHING IT. `git rm -r .orchid && git commit`
 # touches `.orchid` and carries none of it: its tree is smaller than its
@@ -169,22 +170,27 @@ carries_run_state() {
 # ADD-THEN-DELETE history still fails on the commit that added them, whose
 # tree carries every file the push would publish.
 #
-# The two readings meet exactly at the boundary, which is why this is a
-# correction and not a loosening: if a newly reachable commit's tree is clean
-# and its parent's is not, that parent is either newly reachable too -- and is
-# then the commit this returns true on -- or it is part of the baseline, which
-# means the remote already holds those objects on this very destination and
-# this push introduces nothing. A brand-new branch has no baseline at all, so
-# every ancestor is newly reachable and the commit that added the files is
-# always among them.
+# NOR MAY THE WALK ITSELF BE PATH-LIMITED. A newly reachable commit can inherit
+# `.orchid/` unchanged while adding ordinary product work, then a later commit
+# can delete the run state before the tip. `rev-list -- .orchid` shows only the
+# deletion in that suffix: it skips the inherited-state commit because that
+# commit did not touch the path. Testing the trees cannot repair a commit the
+# walk never returned, so enumerate the whole newly reachable range and test
+# every returned tree.
 #
-# `--full-history` is load-bearing: the default walk simplifies merges away, so
-# a feature branch that took run state in through one side of a merge and whose
-# tip matches its first parent can have the very commit that carries it pruned
-# out of the answer. The walk is not capped at one commit any more -- the first
-# candidate may be a deletion -- but it stops at the first candidate whose tree
-# carries state, and rev-list hands them over newest-first, so a cleanup suffix
-# costs one `ls-tree` per deletion commit.
+# The two readings meet exactly at the boundary, which is why this is a
+# correction and not a loosening: an immediate deletion commit whose parent is
+# in the baseline is clean and introduces no contaminated commit. If any
+# newly reachable commit first inherits that parent's dirty tree, however,
+# that commit is enumerated and refused even though it did not touch the path.
+# A brand-new branch has no baseline at all, so every ancestor is newly
+# reachable and the commit that added or inherited the files is among them.
+#
+# The walk is not capped at one commit -- the first candidate may be a
+# deletion -- but it stops at the first candidate whose tree carries state.
+# `rev-list` hands commits over newest-first, so an immediate cleanup suffix
+# costs one `ls-tree`; a longer clean suffix costs one per newly reachable
+# commit, which is the price of proving none inherited run state unchanged.
 #
 # `--not` is emitted only when there is something to exclude -- a bare `--not`
 # with an empty list is a nonsense command line, and this must never be the
@@ -198,7 +204,7 @@ history_carries_run_state() {
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     carries_run_state "$c" && return 0
-  done < <(git rev-list --full-history "${range[@]}" -- .orchid 2>/dev/null)
+  done < <(git rev-list "${range[@]}" 2>/dev/null)
   return 1
 }
 
@@ -307,7 +313,7 @@ if [ "$leaked" -eq 1 ]; then
   # review upload, and offering it there would send an operator through the
   # override only to be refused identically on their next upload.
   if [ "$leaked_where" = history ]; then
-    where="in the HISTORY this push publishes -- its tip does not carry those paths any more, but a commit that adds them is among the commits being sent, and deleting a file is a further commit rather than a removal"
+    where="in the HISTORY this push publishes -- its tip does not carry those paths any more, but a commit that carries them is among the commits being sent, and deleting a file is a further commit rather than a removal"
     fix="Deleting the paths again changes nothing: rebuild the branch without the commits that carry them (an interactive rebase dropping them, a fresh branch cherry-picking only your own commits, or 'git filter-repo --path .orchid --invert-paths') before pushing."
   else
     where="on its tip"
