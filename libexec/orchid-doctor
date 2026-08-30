@@ -92,12 +92,20 @@ _orchid_entry_restore_operator_path
 #
 # A binding pointing at a live directory whose run is still under way is
 # ordinary state, reported so the teardown ordering is visible BEFORE anything
-# is torn down. The other two are the two halves of the live-run finding, and
-# both are warned about:
+# is torn down. The rest are the halves of the live-run finding, and all of
+# them are warned about:
 #
 #   the path is GONE          — the leftover schedule itself: the launchd agent
 #                               or crontab line is firing on its interval
 #                               against nothing.
+#   the REPOSITORY is gone    — the same failure wearing the other shape: the
+#                               directory survived a `git worktree remove`/
+#                               `prune` that took its registration. The pump
+#                               refuses on this too, and refuses in the same
+#                               inaudible place, so it is reported here on the
+#                               same evidence — orchid_checkout_git_alive,
+#                               shared, rather than a second test that could
+#                               cover one shape and miss the other.
 #   the RUN is finished       — the certain waste. `run_status` never leaves a
 #                               terminal state on its own, so every wake from
 #                               the last merge onward is a guaranteed no-op.
@@ -111,6 +119,22 @@ _orchid_entry_restore_operator_path
 #                               shared with the pump (orchid_run_status_terminal,
 #                               lib/common.sh) so the two can never disagree
 #                               about which runs are finished.
+#   the run AWAITS AN OPERATOR — and this is the state the live finding was
+#                               actually in. A run whose last task merges is
+#                               advanced to `accepting` by the driver itself and
+#                               then stops: `orchid run accept` is judgment work
+#                               with an evidence file behind it, so no wake of
+#                               any schedule can perform it. Reported as its own
+#                               fact rather than folded into the one above,
+#                               because the remedy is different — this run may
+#                               still be accepted, so the line names the accept
+#                               verb first and the uninstall second.
+#
+# A binding whose pump has actually WOKEN AND REFUSED says so as well, from the
+# note the pump leaves beside this same record (orchid_service_refusal_record).
+# Doctor can see that a target is dead; only the schedule itself can say that it
+# fired at it, which is the difference between a schedule that was never loaded
+# and one that is failing on its interval right now.
 #
 # The run's status is read from the BOUND checkout, not from the repository
 # doctor happens to be run in — the binding names its own target, and an
@@ -125,20 +149,36 @@ _orchid_entry_restore_operator_path
 # none.
 while IFS="$(printf '\t')" read -r svc_label svc_repo; do
   [ -n "$svc_label" ] || continue
+  # The refusal note, printed under whichever warning names the same target, so
+  # the two are read together rather than as unrelated lines. Read once here;
+  # `orchid_service_refusal_read` is nonzero when the schedule has never
+  # refused, which is the ordinary case and says nothing.
+  svc_refusal="$(orchid_service_refusal_read "$svc_label" 2>/dev/null || true)"
+  svc_dead=""
   if [ ! -d "$svc_repo" ]; then
-    echo "WARN: pump service $svc_label is still installed for $svc_repo, which no longer exists — the scheduler is waking against a deleted path; remove it with: $(orchid_service_uninstall_command "$svc_repo")"
+    svc_dead="which no longer exists — the scheduler is waking against a deleted path"
+  elif ! orchid_checkout_git_alive "$svc_repo"; then
+    svc_dead="whose repository is gone (the directory remains, its git checkout does not) — no pass can drive it again"
+  fi
+  if [ -n "$svc_dead" ]; then
+    echo "WARN: pump service $svc_label is still installed for $svc_repo, $svc_dead; remove it with: $(orchid_service_uninstall_command "$svc_repo")"
+    [ -z "$svc_refusal" ] || echo "  the schedule last woke and refused: $svc_refusal"
     continue
   fi
-  # An unreadable or absent roadmap leaves this empty, which the predicate
-  # answers `no` for: a binding whose run cannot be read is reported as the
-  # ordinary live one it was before, never as finished on the strength of a
-  # failed read.
+  # An unreadable or absent roadmap leaves this empty, which both predicates
+  # answer `no` for: a binding whose run cannot be read is reported as the
+  # ordinary live one it was before, never as finished — or as parked — on the
+  # strength of a failed read.
   svc_rs="$(fm_get "$svc_repo/.orchid/roadmap.md" run_status 2>/dev/null || true)"
   if orchid_run_status_terminal "$svc_rs"; then
     echo "WARN: pump service $svc_label is still installed for $svc_repo, whose run is $svc_rs — a run never leaves that state on its own, so every further wake is a certain no-op; uninstall the schedule, THEN remove the checkout: $(orchid_service_uninstall_command "$svc_repo")"
+  elif orchid_run_status_awaits_operator "$svc_rs"; then
+    echo "WARN: pump service $svc_label is still installed for $svc_repo, whose run is $svc_rs — every task is done and only an operator can accept the run, so no wake of this schedule can move it: $(orchid_run_accept_command "$svc_repo")"
+    echo "  if the run is over instead, uninstall the schedule, THEN remove the checkout: $(orchid_service_uninstall_command "$svc_repo")"
   else
     echo "ok: pump service installed for $svc_repo (label $svc_label) — uninstall it BEFORE removing that checkout: $(orchid_service_uninstall_command "$svc_repo")"
   fi
+  [ -z "$svc_refusal" ] || echo "  the schedule last woke and refused: $svc_refusal"
 done < <(orchid_service_bindings)
 
 # --greenfield (v1-m2 Task 9): the ONLY flag. Skips exactly the two checks

@@ -616,13 +616,18 @@ drive_boundary_wakes_orchestrator() {
 #
 # The counter itself is the boundary record's own `passes` field, bumped by
 # `orchid run boundary set` (libexec/orchid-run) whenever the record it is
-# handed is unchanged by content and reset to 1 whenever it is not. That is
-# deliberately NOT a new file: the driver re-derives the boundary once per pump
-# pass and records it through that one verb, so "how many passes has this exact
-# boundary survived" is already a fact the single writer of the record is in a
-# position to state, and the pump already reads that record back through `run
-# boundary show`. A second piece of runtime state would need its own writer,
-# its own reset rule, and its own way of going stale.
+# handed is unchanged by content, and kept per boundary IDENTITY in that
+# record's `counters` map rather than in its single slot -- a pass meets as
+# many boundaries as it meets and only the highest-ranked is recorded, so a
+# boundary displaced for one pass and recorded again on the next resumes its
+# own count instead of restarting. Without that, two boundaries taking turns
+# are both immortal. That is deliberately NOT a new file: the driver re-derives
+# the boundary once per pump pass and records it through that one verb, so "how
+# many passes has this exact boundary survived" is already a fact the single
+# writer of the record is in a position to state, and the pump already reads
+# that record back through `run boundary show`. A second piece of runtime state
+# would need its own writer, its own reset rule, and its own way of going
+# stale.
 #
 # Both callers read this file, neither owns it: runners/orchid-pump declines
 # the wake, runners/orchid-drive routes the boundary to `orchid notify`

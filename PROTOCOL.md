@@ -196,16 +196,27 @@ may make it. `orchid drive` records at most one per pass through its own
 verb — `orchid run boundary set --kind <kind> [--task <id>] --reason "..."
 [--no-count]` — and exits 16, the dedicated judgment-boundary exit code.
 `orchid run boundary show` prints the record (schema 1: `kind`, `task`,
-`reason`, `epoch`, `at`, `passes`) and itself exits 16 when one is recorded, 0
-when none is. `orchid run boundary clear --reason "..."` releases it. That verb
-is the record's single writer; nothing else may create, edit or delete it.
+`reason`, `epoch`, `at`, `passes`, `counters`) and itself exits 16 when one is
+recorded, 0 when none is. `orchid run boundary clear --reason "..."` releases
+it. That verb is the record's single writer; nothing else may create, edit or
+delete it.
 
 `passes` counts how many passes this EXACT boundary has survived: an identical
-re-set bumps it, any change of content resets it to 1. It is the counter the
-wake budget reads (HEADLESS OPERATION below), and what it counts is orchestrator
-WAKEUPS rather than wall passes — `--no-count` records the boundary without
-charging one, which is what a caller passes for a pass on which nobody could
-have been woken at all.
+re-set bumps it. It is the counter the wake budget reads (HEADLESS OPERATION
+below), and what it counts is orchestrator WAKEUPS rather than wall passes —
+`--no-count` records the boundary without charging one, which is what a caller
+passes for a pass on which nobody could have been woken at all.
+
+`counters` is where that count is KEPT, keyed by the boundary's own identity
+(kind, task and reason) rather than by the record's single slot. A pass meets
+as many boundaries as it meets and only the highest-ranked is recorded, so the
+occupant changes as tasks move; a boundary displaced for a pass and recorded
+again on the next resumes its own count, and one this run has not met before
+starts at 1. Kept in the slot instead, two boundaries taking turns would both
+be immortal — neither ever reaching `pump_wake_max`, each woken for forever,
+with the blocker that fires on the pass a budget runs out never firing at all.
+The map holds the most recently counted boundaries and is bounded; it is
+released with the record by `boundary clear`.
 
 **Exit 16 says a decision is outstanding SOMEWHERE — never that the run is
 stuck.** A pass that meets a boundary still walks every other task and takes
@@ -3228,8 +3239,10 @@ is normal, never an error:
   manifest label — and cannot notice that the record has not changed by a
   character in three passes. The boundary record's own `passes` counter can:
   `orchid run boundary set` bumps it whenever the record it is handed is
-  unchanged by content and resets it to 1 when it is not, so it counts passes
-  this exact boundary has survived. What it counts is WAKEUPS, not wall
+  unchanged by content, and keeps the count per boundary identity in
+  `counters` (above) so that a boundary displaced from the record for a pass
+  resumes its own count instead of restarting — otherwise two boundaries
+  taking turns are each polled forever. What it counts is WAKEUPS, not wall
   passes — the driver passes `--no-count` on any pass that cannot spend one
   (the pass is not a scheduled one at all, since `orchid drive` is also a verb
   run by hand and only the pump hands off to a tick; or the boundary is

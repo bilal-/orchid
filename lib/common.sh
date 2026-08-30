@@ -1372,9 +1372,16 @@ orchid_service_binding_write() {
 # copy first would leave the opposite: `orchid doctor` reporting a schedule
 # that is already gone while the guard waves the checkout through.
 orchid_service_binding_remove() {
-  local repo="$1" label="$2" mdir
+  local repo="$1" label="$2" mdir refusal
   if mdir="$(orchid_service_machine_dir)"; then
     rm -f "$mdir/$label.json" 2>/dev/null || true
+    # The refusal a scheduled pump left beside it goes too: it describes a
+    # schedule that no longer exists, and left behind it would have `orchid
+    # doctor` reporting a failure nobody can act on. Through the accessor, not
+    # a second spelling of the path (see orchid_service_bound's own note).
+    if refusal="$(orchid_service_refusal_path "$label")"; then
+      rm -f "$refusal" 2>/dev/null || true
+    fi
   fi
   rm -f "$(orchid_service_repo_record "$repo")" 2>/dev/null || true
   return 0
@@ -1416,6 +1423,89 @@ orchid_service_binding_present() {
 # in this tree (`run new`'s rollover guard, the driver's run-complete boundary)
 # ask narrower questions of their own and are not folded in here.
 orchid_run_status_terminal() { [ "${1:-}" = complete ]; }
+
+# orchid_run_status_awaits_operator <run_status> -- 0 iff the run has stopped
+# somewhere only a HUMAN can move it from, without having stopped for good.
+# Today that is `accepting` alone.
+#
+# THIS IS THE STATE THE LIVE FINDING ACTUALLY OBSERVED, and reporting only
+# `complete` missed it entirely. `runners/orchid-drive` takes the mechanical
+# half of COMPLETION itself: the pass that finds every task `done` runs `run
+# advance accepting` and then stops at a `run-complete` boundary, because the
+# acceptance evidence and `orchid run accept` are judgment work no verb decides.
+# From that pass onward the run sits in `accepting` -- six tasks done, the work
+# merged and released -- and every scheduled wake re-derives the same boundary,
+# declines to wake anybody for it, and exits 0. The schedule costs a full
+# deterministic pass every interval and can never produce anything again until
+# an operator types a command no scheduler is able to type.
+#
+# DELIBERATELY NOT FOLDED INTO orchid_run_status_terminal, which several
+# surfaces phrase as "nothing here will ever change again". That sentence is
+# false here: `accepting -> running` is a legal edge (libexec/orchid-run's
+# transition table), so this run is parked rather than finished, and a report
+# that called it finished would be telling an operator to tear down a checkout
+# they may be about to accept from. The two predicates answer different
+# questions and every caller asks both.
+orchid_run_status_awaits_operator() { [ "${1:-}" = accepting ]; }
+
+# orchid_run_accept_command <repo> -- the verb that moves an `accepting` run,
+# spelled for a reader who is not standing in <repo> (`orchid doctor` reports
+# on every binding this machine has, and is usually run from none of them).
+# Centralized for the same reason orchid_service_uninstall_command is: three
+# surfaces name it, and a hand-off naming a command that does not exist is
+# worse than one naming none. The placeholders are left as placeholders --
+# `--reason` is the operator's own words and `--evidence` is a file only they
+# can produce (INV-08), so there is no full command line to paste.
+orchid_run_accept_command() {
+  local q; printf -v q '%q' "$1"
+  echo "cd $q && orchid run accept --reason \"<why>\" --evidence <acceptance evidence file>"
+}
+
+# orchid_checkout_git_alive <path> -- 0 iff <path> is still a git checkout with
+# a repository behind it. The other half of "does the target still exist": a
+# directory can outlive its repository, which is exactly what `git worktree
+# remove`, `git worktree prune`, or a deleted main checkout leaves behind, and
+# the very first thing the deterministic driver does is read a ref.
+#
+# ANSWERED FROM THE FILESYSTEM ALONE -- no `git` is run. That is not an
+# optimization. runners/orchid-pump asks this BEFORE the unattended trust gate
+# (a schedule must not poll a dead path forever waiting for a gate that will
+# never be reached), and nothing target-controlled may execute ahead of that
+# gate. A `.git` DIRECTORY is an ordinary checkout; a `.git` FILE is a linked
+# worktree whose `gitdir:` line is what a pruned registration leaves dangling;
+# anything else is not a checkout at all. Reading that one line with the
+# shell's own `read` executes nothing from the target.
+#
+# SHARED, because the pump's refusal goes to the scheduler's /dev/null and the
+# surfaces that make it readable -- `orchid doctor`'s binding walk and `orchid
+# service status` -- have to call a dead target dead on exactly the same
+# evidence. Two spellings of this test is one of them going quietly blind.
+orchid_checkout_git_alive() {
+  local path="$1" line gitdir
+  # An `if`, not `[ -d ... ] && return 0`: a caller running under `set -e`
+  # would abort on an AND-list whose left side fails.
+  if [ -d "$path/.git" ]; then return 0; fi
+  [ -f "$path/.git" ] || return 1
+  IFS= read -r line < "$path/.git" 2>/dev/null || line=""
+  case "$line" in
+    "gitdir: "*) gitdir="${line#gitdir: }" ;;
+    *) return 1 ;;
+  esac
+  gitdir="${gitdir%$'\r'}"
+  [ -n "$gitdir" ] || return 1
+  case "$gitdir" in
+    /*) ;;
+    *) gitdir="$path/$gitdir" ;;
+  esac
+  [ -e "$gitdir" ]
+}
+
+# NO COMBINED "is this target alive" WRAPPER, deliberately. Every caller of the
+# predicate above has already asked `[ -d ... ]` for itself and has a DIFFERENT
+# thing to say about each answer -- the pump refuses with one message for a
+# deleted directory and another for a dead repository, and `orchid doctor`
+# warns in the same two ways -- so a helper folding the two together would be
+# used by nobody and read as the shared predicate while being neither.
 
 # orchid_service_bound <path> -- 0 iff a pump service records itself as
 # installed against that exact checkout. A plain file test on purpose: this is
@@ -1465,6 +1555,73 @@ orchid_service_bindings() {
     [ -n "$repo" ] || continue
     printf '%s\t%s\n' "$label" "$repo"
   done
+}
+
+# orchid_service_binding_label_for <repo> -- the label of the machine-local
+# binding installed against exactly <repo>, nonzero when nothing names it.
+#
+# EXACT STRING MATCH, never a resolution: the label is a hash of the canonical
+# path, `pwd -P` cannot resolve a directory that no longer exists, and the whole
+# reason to look a binding up by path is that its checkout may be gone. The
+# recorded value is also what `orchid doctor` prints back at the operator, so
+# matching it literally is matching what they were told.
+orchid_service_binding_label_for() {
+  local want="$1" label repo
+  [ -n "$want" ] || return 1
+  while IFS="$(printf '\t')" read -r label repo; do
+    [ -n "$label" ] || continue
+    if [ "$repo" = "$want" ]; then
+      printf '%s\n' "$label"
+      return 0
+    fi
+  done < <(orchid_service_bindings)
+  return 1
+}
+
+# orchid_service_refusal_path <label> -- where a scheduled pump leaves the
+# reason it refused to run. Beside the machine-local binding it belongs to, so
+# it survives the checkout exactly as that record does.
+orchid_service_refusal_path() {
+  local mdir; mdir="$(orchid_service_machine_dir)" || return 1
+  echo "$mdir/$1.refusal"
+}
+
+# orchid_service_refusal_record <repo> <text> -- record, machine-locally, that
+# the schedule bound to <repo> woke and refused, and why.
+#
+# WHY A FILE AND NOT THE SCHEDULER'S OWN STREAMS. A pump that finds its target
+# gone exits nonzero and says so on stderr -- and the artifacts `orchid service
+# install` renders send both streams to /dev/null, deliberately: nothing may
+# open a target-controlled path before the unattended trust gate, and a
+# scheduler-owned log that a refusing schedule appends to every interval grows
+# without bound for as long as nobody looks at it. So the loud failure is loud
+# to nobody, which is the same silence the finished-run half of this finding
+# had. The pump therefore writes ONE line, to a machine-local path derived from
+# the binding rather than from anything the target controls, overwritten (never
+# appended) so a schedule refusing every 240s costs one line forever. `orchid
+# doctor` reads it back, which is where an operator can actually see that the
+# schedule is not merely stale but actively failing.
+#
+# BEST EFFORT, ALWAYS 0. It is called from the pump's refusal path, where the
+# refusal itself is the point: a store that cannot be written must not turn a
+# clear diagnosis into an unrelated error. No binding names this repo -- a
+# hand-run pump against a stale ORCHID_REPO -- writes nothing at all.
+orchid_service_refusal_record() {
+  local repo="$1" text="$2" label f
+  label="$(orchid_service_binding_label_for "$repo")" || return 0
+  f="$(orchid_service_refusal_path "$label")" || return 0
+  [ -d "$(dirname "$f")" ] || return 0
+  printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$text" > "$f" 2>/dev/null || true
+  return 0
+}
+
+# orchid_service_refusal_read <label> -- the recorded refusal for that binding,
+# or nothing at all. Nonzero when there is none, so a caller can say nothing
+# rather than say "(none)".
+orchid_service_refusal_read() {
+  local f; f="$(orchid_service_refusal_path "$1")" || return 1
+  [ -s "$f" ] || return 1
+  cat "$f" 2>/dev/null || return 1
 }
 
 # _ocd_cleanup_wt <wt> <repo> -- removes a temp detached worktree (used by

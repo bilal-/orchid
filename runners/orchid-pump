@@ -100,10 +100,24 @@ repo="${ORCHID_REPO:-$PWD}"
 # This is the ONE pump outcome that is a loud failure rather than a cron-
 # friendly wait state, and deliberately so: a wait state is a condition that
 # the next pass might find resolved, and nothing about a removed checkout gets
-# better on the next pass. It exits nonzero so the scheduler's own failure
-# accounting sees it, and it names the command that ends it.
+# better on the next pass. It exits nonzero so a scheduler that keeps failure
+# accounting of its own (launchd's LastExitStatus) sees it, and it names the
+# command that ends it.
+#
+# AND IT LEAVES A RECORD OF HAVING REFUSED. Loud is relative to who is
+# listening: the plist and cron line this schedule was installed from send both
+# streams to /dev/null (nothing may open a target-controlled path ahead of the
+# trust gate), and cron reports no exit status at all, so under the very
+# configuration this arm exists for the refusal below is heard by nobody.
+# orchid_service_refusal_record writes it once, machine-locally, beside the
+# binding that named this schedule -- the one place that outlives the checkout
+# -- and `orchid doctor` reads it back. A hand-run pump, which has an operator
+# reading its stderr, is told the same thing and records nothing (no binding
+# names its repo).
 if [ ! -d "$repo" ]; then
-  echo "pump: refusing to run: $repo does not exist -- the checkout this schedule was installed against is gone" >&2
+  pump_refusal="refusing to run: $repo does not exist -- the checkout this schedule was installed against is gone"
+  orchid_service_refusal_record "$repo" "$pump_refusal"
+  echo "pump: $pump_refusal" >&2
   echo "pump: no later pass will find it again; remove the schedule with: $(orchid_service_uninstall_command "$repo")" >&2
   exit 1
 fi
@@ -198,36 +212,21 @@ fi
 # against a dead checkout reports "pump: run complete" every interval forever.
 # The broken target is the more urgent fact and is answered first.
 #
-# _pump_git_checkout_alive answers it from the FILESYSTEM alone -- no `git` is
-# run. That is not an optimization: this arm sits BEFORE the unattended trust
-# gate below, and nothing target-controlled may execute ahead of that gate. A
-# `.git` DIRECTORY is an ordinary checkout. A `.git` FILE is a linked worktree,
-# and its `gitdir:` line is exactly what `git worktree remove`, `git worktree
-# prune`, or a deleted main checkout leaves dangling. Anything else is not a
-# checkout at all. Reading that one line with the shell's own `read` executes
-# nothing from the target.
-_pump_git_checkout_alive() {
-  local repo="$1" line gitdir
-  # An `if`, not `[ -d ... ] && return 0`: under `set -e` an AND-list whose
-  # left side fails leaves the list itself nonzero, and this file runs with
-  # `set -e` on.
-  if [ -d "$repo/.git" ]; then return 0; fi
-  [ -f "$repo/.git" ] || return 1
-  IFS= read -r line < "$repo/.git" 2>/dev/null || line=""
-  case "$line" in
-    "gitdir: "*) gitdir="${line#gitdir: }" ;;
-    *) return 1 ;;
-  esac
-  gitdir="${gitdir%$'\r'}"
-  [ -n "$gitdir" ] || return 1
-  case "$gitdir" in
-    /*) ;;
-    *) gitdir="$repo/$gitdir" ;;
-  esac
-  [ -e "$gitdir" ]
-}
-if ! _pump_git_checkout_alive "$repo"; then
-  echo "pump: refusing to run: $repo is no longer a git checkout -- its repository or worktree registration is gone" >&2
+# orchid_checkout_git_alive (lib/common.sh) answers it from the FILESYSTEM
+# alone -- no `git` is run, because this arm sits BEFORE the unattended trust
+# gate below and nothing target-controlled may execute ahead of that gate. It
+# lives in the kernel library rather than here so that `orchid doctor` and
+# `orchid service status`, the two surfaces that make this refusal readable
+# once the scheduler has sent it to /dev/null, call a dead target dead on
+# exactly the same evidence this does.
+#
+# Same machine-local record as step 0, for the same reason, with its own text:
+# an operator reading `orchid doctor` has to be able to tell a directory that
+# was deleted from one whose repository was.
+if ! orchid_checkout_git_alive "$repo"; then
+  pump_refusal="refusing to run: $repo is no longer a git checkout -- its repository or worktree registration is gone"
+  orchid_service_refusal_record "$repo" "$pump_refusal"
+  echo "pump: $pump_refusal" >&2
   echo "pump: no later pass will repair it; remove the schedule with: $(orchid_service_uninstall_command "$repo")" >&2
   exit 1
 fi
@@ -264,6 +263,29 @@ if orchid_run_status_terminal "$rs"; then
     echo "pump: nothing will change here again — every further wake is a no-op; uninstall the schedule, THEN remove the checkout: $(orchid_service_uninstall_command "$repo")"
   fi
   exit 0
+fi
+
+# 3b. ...AND THE STATE THE FINDING WAS ACTUALLY IN. `complete` is not what a
+# finished run reaches on its own: the driver takes the mechanical half of
+# COMPLETION itself (`run advance accepting` on the pass that finds every task
+# done) and then stops at a `run-complete` boundary, because the acceptance
+# evidence behind `orchid run accept` is judgment work no verb decides. So the
+# run the live finding describes -- six tasks done, merged, released, an agent
+# still firing every 240s -- was sitting in `accepting`, and a report that only
+# knew `complete` said nothing about it at all.
+#
+# NOT AN EXIT, unlike the arm above, and the difference is the whole reason
+# these are two predicates. `accepting -> running` is a legal edge, an operator
+# may add work rather than accept, and the pass below is what would move it --
+# so this is a diagnosis, not a stop. What it must not do is stay silent: from
+# here on every wake re-derives the same operator-only boundary and hands it to
+# nobody, and the one command that ends it is one no scheduler can type.
+if orchid_run_status_awaits_operator "$rs"; then
+  echo "pump: run $rs — every task is done and the run is waiting for an operator's acceptance"
+  echo "pump: no scheduled wake can perform it: $(orchid_run_accept_command "$repo")"
+  if orchid_service_bound "$repo"; then
+    echo "pump: until that happens this schedule can only repeat this pass; if the run is over, uninstall it, THEN remove the checkout: $(orchid_service_uninstall_command "$repo")"
+  fi
 fi
 
 # The first potentially effectful operation below is orchid_runtime (which
@@ -830,9 +852,12 @@ fi
 # the case where a model genuinely could act and repeatedly did not.
 #
 # `passes` is the boundary record's own counter -- `orchid run boundary set`
-# bumps it whenever the record it is handed is unchanged by content and resets
-# it to 1 when it is not -- so it counts passes THIS EXACT boundary has
-# survived. What it charges is a WAKEUP: runners/orchid-drive passes
+# bumps it whenever the record it is handed is unchanged by content, and keeps
+# it per boundary identity (the record's `counters` map) so that a boundary
+# displaced from the single record slot for a pass resumes rather than
+# restarts -- so it counts passes THIS EXACT boundary has survived, however
+# many other stops took the record in between. What it charges is a WAKEUP:
+# runners/orchid-drive passes
 # `--no-count` on any pass that cannot spend one, which is exactly the two
 # steps above (5c's operator-only boundary, and step 6's unresolvable
 # orchestrator). Otherwise a rate-limited engine would exhaust this budget over

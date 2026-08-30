@@ -9,17 +9,33 @@ set -euo pipefail
 # libexec/orchid-service is a bare handoff, nothing more.
 #
 # Every subverb accepts --dry-run: the exact launchctl/crontab command(s)
-# are PRINTED, prefixed "DRY-RUN:", instead of run. File rendering +
-# placement (the plist under ~/Library/LaunchAgents, the local
-# .orchid/runtime/pump.cron record kept as the linux-side install record --
-# see _svc_install_linux below for why that record exists -- and both halves
-# of the binding record described under TEARDOWN ORDERING) still happens
-# for REAL under --dry-run: that part is plain, safe, repo/HOME-local file
-# I/O, never a system scheduler mutation. Only the launchctl/crontab call
-# itself is gated. This is deliberate: the test suite runs EVERY subverb
-# under --dry-run (never touches a real launchctl/crontab), and still needs
-# to assert real template rendering, real file placement, and real
-# install/uninstall/status bookkeeping against that placement.
+# are PRINTED, prefixed "DRY-RUN:", instead of run. What else it skips is
+# not symmetric between install and uninstall, and the asymmetry is the
+# point rather than an oversight:
+#
+#   INSTALL renders and PLACES for real (the plist under
+#     ~/Library/LaunchAgents, the local .orchid/runtime/pump.cron record kept
+#     as the linux-side install record -- see _svc_install_linux below for why
+#     that record exists -- and both halves of the binding record described
+#     under TEARDOWN ORDERING). Everything it creates is INERT without the
+#     scheduler call that was skipped: a plist nobody loaded, a record whose
+#     only effect is to make the removal guard conservative and `orchid
+#     doctor` mention a schedule, and `uninstall` reverses all of it. The test
+#     suite depends on that: it asserts real template rendering and real
+#     placement without ever touching a live launchctl/crontab.
+#
+#   UNINSTALL removes NOTHING under --dry-run. Its file work is not placement,
+#     it is the destruction of the only records that name a schedule the dry
+#     run has deliberately left running -- the plist `launchctl unload` needs
+#     the path of, and the binding record that is the sole thing tying that
+#     schedule to a checkout. Performed for a schedule still loaded, a
+#     "preview" would manufacture exactly the invisible leftover this file's
+#     TEARDOWN ORDERING exists to prevent, and would do it in the one mode an
+#     operator runs expecting no consequences.
+#
+# The removal path stays covered: ORCHID_SERVICE_DEBUG_SCHEDULER_LOG (see
+# _svc_scheduler_exec) is a test-only seam that stubs the one system call and
+# leaves every removal real.
 
 # Service installation is itself an unattended trust boundary. Preserve the
 # installing operator's PATH only as data for the scheduler artifact, capturing
@@ -78,9 +94,12 @@ a crontab line.
                never stacks a second launchd job or a second crontab line.
   uninstall  remove exactly what install created for --repo (the plist
                file + its launchctl load, or the marker-guarded crontab
-               line). idempotent: refuses cleanly (a plain message, no
-               launchctl/crontab touched) when nothing is installed for
-               --repo -- safe to call blind.
+               line), and clear the binding record. idempotent: refuses
+               cleanly (a plain message, no launchctl/crontab touched) when
+               nothing is installed for --repo -- safe to call blind.
+               under --dry-run it removes NOTHING and prints what it would
+               remove: the schedule is still running, and the records it
+               would delete are the only things that name it.
   status     report installed/loaded state, the binding record, whether the
                bound run has already finished (every wake after that is a
                certain no-op), the teardown ordering, and the tail of --repo's
@@ -108,9 +127,10 @@ options:
   --interval-s N   install only: override pump_interval_s (config default
                      240) for this install
   --dry-run        print the exact launchctl/crontab commands instead of
-                     running them (file rendering + placement still
-                     happens for real -- only the scheduler mutation/query
-                     itself is skipped)
+                     running them. install still renders + places its
+                     (inert) files for real; uninstall removes nothing at
+                     all -- it would be deleting the records naming a
+                     schedule this run has left installed
 EOF
 }
 
@@ -141,14 +161,54 @@ _svc_platform() {
   esac
 }
 
-# _svc_dryprint <cmd...> -- prints "DRY-RUN: <cmd>" with every argument
-# shell-quoted (printf %q) so the line is exactly re-runnable/copy-pastable,
+# _svc_quote_cmd <cmd...> -- the command as ONE line with every argument
+# shell-quoted (printf %q), so it is exactly re-runnable/copy-pastable and
 # never a lossy plain join (an argument containing a space would otherwise
 # print ambiguously).
-_svc_dryprint() {
-  local out="DRY-RUN:" a
-  for a in "$@"; do out="$out $(printf '%q' "$a")"; done
-  echo "$out"
+_svc_quote_cmd() {
+  local out="" a
+  for a in "$@"; do out="${out:+$out }$(printf '%q' "$a")"; done
+  printf '%s\n' "$out"
+}
+_svc_dryprint() { echo "DRY-RUN: $(_svc_quote_cmd "$@")"; }
+
+# _svc_scheduler_exec <cmd...> / _svc_scheduler_eval <pipeline> -- the two
+# forms every scheduler MUTATION in this file goes through: `launchctl
+# load`/`unload` and both crontab pipelines. `status`'s two read-only queries
+# (`launchctl list`, `crontab -l | grep`) stay direct -- they change nothing,
+# so there is nothing for a stub to protect, and status is asked under
+# --dry-run wherever a test asks it at all.
+#
+# ORCHID_SERVICE_DEBUG_SCHEDULER_LOG is a TEST-ONLY seam (never documented in
+# --help, not an operator-facing knob), the same kind as ORCHID_SERVICE_OS and
+# ORCHID_SERVICE_DEBUG_CRON_CMD_FILE above: when set, the command is APPENDED
+# to that file instead of run, and everything else takes the real,
+# non-`--dry-run` path.
+#
+# It exists because `--dry-run` and "the real path" are no longer the same
+# code below. A dry run must not remove the plist, the cron record or the
+# binding (see _svc_uninstall_darwin's own header for why), so a suite that can
+# only ever invoke `--dry-run` -- and this one can only ever do that, since a
+# real uninstall talks to the host's own launchd or rewrites the operator's
+# real crontab -- would have no way left to exercise removal at all. This seam
+# stubs exactly one system call and leaves every removal, record and refusal it
+# is guarding real.
+_svc_scheduler_exec() {
+  if [ -n "${ORCHID_SERVICE_DEBUG_SCHEDULER_LOG:-}" ]; then
+    _svc_quote_cmd "$@" >> "$ORCHID_SERVICE_DEBUG_SCHEDULER_LOG"
+    return 0
+  fi
+  "$@"
+}
+_svc_scheduler_eval() {
+  if [ -n "${ORCHID_SERVICE_DEBUG_SCHEDULER_LOG:-}" ]; then
+    printf '%s\n' "$1" >> "$ORCHID_SERVICE_DEBUG_SCHEDULER_LOG"
+    return 0
+  fi
+  # eval is safe here: $1 is entirely this script's own fixed pipeline syntax
+  # plus values _svc_cron_pipeline_* already ran through `printf %q` -- see
+  # those functions' own header.
+  eval "$1"
 }
 
 # _svc_sed_escape <string> -- escapes sed REPLACEMENT metacharacters for the
@@ -286,9 +346,22 @@ _svc_print_binding() {
   rec="$(orchid_service_repo_record "$repo")"
   if [ -f "$rec" ]; then
     echo "  binding:  $rec"
+    # The target's own liveness first, on the same shared predicate the pump
+    # refuses with and `orchid doctor` warns on: a schedule whose repository is
+    # gone has nothing to say about run_status, and reporting the run's state
+    # for a checkout that cannot be driven at all names the wrong problem.
+    if ! orchid_checkout_git_alive "$repo"; then
+      echo "  target:   $repo is no longer a git checkout -- the pump refuses every wake against it"
+    fi
     rs="$(fm_get "$repo/.orchid/roadmap.md" run_status 2>/dev/null || true)"
     if orchid_run_status_terminal "$rs"; then
       echo "  run:      $rs -- this run is over; every further wake of this schedule is a certain no-op"
+    elif orchid_run_status_awaits_operator "$rs"; then
+      # Not "over" and deliberately not worded as if it were: every task is
+      # done, but `accepting -> running` is a legal edge and this run may still
+      # be accepted. What no wake of this schedule can do is accept it.
+      echo "  run:      $rs -- every task is done and only an operator can accept the run; no wake of this schedule can:"
+      echo "              $(orchid_run_accept_command "$repo")"
     fi
     echo "  teardown: this checkout is bound to a live schedule -- uninstall it BEFORE removing $repo:"
     echo "              $(orchid_service_uninstall_command "$repo")"
@@ -307,6 +380,31 @@ _svc_print_uninstalled() {
   echo "orchid: service uninstalled for $repo (label $label)"
   [ -d "$repo" ] || return 0
   echo "  $repo is now safe to remove"
+}
+
+# _svc_print_dry_uninstall <repo> <label> <artifact> -- what a --dry-run
+# uninstall says INSTEAD of removing anything. It names each thing a real run
+# would delete, which is the preview an operator asked for, and then says
+# plainly that the schedule is still installed -- because the one thing a
+# preview must never leave behind is a belief that the teardown has happened.
+# Only artifacts that are actually there are named: a binding whose plist never
+# landed would otherwise be told its plist is about to go.
+#
+# Deliberately NOT prefixed "DRY-RUN:", which in this file means one thing and
+# one thing only: a launchctl/crontab command line, printed verbatim so it can
+# be pasted or compared byte-for-byte against the string the real path evals
+# (tests/test_service.sh asserts exactly that). These lines describe removals,
+# not commands, and adding them to that prefix would quietly turn a shared
+# spelling into two.
+_svc_print_dry_uninstall() {
+  local repo="$1" label="$2" artifact="$3" rec
+  echo "orchid: --dry-run: nothing was removed — the schedule for $repo (label $label) is still installed"
+  [ ! -e "$artifact" ] || echo "  would remove: $artifact"
+  if orchid_service_binding_present "$repo" "$label"; then
+    rec="$(orchid_service_repo_record "$repo")"
+    echo "  would clear:  the service binding for $repo ($rec, and its machine-local copy)"
+  fi
+  echo "  re-run without --dry-run to actually end it; until then $repo must not be removed"
 }
 
 _svc_print_log_tail() {
@@ -365,13 +463,13 @@ _svc_install_darwin() {
   # erroring "already loaded" or silently leaving the old copy active.
   if [ "$existed" -eq 1 ]; then
     if [ "$dry" -eq 1 ]; then _svc_dryprint launchctl unload "$plist_path"
-    else launchctl unload "$plist_path" >/dev/null 2>&1 || true
+    else _svc_scheduler_exec launchctl unload "$plist_path" >/dev/null 2>&1 || true
     fi
   fi
   if [ "$dry" -eq 1 ]; then
     _svc_dryprint launchctl load "$plist_path"
   else
-    launchctl load "$plist_path"
+    _svc_scheduler_exec launchctl load "$plist_path"
   fi
 
   echo "orchid: service installed for $repo"
@@ -397,11 +495,25 @@ _svc_uninstall_darwin() {
     orchid_die "no service installed for $repo (label $label)"
   fi
   if [ ! -f "$plist_path" ]; then
-    echo "orchid: no launchd agent for $repo (label $label) — clearing the binding record it left behind" >&2
+    if [ "$dry" -eq 1 ]; then
+      echo "orchid: no launchd agent for $repo (label $label) — a real uninstall would clear the binding record it left behind" >&2
+    else
+      echo "orchid: no launchd agent for $repo (label $label) — clearing the binding record it left behind" >&2
+    fi
   elif [ "$dry" -eq 1 ]; then
     _svc_dryprint launchctl unload "$plist_path"
   else
-    launchctl unload "$plist_path" >/dev/null 2>&1 || true
+    _svc_scheduler_exec launchctl unload "$plist_path" >/dev/null 2>&1 || true
+  fi
+  # THE DRY RUN STOPS HERE, holding everything. `launchctl unload` was printed
+  # rather than run, so the agent is still loaded -- and the plist below is the
+  # path a real unload needs, while the binding is the only record naming the
+  # schedule at all. Removing either now would leave a live agent that nothing
+  # can name and nothing can unload by path: the invisible leftover, minted by
+  # the flag an operator runs precisely to avoid consequences.
+  if [ "$dry" -eq 1 ]; then
+    _svc_print_dry_uninstall "$repo" "$label" "$plist_path"
+    return 0
   fi
   rm -f "$plist_path"
   orchid_service_binding_remove "$repo" "$label"
@@ -519,13 +631,10 @@ _svc_install_linux() {
   if [ "$dry" -eq 1 ]; then
     echo "DRY-RUN: $pipeline"
   else
-    # eval is safe here: $pipeline is entirely THIS script's own fixed
-    # pipeline syntax plus two values ($marker, $line) that
-    # _svc_cron_pipeline_install already ran through `printf %q` --
-    # shell-quoted, so an embedded space/quote/$/backtick in a repo path
-    # can't break out of its argument position. Nothing reaches eval here
-    # that didn't originate from this same script's own computed values.
-    eval "$pipeline"
+    # _svc_scheduler_eval, not a bare `eval`: it carries the eval-safety
+    # reasoning ($pipeline is this script's own fixed syntax plus two
+    # `printf %q`-quoted values) and the test-only stub seam in one place.
+    _svc_scheduler_eval "$pipeline"
   fi
 
   echo "orchid: service installed for $repo"
@@ -556,10 +665,12 @@ _svc_uninstall_linux() {
   _svc_emit_cron_seam "$pipeline"
   if [ "$dry" -eq 1 ]; then
     echo "DRY-RUN: $pipeline"
-  else
-    # Same eval-safety reasoning as the install branch above.
-    eval "$pipeline"
+    # Same stop, same reason, as the darwin branch above: the crontab line is
+    # still there, and the pump.cron record plus the binding are what name it.
+    _svc_print_dry_uninstall "$repo" "$label" "$record"
+    return 0
   fi
+  _svc_scheduler_eval "$pipeline"
   rm -f "$record"
   orchid_service_binding_remove "$repo" "$label"
   _svc_print_uninstalled "$repo" "$label"

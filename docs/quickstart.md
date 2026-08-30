@@ -397,10 +397,18 @@ when it is happening (a warning from `orchid merge`, and a refused `git push`).
 
 ### Tearing it down
 
-A completed run does not stop a schedule. Nothing does — not the last task
-merging, not `orchid run accept`, not `run_status: complete`. If you installed
-the service in step 6, the launchd agent or crontab line is still firing every
-`pump_interval_s`, and every one of those wakes is now a certain no-op. The
+A finished run does not stop a schedule. Nothing does — not the last task
+merging, not `orchid run accept`, not `run_status: complete`. And a run does
+not finish by itself either: the pass that finds every task `done` advances it
+to `run_status: accepting` and stops there, because accepting a run is your
+judgment and takes an evidence file. So the ordinary end state of an unattended
+run is a schedule waking every `pump_interval_s` against a run only you can
+move — the pump, `orchid service status` and `orchid doctor` all say so, and
+name `orchid run accept` rather than pretending the run is over.
+
+If you installed the service in step 6, the launchd agent or crontab line is
+still firing every `pump_interval_s`, and once you accept the run every one of
+those wakes is a certain no-op. The
 pump says so on each of them and names the command below — but it says it
 before it has opened its own `pump.log`, so a scheduled wake reports it to the
 scheduler's `/dev/null` rather than to a log you can read afterwards.
@@ -425,7 +433,9 @@ it. The pump itself refuses to run, loudly, rather than waking against a
 deleted path.
 
 `orchid service uninstall` is safe to run blind: it refuses cleanly, touching
-nothing, when no schedule is installed for that path.
+nothing, when no schedule is installed for that path. Add `--dry-run` to see
+exactly what it would run and remove without removing any of it — the schedule
+stays installed, and so do the records that name it.
 
 ## Before you hand this to someone else
 

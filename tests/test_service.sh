@@ -21,6 +21,29 @@ trust_repo() {
     || fail "service fixture acknowledgement failed for $1"
 }
 
+# UNINSTALL, FOR REAL -- everything except the one system call.
+#
+# `--dry-run` removes nothing (T036): a preview that deleted the plist and the
+# binding record while only PRINTING `launchctl unload` would leave a loaded
+# agent that nothing names and nothing can unload by path, which is the exact
+# leftover this verb exists to prevent. So --dry-run can no longer be the way
+# this suite reaches the uninstalled state -- and a genuinely unstubbed
+# uninstall is not available to it either: on darwin it would talk to the
+# host's own launchd, and on linux it would rewrite the operator's REAL
+# crontab, which no test may ever do.
+#
+# ORCHID_SERVICE_DEBUG_SCHEDULER_LOG is the service runner's test-only seam for
+# exactly this: the launchctl/crontab call is appended to a file instead of
+# run, and every removal, record, refusal and message around it is the real
+# one. Truncated per call, so a caller asserting on it sees only its own
+# command. Kept outside every fixture repo, since sections below assert on
+# those trees' exact contents.
+SCHED_LOG="$HOME/scheduler-calls.txt"
+svc_uninstall_real() {
+  : > "$SCHED_LOG"
+  ORCHID_SERVICE_DEBUG_SCHEDULER_LOG="$SCHED_LOG" "$SERVICE" uninstall "$@"
+}
+
 # $WORK (from mktemp -d) commonly has a symlinked component on macOS
 # (/var/folders/... -> /private/var/folders/...) -- the service always
 # hashes/bakes in the CANONICAL, physically-resolved repo path (the brief's
@@ -189,13 +212,48 @@ assert_match 'pump: run complete' "$out" "status tails runtime/pump.log"
 # ===========================================================================
 # E -- uninstall removes exactly the plist file this install created, and
 # prints (never runs) the launchctl unload command.
+#
+# E1 comes first because it is the arm an operator reaches by accident. A
+# --dry-run uninstall PRINTS `launchctl unload` instead of running it, so the
+# agent is still loaded when it returns -- and the two things it used to delete
+# anyway were the plist (the path a real unload needs) and the binding record
+# (the only thing on this machine naming that schedule at all). A preview that
+# performed those removals manufactured the invisible leftover the whole
+# teardown mechanism exists to prevent, in the one mode an operator runs
+# expecting no consequences. It now removes nothing and says what it would.
 # ===========================================================================
+bind_before="$WORK/.orchid/runtime/service.json"
+[ -f "$bind_before" ] || fail "fixture: the installs above must have recorded a binding for \$WORK"
 out="$("$SERVICE" uninstall --repo "$WORK" --dry-run 2>&1)"; rc=$?
-assert_eq 0 "$rc" "uninstall exits 0 when something was installed"
+assert_eq 0 "$rc" "uninstall --dry-run exits 0 when something is installed"
 assert_match 'DRY-RUN:.*launchctl unload' "$out" "uninstall --dry-run prints the launchctl unload command"
+assert_match 'would remove' "$out" "and names what a real run would remove"
+# The paths are compared literally, never as patterns: a scratch path carries
+# `.` and can carry other ERE metacharacters.
+case "$out" in
+  *"$plist3"*) ;;
+  *) fail "the --dry-run preview must name the exact plist a real uninstall would remove" ;;
+esac
+assert_match 'would clear: +the service binding' "$out" "and names the binding record it would clear"
+assert_match 'nothing was removed' "$out" "and says plainly that it did neither"
+[ -f "$plist3" ] \
+  || fail "uninstall --dry-run must NOT remove the plist: launchctl unload was only printed, so the agent is still loaded and this file is the only path anything can unload it by"
+[ -f "$bind_before" ] \
+  || fail "uninstall --dry-run must NOT clear the binding record: it is the only thing naming a schedule this run deliberately left running"
+red_case "a --dry-run uninstall leaves the schedule it did not unload nameable"
+
+# GREEN: the same verb without --dry-run really does remove both, and really
+# does run the unload it only printed above. The system call is stubbed to a
+# file (see svc_uninstall_real) -- everything else here is the real path.
+out="$(svc_uninstall_real --repo "$WORK" 2>&1)"; rc=$?
+assert_eq 0 "$rc" "uninstall exits 0 when something was installed"
+assert_match 'launchctl unload' "$(cat "$SCHED_LOG")" \
+  "the real uninstall runs the unload that --dry-run only printed"
 [ -f "$plist3" ] && fail "uninstall must remove the plist file it created"
+[ -f "$bind_before" ] && fail "uninstall must clear the binding record it wrote"
 remaining="$(find "$HOME/Library/LaunchAgents" -type f 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq 0 "$remaining" "uninstall removes exactly the one plist file (no collateral removal)"
+green_case "a real uninstall removes the plist and the binding it printed under --dry-run"
 
 # ===========================================================================
 # F -- uninstall refuses cleanly when nothing is installed (idempotent: no
@@ -261,8 +319,18 @@ assert_match 'DRY-RUN:.*crontab' "$out" "linux status --dry-run prints (never ru
 assert_match 'pump: run complete' "$out" "linux status also tails pump.log"
 
 out="$("$SERVICE" uninstall --repo "$WORK" --dry-run 2>&1)"; rc=$?
-assert_eq 0 "$rc" "linux uninstall exits 0 when something was installed"
+assert_eq 0 "$rc" "linux uninstall --dry-run exits 0 when something is installed"
 assert_match 'DRY-RUN:.*crontab' "$out" "linux uninstall --dry-run prints (never runs) the crontab pipeline"
+assert_match 'nothing was removed' "$out" "and reports that it removed nothing"
+[ -f "$record" ] \
+  || fail "linux uninstall --dry-run must NOT remove the pump.cron record: the crontab line it describes is still installed, and this record is what status and uninstall reason from"
+[ -f "$WORK/.orchid/runtime/service.json" ] \
+  || fail "linux uninstall --dry-run must NOT clear the binding record either -- same reason as the darwin branch"
+
+out="$(svc_uninstall_real --repo "$WORK" 2>&1)"; rc=$?
+assert_eq 0 "$rc" "linux uninstall exits 0 when something was installed"
+assert_match 'crontab' "$(cat "$SCHED_LOG")" \
+  "the real linux uninstall runs the crontab pipeline that --dry-run only printed"
 [ -f "$record" ] && fail "linux uninstall must remove exactly the pump.cron record it created"
 
 out="$("$SERVICE" uninstall --repo "$WORK" --dry-run 2>&1)"; rc=$?
@@ -484,10 +552,10 @@ l2="$(echo "$out2" | grep -oE "$label_re" | head -n1)"
 [ -f "$HOME/Library/LaunchAgents/$l1.plist" ] || fail "repo 1's plist must exist"
 [ -f "$HOME/Library/LaunchAgents/$l2.plist" ] || fail "repo 2's plist must exist"
 
-"$SERVICE" uninstall --repo "$WORK2" --dry-run >/dev/null 2>&1
+svc_uninstall_real --repo "$WORK2" >/dev/null 2>&1
 [ -f "$HOME/Library/LaunchAgents/$l1.plist" ] || fail "uninstalling repo 2 must not remove repo 1's plist"
 [ -f "$HOME/Library/LaunchAgents/$l2.plist" ] && fail "uninstalling repo 2 must remove repo 2's own plist"
-"$SERVICE" uninstall --repo "$WORK" --dry-run >/dev/null 2>&1
+svc_uninstall_real --repo "$WORK" >/dev/null 2>&1
 rm -rf "$WORK2"
 
 # ===========================================================================
@@ -760,13 +828,136 @@ green_case "service status leaves a live run's schedule unqualified"
 
 # The same complete run with NO schedule bound is told nothing extra: the line
 # exists to end a real obligation, not to lecture a hand-run pump.
-"$SERVICE" uninstall --repo "$DONE_REPO" --dry-run >/dev/null 2>&1
+svc_uninstall_real --repo "$DONE_REPO" >/dev/null 2>&1
 rc=0
 done_unbound="$(ORCHID_REPO="$DONE_CANON" "$PUMP" 2>&1)" || rc=$?
 assert_eq 0 "$rc" "an unbound completed run is still a quiet no-op"
 assert_eq "pump: run complete" "$done_unbound" \
   "and says only that -- with no schedule installed there is no teardown to name"
 green_case "a completed run with no schedule bound to it keeps its one-line no-op"
+
+# -- K2b: `accepting` -- the state the live finding was ACTUALLY in --------
+# `complete` is not a state a run reaches on its own. runners/orchid-drive
+# takes COMPLETION's mechanical half itself: the pass that finds every task
+# done runs `run advance accepting`, and then stops, because the acceptance
+# evidence behind `orchid run accept` is judgment work no verb decides. So the
+# run in the live finding -- six tasks done, merged, released, an agent still
+# firing every 240s -- was sitting in `accepting` the whole time, and a report
+# that knew only `complete` said nothing at all about it.
+#
+# It is reported as its own fact, never folded into the finished-run one:
+# `accepting -> running` is a legal edge, so this run is PARKED rather than
+# over, and the first thing an operator needs is the verb that unparks it.
+ACC_REPO="$BIND/accepting-run"
+mkdir -p "$ACC_REPO"
+(
+  cd "$ACC_REPO" || exit 1
+  git init -q .
+  git commit -q --allow-empty -m root
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: accepting\nrun_id: r-accepting\n---\n# Roadmap\n' > .orchid/roadmap.md
+)
+ACC_CANON="$(cd "$ACC_REPO" && pwd -P)"
+trust_repo "$ACC_REPO"
+acc_install="$("$SERVICE" install --repo "$ACC_REPO" --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the awaiting-acceptance fixture installs a schedule first (out: $acc_install)"
+acc_label="$(echo "$acc_install" | grep -oE "$label_re" | head -n1)"
+
+rc=0
+acc_pump="$(ORCHID_REPO="$ACC_CANON" "$PUMP" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "a run waiting for acceptance is a wait state, not a failure"
+assert_match 'waiting for an operator' "$acc_pump" \
+  "the pump names the wait rather than passing over it in silence"
+assert_match 'orchid run accept' "$acc_pump" \
+  "and names the verb that ends it, which is the one thing no scheduled wake can do"
+assert_match 'run not running \(accepting\)' "$acc_pump" \
+  "and still reports the ordinary state it found -- the diagnosis is added, never substituted"
+red_case "a run parked on an operator's acceptance is named by the pump instead of polled in silence"
+
+acc_doctor="$(ORCHID_REPO="$WORK" "$ORCHID_BIN" doctor 2>&1 || true)"
+assert_match "WARN: pump service $acc_label is still installed" "$acc_doctor" \
+  "doctor warns about a schedule bound to a run that only an operator can move"
+assert_match 'whose run is accepting' "$acc_doctor" "and names the state it is parked in"
+assert_match 'only an operator can accept the run' "$acc_doctor" \
+  "and says why no wake of that schedule will change it"
+grep -qE 'run is accepting.*never leaves that state on its own' <<<"$acc_doctor" \
+  && fail "an accepting run must NOT be reported as finished: it can still go back to running, and telling an operator to tear the checkout down would be wrong"
+red_case "doctor reports a schedule bound to a run that is waiting for its operator"
+
+acc_status="$("$SERVICE" status --repo "$ACC_REPO" --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "status still exits 0 against a run awaiting acceptance (out: $acc_status)"
+assert_match '^ +run: +accepting ' "$acc_status" "status names the parked run behind the schedule"
+assert_match 'orchid run accept' "$acc_status" "and the verb an operator has to run"
+
+# GREEN twin, from the SAME doctor output: the live-run binding is untouched by
+# any of this. Without it the warnings above would be satisfied by a doctor
+# that flagged every binding it can see.
+case "$acc_doctor" in
+  *"ok: pump service installed for $BIND_CANON (label $bind_label)"*) ;;
+  *) fail "a binding whose run is still under way must stay an ok: line while an accepting one is warned about" ;;
+esac
+green_case "a schedule bound to a run that is still under way is not reported as parked"
+
+# -- K2c: a bound checkout whose REPOSITORY is gone, and the refusal it left
+# The pump refuses this shape as loudly as a deleted directory -- and just as
+# inaudibly: the plist and cron line it fires from send both streams to
+# /dev/null. So the refusal is recorded machine-locally, beside the binding
+# that outlives the checkout, and `orchid doctor` reads it back. Doctor can see
+# for itself that a target is dead; only the schedule can say that it fired at
+# it, which is what tells an operator this is costing them right now.
+DEADBIND="$BIND/dead-git-bound"
+mkdir -p "$DEADBIND"
+(
+  cd "$DEADBIND" || exit 1
+  git init -q .
+  git commit -q --allow-empty -m root
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: running\nrun_id: r-dead-bound\n---\n# Roadmap\n' > .orchid/roadmap.md
+)
+# The CANONICAL path, because that is what `install` hashes its label from and
+# bakes into the artifact as ORCHID_REPO -- a scheduled pump therefore arrives
+# with exactly this string, which is what lets it find its own binding.
+DEADBIND_CANON="$(cd "$DEADBIND" && pwd -P)"
+trust_repo "$DEADBIND"
+db_install="$("$SERVICE" install --repo "$DEADBIND" --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the dead-repository fixture installs a schedule first (out: $db_install)"
+db_label="$(echo "$db_install" | grep -oE "$label_re" | head -n1)"
+
+db_doctor_before="$(ORCHID_REPO="$WORK" "$ORCHID_BIN" doctor 2>&1 || true)"
+case "$db_doctor_before" in
+  *"ok: pump service installed for $DEADBIND_CANON"*) ;;
+  *) fail "GREEN: while the repository is intact its binding is ordinary state" ;;
+esac
+green_case "a bound checkout with its repository intact is reported as ordinary state"
+
+rm -rf "$DEADBIND/.git"
+printf 'gitdir: %s\n' "$DEADBIND/no-such-common-dir" > "$DEADBIND/.git"
+rc=0
+db_pump="$(ORCHID_REPO="$DEADBIND_CANON" "$PUMP" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "the pump must still refuse a bound checkout whose repository is gone (out: $db_pump)"
+assert_match 'no longer a git checkout' "$db_pump" "and says which of the two shapes it met"
+db_doctor="$(ORCHID_REPO="$WORK" "$ORCHID_BIN" doctor 2>&1 || true)"
+assert_match "WARN: pump service $db_label is still installed" "$db_doctor" \
+  "doctor warns about a schedule whose repository is gone, not only about one whose directory is"
+assert_match 'whose repository is gone' "$db_doctor" \
+  "and distinguishes it from a directory that was deleted outright"
+assert_match 'the schedule last woke and refused' "$db_doctor" \
+  "and reports that the schedule really did fire and refuse -- the pump's own words, which the scheduler sent to /dev/null"
+assert_match 'refused: .*no longer a git checkout' "$db_doctor" \
+  "and the refusal it prints is the pump's own reason, not a rewording of it"
+red_case "a bound checkout whose repository is gone is reported, with the refusal its schedule recorded"
+
+# ...and the record goes when the schedule does: a refusal describing a
+# schedule that no longer exists would be a warning nobody can act on.
+svc_uninstall_real --repo "$DEADBIND_CANON" >/dev/null 2>&1
+[ -f "$HOME/.orchid/services/$db_label.refusal" ] \
+  && fail "uninstall must clear the recorded refusal along with the binding it belongs to"
+db_doctor_after="$(ORCHID_REPO="$WORK" "$ORCHID_BIN" doctor 2>&1 || true)"
+case "$db_doctor_after" in
+  *"$db_label"*) fail "doctor must stop reporting an uninstalled schedule entirely" ;;
+esac
+green_case "uninstalling a leftover schedule clears its recorded refusal with it"
 
 # -- K3: no removal walks past a live binding ------------------------------
 # The guard is asked at every checkout-removal site orchid owns (the durable-
@@ -807,9 +998,15 @@ case "$doctor_out" in
 esac
 assert_match "orchid service uninstall --repo" "$doctor_out" \
   "and names the command that removes it"
+# The pump refused against that deleted path back in K2, and under a real
+# scheduler said so to /dev/null. Doctor reports the refusal itself, not just
+# the fact that a binding exists -- an operator can then tell a schedule that
+# was installed and never fired from one failing on its interval right now.
+assert_match 'refused: .*does not exist' "$doctor_out" \
+  "doctor reports the refusal the schedule recorded, in the pump's own words -- the only trace a scheduled wake leaves"
 
 rc=0
-gone_uninstall="$("$SERVICE" uninstall --repo "$GONE_CANON" --dry-run 2>&1)" || rc=$?
+gone_uninstall="$(svc_uninstall_real --repo "$GONE_CANON" 2>&1)" || rc=$?
 assert_eq 0 "$rc" \
   "uninstall must work once the checkout is gone -- it is the command doctor names for exactly that state (out: $gone_uninstall)"
 assert_match 'no longer exists' "$gone_uninstall" \
@@ -821,7 +1018,7 @@ assert_match 'no longer exists' "$gone_uninstall" \
 
 # A successful uninstall of a LIVE checkout clears both records and says the
 # checkout is now safe to remove -- the other end of K3's refusal.
-bind_uninstall="$("$SERVICE" uninstall --repo "$BIND_REPO" --dry-run 2>&1)"; rc=$?
+bind_uninstall="$(svc_uninstall_real --repo "$BIND_REPO" 2>&1)"; rc=$?
 assert_eq 0 "$rc" "uninstall exits 0 for the live binding fixture"
 assert_match 'is now safe to remove' "$bind_uninstall" \
   "uninstall says the one thing the operator was waiting to hear before removing the checkout"
@@ -878,7 +1075,7 @@ assert_eq 0 "$rc" "the fixture re-installs cleanly once its record store is writ
 [ -f "$bind_rec" ] || fail "fixture: the re-install must have recorded the binding"
 rm -f "$HOME/Library/LaunchAgents/$bind_label.plist"
 rc=0
-orphan_out="$("$SERVICE" uninstall --repo "$BIND_REPO" --dry-run 2>&1)" || rc=$?
+orphan_out="$(svc_uninstall_real --repo "$BIND_REPO" 2>&1)" || rc=$?
 assert_eq 0 "$rc" \
   "uninstall must clear a binding whose scheduler artifact is not there (out: $orphan_out)"
 assert_match 'clearing the binding record' "$orphan_out" \
@@ -913,7 +1110,7 @@ assert_eq linux "$(jq -r '.platform' "$LBIND/.orchid/runtime/service.json")" \
 rc=0
 lguard="$(orchid_service_removal_guard "$LBIND" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "a cron-scheduled checkout is no more removable than a launchd-scheduled one"
-"$SERVICE" uninstall --repo "$LBIND" --dry-run >/dev/null 2>&1
+svc_uninstall_real --repo "$LBIND" >/dev/null 2>&1
 [ -f "$LBIND/.orchid/runtime/service.json" ] \
   && fail "linux uninstall must remove the binding record it wrote"
 unset ORCHID_SERVICE_OS

@@ -2449,7 +2449,9 @@ stops at a named boundary rather than making a free-form judgment. The record
 is owned solely by `orchid run boundary set|clear|show` (schema 1: `kind`,
 `task`, `reason`, `epoch`, `at`, `passes` — how many passes this exact boundary
 has survived unchanged by content, which `set --no-count` records without
-charging), and 16 is the dedicated judgment-boundary
+charging — and `counters`, the bounded map holding that count per boundary
+identity so a boundary displaced from the single record slot for a pass
+resumes rather than restarts), and 16 is the dedicated judgment-boundary
 exit code — returned by `drive` when a pass stopped at one, and by `run
 boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
 `review-evidence`, `review-conflict`, `hook-failure`, `worktree-conflict`,

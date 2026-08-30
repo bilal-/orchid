@@ -335,17 +335,24 @@ this section false without touching a byte of it.
    line elsewhere) so ticks continue without a terminal open —
    `orchid service status`/`orchid service uninstall` report/reverse it.
 5. Run ends at `run_status: complete` (acceptance evidence in
-   `reviews/acceptance.log`) or surfaces a blocker. Integration branch holds
-   the product; pushing/deploying is yours. A schedule installed in step 4
-   does NOT end with it — nothing ties one to a run's lifetime, so every wake
+   `reviews/acceptance.log`) or surfaces a blocker. A run does not reach that
+   state on its own: the pass that finds every task `done` advances it to
+   `accepting` and stops at a `run-complete` boundary, so an unattended run
+   parks in `accepting` until an operator runs `orchid run accept`. Integration
+   branch holds the product; pushing/deploying is yours. A schedule installed
+   in step 4 does NOT end with it — nothing ties one to a run's lifetime, so
+   every wake from `accepting` onward can only repeat one pass, and every wake
    after completion is a certain no-op that runs forever. Tearing the checkout
    down is therefore ordered, not interchangeable: `orchid service uninstall
    --repo <path>` FIRST, `git worktree remove <path>` second. Reversed, the
    scheduler keeps firing against a directory that is gone and the binding
    record naming the leftover schedule went into the bin with it — `orchid
    doctor` reads the machine-local copy under `~/.orchid/services/` and names
-   what is still owed an uninstall, both for a binding whose checkout is gone
-   and for one whose run has already reached a terminal state. Doctor is the
+   what is still owed an uninstall: a binding whose checkout is gone, one whose
+   repository is gone under a surviving directory, one whose run has already
+   reached a terminal state, and one whose run is parked in `accepting`. A
+   schedule that has actually woken and refused says so there too, from a note
+   the pump leaves beside that same record. Doctor is the
    surface that reaches an operator here: the pump says the same thing on every
    wake, but it says it before the repo-local service log is opened (nothing
    may open a path inside the target ahead of the unattended trust gate), so a

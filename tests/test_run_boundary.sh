@@ -42,6 +42,14 @@ assert_eq "reviewer requested changes" "$(printf '%s' "$shown" | jq -r '.reason'
 assert_eq "$ORCHID_EPOCH" "$(printf '%s' "$shown" | jq -r '.epoch')" "the record is stamped with the fencing epoch"
 assert_match "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" \
   "$(printf '%s' "$shown" | jq -r '.at')" "the record is timestamped"
+# The wake budget's counters, keyed by boundary identity rather than kept in
+# the one record slot -- see section 3's own RED case for what that buys.
+assert_eq 1 "$(printf '%s' "$shown" | jq -r '.passes')" \
+  "the record carries the pass counter the wake budget reads"
+assert_eq 1 "$(printf '%s' "$shown" | jq -r '.counters | length')" \
+  "and the per-boundary counter map it keeps that count in"
+assert_eq 1 "$(printf '%s' "$shown" | jq -r '[.counters[]] | add')" \
+  "whose one entry is this boundary's own count"
 
 # grep -c prints "0" AND exits 1 when nothing matches, so the count must be
 # captured with `|| true` rather than falling back to a second `echo`.
@@ -117,12 +125,38 @@ assert_eq 0 "$rc" "a brand-new boundary may be recorded --no-count"
 assert_eq 0 "$(boundary_passes)" \
   "a boundary first MET while no orchestrator was resolvable starts at 0, not at 1"
 
-# Back to the review-conflict record the sections below inherit -- 6 asserts
-# the kind it clears by name.
+# ...AND THE COUNT SURVIVES BEING DISPLACED. The record holds ONE boundary, but
+# a pass MEETS as many as it meets and the driver records the highest-ranked --
+# so the winner changes from pass to pass as tasks move. Counted in the record's
+# slot alone, a boundary that loses one pass to a higher-ranked stop and returns
+# on the next begins again at 1, which makes two boundaries taking turns both
+# immortal: neither ever reaches pump_wake_max, an orchestrator is woken for
+# each of them forever, and the blocker that reaches a human on the pass the
+# budget runs out never fires. That is the unbounded polling this counter exists
+# to end, reappearing whenever a run has more than one thing wrong with it.
+#
+# The operator-decision boundary above has just displaced this one. It comes
+# back having already spent two.
 "$ORCHID_BIN" run boundary set --kind review-conflict --task T001 \
   --reason "reviewer requested changes, and a high finding landed" >/dev/null
+assert_eq 3 "$(boundary_passes)" \
+  "a boundary that comes back after another took the record resumes its own count, never restarting at 1"
+red_case "the wake budget survives a boundary being displaced for a pass"
+
+# GREEN, and the reason resuming is not the same as never resetting: a boundary
+# this run has genuinely never met still starts at 1.
+"$ORCHID_BIN" run boundary set --kind task-prerequisite --task T001 \
+  --reason "a stop this run has never met before" >/dev/null
 assert_eq 1 "$(boundary_passes)" \
-  "and a boundary that comes back after a different one is a new fact, counted from 1"
+  "a boundary with no history of its own still starts its count at 1"
+green_case "an unseen boundary starts its own count at 1"
+
+# Back to the review-conflict record the sections below inherit -- 6 asserts
+# the kind it clears by name. Displaced a second time, resumed a second time.
+"$ORCHID_BIN" run boundary set --kind review-conflict --task T001 \
+  --reason "reviewer requested changes, and a high finding landed" >/dev/null
+assert_eq 4 "$(boundary_passes)" \
+  "and it keeps resuming: the count belongs to the boundary, not to the slot"
 
 # ===========================================================================
 # 4 -- refusals. An unknown kind, a missing reason, and an unknown task are

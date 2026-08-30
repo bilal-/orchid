@@ -87,8 +87,25 @@ from the main checkout, which shares the same record.
 ## The run is finished but the service is still firing
 
 **Symptom:** every task is `done`, the work is merged, `orchid status` shows
-`run_status: complete` — and the launchd agent or crontab line is still waking
-every `pump_interval_s`.
+`run_status: accepting` (or `complete`) — and the launchd agent or crontab line
+is still waking every `pump_interval_s`.
+
+`accepting` is where a finished run stops on its own. The driver takes the
+mechanical half of completion itself — the pass that finds every task `done`
+advances `running -> accepting` — and then stops, because the acceptance checks
+and `orchid run accept --reason ... --evidence ...` are judgment work no verb
+decides. Nothing advances it from there, so a schedule left running against an
+`accepting` run repeats one pass for as long as it is installed. The pump, the
+`orchid service status` binding block and `orchid doctor` all name that state
+and the accept verb; none of them calls it finished, because `accepting ->
+running` is legal and you may still be about to add work rather than accept:
+
+```
+WARN: pump service com.orchid.pump.<hash> is still installed for /path/to/repo,
+  whose run is accepting — every task is done and only an operator can accept
+  the run, so no wake of this schedule can move it:
+  cd /path/to/repo && orchid run accept --reason "<why>" --evidence <acceptance evidence file>
+```
 
 That is expected, and it is yours to stop. Nothing ties a schedule's lifetime
 to the run it serves: not the last task merging, not `orchid run accept`, not
@@ -144,6 +161,29 @@ marker-guarded crontab line, neither of which lived in the repository either.
 `install` and `status` still refuse a missing `--repo`: there is nothing to
 install for, and nothing to report on.
 
+A checkout can also lose its repository while the directory survives — a
+`git worktree remove` or `prune` that took the registration, a main checkout
+that was deleted. The pump refuses that shape as loudly as a missing directory,
+and `orchid doctor` reports it the same way (`whose repository is gone`).
+Either way the refusal itself goes to the scheduler's `/dev/null`, so the pump
+also records it beside the machine-local binding and doctor prints it back:
+
+```
+WARN: pump service com.orchid.pump.<hash> is still installed for /path/to/repo,
+  whose repository is gone ...
+  the schedule last woke and refused: <timestamp>  refusing to run: ...
+```
+
+That line is the difference between a schedule that was installed and never
+fired and one that is failing on its interval right now.
+
+**`--dry-run` previews an uninstall without performing it.** It prints the
+`launchctl`/`crontab` command it would run and names the plist (or `pump.cron`
+record) and the binding record it would remove — and removes none of them. The
+schedule is still installed when it returns, and those records are the only
+things naming it, so deleting them for a preview would leave exactly the
+leftover this page is about. Re-run without `--dry-run` to actually end it.
+
 ## The pump woke an orchestrator over and over and nothing moved
 
 **Symptom:** `pump.log` shows repeated hand-offs to an orchestrator for the
@@ -171,7 +211,11 @@ or one the `orchestrate` step refuses outright.
 The driver raises the blocker on the same pass, exactly once. Read it in
 `.orchid/BLOCKERS.md`, or with `orchid run boundary show`, and act on the
 boundary yourself — a `review-conflict` boundary wants `orchid task arbitrate`.
-The counter resets the moment the boundary changes.
+A boundary that genuinely changes starts a fresh count; one that is merely
+displaced for a pass by a higher-ranked stop and comes back does not, because
+the counts are kept per boundary (`counters` in the record) rather than in its
+single slot — otherwise two boundaries taking turns would each be woken for
+forever.
 
 A **finished** run never gets this far and has its own line. No command surface
 admits `orchid run accept`, so a `run-complete` boundary is operator-only and
