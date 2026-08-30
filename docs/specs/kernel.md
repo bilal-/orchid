@@ -2110,13 +2110,22 @@ product's history, where a large diff makes it read as tooling. Two guards,
 because the kernel never performs the merge that leaks it and never may:
 
 - The same pre-push hook additionally refuses a push of any **other branch**
-  (`refs/heads/*`, checked only after the name-based leg above) whose tip
-  carries `.orchid/` when the remote's copy of that branch does not already
-  carry it. Push is the chokepoint rather than merge, because a squash, a
-  cherry-pick or a rebase carries the files across without a merge commit,
-  and a hosted merge request is merged where no local hook runs at all. A
-  branch whose remote copy already tracks run state is exempt, so a
-  deliberately self-hosted repository is asked once and never again. Gerrit's
+  (`refs/heads/*`, checked only after the name-based leg above) that would
+  publish `.orchid/` where the remote does not already have it — carried on
+  the tip, or carried by any commit the push makes **newly reachable**. The
+  history half is not redundancy: a push sends commits, not a tree, so `git rm
+  -r .orchid && git commit` leaves a clean tip over a history that still
+  publishes every file, which is the shape a tip-only test waves through.
+  "Newly reachable" is measured against the remote's own copy of the ref (the
+  sha git hands the hook) plus that remote's tracking refs, so commits the
+  remote already holds are never counted and the deliberate-remote exemption
+  below keeps working unchanged. Push is the chokepoint rather than merge,
+  because a squash, a cherry-pick or a rebase carries the files across
+  without a merge commit, and a hosted merge request is merged where no local
+  hook runs at all. A branch whose remote copy already tracks run state is
+  exempt, so a deliberately self-hosted repository is asked once and never
+  again — one `ORCHID_ALLOW_PUSH=1` push puts those commits on the remote, and
+  every later push of that ref is then exempt by the same baseline. Gerrit's
   `refs/for/<branch>` — either spelling, with or without a `%…` push-option
   suffix — is BRANCH-BOUND and is checked as a branch: on a Gerrit-hosted
   project the review upload *is* the push, and the change is submitted onto
@@ -2134,11 +2143,20 @@ because the kernel never performs the merge that leaks it and never may:
   outside the run — not the integration branch, not a branch recorded on a
   task, including an **archived** run's tasks under `runs/<run_id>/tasks/`,
   since `orchid run new` retires a task record but never deletes its branch
-  — carries `.orchid/`, naming the branch. Membership is read from those
-  records, never from the branch's name. It does not refuse because the
-  condition is created by an operator's own merge, on branches the kernel
-  does not own and cannot undo; freezing a task in `merging` behind a report
-  would be worse than reporting.
+  — carries `.orchid/` in its **tree or in its history**, naming the branch.
+  The history half is the same fact as the hook's: a deletion commit hides
+  the paths from a tree test while every file stays in what the branch
+  publishes. Membership is read from those records, never from the branch's
+  name. The one repository exempt outright is the **self-hosted** one, where
+  `ORCHID_ROOT` and the target repository resolve to the same physical
+  checkout — orchid's own run state on orchid's own branches, where the
+  warning would otherwise fire on every merge forever and train the operator
+  to ignore it. That is decided by path identity alone: never by the
+  repository's name, and never by `.orchid/` already sitting on a product
+  branch, which is the leak rather than consent to it. It does not refuse
+  because the condition is created by an operator's own merge, on branches
+  the kernel does not own and cannot undo; freezing a task in `merging`
+  behind a report would be worse than reporting.
 
 The staging side of the same finding: `orchid init`, `orchid plan apply`
 (via `orchid_commit_durable`) and `orchid run new` stage run state with `git

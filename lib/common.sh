@@ -1814,18 +1814,89 @@ _orchid_in_run_branches() {
   done
 }
 
-# orchid_leaked_run_state_branches <repo> <integ> -- print, one per line,
-# every LOCAL branch outside this run whose tip tree carries durable run
-# state. Empty output (the healthy shape) means the run's bookkeeping is
-# still confined to the run's own branches.
+# _orchid_self_hosted_checkout <repo> -- true when the repository being managed
+# IS the checkout orchid is running out of. That is the one repository where
+# run state on a branch outside the run is not a leak at all: orchid's own
+# `main` carries `.orchid/` on purpose, and the advisory below would name it on
+# every single merge of orchid's own dogfood run -- a warning that fires every
+# time is a warning an operator learns to scroll past, which is precisely how
+# the real leak it exists to catch gets missed.
 #
-# The question is asked of each branch's TREE, not of its ancestry: a squash
-# merge, a cherry-pick and a `git merge` all put the same files on the same
-# branch, and only one of them leaves the integration branch as an ancestor.
+# PHYSICAL IDENTITY, and nothing weaker. Two tempting shortcuts are both wrong
+# and are deliberately not used:
+#
+#   * the repository's NAME. A product repository may be called `orchid`, and a
+#     self-hosted checkout may be called anything at all; a name is not a fact
+#     about which tree this process is executing from.
+#   * `.orchid/` ALREADY being on a product branch. That is the leak itself.
+#     Reading it as consent would mean the advisory switches itself off the
+#     moment the thing it reports has happened once -- the one shape where it
+#     must still speak.
+#
+# So the question asked is whether ORCHID_ROOT and the repository's own top
+# level are the same directory -- through orchid_physical_dir, this library's
+# own canonicalizer, so macOS reaching $TMPDIR through `/var` -> `/private/var`
+# (or an operator who installed orchid behind a symlink) cannot make one
+# checkout look like two. ORCHID_ROOT is compared against the top level rather
+# than merely being inside it, so an orchid VENDORED into a product repository
+# (`<product>/tools/orchid`) is correctly NOT self-hosted: that tree is the
+# product's, and run state committed there leaks exactly as it always did.
+#
+# Fails closed -- an unreadable repo, an unset or non-existent ORCHID_ROOT, a
+# path that cannot be resolved -- so an uncertain answer keeps the warning
+# rather than silencing it.
+_orchid_self_hosted_checkout() {
+  local repo="$1" root top
+  root="${ORCHID_ROOT:-}"
+  [ -n "$root" ] || return 1
+  top="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ -n "$top" ] || return 1
+  top="$(orchid_physical_dir "$top")" || return 1
+  root="$(orchid_physical_dir "$root")" || return 1
+  [ -n "$top" ] && [ -n "$root" ] && [ "$top" = "$root" ]
+}
+
+# orchid_leaked_run_state_branches <repo> <integ> -- print, one per line,
+# every LOCAL branch outside this run that carries durable run state, in its
+# tip tree or anywhere in its history. Empty output (the healthy shape) means
+# the run's bookkeeping is still confined to the run's own branches -- and it
+# is also the whole answer in a SELF-HOSTED checkout, where there is no product
+# to leak into (_orchid_self_hosted_checkout).
+#
+# The question is asked of each branch's TREE and of its HISTORY, never of its
+# ancestry relative to the integration branch: a squash merge, a cherry-pick and
+# a `git merge` all put the same files on the same branch, and only one of them
+# leaves the integration branch as an ancestor.
+#
+# THE HISTORY HALF IS NOT BELT-AND-BRACES. A tree test alone answers "is run
+# state in the working files of this branch right now", and the answer to that
+# is `no` the moment somebody notices the paths and commits a deletion -- while
+# every one of those files is still sitting in the branch's history, still
+# published by every push and clone of it, and still riding on into whatever
+# that branch is merged into. `git rm -r .orchid && git commit` does not remove
+# anything from a history; it appends. So a branch is named here when ANY commit
+# it can reach touched `.orchid` at all, which is exactly the add-then-delete
+# shape a tree test reads as clean.
+#
 # `.orchid/runtime/` is gitignored and so is never in a tree at all -- any
 # `.orchid/` path a commit carries is durable run state by construction.
+#
+# BOTH tests are kept, and the tree test runs first, because neither strictly
+# contains the other: in a SHALLOW clone the commit that introduced `.orchid/`
+# can be behind the graft point, where the tree still carries the files and the
+# path-limited walk has nothing to find.
+#
+# `--full-history` because the default walk simplifies merges away: a branch
+# that took run state in from one side of a merge and whose tip matches its
+# first parent is the leak, and plain history simplification is entitled to
+# prune exactly that commit out of the answer.
 orchid_leaked_run_state_branches() {
   local repo="$1" integ="$2" in_run b
+  # The one repository where none of this is a leak: orchid's own. Asked before
+  # any ref is read, and asked of the filesystem rather than of the run's
+  # records -- see _orchid_self_hosted_checkout for why neither the name nor
+  # the presence of `.orchid/` may answer it.
+  if _orchid_self_hosted_checkout "$repo"; then return 0; fi
   in_run="$(_orchid_in_run_branches "$repo" "$integ")"
   while IFS= read -r b; do
     [ -n "$b" ] || continue
@@ -1835,8 +1906,14 @@ orchid_leaked_run_state_branches() {
     # that 141 to the pipeline's status -- the same size-dependent coin flip
     # tests/helpers.sh's assert_match documents.
     if grep -Fxq -- "$b" <<<"$in_run"; then continue; fi
-    if [ -z "$(git -C "$repo" ls-tree "refs/heads/$b" -- .orchid 2>/dev/null)" ]; then continue; fi
-    printf '%s\n' "$b"
+    if [ -n "$(git -C "$repo" ls-tree "refs/heads/$b" -- .orchid 2>/dev/null)" ]; then
+      printf '%s\n' "$b"
+      continue
+    fi
+    if [ -n "$(git -C "$repo" rev-list --full-history --max-count=1 \
+                 "refs/heads/$b" -- .orchid 2>/dev/null)" ]; then
+      printf '%s\n' "$b"
+    fi
   done <<<"$(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true)"
 }
 

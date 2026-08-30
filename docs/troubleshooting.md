@@ -2257,7 +2257,13 @@ want:
   record but never deletes the branch) carries `.orchid/`. Membership comes
   from those records, not from the branch's name, so renaming a task branch
   does not turn it into a leak and naming your own branch `task/…` does not
-  hide one. It names the branch. It prescribes nothing and
+  hide one. A branch is named whether the files are on its tip **or only in
+  its history**, and the warning is silent in exactly one repository: the
+  checkout orchid is itself running out of, where its own run state on its own
+  branches is the point. That is decided by comparing `ORCHID_ROOT` with the
+  repository's top level — not by the repository's name, and not by `.orchid/`
+  already being on a product branch, which is the leak rather than consent. It
+  names the branch. It prescribes nothing and
   undoes nothing: the merge that put it there is yours, on branches orchid
   does not own, and a run frozen behind a report would be worse than a run
   that reports.
@@ -2278,6 +2284,24 @@ want:
   local gate that sees *every* route, including a squash, a cherry-pick or a
   rebase that carries the files across without ever making a merge commit, and
   a hosted MR that is merged where no local hook runs at all.
+
+**`git rm -r .orchid` is not the fix, and both checks know it.** A push
+publishes commits, not a tip. Deleting the paths appends a commit with a
+smaller tree; every file is still in the commits being sent, in every clone
+made of the branch afterwards, and in whatever the branch is merged into. So
+both the merge warning and the hook look at the whole history — for the hook,
+at every commit the push would make newly reachable, measured against what the
+remote already holds — and a branch whose tip looks clean is still named. To
+actually remove it, rebuild the branch without those commits: an interactive
+rebase dropping them, a fresh branch cherry-picking only your own commits, or
+
+```
+git filter-repo --path .orchid --invert-paths
+```
+
+If your repository tracks run state on purpose, `ORCHID_ALLOW_PUSH=1` once is
+still the answer — after that push the remote holds those commits and every
+later push of that ref goes through untouched.
 
 **Your repository is already past `planning` and you want the current guard.**
 `orchid start` refuses a run that has left planning — it is a setup command,

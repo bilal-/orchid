@@ -665,13 +665,19 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   (defense-in-depth; PROTOCOL.md instructs the model not to push, but that
   prompt policy is not OS/network containment).
   `ORCHID_ALLOW_PUSH=1` overrides it for one push.
-  The same hook also refuses a push of *any other branch* whose tip carries
-  orchid's own run state (`.orchid/`) when the remote's copy of that branch
-  does not already carry it — the leak that reaches a product's `main` by riding
-  the merge chain rather than by anyone pushing an orchid-named branch. A
+  The same hook also refuses a push of *any other branch* that would publish
+  orchid's own run state (`.orchid/`) where the remote does not already have
+  it — the leak that reaches a product's `main` by riding
+  the merge chain rather than by anyone pushing an orchid-named branch. Both
+  the branch's **tip** and every commit the push makes **newly reachable** are
+  checked, because a push sends commits rather than a tree: `git rm -r .orchid
+  && git commit` leaves a clean tip over a history that still carries every
+  file, and that is the shape a tip-only check would wave straight through. A
   branch whose remote copy already tracks run state is exempt automatically, so
   a repository that carries its own run state on purpose (orchid's own does)
-  pushes it once with `ORCHID_ALLOW_PUSH=1` and is never asked again. A
+  pushes it once with `ORCHID_ALLOW_PUSH=1` and is never asked again — the
+  commits are on the remote from then on, so the same exemption covers the
+  history check too. A
   **Gerrit review upload counts as a branch** — `refs/for/<branch>`,
   `refs/for/refs/heads/<branch>`, with or without a `%topic=…` push-option
   suffix — because on a Gerrit-hosted project the upload *is* the push and the

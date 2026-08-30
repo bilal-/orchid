@@ -2104,3 +2104,93 @@ scan_out="$( (
 assert_eq "product/main" "$scan_out" \
   "only the branch outside the run is named: not the integration branch, not a live task's branch, not an archived one's"
 green_case 'the integration branch carrying its own run state is never a leak'
+
+# ---------------------------------------------------------------------------
+# T037 -- ADD THEN DELETE, on the advisory's side of the fence.
+#
+# The scan above asks each branch's TREE, and the operator response that shape
+# invites is the one that does not work: notice the `.orchid/` paths, `git rm -r
+# .orchid && git commit`, and the tree test says clean from that moment on --
+# while every one of those files is still in the branch's history, still
+# published by every push and clone of it, and still riding into whatever the
+# branch is merged into. A deletion is an append, not a removal.
+#
+# Both new branches are cut from the SAME `scan_repo` the block above uses, so
+# the exact-output assertion below is the same assertion widened by exactly the
+# two branches this case adds -- an over-firing scan shows up as an extra name,
+# an under-firing one as a missing one.
+#
+# RED (before this fix): `product/stripped` is absent from the output and merge
+# reports the repository as containing exactly one leak when it contains two.
+strip_scan_wt="$WORK/containment-scan-strip"
+git -C "$scan_repo" worktree add -q -b product/stripped "$strip_scan_wt" orchid/integration
+git -C "$strip_scan_wt" rm -rq .orchid
+git -C "$strip_scan_wt" commit -q -m "operator: deleted the .orchid/ paths they noticed in the diff"
+git -C "$scan_repo" worktree remove --force "$strip_scan_wt"
+[ -z "$(git -C "$scan_repo" ls-tree product/stripped -- .orchid)" ] \
+  || fail "fixture: product/stripped's TIP must be clean, or this is the tree case wearing another name"
+[ -n "$(git -C "$scan_repo" rev-list --full-history --max-count=1 product/stripped -- .orchid)" ] \
+  || fail "fixture: product/stripped's HISTORY must still carry .orchid/, or there is nothing to detect"
+
+# The truly-clean twin, cut from the operator's own root commit -- the one
+# commit in this repository that never saw run state. It keeps the case above
+# from passing for a scan that simply names every branch.
+git -C "$scan_repo" branch product/clean "$(git -C "$scan_repo" rev-parse orchid/integration^)"
+[ -z "$(git -C "$scan_repo" rev-list --full-history --max-count=1 product/clean -- .orchid)" ] \
+  || fail "fixture: product/clean must have no .orchid/ anywhere in its history"
+
+scan_out2="$( (
+  ORCHID_ROOT="$REPO_ROOT"; export ORCHID_ROOT
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_leaked_run_state_branches "$scan_repo" orchid/integration
+) )"
+assert_eq "$(printf 'product/main\nproduct/stripped')" "$scan_out2" \
+  "a branch whose tip was cleaned but whose history still carries run state is named, and a branch that never carried it is not"
+red_case 'a branch whose tip is clean but whose history adds .orchid/ is reported as a leak'
+
+# ---------------------------------------------------------------------------
+# T037 -- the SELF-HOSTED exemption, and the product repository it must not be
+# confused with.
+#
+# orchid's own repository carries `.orchid/` on `main` deliberately: that is
+# what makes its own dogfood run durable. Scanning it finds a "leak" on every
+# merge, forever, and a warning that fires every time is a warning an operator
+# scrolls past -- which is exactly how the real leak this whole advisory exists
+# to catch would go unread.
+#
+# The two runs below are over the SAME repository, with the same branches, the
+# same names and the same `.orchid/` on `product/main`. The ONLY difference is
+# ORCHID_ROOT: whether the tree this process is executing from is that very
+# checkout. That is what makes this a test of physical identity rather than of
+# any of the things that must not answer the question --
+#
+#   * not the NAME. `scan_repo` is not called `orchid` in either run, and a
+#     product repository is free to be.
+#   * not `.orchid/` ALREADY being on a product branch. It is, in both runs.
+#     Reading that as consent would switch the advisory off precisely when the
+#     thing it reports has happened.
+#
+# RED (before this fix): the self-hosted run names product/main too, and
+# orchid's own run warns about orchid's own repository on every merge.
+selfhost_out="$( (
+  ORCHID_ROOT="$scan_repo"; export ORCHID_ROOT
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_leaked_run_state_branches "$scan_repo" orchid/integration
+) )"
+assert_eq "" "$selfhost_out" \
+  "a repository orchid is itself running out of has no product to leak into -- the advisory says nothing"
+green_case 'the self-hosted checkout is exempt from the containment advisory'
+
+# The exemption is the checkout, not somewhere inside it. An orchid VENDORED
+# into a product repository (`<product>/tools/orchid`) shares that repository's
+# top level, and everything committed there is the product's -- so it is not
+# self-hosted, and the identical scan must still report.
+mkdir -p "$scan_repo/tools/orchid"
+vendored_out="$( (
+  ORCHID_ROOT="$scan_repo/tools/orchid"; export ORCHID_ROOT
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_leaked_run_state_branches "$scan_repo" orchid/integration
+) )"
+assert_eq "$(printf 'product/main\nproduct/stripped')" "$vendored_out" \
+  "an orchid vendored INSIDE a product repository is not that repository, and the advisory still reports"
+red_case 'only the checkout itself is self-hosted, never a directory within it'

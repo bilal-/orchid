@@ -1331,6 +1331,112 @@ grep -q "refs/for/" <<<"$(git -C "$r37_g" ls-remote "$remote37_g" 2>/dev/null ||
   || fail "and it must actually have landed on the remote, not merely not-errored"
 green_case 'a review upload carrying no run state is untouched by the leg'
 
+# ---------------------------------------------------------------------------
+# T037 -- ADD THEN DELETE: a push publishes commits, not a tip.
+#
+# The whole leg above asks what the tip tree carries, and the operator response
+# that shape invites is the one that does not work. You merge the integration
+# branch into your feature branch, you see the `.orchid/` paths in the diff, you
+# `git rm -r .orchid && git commit`, and now `git ls-tree` on the tip says
+# clean -- while every one of those files is still in the commits the push
+# sends, still in the clone anybody makes of the branch, and still on its way
+# into whatever the branch is merged into. A deletion is an append, not a
+# removal, and the leak is untouched by it.
+#
+# Built through a throwaway worktree, as the leak fixtures elsewhere are: the
+# fixture repository's own checkout must never be switched onto a branch that
+# tracks `.orchid/`, because checking back out would delete the live run state
+# the rest of the suite is reading.
+#
+# RED (before this fix): every push in this block succeeds, and run state
+# reaches the remote by the one route an operator believes they have closed.
+# ---------------------------------------------------------------------------
+git -C "$r37_g" branch feature/stripped orchid/integration
+strip37_wt="$W/r37-gerrit-strip"
+git -C "$r37_g" worktree add -q "$strip37_wt" feature/stripped
+git -C "$strip37_wt" rm -rq .orchid
+git -C "$strip37_wt" commit -q -m "operator: deleted the .orchid/ paths they noticed in the diff"
+git -C "$r37_g" worktree remove --force "$strip37_wt"
+# BOTH halves of the fixture, or the case is one of the two already covered:
+# the tip must be clean (else this is the tip case again, and would pass with
+# the history walk removed) and the history must not be (else it is the clean
+# case, and would pass with the whole leg removed).
+[ -z "$(git -C "$r37_g" ls-tree feature/stripped -- .orchid)" ] \
+  || fail "fixture: the TIP must carry no .orchid/, or this is the tip case wearing another name"
+[ -n "$(git -C "$r37_g" rev-list --full-history --max-count=1 feature/stripped -- .orchid)" ] \
+  || fail "fixture: the HISTORY must still carry .orchid/, or there is nothing here to detect"
+
+rc=0
+strip37_push="$(git -C "$r37_g" push origin feature/stripped 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a branch whose HISTORY carries run state must be refused (got: $strip37_push)"
+assert_match "push blocked" "$strip37_push" "the history half of the leg names the block plainly"
+assert_match "in the HISTORY this push publishes" "$strip37_push" \
+  "and says where the state is, since the operator is looking at a clean tip"
+# The remedy has to differ from the tip case's, or the message sends an
+# operator to do again the exact thing that did not work.
+grep -q "strip [.]orchid/ from it before pushing" <<<"$strip37_push" \
+  && fail "the tip remedy is the thing that already failed here -- a history leak needs the branch rebuilt"
+assert_match "filter-repo" "$strip37_push" "and it names a way to actually rebuild the branch"
+git -C "$r37_g" ls-remote --exit-code --heads "$remote37_g" feature/stripped >/dev/null 2>&1 \
+  && fail "a blocked push must not have landed the ref on the remote"
+red_case 'a branch whose tip is clean but whose history adds .orchid/ is refused at push'
+
+# The GREEN twin: a branch with a TRULY clean history -- no commit in it ever
+# touched `.orchid` -- pushes exactly as plain git does, and lands. Without
+# this, the case above passes just as well for a leg that refuses everything.
+git -C "$r37_g" branch feature/clean-history "$g37_branch"
+[ -z "$(git -C "$r37_g" rev-list --full-history --max-count=1 feature/clean-history -- .orchid)" ] \
+  || fail "fixture: the clean twin's history must never have touched .orchid/, or it proves nothing"
+rc=0
+clean37_push="$(git -C "$r37_g" push origin feature/clean-history 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a branch with no run state anywhere in its history must push normally (got: $clean37_push)"
+git -C "$r37_g" ls-remote --exit-code --heads "$remote37_g" feature/clean-history >/dev/null 2>&1 \
+  || fail "and it must actually have landed on the remote, not merely not-errored"
+green_case 'a branch with no .orchid/ anywhere in its history pushes exactly as it always did'
+
+# The same add-then-delete history, uploaded the Gerrit way. Submitting this
+# change puts those commits on the target branch just as a merge would, so the
+# leg has to read the magic ref's history and not only its tip.
+#
+# Deliberately asserted AFTER the successful push above, so `refs/remotes/
+# origin/*` now exists and is used as this upload's baseline: that is what
+# proves the baseline excludes only what the remote actually holds, rather than
+# quietly excusing the upload the moment any tracking ref appears.
+rc=0
+gstrip37="$(git -C "$r37_g" push origin "feature/stripped:refs/for/$g37_branch%topic=stripped" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a review upload whose history carries run state must be refused (got: $gstrip37)"
+assert_match "in the HISTORY this push publishes" "$gstrip37" "the history half reads the magic ref too"
+assert_match "review upload for branch .$g37_branch." "$gstrip37" \
+  "and still names the branch submitting it would land those commits on"
+grep -q "every later push of this ref is exempt" <<<"$gstrip37" \
+  && fail "a magic ref the remote never advertises still has no exemption to offer"
+red_case 'a Gerrit upload whose tip is clean but whose history adds .orchid/ is refused'
+
+# Its GREEN twin, with the same baseline in place: the clean-history branch
+# uploads for review and lands.
+rc=0
+gclean37="$(git -C "$r37_g" push origin "feature/clean-history:refs/for/$g37_branch%topic=clean-history" 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a clean-history review upload must push exactly as plain git does (got: $gclean37)"
+green_case 'a review upload with no .orchid/ anywhere in its history is untouched by the leg'
+
+# And the documented way through survives the history half unchanged: push it
+# once with the override, and every later push of that ref is exempt because
+# the commits are then part of what the remote already holds -- the same
+# deliberate-remote semantics the tip half has always had.
+rc=0
+ORCHID_ALLOW_PUSH=1 git -C "$r37_g" push origin feature/stripped >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "ORCHID_ALLOW_PUSH=1 must allow a deliberate push of a history-carrying branch"
+more37_wt="$W/r37-gerrit-more"
+git -C "$r37_g" worktree add -q "$more37_wt" feature/stripped
+printf 'more\n' > "$more37_wt/more.txt"
+git -C "$more37_wt" add more.txt
+git -C "$more37_wt" commit -q -m "further work on a branch the remote already holds those commits on"
+git -C "$r37_g" worktree remove --force "$more37_wt"
+rc=0
+again37="$(git -C "$r37_g" push origin feature/stripped 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a ref whose commits the remote ALREADY holds must push without the override (got: $again37)"
+green_case 'once pushed deliberately, a history-carrying ref is exempt on every later push'
+
 # ===========================================================================
 # 5 -- worktrees: create at an explicit path, reuse only an EXACT integration
 # checkout, never adopt or overwrite anything else.
