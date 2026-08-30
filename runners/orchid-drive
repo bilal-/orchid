@@ -1203,6 +1203,63 @@ drive_dispatch() {
     return 0
   fi
 
+  # T025: THE NON-CONVERGENCE STOP, ASKED WHERE THE ROUND IS ABOUT TO BE SPENT.
+  #
+  # The two rules PROTOCOL.md states about `rework_signature_repeats` are both
+  # read at dispatch -- reroute at >= 2, stop at >= `rework_nonconvergence_max`
+  # -- but only the first one used to be. The stop lived exclusively at the two
+  # places a failure LANDS (drive_testing's FAIL arm and the merging arm), so a
+  # task that arrived in `rework` past the threshold by any other route was
+  # walked straight past it: the arm below excluded an engine, spawned, spent an
+  # attempt, and the loop only stopped once THAT round had failed identically
+  # too. Spending a round to re-discover a stop the state already justifies is
+  # the exact behaviour F27 recorded, one level up.
+  #
+  # THE ROUTES ARE ORDINARY, not exotic. A stop whose `task advance` was REFUSED
+  # (the archetype gate, the epoch fence, the verb lock) leaves the task in
+  # `rework` with the streak standing -- this file's own AB3 case. `orchid merge`
+  # run by hand advances `merging -> rework` with nobody to ask the question. A
+  # `rework_nonconvergence_max` lowered in config re-judges every task already
+  # parked in the loop. And a pass that dies between the advance and the stop
+  # leaves exactly the same state as the refusal. None of them is a fresh
+  # failure, and none of them is a reason to buy the loop another round.
+  #
+  # Asked through the SHARED stop, so this is one more caller of one composer
+  # rather than a second judgment: same threshold, same attribution, same single
+  # page, and the same de-dup on every later pass over the blocked task. Nothing
+  # is dispatched either way -- a refused block returns 1 with its own truthful
+  # boundary already recorded, and returning here is what makes that refusal cost
+  # a pass instead of an engine round.
+  #
+  # THE OPERATOR'S OWN TWO DOORS REACH IT TOO, and that is the point rather than
+  # a side effect. `task retry` and `task unblock` deliberately do NOT clear the
+  # streak (tests/test_rework.sh Part F pins it: an identical signature over the
+  # operator's route is the same non-convergence evidence as one over the
+  # driver's), so a task handed back at or past the threshold is withheld here
+  # instead of spending the round the verb appeared to grant. What releases the
+  # loop is a verification that ANSWERS DIFFERENTLY -- `orchid task reverify`
+  # re-runs it for no attempt, and a changed signature restarts the count at one,
+  # after which this arm is silent and the next round is dispatched carrying the
+  # operator's reason. Both verbs say so on the way out rather than leaving it to
+  # be discovered by watching a pass do nothing (libexec/orchid-task's
+  # warn_rework_nonconverged), and a repository that really does want more rounds
+  # of the same question raises `rework_nonconvergence_max`.
+  #
+  # ASKED BEFORE THE SCHEDULE GATE BELOW, NOT AFTER IT. A task that is merely
+  # waiting -- for a dependency, or for a concurrency slot -- is still a task
+  # whose loop has stopped converging, and the judgment does not improve by
+  # being deferred until a slot frees. Ordered the other way the stop would be
+  # invisible for as long as the run is busy, which is exactly when a task
+  # quietly re-asking an answered question costs the most; and a reader would
+  # have to know the scheduler's state to know whether the guard had been
+  # consulted at all.
+  if [ "$from" = rework ] && drive_rework_nonconverged "$id"; then
+    if drive_rework_nonconvergence_stop "$id" "dispatch withheld"; then
+      drive_note "$id: no round was dispatched into a loop already judged not to be converging"
+    fi
+    return 0
+  fi
+
   blockers="$(schedule_dispatch_blockers "$repo" "$id" 2>/dev/null || true)"
   if [ -n "$blockers" ]; then
     drive_note "$id: not dispatchable yet — $(printf '%s' "$blockers" | tr '\n' ';')"
@@ -1933,11 +1990,31 @@ drive_verify_fail_pending_consume() {
   return 0
 }
 
-# drive_rework_nonconvergence_stop <task> <failure-context> -- after ANY edge
-# has landed in rework and captured its evidence, stop a byte-identical loop at
-# the configured threshold. Both testing and merging can produce that edge;
-# keeping the judgment here prevents the merge-validation family from evading
-# the stop simply because its failure was discovered one phase later.
+# drive_rework_nonconverged <task> -- 0 when this task's consecutive identical
+# failure streak has reached `rework_nonconvergence_max`. Split out of the stop
+# below because two callers need the QUESTION on its own: the stop answers it
+# before acting, and the dispatch guard has to distinguish "below the threshold"
+# from "at it but the block was refused", which the stop's single `return 1`
+# deliberately merges (see its header). Reading the threshold in one place is
+# also what keeps the two arms from disagreeing about what non-converged means.
+drive_rework_nonconverged() {
+  local id="$1" tf reps nc_max
+  tf="$state/tasks/$id.md"
+  reps="$(fm_get "$tf" rework_signature_repeats)"
+  case "$reps" in ''|*[!0-9]*) reps=0 ;; esac
+  nc_max="$(config_get "$repo" rework_nonconvergence_max 3)"
+  case "$nc_max" in ''|*[!0-9]*) nc_max=3 ;; esac
+  [ "$nc_max" -gt 0 ] && [ "$reps" -ge "$nc_max" ]
+}
+
+# drive_rework_nonconvergence_stop <task> <failure-context> -- stop a
+# byte-identical loop at the configured threshold. Called from every arm that
+# can see the state that justifies it: the two where a failure LANDS in rework
+# and captures its evidence (testing, merging -- keeping the judgment here is
+# what stops the merge-validation family evading it just because its failure was
+# discovered one phase later), and the DISPATCH, which is where a round would
+# actually be spent on a task that reached this state by some other route.
+# `<failure-context>` is what distinguishes them in the pass log.
 #
 # ONE STOP, ONE PAGE, THROUGH THE ROUTE EVERY OTHER BLOCK TAKES. This arm used
 # to do what the four arms drive_notify's header names did: raise its own
@@ -1970,20 +2047,20 @@ drive_verify_fail_pending_consume() {
 # Returns 0 only when the task really is blocked. Returns 1 both when the streak
 # is below the threshold AND when the block was REFUSED: in the second case a
 # boundary is already recorded, and the caller's ordinary reporting is still the
-# truth, because the task really is still in `rework` and the next pass really
-# will dispatch it again. Claiming `rework -> blocked` on a refused advance --
-# or recording a boundary that asserts the stop succeeded -- would leave an
-# operator looking for a blocked task that is not there. Call only as an `if`
-# condition under set -e.
+# truth, because the task really is still in `rework`. Claiming `rework ->
+# blocked` on a refused advance -- or recording a boundary that asserts the stop
+# succeeded -- would leave an operator looking for a blocked task that is not
+# there. What that refusal does NOT mean any more is that the loop resumes: the
+# dispatch guard asks `drive_rework_nonconverged` before it launches anything,
+# so a stop that could not be taken costs a pass rather than an engine round.
+# Call only as an `if` condition under set -e.
 drive_rework_nonconvergence_stop() {
-  local id="$1" context="$2" tf reps nc_max rwlog rel whose remedy culprit reason barc
+  local id="$1" context="$2" tf reps rwlog rel whose remedy culprit reason barc
   tf="$state/tasks/$id.md"
   [ "$(fm_get "$tf" status)" = rework ] || return 1
+  drive_rework_nonconverged "$id" || return 1
   reps="$(fm_get "$tf" rework_signature_repeats)"
   case "$reps" in ''|*[!0-9]*) reps=0 ;; esac
-  nc_max="$(config_get "$repo" rework_nonconvergence_max 3)"
-  case "$nc_max" in ''|*[!0-9]*) nc_max=3 ;; esac
-  [ "$nc_max" -gt 0 ] && [ "$reps" -ge "$nc_max" ] || return 1
 
   rwlog="$(rework_latest_log "$state" "$id" 0 2>/dev/null || true)"
   # Named the way every other evidence pointer in this file is named --
@@ -2019,7 +2096,7 @@ drive_rework_nonconvergence_stop() {
   if [ "$barc" -ne 0 ]; then
     drive_note "$id: $context, signature unchanged $reps times — rework -> blocked REFUSED (exit $barc); the task is still in rework$culprit"
     set_boundary operator-decision "$id" \
-      "rework is not converging ($reps consecutive attempts produced a byte-identical failure signature; see $rel) but rework -> blocked was REFUSED (exit $barc) — the task is still in rework and the next pass will dispatch it again; stop it by hand with: orchid task advance $id blocked --reason \"...\"$culprit"
+      "rework is not converging ($reps consecutive attempts produced a byte-identical failure signature; see $rel) but rework -> blocked was REFUSED (exit $barc) — the task is still in rework, and while the streak stands the next pass withholds its dispatch rather than spending a round; stop it by hand with: orchid task advance $id blocked --reason \"...\"$culprit"
     return 1
   fi
   drive_note "$id: $context, signature unchanged $reps times — rework -> blocked (not converging)$culprit"

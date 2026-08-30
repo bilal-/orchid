@@ -773,7 +773,14 @@ buying a fresh implementation pass to reach the same tree.
   - `rework_nonconvergence_max` (config, default 3) consecutive identical
     signatures stop the loop — `blocked`, plus an `operator-decision`
     boundary. An unchanged signature is evidence the loop is not converging,
-    not a fresh failure.
+    not a fresh failure. The stop is asked wherever a round would be SPENT,
+    not only where a failure lands: a task sitting in `rework` at or past the
+    threshold has its next dispatch withheld, whatever route left it there
+    (a refused stop, a hand-driven merge, a lowered key, or the operator's
+    `task retry` / `task unblock`, which take a blocked task back to `rework`
+    and deliberately leave the streak standing). What clears it is a
+    verification that answers DIFFERENTLY — a new signature restarts the
+    count at one — or a passing one, which retires the streak outright.
   An identical signature still CONSUMES its attempt. The waiver above is for
   a signature that is disjoint — distinct forward progress — and the attempt
   cap exists precisely to target repeated identical failures; waiving them

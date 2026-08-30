@@ -913,6 +913,25 @@ and the next attempt's brief carries the failing output alongside it) rather
 than `orchid task retry`, which buys the loop more rounds without changing
 anything about the question it is being asked.
 
+**Neither verb restarts the loop on its own, and both say so.** `unblock` and
+`retry` take the task back to `rework` but deliberately leave the streak
+standing — an identical signature reached over your route is the same evidence
+of a loop that is not converging as one reached over the driver's — so the next
+pass withholds the dispatch and stops the task again rather than spending a
+round. Nothing is lost by that: your reason is already in the task body and the
+next round that runs will carry it. What has to happen first is that
+verification ANSWERS DIFFERENTLY. Change whatever produces the failure (the
+assertion, the fixture, the repository), then:
+
+```sh
+orchid task reverify <id> --reason "..."   # re-runs the verifier, costs no attempt
+```
+
+A changed failure restarts the count at one and the following pass dispatches
+normally; a passing one ends the streak outright and the task moves on. If the
+loop really should get more rounds of the same question, the knob for that is
+`rework_nonconvergence_max` in the repository config, not a second `retry`.
+
 If the pass stops again with `awaiting-operator-prerequisite` instead, that is
 the OTHER operator-owned stop at this point — a step outside the repository,
 not inside the candidate — and the next section is the one you want. Do the

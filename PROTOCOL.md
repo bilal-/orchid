@@ -2184,6 +2184,24 @@ ones its archetype never declares.
       CHANGED. If the advance REFUSES, the task is still in `rework`: report
       the refusal and stop at a boundary that says so, never one that asserts
       a block that did not happen.
+    - **and the same question is asked again at the DISPATCH, before anything
+      is launched.** Both rules above read `rework_signature_repeats`, but a
+      failure only LANDS here — in the testing arm, and in the merging one. A
+      task can be sitting in `rework` at or past the threshold without either
+      of them having run: the advance just above was refused, `orchid merge`
+      was driven by hand, the pass died between the two, the key was lowered in
+      config, or an operator answered the page with `orchid task unblock` /
+      `orchid task retry` (which take a blocked task back to `rework` and
+      deliberately leave the streak standing — an identical signature over the
+      operator's route is the same evidence as one over the driver's). So the
+      dispatch arm asks it too, through the same stop, and withholds the round:
+      no worktree, no launch, no attempt. Spending a round to rediscover a stop
+      the recorded state already justifies is F27 one level up. What releases
+      the loop is a verification that ANSWERS DIFFERENTLY — a new signature
+      restarts the count at one and the next dispatch proceeds normally,
+      carrying the operator's reason in the body — which is why both doors say
+      on the way out that the next pass will withhold, and name `orchid task
+      reverify` (no attempt spent) as the edge that re-runs the verifier.
 
     When the rework was caused by something `context.md` failed to state —
     not an actual defect in the candidate — this is a lesson-birth moment
@@ -2770,8 +2788,12 @@ one-pass driver could otherwise stop progressing in silence:
   second identical `rework_signature` re-routes the dispatch through
   `resolve_role_available`'s exclusion of the last attempt's engine, and
   `rework_nonconvergence_max` identical rounds end the loop at `blocked`
-  with an `operator-decision` boundary. Every one of those reads a
-  structured field the kernel wrote (`rework_signature_repeats`,
+  with an `operator-decision` boundary. The last of those is asked at the
+  DISPATCH as well as where the failure lands, so a task that reached
+  `rework` past the threshold by any other route — a refused stop, a
+  hand-driven merge, a lowered key, an operator's `retry`/`unblock` — has its
+  round withheld rather than spent rediscovering the stop. Every one of those
+  reads a structured field the kernel wrote (`rework_signature_repeats`,
   `implementer_engine_id`), never prose from a log — a driver comparing two
   logs by eye would be exactly the free-form judgment this file forbids it.
 - **One counter for the escalation ladder.** The prose ladder in step 2

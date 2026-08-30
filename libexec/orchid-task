@@ -595,6 +595,40 @@ capture_rework_evidence() {
   fi
 }
 
+# warn_rework_nonconverged <task-file> <id> -- say, at the operator's own two
+# doors into rework, what the driver will do with the task they just moved.
+#
+# The consecutive-signature streak deliberately SURVIVES `retry` and `unblock`:
+# an identical failure reached over the operator's route is the same evidence of
+# a loop that is not converging as one reached over the driver's, which is why
+# `capture_rework_evidence` counts it there too. The driver's dispatch guard
+# reads that count before it launches anything, so a task returned to `rework`
+# at or past `rework_nonconvergence_max` is stopped again on the next pass
+# instead of being dispatched -- no engine round, no attempt.
+#
+# That is the right call (the round would re-ask a question already answered
+# identically N times) and it is invisible from here, which is what this warning
+# is for. `unblock` already prints exactly this shape of line about the attempt
+# budget, for exactly this reason: an operator who has to rediscover the stop by
+# watching a pass do nothing has been told nothing. So the door names the
+# condition, the count, the key that sets it, and the two things that actually
+# release the loop -- a verification that answers DIFFERENTLY (`reverify`, which
+# re-runs it without spending an attempt, and whose new signature restarts the
+# count at one) or a repository that has decided this loop deserves more rope
+# (`rework_nonconvergence_max`).
+#
+# Called last, after `capture_rework_evidence` has counted the round being
+# recovered from: the number this warns about is the one the driver will read.
+warn_rework_nonconverged() {
+  local wf="$1" wid="$2" wreps wmax
+  wreps="$(fm_get "$wf" rework_signature_repeats)"
+  case "$wreps" in ''|*[!0-9]*) wreps=0 ;; esac
+  wmax="$(config_get "$repo" rework_nonconvergence_max 3)"
+  case "$wmax" in ''|*[!0-9]*) wmax=3 ;; esac
+  [ "$wmax" -gt 0 ] && [ "$wreps" -ge "$wmax" ] || return 0
+  echo "$wid: WARNING — the last $wreps round(s) failed with a byte-identical signature (rework_nonconvergence_max=$wmax), so the next pass withholds the dispatch and stops this task again rather than spending a round re-asking an identically-answered question. Your reason is in the task body and will reach the next round, but something has to make verification answer differently first: fix it and run 'orchid task reverify $wid --reason \"...\"' (no attempt spent, and a changed failure restarts the count), or raise rework_nonconvergence_max if this loop really should get more rounds of the same question." >&2
+}
+
 case "$sub" in
   create)
     verb_lock_guard "$repo"
@@ -1991,7 +2025,9 @@ case "$sub" in
     # rediscover it one wasted engine invocation later.
     if [ "$ub_attempts" -ge "$ub_budget" ]; then
       echo "$id: WARNING — attempts $ub_attempts/$ub_budget, so the next verify failure re-blocks it immediately; grant more with: orchid task retry $id --reason \"...\" --attempts N" >&2
-    fi ;;
+    fi
+    # ...and the OTHER thing that re-blocks it before it ever gets that far.
+    warn_rework_nonconverged "$f" "$id" ;;
   retry)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="${1:-}"; shift || true
@@ -2136,7 +2172,11 @@ case "$sub" in
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: $from -> rework"
     echo "$id: guidance delivered to the task body (see \`orchid task show $id\`) — the implementer's capsule copies it verbatim"
-    echo "$id: $budget_note" ;;
+    echo "$id: $budget_note"
+    # A granted round the dispatch guard then withholds is not a granted round,
+    # and this is the verb whose entire promise is the round. Said here rather
+    # than discovered by watching the next pass do nothing.
+    warn_rework_nonconverged "$f" "$id" ;;
   reverify)
     # T026 (dogfood F28, and twice more on r-002's T013/T014): the supported
     # "the tree is green, just re-run verification" edge.

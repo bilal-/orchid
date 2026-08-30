@@ -833,13 +833,55 @@ assert_eq "$sig_retry" "$(fm T007 rework_signature)" "and the signature it repea
 # gone (the retry above deleted it), so this is the ordinary "operator retries
 # a parked task" shape: no round, no counter movement, no second copy of a
 # round already filed.
-"$ORCHID_BIN" task retry T007 --reason "same diagnosis, said twice" >/dev/null
+bare_retry_err="$("$ORCHID_BIN" task retry T007 --reason "same diagnosis, said twice" 2>&1 1>/dev/null)"
 assert_eq "2" "$(fm T007 rework_rounds)" \
   "a retry over no evidence at all captures nothing rather than re-filing the round before it"
 [ ! -f "$STATE/reviews/T007-r3-rework.log" ] \
   || fail "and files no round-3 log — rework_rounds must never outrun the files on disk"
 assert_eq "2" "$(fm T007 rework_signature_repeats)" \
   "nor may a bare retry advance the streak that reroutes the role and blocks the task"
+# The non-vacuity half of the warning asserted below: at 2 of 3 this door is
+# silent, so the sentence it prints at 3 is a judgment about the streak and not
+# something every retry says.
+if grep -qF "withholds the dispatch" <<<"$bare_retry_err"; then
+  fail "a retry below rework_nonconvergence_max must not warn about a stop that is not going to happen (err: $bare_retry_err)"
+fi
+
+# AND AT THE THRESHOLD, THE DOOR SAYS WHAT THE DRIVER WILL DO WITH THE TASK IT
+# JUST HANDED BACK. The streak surviving these verbs is deliberate (asserted
+# twice above), and the driver's dispatch guard reads it before it launches
+# anything: at `rework_nonconvergence_max` the next pass withholds the round
+# and stops the task again instead of spending it. From here that is invisible
+# — the verb prints `blocked -> rework` and exits 0 — so an operator who is not
+# told rediscovers it by watching a pass do nothing, which is the same silence
+# `unblock` already refuses to leave them in about a spent attempt budget.
+# One more identical round takes the streak to the shipped default of 3.
+"$ORCHID_BIN" task advance T007 implementing --reason "the second granted round" >/dev/null
+"$ORCHID_BIN" task advance T007 testing --reason "the second granted round" >/dev/null
+mk_log "$STATE/reviews/T007-verify.log" 2026-08-17T09:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "FAIL tests/OrderTest: RETRYROUTEFAILURE assertSame order differs" 1
+"$ORCHID_BIN" task advance T007 blocked --reason "and identically again" >/dev/null
+retry_nc_err="$("$ORCHID_BIN" task retry T007 --reason "third time, same diagnosis" 2>&1 1>/dev/null)"
+assert_eq "3" "$(fm T007 rework_signature_repeats)" \
+  "fixture witness: the round this retry captured takes the streak to the shipped default threshold"
+assert_eq rework "$(fm T007 status)" \
+  "and the verb still does its job — this is a warning, not a refusal"
+assert_match "rework_nonconvergence_max=3" "$retry_nc_err" \
+  "the door names the condition and the key that sets it (err: $retry_nc_err)"
+assert_match "withholds the dispatch" "$retry_nc_err" \
+  "...and what the next pass actually does with the round it appeared to grant"
+assert_match "orchid task reverify T007" "$retry_nc_err" \
+  "...and the one edge that releases the loop, since only a verification that answers differently can"
+
+# `unblock` is the same door with guidance instead of budget, and it is the one
+# docs/troubleshooting.md points at for this stop — so it is the one that most
+# needs to say the round is not going to run yet.
+"$ORCHID_BIN" task advance T007 blocked --reason "stopped again for the operator" >/dev/null
+unblock_nc_err="$("$ORCHID_BIN" task unblock T007 --reason "the assertion is order-sensitive" 2>&1 1>/dev/null)"
+assert_match "withholds the dispatch" "$unblock_nc_err" \
+  "both operator doors warn identically: one condition, one sentence (err: $unblock_nc_err)"
+grep -qF "the assertion is order-sensitive" "$STATE/tasks/T007.md" \
+  || fail "witness: the guidance is delivered into the body regardless — what the guard withholds is the ROUND, never the reason"
 
 # `unblock`, the other operator door into rework: guidance instead of budget,
 # and the same two lines of `rm -f` at the end of it.
