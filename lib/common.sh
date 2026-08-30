@@ -2046,20 +2046,33 @@ orchid_service_binding_field() {
 # a composed stdout line: `artifact` is a path that may contain anything, and a
 # caller splitting a joined line back apart is a second parser to keep in step
 # with the writer.
+#
+# ShellCheck rationale for the SC2034 directives here and on orchid_service_identity
+# below: these are the library's public results, written here and read by
+# runners/orchid-service after the sourced function returns, so nothing in this file
+# reads them. They are marked at BOTH ends because ShellCheck reports an unused name
+# once, at a single one of its assignments, and every one of these names is assigned
+# both at its declaration and again in each of the resolver's arms.
+# shellcheck disable=SC2034
 ORCHID_SERVICE_ID_LABEL=""
+# shellcheck disable=SC2034
 ORCHID_SERVICE_ID_ARTIFACT=""
+# shellcheck disable=SC2034
 ORCHID_SERVICE_ID_PLATFORM=""
+# shellcheck disable=SC2034
 ORCHID_SERVICE_ID_SOURCE=""
 # The checkout path the resolved binding says it was INSTALLED AGAINST. Not one
 # of the three facts about the schedule -- it is the fact about the CALLER that
 # orchid_service_binding_owned below is asked of, and it is exposed rather than
 # re-read because the caller must not open the record a second time and get a
 # different answer from the one this resolution was made on.
+# shellcheck disable=SC2034
 ORCHID_SERVICE_ID_REPO=""
 # WHY a record was rejected as something install could not have written -- one
 # sentence naming the field, the value and the record it came from. The caller
 # prints it above its own refusal: "this record is not usable" is not actionable
 # on its own, and the recovery (repair or delete that file) needs the path.
+# shellcheck disable=SC2034
 ORCHID_SERVICE_ID_REJECTED=""
 
 # THE FIELDS THAT ARE A SCHEDULE'S IDENTITY, spelled once because two different
@@ -2177,6 +2190,11 @@ _orchid_service_record_usable() {
 # install could not have written; repair or delete that file). Reported alike,
 # the second would send an operator hunting for a disagreement between two halves
 # that agree perfectly.
+#
+# ShellCheck rationale: every ORCHID_SERVICE_ID_* assignment below writes one of the
+# public results declared above, which this file never reads. See their declaration
+# for why the SC2034 directive is at both ends rather than on one assignment.
+# shellcheck disable=SC2034
 orchid_service_identity() {
   local repo="$1" rrec mrec="" rlabel="" mlabel="" k a b rart="" rplat="" rrepo=""
   ORCHID_SERVICE_ID_LABEL=""; ORCHID_SERVICE_ID_ARTIFACT=""
@@ -2225,14 +2243,19 @@ orchid_service_identity() {
         b="$(orchid_service_binding_field "$mrec" "$k")" || b=""
         [ "$a" = "$b" ] || return 1
       done
-      ORCHID_SERVICE_ID_SOURCE=twins
+      ORCHID_SERVICE_ID_SOURCE="twins"
     else
       # The machine-local half is missing, which is the residue an install that
       # failed between its two renames leaves -- and it never reached the
       # scheduler, so the record here is both the only evidence and a harmless
       # one. It must stay usable or the removal guard is wedged by a record no
       # verb can clear.
-      ORCHID_SERVICE_ID_SOURCE=repo-only
+      #
+      # QUOTED, like every other value this global takes: `repo-only` and
+      # `machine-only` are single words to bash, but an unquoted hyphen in an
+      # assignment reads as arithmetic to ShellCheck (SC2100), and these are
+      # fixed tokens rather than sums.
+      ORCHID_SERVICE_ID_SOURCE="repo-only"
     fi
     ORCHID_SERVICE_ID_LABEL="$rlabel"
     # The values validated above, not a second read of the same fields: a
@@ -2286,10 +2309,10 @@ orchid_service_identity() {
       ORCHID_SERVICE_ID_ARTIFACT="$rart"
       ORCHID_SERVICE_ID_PLATFORM="$rplat"
     fi
-    ORCHID_SERVICE_ID_SOURCE=machine-only
+    ORCHID_SERVICE_ID_SOURCE="machine-only"
     return 0
   fi
-  ORCHID_SERVICE_ID_SOURCE=none
+  ORCHID_SERVICE_ID_SOURCE="none"
   return 0
 }
 
