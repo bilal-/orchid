@@ -49,19 +49,44 @@ svc_uninstall_real() {
 # uninstall does when `launchctl unload` returns nonzero -- and that arm is the
 # one deciding whether the plist and the binding record survive. $1 is an ERE
 # matched against the quoted command line, so a caller can fail the unload
-# alone (launchd still holds the job) or the unload and the `list` together
-# (nothing was ever loaded). See K7.
+# alone (launchd still holds the job) or the unload and the `list` together.
 #
-# It is equally how a caller ANSWERS `launchctl list` -- the one call whose
-# nonzero status is not a malfunction but a fact ("launchd holds no such job").
-# Failing it alone is the only way to stage a never-loaded label, which is what
-# K6 and K8's green arms are about; leaving it to succeed stages a job launchd
-# still holds, the half that both refusals turn on.
-svc_uninstall_failing() {
-  local fail_re="$1"; shift
+# $2/$3 are the exit STATUS and the stderr text a matching call produces, and
+# they are the whole of K11: for `launchctl list`, "nonzero" is two different
+# facts. Exit 113 (or launchd's own "Could not find service" sentence) is
+# launchd ANSWERING that it holds no such job; every other nonzero is a query
+# that never got an answer -- launchctl missing, denied, unable to reach
+# launchd. Read alike, the second silently clears the binding record of an agent
+# that is still firing. So the two wrappers below name which one they are
+# staging, and no caller passes a bare "it failed" for a `list` again.
+svc_uninstall_stub() {
+  local fail_re="$1" fail_rc="$2" fail_err="$3"; shift 3
   : > "$SCHED_LOG"
   ORCHID_SERVICE_DEBUG_SCHEDULER_LOG="$SCHED_LOG" \
-  ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL="$fail_re" "$SERVICE" uninstall "$@"
+  ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL="$fail_re" \
+  ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL_RC="$fail_rc" \
+  ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL_ERR="$fail_err" \
+  "$SERVICE" uninstall "$@"
+}
+
+# A matching call fails the way a MALFUNCTION does: an ordinary nonzero and a
+# message that answers nothing. Right for an unload, whose failure is only ever
+# a malfunction (K7's red arm); for a `list` this is the indeterminate case, and
+# uninstall must refuse on it exactly as it refuses on a loaded job.
+svc_uninstall_failing() {
+  local fail_re="$1"; shift
+  svc_uninstall_stub "$fail_re" 1 'Operation not permitted' "$@"
+}
+
+# A matching call fails the way launchd ANSWERS "I hold no such job": exit 113,
+# which launchctl reports as `Could not find service`. This is the only way to
+# stage a never-loaded label, which is what K6, K7's and K8's green arms are
+# about; leaving `list` to succeed stages a job launchd still holds, the half
+# both refusals turn on. Deliberately says nothing on stderr, so these arms
+# prove the STATUS rule on its own (K11 proves the sentence rule separately).
+svc_uninstall_notfound() {
+  local fail_re="$1"; shift
+  svc_uninstall_stub "$fail_re" 113 '' "$@"
 }
 
 # $WORK (from mktemp -d) commonly has a symlinked component on macOS
@@ -623,6 +648,11 @@ rm -rf "$WORK2"
 #       that would report a binding no machine-local walk can find must
 #       install no schedule either, since that pairing is a live agent with
 #       no name left anywhere once its checkout is removed.
+#   K11 RED/GREEN: `launchctl list` returns nonzero for two different facts,
+#       and only one of them is an answer. Both teardown paths must clear on
+#       launchd's own "no such job" and refuse on a query that never reached
+#       launchd -- read alike, the second deletes the last name a still-firing
+#       agent has.
 # ===========================================================================
 source "$REPO_ROOT/lib/common.sh"
 
@@ -1111,13 +1141,13 @@ assert_eq 0 "$rc" "the fixture re-installs cleanly once its record store is writ
 [ -f "$bind_rec" ] || fail "fixture: the re-install must have recorded the binding"
 rm -f "$HOME/Library/LaunchAgents/$bind_label.plist"
 rc=0
-# `svc_uninstall_failing 'launchctl list'`, not `svc_uninstall_real`: the state
+# `svc_uninstall_notfound 'launchctl list'`, not `svc_uninstall_real`: the state
 # under test is an artifact that NEVER LANDED, so launchd holds no job under
-# this label, and since K8 that is a question uninstall actually asks. Failing
-# the stubbed `list` is how this fixture answers it -- a stub that answered
-# "still loaded" would be describing a different state, and would be asserting
-# the wrong half of K8's distinction here.
-orphan_out="$(svc_uninstall_failing 'launchctl list' --repo "$BIND_REPO" 2>&1)" || rc=$?
+# this label, and since K8 that is a question uninstall actually asks. Having
+# the stubbed `list` answer 113 is how this fixture answers it -- a stub that
+# answered "still loaded" would be describing a different state, and one that
+# merely failed would be describing no state at all (K11).
+orphan_out="$(svc_uninstall_notfound 'launchctl list' --repo "$BIND_REPO" 2>&1)" || rc=$?
 assert_eq 0 "$rc" \
   "uninstall must clear a binding whose scheduler artifact is not there (out: $orphan_out)"
 assert_match 'clearing the binding record' "$orphan_out" \
@@ -1173,13 +1203,14 @@ assert_match 'launchctl list' "$(cat "$SCHED_LOG")" \
   "the refusal is decided by asking launchd whether the job is still there, never by the unload's exit status alone"
 red_case "an uninstall whose launchctl unload failed leaves the schedule nameable and the checkout guarded"
 
-# GREEN, and the reason the exit status alone could not have decided it: an
-# unload of a plist that was never loaded fails too. `install` writes the plist
-# before loading it, so anything failing in between leaves one -- an ordinary
-# state uninstall must still clear. Here BOTH stubbed calls fail, which is what
-# launchd reports when it holds no such job, and the removals proceed.
+# GREEN, and the reason the unload's exit status alone could not have decided
+# it: an unload of a plist that was never loaded fails too. `install` writes the
+# plist before loading it, so anything failing in between leaves one -- an
+# ordinary state uninstall must still clear. Here BOTH stubbed calls fail, and
+# the `list` fails with launchd's own "no such job" status, so the removals
+# proceed. K11 is this same line with the other kind of failure.
 rc=0
-never_out="$(svc_uninstall_failing 'launchctl (unload|list)' --repo "$BIND_REPO" 2>&1)" || rc=$?
+never_out="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$BIND_REPO" 2>&1)" || rc=$?
 assert_eq 0 "$rc" \
   "an unload that failed because nothing was ever loaded still clears the records (out: $never_out)"
 assert_match 'is now safe to remove' "$never_out" \
@@ -1254,7 +1285,7 @@ red_case "an uninstall whose plist is gone while launchd still holds the job kee
 # named `launchctl remove`, or the machine rebooted -- the SAME command that
 # refused clears everything and hands the checkout back.
 rc=0
-freed_out="$(svc_uninstall_failing 'launchctl list' --repo "$BIND_REPO" 2>&1)" || rc=$?
+freed_out="$(svc_uninstall_notfound 'launchctl list' --repo "$BIND_REPO" 2>&1)" || rc=$?
 assert_eq 0 "$rc" \
   "once launchd holds no such job, the same uninstall clears the orphaned binding (out: $freed_out)"
 assert_match 'clearing the binding record' "$freed_out" \
@@ -1340,10 +1371,10 @@ orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
 green_case "a schedule installed over a usable record path is one the removal guard can still refuse"
 # Hand the fixture back in the state K9 found it: the green arm above really
 # installed a schedule, and a binding left standing here would be a leftover of
-# exactly the kind this section is about. `launchctl list` is failed because
-# nothing was ever loaded under the stub, which is the never-loaded answer
-# uninstall needs (see K6's note).
-svc_uninstall_failing 'launchctl list' --repo "$BIND_REPO" >/dev/null 2>&1
+# exactly the kind this section is about. `launchctl list` answers "no such job"
+# because nothing was ever loaded under the stub, which is the never-loaded
+# answer uninstall needs (see K6's note).
+svc_uninstall_notfound 'launchctl list' --repo "$BIND_REPO" >/dev/null 2>&1
 
 # -- K10: the SAME obstruction at the machine-local destination -------------
 # K9 proves the rule at the repo-local record. It is the same rule at the other
@@ -1412,7 +1443,137 @@ assert_eq "$bind_label" "$(orchid_service_binding_label_for "$BIND_CANON")" \
   "so the walk that survives the checkout can still name this schedule's label -- which is what uninstall and doctor need once the repo is gone"
 green_case "a schedule installed over a usable machine-local path is one that can still be named after its checkout"
 # Hand the fixture back unbound, exactly as K9 does.
-svc_uninstall_failing 'launchctl list' --repo "$BIND_REPO" >/dev/null 2>&1
+svc_uninstall_notfound 'launchctl list' --repo "$BIND_REPO" >/dev/null 2>&1
+
+# -- K11: an unanswered launchd query is not an absence --------------------
+# K7 and K8 both end at the same question -- does launchd still hold this job --
+# and both used to read the answer as a boolean. `launchctl list` is not a
+# boolean. It exits nonzero for launchd's own "no job by that name" (status 113,
+# `Could not find service`) AND for every way of failing to ask at all:
+# launchctl missing from PATH, denied, unable to reach the user's launchd
+# session, killed. The first is an answer; the second is silence.
+#
+# Collapsed together, silence clears. That is K7's and K8's own finding rebuilt
+# through the query instead of through the artifact: a launchctl that cannot
+# answer on a machine whose agent is very much still loaded takes the plist and
+# both binding records with it, unwedges the removal guard, and reports success
+# -- a schedule still firing with no name anywhere. So the two are staged here
+# as twins: the SAME uninstall, the SAME stubbed call, differing only in what
+# launchctl returned.
+reinst4_out="$("$SERVICE" install --repo "$BIND_REPO" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the indeterminate-query fixture re-installs a schedule first (out: $reinst4_out)"
+[ -f "$bind_plist" ] || fail "fixture: the re-install must have placed the plist"
+[ -f "$bind_rec" ] || fail "fixture: the re-install must have written the repo-local binding"
+[ -f "$bind_mrec" ] || fail "fixture: the re-install must have written the machine-local binding"
+
+# RED, the unload path: the unload failed and the `list` after it failed too --
+# but with an ordinary error, not an answer. K7's green arm is this same command
+# line; the only difference is the status launchctl handed back.
+rc=0
+indet_out="$(svc_uninstall_failing 'launchctl (unload|list)' --repo "$BIND_REPO" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "an uninstall whose launchd query never answered must refuse, not treat silence as an absence (out: $indet_out)"
+assert_match 'could not be asked whether it still holds that job' "$indet_out" \
+  "and says exactly which fact is missing -- not that the job is gone, and not that it is there"
+assert_match 'an unanswered query is not an absence' "$indet_out" \
+  "and states the rule it is applying, so the refusal is not mistaken for the loaded one"
+# A herestring, never `echo | grep -q`: under pipefail a `grep -q` that exits on
+# its first match can SIGPIPE the producer, so a negative assertion built that
+# way passes precisely when it should fire.
+grep -q 'still reports that job as loaded' <<<"$indet_out" \
+  && fail "and must NOT claim launchd reported the job -- launchd reported nothing at all, and a refusal that overstates its evidence sends the operator to a launchctl remove that will not apply"
+assert_match 'launchctl list .* exited 1: Operation not permitted' "$indet_out" \
+  "and names the launchctl failure whole -- the query, its status and what it printed. Pinned as ONE line on purpose: the unload's own error is printed just above, and an operator who cannot tell the two calls apart cannot act on either"
+assert_match 'ask launchd yourself' "$indet_out" "and names the step that resolves the unknown"
+assert_match 'service uninstall --repo' "$indet_out" "and the uninstall to re-run afterwards"
+[ -f "$bind_plist" ] \
+  || fail "a refused uninstall must NOT remove the plist: nothing established that the agent it loaded is gone"
+[ -f "$bind_rec" ] \
+  || fail "and must NOT clear the repo-local binding: it is what keeps the removal guard refusing this checkout"
+[ -f "$bind_mrec" ] \
+  || fail "and must NOT clear the machine-local binding: it is the only thing that could name the schedule once the checkout is gone"
+rc=0
+orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "and the checkout must still be refused for removal -- an unanswered query that unwedged the guard is the leftover this section exists to prevent"
+assert_match 'launchctl list' "$(cat "$SCHED_LOG")" \
+  "the refusal is still decided by asking launchd -- the point is what happened to the question, not that it was skipped"
+red_case "an uninstall whose launchd query could not answer keeps the schedule nameable and the checkout guarded"
+
+# GREEN twin: the same fixture, the same command, the same two stubbed calls --
+# and this time the `list` fails with launchd's own "no such job" status. That
+# IS an answer, so the removals proceed.
+rc=0
+answered_out="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$BIND_REPO" 2>&1)" || rc=$?
+assert_eq 0 "$rc" \
+  "the identical uninstall clears once the same call returns launchd's answer instead of an error (out: $answered_out)"
+assert_match 'is now safe to remove' "$answered_out" "and reaches the ordinary conclusion"
+[ -f "$bind_plist" ] && fail "the plist must be gone: launchd answered that it holds no job that needed it"
+[ -f "$bind_rec" ] && fail "and so must the repo-local binding"
+[ -f "$bind_mrec" ] && fail "and its machine-local copy"
+rc=0
+orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "and the checkout is removable again"
+green_case "a launchd query that answers 'no such job' still clears, so the refusal above is the failure and not the question"
+
+# RED, the orphan path: the same distinction where there is no unload to try.
+# K8 asks launchd because a missing plist proves nothing about a loaded agent;
+# if that question comes back unanswered, the binding record being cleared is
+# still the only name a live agent has.
+reinst5_out="$("$SERVICE" install --repo "$BIND_REPO" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the orphan-path indeterminate fixture re-installs a schedule first (out: $reinst5_out)"
+[ -f "$bind_plist" ] || fail "fixture: the re-install must have placed the plist"
+rm -f "$bind_plist"   # deleted by hand, exactly as in K8
+rc=0
+orphan_indet="$(svc_uninstall_failing 'launchctl list' --repo "$BIND_REPO" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "an uninstall whose plist is gone and whose launchd query never answered must refuse (out: $orphan_indet)"
+assert_match 'its plist is already gone and launchd could not be asked' "$orphan_indet" \
+  "and names both halves of what it does not know: the file is gone, and the job's state was never established"
+assert_match 'an unanswered query is not an absence' "$orphan_indet" \
+  "and applies the same rule the unload path does -- one collapse, one fix, both doors"
+assert_match 'launchctl list .* exited 1: Operation not permitted' "$orphan_indet" \
+  "and names the launchctl failure here too -- this arm runs no unload at all, so this line is the only account of what went wrong"
+[ -f "$bind_rec" ] \
+  || fail "the repo-local binding must survive: it is what keeps the removal guard refusing this checkout"
+[ -f "$bind_mrec" ] \
+  || fail "and the machine-local copy must too: with the plist gone it is the only thing that could name the agent at all"
+rc=0
+orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "and the checkout must still be refused for removal"
+red_case "an uninstall whose plist is gone keeps the binding when launchd could not be asked about the job"
+
+# GREEN twin: nothing about the fixture changes except the answer.
+rc=0
+orphan_answered="$(svc_uninstall_notfound 'launchctl list' --repo "$BIND_REPO" 2>&1)" || rc=$?
+assert_eq 0 "$rc" \
+  "the identical uninstall clears the orphaned binding once launchd answers (out: $orphan_answered)"
+assert_match 'clearing the binding record' "$orphan_answered" "and says what it is doing"
+[ -f "$bind_rec" ] && fail "the repo-local binding must be gone"
+[ -f "$bind_mrec" ] && fail "and so must its machine-local copy"
+green_case "the unanswered-query refusal clears on a re-run once launchd answers"
+
+# The second signature of the SAME answer. `Could not find service` is what
+# launchctl prints when it holds no such job, and a launchctl generation that
+# reports that with a plain exit 1 is still ANSWERING -- reading only the status
+# would turn the ordinary never-loaded state into a permanent refusal, which is
+# a wedge rather than a step (K6's own point). Staged with status 1 precisely so
+# it cannot pass through the 113 rule the arms above prove.
+reinst6_out="$("$SERVICE" install --repo "$BIND_REPO" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the not-found-sentence fixture re-installs a schedule first (out: $reinst6_out)"
+rm -f "$bind_plist"
+rc=0
+sentence_out="$(svc_uninstall_stub 'launchctl list' 1 'Could not find service "com.orchid.pump" in domain for uid: 501' --repo "$BIND_REPO" 2>&1)" || rc=$?
+assert_eq 0 "$rc" \
+  "launchd's own not-found sentence is an answer even when the status is a plain 1 (out: $sentence_out)"
+assert_match 'clearing the binding record' "$sentence_out" "and the binding it left behind is cleared"
+[ -f "$bind_rec" ] && fail "the repo-local binding must be gone -- launchd said it holds no such job"
+[ -f "$bind_mrec" ] && fail "and so must its machine-local copy"
+rc=0
+orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "and the checkout is removable again -- a definitive absence is definitive however launchctl spells it"
+green_case "launchd's not-found sentence clears the binding even when its exit status is an ordinary 1"
 
 # The linux/cron branch keeps its own binding record too -- the record is not
 # a launchd-only affordance, and the cron record it points at lives inside the

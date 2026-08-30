@@ -204,10 +204,22 @@ _svc_dryprint() { echo "DRY-RUN: $(_svc_quote_cmd "$@")"; }
 # it exists because a stub that can only SUCCEED cannot reach the arm that
 # matters most: what a real uninstall does when `launchctl unload` FAILS (see
 # _svc_unload_darwin). It is an ERE matched against the quoted command line; a
-# stubbed call that matches returns 1 instead of 0, and is still logged, so a
-# test can fail the unload alone (launchd still reports the job -- the
-# dangerous case) or the unload and the `list` together (nothing was loaded --
-# the ordinary case). Ignored entirely unless the log seam above is set.
+# stubbed call that matches fails instead of succeeding, and is still logged, so
+# a test can fail the unload alone (launchd still reports the job -- the
+# dangerous case) or the unload and the `list` together (the case whose meaning
+# depends entirely on HOW the list failed). Ignored entirely unless the log seam
+# above is set.
+#
+# ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL_RC / _FAIL_ERR are the third half, and
+# they exist because "nonzero" is no longer one fact. `launchctl list` answers
+# _svc_launchd_probe in three ways, and two of them are nonzero: launchd's own
+# "no job by that name" and every malfunction that could not answer at all. A
+# stub that could only ever return 1 with nothing on stderr could stage exactly
+# one of those, so the distinction the probe exists to draw would be half
+# untestable -- and it is the half that decides whether a binding record is
+# cleared or kept. _FAIL_RC is the exit status a matching call returns (default
+# 1); _FAIL_ERR is text it writes to stderr (default none), which is where
+# launchd's own not-found sentence lives.
 #
 # A herestring, not `_svc_quote_cmd "$@" | grep -q`: this file runs under
 # `pipefail`, and `grep -q` exits the moment it matches, so a producer still
@@ -222,7 +234,11 @@ _svc_scheduler_exec() {
   local rc=0
   if [ -n "${ORCHID_SERVICE_DEBUG_SCHEDULER_LOG:-}" ]; then
     _svc_quote_cmd "$@" >> "$ORCHID_SERVICE_DEBUG_SCHEDULER_LOG"
-    _svc_scheduler_stub_fails "$@" && rc=1
+    if _svc_scheduler_stub_fails "$@"; then
+      rc="${ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL_RC:-1}"
+      [ -z "${ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL_ERR:-}" ] \
+        || printf '%s\n' "$ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL_ERR" >&2
+    fi
     return "$rc"
   fi
   "$@"
@@ -449,28 +465,94 @@ _svc_print_log_tail() {
 # darwin (launchd)
 # ---------------------------------------------------------------------------
 
-# _svc_launchd_holds <label> -- 0 iff launchd currently reports a job under
-# this label. THE ONLY WITNESS EITHER REFUSAL BELOW IS ALLOWED TO USE: whether
-# an agent is still loaded is a fact about launchd, and every filesystem proxy
-# for it (an unload's exit status, the presence of a plist) answers a different
-# question and answers it wrongly in exactly the state that matters.
+# The one nonzero exit status this file reads as an ANSWER rather than as a
+# malfunction: launchd's own "no job by that name", which launchctl reports as
+# `113: Could not find specified service`. Its message is matched too, because
+# the status is the contract of one launchctl generation and the sentence is the
+# contract of another -- either one, on its own, is launchd saying the job is
+# not there. NOTHING ELSE IS: see _svc_launchd_probe.
+SVC_LAUNCHD_NOT_FOUND_RC=113
+SVC_LAUNCHD_NOT_FOUND_RE='Could not find service'
+
+# The last probe's exit status and stderr, for the refusal that has to name what
+# went wrong. Globals rather than a return value because the return value is
+# already carrying the three-way answer.
+_svc_launchd_probe_rc=0
+_svc_launchd_probe_err=""
+
+# _svc_launchd_probe <label> -- ask launchd whether it currently holds a job
+# under this label. THE ONLY WITNESS EITHER REFUSAL BELOW IS ALLOWED TO USE:
+# whether an agent is still loaded is a fact about launchd, and every filesystem
+# proxy for it (an unload's exit status, the presence of a plist) answers a
+# different question and answers it wrongly in exactly the state that matters.
+#
+# THREE ANSWERS, NOT TWO, and the third is why this is no longer a predicate:
+#
+#   0  launchd holds the job.
+#   1  launchd says it holds no such job -- a DEFINITIVE absence, the only
+#      answer that may clear a binding record.
+#   2  the query did not answer: launchctl could not run, could not reach
+#      launchd, was denied, was killed. Nothing is known.
+#
+# Read as a boolean, the third collapses into the second -- and that collapse is
+# this task's own finding wearing a different hat. `launchctl list` exits
+# nonzero for "no such job" AND for every way of failing to ask, so a broken or
+# unreachable launchctl on a machine whose agent is very much still loaded
+# answered "nothing is loaded", and the caller went on to delete the plist and
+# both binding records: a live schedule, no name for it anywhere, and a removal
+# guard waving the checkout through, reported as success. An unanswered question
+# is not a no.
 #
 # Routed through _svc_scheduler_exec, not called directly, so the suite's seam
-# can answer it -- a `list` that could only ever succeed would make both
-# refusals unreachable and both clearances untestable.
-_svc_launchd_holds() { _svc_scheduler_exec launchctl list "$1" >/dev/null 2>&1; }
+# can answer it in all three ways -- a `list` that could only ever succeed would
+# make both refusals unreachable and both clearances untestable.
+#
+# stderr is captured (`2>&1 >/dev/null` -- stderr onto the substitution's pipe
+# FIRST, then stdout to /dev/null, so the listing itself is discarded and only
+# the diagnostic survives), because a refusal on answer 2 has to name what
+# actually failed or it is indistinguishable from a refusal on answer 0.
+_svc_launchd_probe() {
+  local label="$1" rc=0
+  _svc_launchd_probe_rc=0
+  _svc_launchd_probe_err=""
+  _svc_launchd_probe_err="$(_svc_scheduler_exec launchctl list "$label" 2>&1 >/dev/null)" || rc=$?
+  _svc_launchd_probe_rc="$rc"
+  if [ "$rc" -eq 0 ]; then return 0; fi
+  if [ "$rc" -eq "$SVC_LAUNCHD_NOT_FOUND_RC" ]; then return 1; fi
+  case "$_svc_launchd_probe_err" in
+    *"$SVC_LAUNCHD_NOT_FOUND_RE"*) return 1 ;;
+  esac
+  return 2
+}
 
-# _svc_refuse_loaded_darwin <repo> <label> <why> <survives> <hand> -- the ONE
-# composer for "launchd still holds this job, so nothing here gets removed".
-# Two arms reach it (a failed unload, and a plist that is already gone), they
-# refuse for the same reason and must be told apart only by <why>/<survives>;
-# written twice they would drift, and an operator comparing two near-identical
-# refusals would have to guess which difference was meaningful.
-_svc_refuse_loaded_darwin() {
-  local repo="$1" label="$2" why="$3" survives="$4" hand="$5"
+# _svc_name_launchd_failure <label> -- print what the probe's third answer knows.
+# A refusal that cannot be acted on is a wedge, and "launchd could not be asked"
+# is only actionable if the operator is told which call failed, with what status,
+# and what it said.
+#
+# ONE line carrying all three, not a line per fact: the unload path prints the
+# unload's own error immediately before this, and two bare `orchid: launchctl:`
+# messages -- often the same text twice, when one launchctl is failing both
+# calls -- read as a repeat rather than as two different commands failing.
+_svc_name_launchd_failure() {
+  local msg
+  msg="$(_svc_quote_cmd launchctl list "$1") exited $_svc_launchd_probe_rc"
+  [ -z "$_svc_launchd_probe_err" ] || msg="$msg: $_svc_launchd_probe_err"
+  echo "orchid: launchctl: $msg" >&2
+}
+
+# _svc_refuse_darwin <repo> <label> <why> <survives> <lead> <hand> -- the ONE
+# composer for "nothing here gets removed". Four arms reach it (a failed unload
+# and a plist already gone, each for a job launchd still holds and again for a
+# launchd that could not be asked); they refuse with the same shape and must be
+# told apart only by <why>/<survives> and the step they name. Written out per
+# arm they would drift, and an operator comparing near-identical refusals would
+# have to guess which difference was meaningful.
+_svc_refuse_darwin() {
+  local repo="$1" label="$2" why="$3" survives="$4" lead="$5" hand="$6"
   echo "orchid: refusing to remove anything for $repo (label $label): $why" >&2
   echo "orchid: $survives" >&2
-  orchid_die "unload it by hand, then re-run: $hand && $(orchid_service_uninstall_command "$repo")"
+  orchid_die "$lead, then re-run: $hand && $(orchid_service_uninstall_command "$repo")"
 }
 
 # _svc_orphan_darwin <repo> <label> -- the plist is GONE and the binding record
@@ -492,16 +574,33 @@ _svc_refuse_loaded_darwin() {
 # a record whose artifact was never written, and so was never loaded for a
 # moment -- and that state must stay clearable (K6), or the guard is wedged by a
 # record no verb can remove. The two states are identical on disk and different
-# to launchd, so launchd is the one asked.
+# to launchd, so launchd is the one asked -- and only an answer, never a failure
+# to obtain one, is allowed to stand in for "nothing is loaded".
 _svc_orphan_darwin() {
-  local repo="$1" label="$2"
-  # Nonzero: launchd holds no job under this label, so the missing plist was
-  # the never-loaded case and clearing the binding leaves nothing behind.
-  _svc_launchd_holds "$label" || return 0
-  _svc_refuse_loaded_darwin "$repo" "$label" \
-    "its plist is already gone and launchd still reports that job as loaded" \
-    "removing a plist does not unload the job it loaded, and the binding record is the only thing left on this machine that names that agent — it is left exactly as it was" \
-    "launchctl remove $(printf '%q' "$label")"
+  local repo="$1" label="$2" answer=0
+  _svc_launchd_probe "$label" || answer=$?
+  # Only a DEFINITIVE absence clears. A query that could not answer is not an
+  # absence: read as one it would clear the last name a still-loaded agent has,
+  # which is the whole of this arm's header reached through a broken launchctl
+  # instead of through a deleted plist.
+  case "$answer" in
+    1) return 0 ;;
+    0)
+      _svc_refuse_darwin "$repo" "$label" \
+        "its plist is already gone and launchd still reports that job as loaded" \
+        "removing a plist does not unload the job it loaded, and the binding record is the only thing left on this machine that names that agent — it is left exactly as it was" \
+        "unload it by hand" \
+        "launchctl remove $(printf '%q' "$label")"
+      ;;
+    *)
+      _svc_name_launchd_failure "$label"
+      _svc_refuse_darwin "$repo" "$label" \
+        "its plist is already gone and launchd could not be asked whether it still holds that job" \
+        "an unanswered query is not an absence, and with the plist gone the binding record is the only thing left on this machine that names that agent — it is left exactly as it was" \
+        "ask launchd yourself" \
+        "launchctl list $(printf '%q' "$label")"
+      ;;
+  esac
 }
 
 # _svc_unload_darwin <repo> <label> <plist> -- run the unload a real uninstall
@@ -523,25 +622,46 @@ _svc_orphan_darwin() {
 # plist BEFORE it loads it, so anything that failed in between leaves a plist
 # launchd never knew about, and `launchctl unload` fails for exactly that too
 # -- the state `uninstall` most needs to be able to clear. The two are told
-# apart by asking launchd itself: `launchctl list <label>` succeeds only for a
-# job it currently holds. Asked ONLY after a failure, so the ordinary path
-# makes no extra system call and behaves precisely as it did before.
+# apart by asking launchd itself, through _svc_launchd_probe -- which answers in
+# three, not two: only a definitive "no such job" clears, and a query that could
+# not answer refuses exactly as a loaded job does. Asked ONLY after a failure,
+# so the ordinary path makes no extra system call and behaves precisely as it
+# did before.
 #
 # THE LINUX BRANCH NEEDS NO EQUIVALENT: `_svc_uninstall_linux` runs its crontab
 # pipeline without `|| true`, so under this file's `set -e` a failed rewrite
 # aborts before the record and the binding are touched -- the same conservative
 # residue, reached by the shell rather than by hand.
 _svc_unload_darwin() {
-  local repo="$1" label="$2" plist="$3" err=""
+  local repo="$1" label="$2" plist="$3" err="" answer=0
   err="$(_svc_scheduler_exec launchctl unload "$plist" 2>&1)" && return 0
-  # `list` nonzero means launchd holds no job under this label, so the failure
-  # above was the never-loaded case and the removals after it are safe.
-  _svc_launchd_holds "$label" || return 0
+  _svc_launchd_probe "$label" || answer=$?
+  # A DEFINITIVE "no such job" means the failure above was the never-loaded case
+  # and the removals after it are safe. A `list` that could not answer means
+  # nothing at all -- and a failed unload plus an unanswerable query is, if
+  # anything, the likelier shape of a launchctl that is malfunctioning while the
+  # agent it loaded keeps firing.
+  if [ "$answer" -eq 1 ]; then return 0; fi
+  # Said once, ahead of both refusals: whichever one follows, the unload's own
+  # message is the first thing that went wrong and the operator needs it.
   [ -z "$err" ] || echo "orchid: launchctl: $err" >&2
-  _svc_refuse_loaded_darwin "$repo" "$label" \
-    "'launchctl unload' failed and launchd still reports that job as loaded" \
-    "the plist is the only path an unload can name that agent by, and the binding record is the only thing that names the schedule at all — both are left exactly as they were" \
-    "launchctl unload $(printf '%q' "$plist")"
+  case "$answer" in
+    0)
+      _svc_refuse_darwin "$repo" "$label" \
+        "'launchctl unload' failed and launchd still reports that job as loaded" \
+        "the plist is the only path an unload can name that agent by, and the binding record is the only thing that names the schedule at all — both are left exactly as they were" \
+        "unload it by hand" \
+        "launchctl unload $(printf '%q' "$plist")"
+      ;;
+    *)
+      _svc_name_launchd_failure "$label"
+      _svc_refuse_darwin "$repo" "$label" \
+        "'launchctl unload' failed and launchd could not be asked whether it still holds that job" \
+        "an unanswered query is not an absence — the plist is the only path an unload can name that agent by, and the binding record is the only thing that names the schedule at all — both are left exactly as they were" \
+        "ask launchd yourself" \
+        "launchctl list $(printf '%q' "$label")"
+      ;;
+  esac
 }
 
 _svc_install_darwin() {
@@ -634,7 +754,7 @@ _svc_uninstall_darwin() {
       # preview makes no system call at all, so it can promise the clearance
       # only conditionally -- a real run asks launchd first. See _svc_orphan_darwin.
       _svc_dryprint launchctl list "$label"
-      echo "orchid: no launchd agent plist for $repo (label $label) — a real uninstall would ask launchd whether it still holds that job, and would clear the binding record it left behind only if it does not" >&2
+      echo "orchid: no launchd agent plist for $repo (label $label) — a real uninstall would ask launchd whether it still holds that job, and would clear the binding record it left behind only if launchd answered that it does not" >&2
     else
       # Not an unconditional clearance: a plist can be gone while its agent is
       # still loaded, and this record is then the only thing naming it.

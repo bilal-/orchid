@@ -224,6 +224,31 @@ agent, so clearing it would leave a schedule still firing that nothing reports
 and nothing can find. Once launchd has let the job go, re-run the same
 uninstall and it clears normally.
 
+**And it refuses when launchd could not be asked at all.** `launchctl list`
+exits nonzero for two different facts: launchd answering that it holds no such
+job (status 113, `Could not find service`), and every way of failing to ask —
+launchctl missing from `PATH`, denied, unable to reach your launchd session.
+Only the first clears anything. A query that never got an answer is treated
+exactly like a loaded job, because on a machine where launchctl is malfunctioning
+the agent is very likely still firing:
+
+```
+orchid: launchctl: Operation not permitted
+orchid: launchctl: launchctl list com.orchid.pump.<hash> exited 1: Operation not permitted
+orchid: refusing to remove anything for /path/to/repo (label com.orchid.pump.<hash>):
+  'launchctl unload' failed and launchd could not be asked whether it still holds that job
+orchid: an unanswered query is not an absence ... both are left exactly as they were
+orchid: ask launchd yourself, then re-run: launchctl list <label> && orchid service uninstall --repo /path/to/repo
+```
+
+The second `orchid: launchctl:` line is the point: it names the query that went
+unanswered, its exit status and whatever it printed, so you can fix the query
+rather than guess (the first line is the unload's own error). Run that
+`launchctl list` yourself; once it answers — either way — re-run the uninstall
+and it will act on the answer. The plist-already-gone case above refuses the
+same way and for the same reason, with `its plist is already gone` in place of
+the failed unload.
+
 ## The pump woke an orchestrator over and over and nothing moved
 
 **Symptom:** `pump.log` shows repeated hand-offs to an orchestrator for the
