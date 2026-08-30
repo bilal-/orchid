@@ -730,7 +730,15 @@ buying a fresh implementation pass to reach the same tree.
     engine in the role's failover chain (a preference: a chain with no other
     eligible entry dispatches as usual and says so, and a streak whose newest
     round is a red repo-wide `merge_gate` is not attributed to an engine at
-    all);
+    all). The engine that did not converge is identified by RESOLVING the
+    task's recorded `implementer_engine_id` through the plugin registry, never
+    by stripping its publisher prefix: a chain is written in install-directory
+    names and that field holds a manifest id, and the two coincide only because
+    `orchid plugins install` places a plugin in a directory named after its
+    id's basename. An actor that resolves to no single installed plugin
+    (uninstalled since, or claimed by two plugins at once) leaves this pass
+    unable to name the entry to exclude, so the preference is dropped and no
+    reroute is journalled — the dispatch still happens, on the same chain;
   - `rework_nonconvergence_max` (config, default 3) consecutive identical
     signatures stop the loop — `blocked`, plus an `operator-decision`
     boundary. An unchanged signature is evidence the loop is not converging,

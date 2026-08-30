@@ -9360,3 +9360,243 @@ assert_eq blocked "$(nfield status)" \
   "with the refusing precondition repaired, the next pass takes the stop it could not take before (rc=$NDRIVE_RC, out: $NDRIVE_OUT)"
 assert_match "rework -> blocked \(not converging\)" "$NDRIVE_OUT" \
   "...and reports it this time, because this time it happened (out: $NDRIVE_OUT)"
+
+# ===========================================================================
+# Part AC (T025) -- THE FAILOVER MUST NAME THE ENGINE THE CHAIN NAMES.
+#
+# Lettered AC, APPENDED: `AA` and `AB` above are this task's own earlier Parts,
+# and `S`..`Y7`, `Z`, `ZP` belong to T007/T023/T024/T026. Renaming any of them
+# to claim a letter would re-point every prose cross-reference in this file.
+#
+# RED BEFORE THIS ROUND. Two vocabularies meet in the reroute arm and nothing
+# translated between them:
+#
+#   * a role chain is written in INSTALL-DIRECTORY names -- `role.implementer=
+#     skewdir,skewalt` -- and `resolve_role_available` excludes an entry by
+#     matching that name exactly;
+#   * `implementer_engine_id` holds the MANIFEST ID the implement envelope
+#     reported, minus the first-party `orchid/` prefix libexec/orchid-task
+#     strips. A third-party actor therefore lands there as `test/renamedskew`.
+#
+# The arm bridged them with `${id##*/}` -- take the basename. That is right
+# only because `orchid plugins install` HAPPENS to place a plugin in a
+# directory named after its id's basename; nothing enforces it, `manifest_
+# validate` never compares the two (it requires only that `id` be qualified as
+# publisher/name), and a vendored, hand-placed or renamed directory separates
+# them. lib/review.sh's `_review_engine_name_for_qid` already refuses the bare
+# strip for exactly this reason, and lib/capability.sh's routing gate resolves
+# the same field through the registry rather than through the string.
+#
+# What the strip cost, on the one repository shape it is wrong about:
+#
+#   1. THE REROUTE DID NOT HAPPEN. `renamedskew` is not in the chain, so the
+#      exclusion excluded nothing and the walk handed back `skewdir` -- the
+#      engine that had just failed twice identically. The whole point of the
+#      failover is that the third attempt asks somebody else.
+#   2. AND THE JOURNAL SAID IT DID, naming two engines that were both wrong:
+#      "an identical failure signature under 'renamedskew' -- this attempt runs
+#      on 'skewdir'". That entry is the only durable record of which engine
+#      produced which candidate. A silently-skipped reroute is a missed
+#      improvement; a false line in that record is a wrong answer to the one
+#      question an operator comes here to ask.
+#
+# GREEN: the actor is resolved through the registry that installed it
+# (lib/resolver.sh's `resolve_engine_name_any`), the exclusion bites, the job
+# really is minted for the other engine, and the journal names both of them the
+# way the chain does.
+# ===========================================================================
+SKW="$WORK/skewroute"
+SKWCTL="$WORK/skwctl"
+mkdir -p "$SKW" "$SKWCTL"
+
+# mk_skew_engine <dir-name> <manifest-id> -- an implementer whose DIRECTORY
+# name and whose manifest `id` are set independently. Everything else is the
+# smallest adapter the launcher and the capability suite both accept: it
+# answers the dryrun probe, records that it started, and files an ok envelope.
+# It deliberately commits nothing -- this Part measures which engine is
+# DISPATCHED, and a candidate would only add git latency to a fixture that
+# never reaches `testing`.
+mk_skew_engine() {
+  local name="$1" id="$2" dir
+  dir="$WORK/eng/$name"
+  mkdir -p "$dir"
+  printf 'manifest_version=1\nid=%s\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+    "$id" > "$dir/plugin.conf"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'set -eu'
+    printf 'CTL=%s\n' "$(printf '%q' "$SKWCTL")"
+    printf 'ENGINE=%s\n' "$name"
+  } > "$dir/run"
+  cat >> "$dir/run" <<'EOF'
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
+  jq -n '{contract:1, job_id:"x", task:"x", operation:"implement", status:"ok", summary:"dryrun"}' > "$out"
+  exit 0
+fi
+echo "$ENGINE" >> "$CTL/starts"
+jq -n --arg jid "$jid" --arg task "$task" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok", summary:"stub"}' > "$out.part"
+mv "$out.part" "$out"
+EOF
+  chmod +x "$dir/run"
+}
+# THE SKEW IS THE FIXTURE. `skewdir` claims `test/renamedskew`; its directory
+# and its id share nothing. `skewalt` is the ordinary case, so the assertions
+# below cannot pass by treating every engine as skewed.
+mk_skew_engine skewdir test/renamedskew
+mk_skew_engine skewalt test/skewalt
+
+# --- AC0: the translation itself, against the registry -------------------
+assert_eq skewdir "$(resolve_engine_name_any test/renamedskew)" \
+  "a qualified id resolves to the DIRECTORY of the plugin whose manifest claims it, not to the id's own basename"
+assert_eq skewdir "$(resolve_engine_name_any skewdir)" \
+  "...and a name that is already a directory answers itself, so a caller needs one lookup and not two"
+assert_eq skewalt "$(resolve_engine_name_any test/skewalt)" \
+  "...including for the ordinary plugin whose directory and id basename do agree"
+SKNRC=0
+resolve_engine_name_any test/nosuchplugin >/dev/null 2>&1 || SKNRC=$?
+assert_eq 1 "$SKNRC" \
+  "an actor nothing installed answers to is reported as unresolved (exit 1), never guessed at by basename"
+# Non-vacuity: `renamedskew` really is a directory nobody has, so AC1's
+# assertions below are about a translation and not about a lucky coincidence.
+SKNRC=0
+resolve_engine_name_any renamedskew >/dev/null 2>&1 || SKNRC=$?
+assert_eq 1 "$SKNRC" \
+  "fixture witness: the id's basename names NO installed plugin, which is exactly what the old strip handed the chain walk"
+
+# --- AC1: the reroute, end to end through the driver ----------------------
+cd "$SKW" || exit 1
+git init -q .
+printf 'role.implementer=skewdir,skewalt\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+# The fallback may only ACTIVATE once it has passed the capability suite for
+# this exact (engine, role) pair -- the same gate every other failover goes
+# through. Without it the walk below would correctly find nothing eligible and
+# the dispatch would (correctly, but uninterestingly) stay on the primary.
+capsuite_run skewalt implementer >/dev/null \
+  || fail "sanity: capsuite_run should pass for skewalt/implementer"
+ORCHID_REPO="$SKW" "$ORCHID_BIN" init >/dev/null || fail "orchid init (skew-failover fixture)"
+git checkout -q orchid/integration
+SKEPOCH="$(ORCHID_REPO="$SKW" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+skorchid() { ORCHID_REPO="$SKW" ORCHID_EPOCH="$SKEPOCH" "$ORCHID_BIN" "$@"; }
+skorchid requirements import "$WORK/requirements.md" >/dev/null
+skorchid task create K010 "fails the same way every round" >/dev/null
+skorchid plan apply --reason "initial plan" >/dev/null
+
+# Parked directly in `rework` with the streak already at the reroute threshold:
+# this Part is about the ROUTING decision, and driving three real verify
+# failures to reach the same state would measure the capture path Part AA
+# already covers, at three passes' cost.
+SKTASK="$SKW/.orchid/tasks/K010.md"
+SKCAND="$(git -C "$SKW" rev-parse HEAD)"
+fm_set "$SKTASK" base_sha "$SKCAND"
+fm_set "$SKTASK" candidate_sha "$SKCAND"
+fm_set "$SKTASK" implementer_engine_id "test/renamedskew"
+fm_set "$SKTASK" rework_signature_repeats 2
+fm_set "$SKTASK" status rework
+skfield() { fm_get "$SKTASK" "$1"; }
+assert_eq "test/renamedskew" "$(skfield implementer_engine_id)" \
+  "fixture witness: the task really records the QUALIFIED id, which is the form libexec/orchid-task writes for a third-party actor"
+
+SKDRIVE_RC=0
+SKDRIVE_OUT="$(ORCHID_REPO="$SKW" ORCHID_EPOCH="$SKEPOCH" "$DRIVE" 2>&1)" || SKDRIVE_RC=$?
+assert_eq implementing "$(skfield status)" \
+  "fixture: the pass dispatched the reworking task (rc=$SKDRIVE_RC, out: $SKDRIVE_OUT)"
+
+# WHICH ENGINE WAS ACTUALLY ASKED. The job manifest records the resolved chain
+# entry, and it is written by the pass itself -- so this is the dispatch fact,
+# read without waiting on anything.
+skjob_engine() {
+  local mf
+  for mf in "$SKW/.orchid/runtime/jobs"/*.json; do
+    [ -e "$mf" ] || continue
+    [ "$(jq -r '.task // ""' "$mf")" = K010 ] || continue
+    [ "$(jq -r '.operation // ""' "$mf")" = implement ] || continue
+    jq -r '.engine // ""' "$mf"
+    return 0
+  done
+  return 1
+}
+assert_eq skewalt "$(skjob_engine)" \
+  "a second identical signature routes the next attempt to the OTHER chain entry, even when the failing engine's directory and manifest id disagree (out: $SKDRIVE_OUT)"
+
+# ...and the engine really ran, so the manifest above is not a record of a
+# dispatch that never happened. A bounded wait, not a race: the stub commits
+# nothing and returns immediately, and a machine slow enough to exceed this has
+# a broken launcher rather than a flaky test.
+ski=0
+while [ "$ski" -lt 200 ]; do
+  [ -s "$SKWCTL/starts" ] && break
+  ski=$((ski + 1))
+  sleep 0.05
+done
+assert_eq skewalt "$(sed -n 1p "$SKWCTL/starts" 2>/dev/null || true)" \
+  "the engine that actually started is the one the reroute named (starts: $(tr '\n' ' ' < "$SKWCTL/starts" 2>/dev/null || true))"
+
+# THE DURABLE RECORD, WHICH IS THE HALF THAT WAS WRONG RATHER THAN MISSING.
+SKJOURNAL="$SKW/.orchid/journal.md"
+SKJTEXT="$(cat "$SKJOURNAL" 2>/dev/null || true)"
+assert_match "rework routed to a different engine" "$SKJTEXT" \
+  "the reroute is journalled, because this time it happened"
+assert_match "identical failure signature under 'skewdir'" "$SKJTEXT" \
+  "...and it indicts the engine BY THE NAME THE CHAIN USES, not by the basename of the id it reported"
+assert_match "this attempt runs on 'skewalt'" "$SKJTEXT" \
+  "...and names the engine the attempt is really running on"
+# The negative, on the file directly: a pipe here would let `set -o pipefail`
+# turn grep's own SIGPIPE into a "no match" and pass this vacuously.
+if grep -qF "renamedskew" "$SKJOURNAL"; then
+  fail "the record must never name an actor that is not in any chain: an operator reading 'under renamedskew' has no engine to go and look at (journal: $SKJTEXT)"
+fi
+
+# --- AC2: an actor orchid cannot name gets no reroute AND no claim ---------
+# The other half of the same rule, in its own repository so that AC1's live
+# job cannot decide it: a dispatch that ADOPTS an outstanding job never reaches
+# the reroute arm at all, and a fixture that raced the stub's exit would be
+# measuring the adopt path on a slow machine and this one on a fast one.
+#
+# `test/uninstalled` is a well-formed id that no installed manifest claims --
+# an engine uninstalled since it filed, or (INV-10) one claimed by two plugins
+# at once, which is the same unanswerable question. The old strip would have
+# aimed the exclusion at `uninstalled`, excluded nothing, and journalled a
+# reroute anyway. Naming the wrong engine is not the safe direction, so the
+# preference is dropped: the dispatch proceeds on the same chain, says why on
+# the pass's own output, and claims nothing durable.
+SKW2="$WORK/skewgone"
+mkdir -p "$SKW2"
+cd "$SKW2" || exit 1
+git init -q .
+printf 'role.implementer=skewdir,skewalt\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$SKW2" "$ORCHID_BIN" init >/dev/null || fail "orchid init (unresolvable-actor fixture)"
+git checkout -q orchid/integration
+SKEPOCH2="$(ORCHID_REPO="$SKW2" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+sk2orchid() { ORCHID_REPO="$SKW2" ORCHID_EPOCH="$SKEPOCH2" "$ORCHID_BIN" "$@"; }
+sk2orchid requirements import "$WORK/requirements.md" >/dev/null
+sk2orchid task create K020 "an actor that is no longer installed" >/dev/null
+sk2orchid plan apply --reason "initial plan" >/dev/null
+SKTASK2="$SKW2/.orchid/tasks/K020.md"
+SKCAND2="$(git -C "$SKW2" rev-parse HEAD)"
+fm_set "$SKTASK2" base_sha "$SKCAND2"
+fm_set "$SKTASK2" candidate_sha "$SKCAND2"
+fm_set "$SKTASK2" implementer_engine_id "test/uninstalled"
+fm_set "$SKTASK2" rework_signature_repeats 2
+fm_set "$SKTASK2" status rework
+SKJOURNAL2="$SKW2/.orchid/journal.md"
+SKDRIVE_RC=0
+SKDRIVE_OUT="$(ORCHID_REPO="$SKW2" ORCHID_EPOCH="$SKEPOCH2" "$DRIVE" 2>&1)" || SKDRIVE_RC=$?
+assert_match "resolves to no single installed plugin" "$SKDRIVE_OUT" \
+  "the pass SAYS it could not identify the actor, rather than silently routing somewhere (out: $SKDRIVE_OUT)"
+assert_eq implementing "$(fm_get "$SKTASK2" status)" \
+  "...and the task is still dispatched, on the same chain — an unnameable actor withholds the PREFERENCE, never the round (out: $SKDRIVE_OUT)"
+if grep -qF "rework routed to a different engine" "$SKJOURNAL2"; then
+  fail "a reroute that could not be aimed must write no journal line claiming one (journal: $(cat "$SKJOURNAL2" 2>/dev/null || true))"
+fi
+if grep -qF "test/uninstalled" "$SKJOURNAL2"; then
+  fail "an unresolvable actor must not reach the durable record either (journal: $(cat "$SKJOURNAL2" 2>/dev/null || true))"
+fi

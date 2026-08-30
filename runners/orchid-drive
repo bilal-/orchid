@@ -1195,7 +1195,7 @@ drive_hook_gate() {
 drive_dispatch() {
   local id="$1" arch="$2" from="$3"
   local tf target outcome blockers plan action path branch integ integ_head base_stamp arc lrc role_line role op wtmiss prep prep_why
-  local rework_engine reps last_engine rjrc
+  local rework_engine reps last_engine last_name lnrc rjrc
   tf="$state/tasks/$id.md"
   target="$(drive_dispatch_target "$arch" "$from")"
   if [ -z "$target" ]; then
@@ -1433,15 +1433,13 @@ drive_dispatch() {
       if [ "$from" = rework ]; then
         reps="$(fm_get "$tf" rework_signature_repeats)"
         case "$reps" in ''|*[!0-9]*) reps=0 ;; esac
-        # Normalized to the BARE name a role chain is written in: the kernel
-        # records this field from the implement envelope's self-reported
-        # `.engine`, which adapters emit in qualified form ("orchid/claude"),
-        # and the kernel's own strip only removes the first-party "orchid/"
-        # prefix -- a third-party "acme/foo" would otherwise never match its
-        # own chain entry and the exclusion below would silently exclude
-        # nothing.
+        # The kernel records this field from the implement envelope's
+        # self-reported `.engine`, which adapters emit in qualified form
+        # ("orchid/claude"), and the kernel's own strip only removes the
+        # first-party "orchid/" prefix -- so a third-party actor arrives here
+        # as "acme/foo", which is NOT how a role chain names it. It has to be
+        # translated before the exclusion below can bite.
         last_engine="$(fm_get "$tf" implementer_engine_id)"
-        last_engine="${last_engine##*/}"
         # ...but a repeated signature only indicts an ENGINE when the failure
         # was an engine's to answer. A red repo-wide `merge_gate` is not: it is
         # a check the repository applies to everything, which this task was
@@ -1459,18 +1457,77 @@ drive_dispatch() {
           drive_note "$id: rework signature unchanged $reps times, but the repeated failure is the repository's own merge_gate — no engine can converge on that, so the role is not rerouted"
           reps=0
         fi
+        # ...and it only indicts an engine ORCHID CAN NAME. A chain is walked by
+        # INSTALL-DIRECTORY name; this field holds a MANIFEST ID. The two
+        # coincide for every plugin `orchid plugins install` placed -- which is
+        # why the bare `${id##*/}` strip this used to do read correctly in every
+        # fixture and every shipped layout -- but they are not the same fact,
+        # and a vendored, hand-placed or renamed directory separates them. Then
+        # the strip names a chain entry that does not exist,
+        # `resolve_role_available` excludes nothing, and the walk hands back THE
+        # ENGINE THAT JUST FAILED -- while the journal below records, durably
+        # and in the operator's own words, that this attempt was routed to a
+        # different one. That record is the only place anyone can learn which
+        # engine produced which candidate, so a false entry in it is worse than
+        # a reroute that never happened.
+        #
+        # The actor is therefore RESOLVED through the registry that installed it
+        # (resolve_engine_name_any: the directory a binding uses, or the
+        # qualified id an installed manifest claims), never guessed at -- the
+        # same refusal lib/review.sh's _review_engine_name_for_qid and
+        # lib/capability.sh's routing gate already make about the same field.
+        #
+        # AND WHEN IT CANNOT BE NAMED, THE REROUTE IS DROPPED RATHER THAN AIMED.
+        # Nothing installed answering to it (uninstalled since) and two plugins
+        # claiming one id (INV-10 refuses to pick between them) both leave this
+        # pass unable to say which chain entry did not converge. Falling back to
+        # the basename, or to whichever engine the role resolves to right now,
+        # would put a name orchid cannot stand behind into a durable indictment.
+        #
+        # Dropping it costs less than it looks like it should, which is why this
+        # is the cheap side of the trade rather than a sacrifice: what is
+        # withheld is the PREFERENCE and its record, never the round. The
+        # dispatch below still happens, and if the unnameable actor is
+        # unresolvable because it is no longer installed, `resolve_role_available`
+        # skips it on its own ("not found on search path") and the next entry
+        # takes the work anyway -- the same destination, minus a journal line
+        # this pass could not have written truthfully. The engine that does run
+        # still SEES the previous failure, which is the substantive half of this
+        # feature, and the non-convergence stop still ends the loop.
+        if [ "$reps" -ge 2 ] && [ -n "$last_engine" ]; then
+          lnrc=0
+          last_name="$(resolve_engine_name_any "$last_engine" 2>/dev/null)" || lnrc=$?
+          if [ "$lnrc" -eq 0 ] && [ -n "$last_name" ]; then
+            last_engine="$last_name"
+          else
+            drive_note "$id: rework signature unchanged $reps times, but the actor that filed the last candidate ('$last_engine') resolves to no single installed plugin, so the chain entry to exclude cannot be named — dispatching on the same chain, and claiming no reroute"
+            reps=0
+          fi
+        fi
         # An adapter is not REQUIRED to report `.engine` (reconcile only
         # cross-checks it when present), so an empty field is not proof that
         # no engine ran. Fall back to whichever engine this role would resolve
         # to right now -- absent a ledger change, that is exactly the one that
         # ran last time -- rather than skipping the reroute over a missing
-        # optional field.
+        # optional field. That fallback already speaks in chain names, so it is
+        # deliberately BELOW the resolution above rather than inside it.
         if [ "$reps" -ge 2 ] && [ -z "$last_engine" ]; then
           last_engine="$(resolve_role_available "$repo" "$role" 2>/dev/null || true)"
         fi
         if [ "$reps" -ge 2 ] && [ -n "$last_engine" ]; then
           if rework_engine="$(resolve_role_available "$repo" "$role" "$op" "$last_engine" 2>/dev/null)"; then
-            : # Journal only after drive_launch proves this reroute spawned.
+            # Journal only after drive_launch proves this reroute spawned --
+            # and only if it really is a DIFFERENT engine. Unreachable while
+            # that walk's exclusion is an exact match on the chain entry, which
+            # is precisely why the check is here: the sentence below is a claim
+            # about two names being different, and the one bug this arm has
+            # already shipped was that claim going unchecked while the exclusion
+            # silently matched nothing. Cheap enough to assert rather than
+            # assume, and inert for as long as the assumption holds.
+            if [ "$rework_engine" = "$last_engine" ]; then
+              rework_engine=""
+              drive_note "$id: rework signature unchanged $reps times under '$last_engine', and the chain walk returned that same engine — no reroute is claimed for a dispatch that is not one"
+            fi
           else
             rework_engine=""
             drive_note "$id: rework signature unchanged $reps times under '$last_engine', but role '$role' has no other eligible engine — dispatching on the same chain"
