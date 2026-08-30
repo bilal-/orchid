@@ -2035,9 +2035,10 @@ semantic correctness beyond declared verification commands.
   spent no Git at all — its ordering pinned on the report edge, since
   revocation walks no history and so has no position a trace can read; the
   routes through both scheduled runners that write nothing and answer anyway
-  — `pump: not an orchid repo`, `pump: run complete`, the tick's finished-run
+  — `pump: not an orchid repo`, the pump's split-brain line, `pump: run
+  complete`, the tick's finished-run
   line — which out of a stale root must refuse with none of those verdicts
-  produced, beside the runs out of a healthy root that must produce all three
+  produced, beside the runs out of a healthy root that must produce all four
   — and a task whose `verification_commands` names nothing but `true` is still
   gated by `merge_gate` before its ref can advance
 - INV-16 a step is never dispatched to an actor whose manifest does not

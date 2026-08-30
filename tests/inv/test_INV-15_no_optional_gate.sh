@@ -59,7 +59,8 @@ source "$(dirname "$0")/../helpers.sh"
 #     as the witness -- a gate an entry point reaches only after it has
 #     already written is reached too late. It then asks the same question of
 #     the routes through both scheduled runners that write NOTHING and answer
-#     anyway -- `pump: not an orchid repo`, `pump: run complete`, the tick's
+#     anyway -- `pump: not an orchid repo`, the split-brain line, `pump: run
+#     complete`, the tick's
 #     finished-run line -- each of which exits above the trust gate and had the
 #     stale-root gate below it, so a gate present in the file was skipped on
 #     the route that only produces a verdict. A verdict about this repository,
@@ -164,7 +165,7 @@ source "$(dirname "$0")/../helpers.sh"
 #      must be caught. A gate written as a producer piped into `grep -q`. A
 #      pump invoked out of that same stale root, which must refuse with no
 #      runtime directory created, and the two scheduled runners' write-nothing
-#      routes asked out of it, which must refuse with none of their three no-op
+#      routes asked out of it, which must refuse with none of their four no-op
 #      verdicts produced. A merge whose repo-wide gate exits non-zero,
 #      which must leave the integration ref exactly where it was. An
 #      `orchid trust unattended` out of that stale root, which must refuse
@@ -216,7 +217,7 @@ source "$(dirname "$0")/../helpers.sh"
 #      same pump against the same repo out of a root that is NOT stale, which
 #      must run and must create the very directory the refusal above proved
 #      absent; both scheduled runners' write-nothing routes out of that same
-#      root, which must produce the three no-op verdicts whose absence the
+#      root, which must produce the four no-op verdicts whose absence the
 #      refusals are measured by; the same task, the same tree and the same absent opt-in with a
 #      GREEN gate, which must merge and advance the ref; the same
 #      acknowledgement out of a root that is not stale, which must write the
@@ -1762,10 +1763,16 @@ mkdir -p "$PUMP_REPO/.orchid/tasks"
 printf -- '---\nrun_status: planning\nrun_id: inv15-pump\n---\n# Roadmap\n' \
   > "$PUMP_REPO/.orchid/roadmap.md"
 
-# ACKNOWLEDGED, and this is load-bearing rather than setup: without it the
-# pump refuses at the unattended-trust gate, which sits AHEAD of the stale-root
-# gate and writes nothing either -- so the runtime directory would be absent
-# for the wrong reason and this section would prove nothing at all.
+# ACKNOWLEDGED, and this is load-bearing rather than setup -- for the GREEN run
+# rather than for the RED one, which is worth being exact about now that the
+# stale-root gate has moved. It used to sit BELOW the pump's unattended-trust
+# gate, and the note here used to say so; it now fires above it, so out of the
+# stale root the refusal below would arrive with or without this record. What
+# still needs it is the run that must be ALLOWED: without an acknowledgement
+# this checkout's own pump refuses at its trust gate, never reaches its lease
+# step, and creates no runtime directory either -- and then the absence the RED
+# run is measured by is inherited from a pump that never writes there at all
+# rather than caused by the gate.
 HOME="$MACHINE_HOME" "$ORCHID_BIN" trust unattended "$PUMP_REPO" \
   --reason "INV-15 pre-write pump gate fixture" >/dev/null \
   || fail "INV-15: could not acknowledge the pump fixture repository, so the runs below would be stopped by the unattended-trust gate rather than by the gate this section is about"
@@ -1844,6 +1851,18 @@ PUMP_DONE="$PUMP_PROOF/repo-complete"
 mkdir -p "$PUMP_DONE/.orchid"
 printf -- '---\nrun_status: complete\nrun_id: inv15-pump-done\n---\n# Roadmap\n' \
   > "$PUMP_DONE/.orchid/roadmap.md"
+# The pump's remaining verdict, and it is BUILT rather than argued from the
+# other two, because the predicate behind it is a different one:
+# orchid_split_brain is true when .orchid/tasks or .orchid/journal.md exists
+# WITHOUT .orchid/roadmap.md -- the "wrong checkout" shape -- and it is answered
+# by its own echo and its own exit on its own route. Verdicts that share a shape
+# do not share a line, and whether a route reaches the gate is a fact about that
+# route; the only way to have it is to take it.
+PUMP_SPLIT="$PUMP_PROOF/repo-split-brain"
+mkdir -p "$PUMP_SPLIT/.orchid"
+printf '# Journal\n' > "$PUMP_SPLIT/.orchid/journal.md"
+[ ! -f "$PUMP_SPLIT/.orchid/roadmap.md" ] \
+  || fail "INV-15: the split-brain fixture has a roadmap, so it is not split-brain and the pump would answer it on some other route"
 
 # early_probe <root> <runner> <repo> -- one scheduled-runner invocation out of
 # <root> against <repo>. Same shape as pump_probe above, with the target and
@@ -1862,6 +1881,11 @@ assert_eq 0 "$early_rc" \
   "INV-15: this checkout's own pump must answer an uninitialised directory with its no-op verdict (got rc=$early_rc: $early_out)"
 assert_eq "pump: not an orchid repo" "$early_out" \
   "INV-15: ...and answer it verbatim, so the absence of this line below is the gate suppressing it rather than a pump that never says it"
+early_probe "$REPO_ROOT" orchid-pump "$PUMP_SPLIT"
+assert_eq 0 "$early_rc" \
+  "INV-15: this checkout's own pump must answer a split-brain checkout with its no-op verdict (got rc=$early_rc: $early_out)"
+assert_match '^pump: no roadmap in this checkout ' "$early_out" \
+  "INV-15: ...and it must be the split-brain line, which is its own echo on its own route rather than a second spelling of the uninitialised one"
 early_probe "$REPO_ROOT" orchid-pump "$PUMP_DONE"
 assert_eq 0 "$early_rc" \
   "INV-15: this checkout's own pump must answer a finished run with its no-op verdict (got rc=$early_rc: $early_out)"
@@ -1872,9 +1896,9 @@ assert_eq 0 "$early_rc" \
   "INV-15: this checkout's own tick must answer a finished run with its no-op verdict (got rc=$early_rc: $early_out)"
 assert_match 'run_status complete, nothing to do' "$early_out" \
   "INV-15: ...and it must be the finished-run line, not some other exit"
-green_case "both scheduled runners, out of a root that is NOT stale, produced the short-route verdicts they exist to produce on an unacknowledged target -- the pump's uninitialised and finished-run lines and the tick's finished-run line -- so each verdict is an answer that really is given, and its absence below is caused rather than inherited"
+green_case "both scheduled runners, out of a root that is NOT stale, produced every short-route verdict they exist to produce on an unacknowledged target -- the pump's uninitialised, split-brain and finished-run lines and the tick's finished-run line -- so each verdict is an answer that really is given, and its absence below is caused rather than inherited"
 
-# The RED half: the same three questions, out of the genuinely stale root.
+# The RED half: the same four questions, out of the genuinely stale root.
 early_probe "$PUMP_ROOT" orchid-pump "$PUMP_BARE"
 assert_eq 1 "$early_rc" \
   "INV-15: a pump answering 'not an orchid repo' out of a stale installation root must refuse instead (got rc=$early_rc: $early_out)"
@@ -1884,6 +1908,15 @@ assert_match 'templates/\.keep' "$early_out" \
   "INV-15: ...naming the staged kernel path, which only the index comparison can have produced"
 if grep -qF 'pump: not an orchid repo' <<<"$early_out"; then
   fail "INV-15: the refused pump printed its uninitialised verdict anyway. That verdict is an answer about this repository read out of the tree whose staleness is the finding, and it is on a route that exits above the trust gate — so the gate is reached on the route that writes and skipped on the route that only answers"
+fi
+
+early_probe "$PUMP_ROOT" orchid-pump "$PUMP_SPLIT"
+assert_eq 1 "$early_rc" \
+  "INV-15: a pump answering its split-brain line out of a stale installation root must refuse instead (got rc=$early_rc: $early_out)"
+assert_match 'refusing to run: the checkout orchid itself runs from' "$early_out" \
+  "INV-15: ...and it must be the stale-root refusal"
+if grep -qF 'no roadmap in this checkout' <<<"$early_out"; then
+  fail "INV-15: the refused pump printed its split-brain verdict anyway. This route is reached through a different predicate from the pump's other two verdicts, which is exactly why it is taken here rather than argued from them: a gate is reached or skipped per ROUTE, and routes that clear it say nothing about the one beside them"
 fi
 
 early_probe "$PUMP_ROOT" orchid-pump "$PUMP_DONE"
@@ -1903,7 +1936,7 @@ assert_match 'refusing to run: the checkout orchid itself runs from' "$early_out
 if grep -qF 'nothing to do' <<<"$early_out"; then
   fail "INV-15: the refused tick printed its finished-run verdict anyway. The direct tick is an unattended entry point in its own right — a crontab can point straight at it — so this is the same omission the pump had, one file over"
 fi
-red_case "the same three short-route questions asked out of a genuinely stale installation root were all refused with the staged kernel path named and not one of the three verdicts produced, so the gate these runners arm is reached on the routes that only ANSWER and not merely on the routes that write"
+red_case "the same four short-route questions asked out of a genuinely stale installation root were all refused with the staged kernel path named and not one of the four verdicts produced, so the gate these runners arm is reached on every route that only ANSWERS and not merely on the routes that write"
 
 # ===========================================================================
 # 7 -- THE MERGE FLOOR, EXECUTED.
@@ -3114,7 +3147,7 @@ not_tested "gate-omission-beyond-the-four-families" \
 not_tested "gate-reach-into-code-that-arms-nothing" \
   "shipped code that executes out of \$ORCHID_ROOT without loading lib/common.sh at all. Section 4's universe is every file under install.sh, bin/, libexec/, runners/, scripts/ and plugins/*/*/* that SOURCES the library, because sourcing it is what arms the guard and the question this file asks is whether what was armed is fired. A helper that runs kernel code some other way — a plugin's notify sender that shells to the orchid dispatcher rather than sourcing it, a hook script, anything reached through a subprocess — arms nothing here, so it is neither reported nor cleared. The subprocess case is the benign half: whatever it invokes is itself in the universe and fires the gate on its own account. The case that is not covered is a file that reads and acts on \$ORCHID_ROOT's contents directly without loading the library, which no shipped file does today and which this derivation would not notice arriving"
 not_tested "firing-site-reachability-within-an-entry-point" \
-  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the five sections 6, 8 and 9 execute. Section 4 is textual in that one respect by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call -- or runs past it BEFORE that work -- which it cannot. (What section 4 no longer takes on trust is the OTHER half of that question, whether a call it found fires anything where the file lives: that is answered by running a stub at the file's own path out of a genuinely stale root, so a firing site that is inert at that location is reported rather than counted.) Section 6 answers both questions for runners/orchid-pump and runners/orchid-tick, section 8 for libexec/orchid-trust and for runners/orchid-service, and section 9 for libexec/orchid-doctor, each by running the entry point and weighing its refusal against a side effect — a write, or a verdict — that really does happen otherwise; that is five entry points out of the deferring set. Section 6 is also where the ROUTE half of the question is put rather than only the file half: both scheduled runners answer an uninitialised, split-brain or finished repository above their trust gate and leave, and those routes had no fire on them at all, which no scan of either file could have said, because the call is in the text. The split-brain route is the one of the four verdicts not run, since it needs a target built to trip a different predicate and it exits through the same line the other two do. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally on the route to its own work, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no ACTING arm that could forget; section 8 runs its status arm out of a stale root and requires the refusal to land ahead of the report, which is the half a scan of that file cannot answer. libexec/orchid-trust is the one that fires PER SUBCOMMAND, because what the gate must precede is per subcommand, and no ACTING arm of it is exempt any longer: the lookup arm carried an exemption for writing nothing durable, that exemption is gone, and section 8 executes both the acknowledgement, whose side effect is the record it writes, and the lookup, whose side effect is the report an operator acts on. What both files DO have above the call is the usage arm -- -h, --help, help, a bare invocation -- and that is the one route through either of them on which this gate does not fire. It is not left as an omission in one and a decision in the other: section 8 runs both verbs' usage arms out of the same stale root that refuses their acting arms, so the exemption is measured, bounded to the arm that resolves no target and reads no record, and identical in the two files. What is not tested is the claim UNDER it -- that a usage text can never carry anything an operator acts on about a repository -- which is an argument about the content of two here-documents rather than about an ordering, and belongs to review. Section 8 does not run the third arm, revocation; section 9 does, on the self-hosted target, and what is left untested there is narrower than the arm. Its ordering cannot be read off a trace: revocation walks no history by design, so its machine-local half — the bounded identity derivation that decides which record would be unlinked — spends no Git in any environment, and there is no position for an observer to measure. Section 9 measures the two halves that can be: the arm spends no target query of its own at all, so the gate's comparison is the only Git in a refused run and nothing precedes it; and the ORDER is pinned on the report edge instead, since an underivable identity is a diagnosis about the target and out of a stale root it must not be produced. What that leaves untested is the ordering between the derivation and the gate on the route where the derivation SUCCEEDS, which no instrumentation in this file can see. So a trust subcommand added tomorrow that acts and forgets the call is caught by nothing: section 4 sees the file's other call sites and is satisfied, and sections 8 and 9 only ever asked about the arms they run. An entry point that guards its call, or that acts before it, belongs to review, and the two questions to put to it are the ones sections 4, 6, 8 and 9 put to those five: on which route is your gate not reached, and what have you already done by the time it is"
+  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the five sections 6, 8 and 9 execute. Section 4 is textual in that one respect by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call -- or runs past it BEFORE that work -- which it cannot. (What section 4 no longer takes on trust is the OTHER half of that question, whether a call it found fires anything where the file lives: that is answered by running a stub at the file's own path out of a genuinely stale root, so a firing site that is inert at that location is reported rather than counted.) Section 6 answers both questions for runners/orchid-pump and runners/orchid-tick, section 8 for libexec/orchid-trust and for runners/orchid-service, and section 9 for libexec/orchid-doctor, each by running the entry point and weighing its refusal against a side effect — a write, or a verdict — that really does happen otherwise; that is five entry points out of the deferring set. Section 6 is also where the ROUTE half of the question is put rather than only the file half: both scheduled runners answer an uninitialised, split-brain or finished repository above their trust gate and leave, and those routes had no fire on them at all, which no scan of either file could have said, because the call is in the text. All four of those verdicts are RUN, each on its own target: an uninitialised directory, a split-brain checkout built to trip a different predicate from the other two, and a finished run put to both runners. Three routes clearing a gate says nothing about a fourth, so none of them is argued from the others. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally on the route to its own work, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no ACTING arm that could forget; section 8 runs its status arm out of a stale root and requires the refusal to land ahead of the report, which is the half a scan of that file cannot answer. libexec/orchid-trust is the one that fires PER SUBCOMMAND, because what the gate must precede is per subcommand, and no ACTING arm of it is exempt any longer: the lookup arm carried an exemption for writing nothing durable, that exemption is gone, and section 8 executes both the acknowledgement, whose side effect is the record it writes, and the lookup, whose side effect is the report an operator acts on. What both files DO have above the call is the usage arm -- -h, --help, help, a bare invocation -- and that is the one route through either of them on which this gate does not fire. It is not left as an omission in one and a decision in the other: section 8 runs both verbs' usage arms out of the same stale root that refuses their acting arms, so the exemption is measured, bounded to the arm that resolves no target and reads no record, and identical in the two files. What is not tested is the claim UNDER it -- that a usage text can never carry anything an operator acts on about a repository -- which is an argument about the content of two here-documents rather than about an ordering, and belongs to review. Section 8 does not run the third arm, revocation; section 9 does, on the self-hosted target, and what is left untested there is narrower than the arm. Its ordering cannot be read off a trace: revocation walks no history by design, so its machine-local half — the bounded identity derivation that decides which record would be unlinked — spends no Git in any environment, and there is no position for an observer to measure. Section 9 measures the two halves that can be: the arm spends no target query of its own at all, so the gate's comparison is the only Git in a refused run and nothing precedes it; and the ORDER is pinned on the report edge instead, since an underivable identity is a diagnosis about the target and out of a stale root it must not be produced. What that leaves untested is the ordering between the derivation and the gate on the route where the derivation SUCCEEDS, which no instrumentation in this file can see. So a trust subcommand added tomorrow that acts and forgets the call is caught by nothing: section 4 sees the file's other call sites and is satisfied, and sections 8 and 9 only ever asked about the arms they run. An entry point that guards its call, or that acts before it, belongs to review, and the two questions to put to it are the ones sections 4, 6, 8 and 9 put to those five: on which route is your gate not reached, and what have you already done by the time it is"
 not_tested "early-exit-matchers-outside-the-kernel-and-the-invariant-gates" \
   "the rest of tests/. Section 5's glob is the shipped kernel, the bundled plugins and tests/inv/test_*.sh, and the last of those was added because an invariant gate deciding its verdict by a race is the same defect the section scans the kernel for. The other test files carry the shape too, in the hundreds, and they are not covered here: converting them is a mechanical sweep of a different size, and the argument for taking the gates first is that a wrong answer there is a wrong answer about the kernel, whereas a wrong answer in a feature test is a flaky test somebody re-runs. The tell is unchanged wherever it appears, and the direction that costs is the negative assertion: a producer piped into an early-exiting grep, then '&& fail', is skipped exactly when the pattern is present. Spelled in words rather than in code, here and in the failure message above, because these two lines are not comments: this file is inside the glob it runs, so a literal instance of the shape on a line of its own prose is a violation of this invariant reported against this file — which is the right answer, and the reason the wording works around it"
 not_tested "early-exit-matchers-other-than-grep-q" \
