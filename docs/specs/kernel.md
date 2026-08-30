@@ -283,7 +283,7 @@ across prose sections is normative HERE):**
 | testing | `verify` FAIL → `task advance` | failure classified first: candidate → attempts++; handoff/environment/flaky → `task infra-fail` + `--waive-attempt --reason`. If a candidate failure cannot take `testing → rework` because the archetype omits that edge or the edge is refused before charging, `task advance blocked --charge-attempt --reason` preserves the strict charge in one locked transition while stopping for an operator. | frontmatter, journal | rework, or blocked on the charge fallback |
 | reviewing | all required review envelopes reconciled → `task advance` | fail-closed envelope checks | frontmatter | arbitrating |
 | arbitrating | `task arbitrate --result approve --reason` | findings ≥ blocking_severity resolved; no `unresolved_objection` this arbiter lacks the authority to settle | frontmatter (clears `unresolved_objection`), journal | merging (or `done` on an outcome=report archetype) |
-| arbitrating | `task arbitrate --result request-changes --reason` | attempts++ unless waived | frontmatter (writes `unresolved_objection`, `unresolved_objection_by`), journal | rework |
+| arbitrating | `task arbitrate --result request-changes --reason` | attempts++ unless waived | frontmatter (bumps `objection_seq`, then writes `unresolved_objection_by`, `unresolved_objection`), journal | rework |
 | merging | `merge` exit 0 → `task advance` | serialized; base current; temp-worktree suite AND `merge_gate` green | integration ref, evidence, frontmatter | done |
 | merging | `merge` exit 1 (`validation_failed`) → `task advance` | — | evidence, frontmatter | rework |
 | merging | `merge` exit 1 (`gate_failed`) → `task advance --charge-attempt` | repo-wide `merge_gate` red; integration ref untouched; attempts++ (the ONE merge failure that charges — a red repo-wide gate repeats identically, so an uncharged edge never terminates) | evidence, frontmatter, journal | rework |
@@ -1255,19 +1255,36 @@ paged with `orchid notify` and answered with `orchid answer`, and no verb
 consumes an answer file — so an operator who has decided still needs an actor
 to record the arbitration, and in an unattended run that actor is a woken
 orchestrator. `review_operator_relay` (lib/review.sh) is the reader that credits
-one: `--result approve` recorded by a non-operator counts as the operator's iff
-a question in `runtime/answers/` names this task in its `task:` header, carries
-the standing objection's text and the remedy clause `review_objection_remedy`
-composes for this task, and has an `.answer` recording exactly `approve`.
-`orchid answer` is on no surface's admitted verb list, so that state is state no
-model can write (`notify` IS admitted, which is why the question is not the
-evidence and the answer is). The objection's text opens with the round it was
-raised in, so an answer given about a superseded objection authorises nothing.
-Only the clearing direction is relayed: refusing a relayed `request-changes`
-leaves the operator's objection standing, which is what they asked for, while
-admitting one would record a model's paraphrase under their authority. The
-clear's journal entry names the relaying actor and the qid beside the
-authority, since the entry's own actor is the model that ran the verb.
+one, and what it reads is an AUTHORITY RECORD, never a page's prose:
+`runtime/answers/<qid>.objection`, three lines (`task:`, `seq:`, `objection:`),
+written by `orchid notify --objection` and defined in lib/objection.sh. A
+`--result approve` recorded by a non-operator counts as the operator's iff such a
+record names this task, names the objection instance standing now, carries the
+canonical stored objection line byte for byte, and its `<qid>.question` (same
+`task:` header) has an `.answer` recording exactly `approve`. Every field is
+compared as a whole line; nothing is matched as a substring. `orchid answer` is
+on no surface's admitted verb list, and `runners/orchid-orchestrator-command`
+refuses an unrecognised flag to `notify` — so a woken model can raise a page
+(`notify` IS admitted) but cannot raise one that mints an authority, which is
+what makes the record rather than the page the evidence. The record is CONSUMED
+before anything is cleared, so it is spent once and a crash or a replay finds
+nothing left to spend. Only the clearing direction is relayed: refusing a relayed
+`request-changes` leaves the operator's objection standing, which is what they
+asked for, while admitting one would record a model's paraphrase under their
+authority. The clear's journal entry names the relaying actor, the qid and the
+instance beside the authority, since the entry's own actor is the model that ran
+the verb.
+`objection_seq` (v1.1, T032 convergence): kernel-owned, refused by `task set`,
+bumped by every `task arbitrate --result request-changes` and NEVER reset — the
+identity of the objection instance an operator's answer is bound to. The stored
+text cannot be that identity: `--waive-attempt` leaves `attempts` untouched, so
+the same defect rejected twice across a waived round composes a byte-identical
+`a<attempt>: <reason>` line, and a cleared objection re-raised in the same words
+composes one too. The counter rotates where the text does not and never rewinds,
+so an authority minted for an earlier instance can never be spent on the one
+standing now. Written BEFORE the class and the text, so a crash between the
+writes leaves the older objection standing under an instance nothing is bound
+to — nothing relayable, rather than an answer spent on words nobody read.
 `hook_guidance` (v1-m3):
 written by the orchestrator from a bound `hook.on_verify_fail` handler's
 `.artifact.guidance` string, via `orchid task set <id> hook_guidance

@@ -104,14 +104,49 @@ review_objection_line() {
   envelope_fold_line "$1" "$REVIEW_OBJECTION_MAX"
 }
 
+# review_objection_record <attempt> <reason> -- the CANONICAL stored line: what
+# `unresolved_objection` holds, what the page quotes, and what the authority
+# record beside that page is compared against, byte for byte.
+#
+# `a<attempt>:` says which round was rejected, which is what makes a standing
+# objection legible three rounds later. It is not a binding -- a rework round
+# moves `attempts` and `candidate_sha`, and an objection that expired on either
+# would expire on precisely the event it exists to survive. The binding is
+# `objection_seq` (lib/objection.sh); this prefix is legibility.
+#
+# THE BUDGET IS THE WHOLE LINE'S, NOT THE REASON'S, and that is what makes this
+# a function rather than a `printf` at the one write. The stored value has to be
+# a FIXPOINT of review_objection_line, because readers fold what they are given
+# before putting it in a TAB-separated record: fold the reason to
+# REVIEW_OBJECTION_MAX and the line with its prefix comes out LONGER than the
+# cap, so every reader truncates it again -- a second `...` in the page, a
+# quoted objection that is not the stored one, and (before the authority record
+# below existed) an objection past the cap that could never be relayed at all,
+# because the page and the field it was compared against disagreed by the
+# handful of characters the prefix cost. Budgeting `- 3` as well leaves room for
+# the ellipsis envelope_fold_line appends when it truncates, so the composed
+# line is at most REVIEW_OBJECTION_MAX characters and folding it again is a
+# no-op at every length.
+review_objection_record() {
+  local prefix="a${1}: " budget
+  budget=$(( REVIEW_OBJECTION_MAX - ${#prefix} - 3 ))
+  [ "$budget" -gt 0 ] || budget=1
+  printf '%s%s\n' "$prefix" "$(envelope_fold_line "$2" "$budget")"
+}
+
 # review_objection_remedy <task> -- the clause naming the verb that settles
-# THIS task's standing objection. One literal, two ends: lib/drive.sh composes
-# it into the detail every objection boundary carries (and therefore into the
-# page an operator is sent), and review_operator_relay below requires it back
-# out of the question an operator answered before it credits that answer as a
-# decision about the objection. Two copies of this sentence would be one
-# reformatting away from a relay that silently stops being possible, with the
-# refusal blaming the operator's answer rather than the prose that moved.
+# THIS task's standing objection. lib/drive.sh composes it into the detail every
+# objection boundary carries, and therefore into the page an operator is sent:
+# it is what tells them, in the kernel's own words, that `approve` is the answer
+# that settles this and `orchid task arbitrate <this id>` is the verb that
+# records it. TASK-BOUND, so a page never points at another task's verb.
+#
+# It is prose FOR THE OPERATOR and no longer evidence about them. The relay used
+# to require this clause back out of the question file before crediting an
+# answer, which made a sentence a security boundary -- and a weak one, since
+# `notify` is brokered and a model could compose it. The authority record beside
+# the page carries that weight now (lib/objection.sh), so this clause may be
+# reworded for a human without any answer becoming uncreditable.
 review_objection_remedy() {
   printf 'orchid task arbitrate %s --result approve|request-changes\n' "${1:-}"
 }
@@ -216,30 +251,46 @@ review_objection_arbiter() {
 # WHAT MAKES IT THE OPERATOR'S, on four axes, none of which the relaying model
 # supplies:
 #
-#   * `runtime/answers/<qid>.answer` is written by ONE verb, `orchid answer`,
-#     which is not on `_DRIVE_BROKERED_WRITE_VERBS` (lib/drive.sh) and is named
-#     in runners/orchid-orchestrator-command's own REFUSED list: the broker
-#     `exec`s a validated argv and there is no seam that reaches it. `notify` IS
-#     admitted -- a model may raise a page -- so the QUESTION is not evidence of
-#     anything and the ANSWER is the whole of the provenance. (A `soft` surface
-#     enforces nothing, being an adapter bounded only by its prompt; that is the
-#     same trust boundary ORCHID_ACTOR itself rests on, and this reader adds no
-#     authority there that unsetting that variable would not already give.)
-#   * THE TASK. The question's first line is `task: <id>` (libexec/orchid-notify
-#     writes that header before anything else), compared exactly, so an answer
-#     about some other task cannot settle this one.
-#   * THE OBJECTION. The question must carry the standing objection's own text.
-#     That text opens with `a<attempt>:`, so an answer given about an earlier
-#     objection -- one already cleared, or one this arbitration is superseding
-#     -- does not authorise anything about the objection standing now. This is
-#     what stops a `.answer` from becoming a reusable token.
+#   * THE PAGE IS THE KERNEL'S. The evidence is not the question's prose -- it is
+#     the AUTHORITY RECORD written beside it, `runtime/answers/<qid>.objection`
+#     (lib/objection.sh, whose header argues the format). Only `orchid notify
+#     --objection` writes one, and runners/orchid-orchestrator-command refuses
+#     an unrecognised flag to `notify` structurally, so the surface a woken
+#     model reaches cannot mint one. This is the axis that used to be missing:
+#     the reader matched the objection's text INSIDE a question file, and
+#     `notify` is on the brokered write table, so a model could mint a page
+#     quoting the objection and the remedy clause and then be credited with the
+#     operator's answer to it. Text a model can compose is not provenance. (A
+#     `soft` surface enforces nothing, being an adapter bounded only by its
+#     prompt; that is the same trust boundary ORCHID_ACTOR itself rests on, and
+#     this reader adds no authority there that unsetting that variable would not
+#     already give.)
+#   * THE ANSWER IS THE OPERATOR'S. `runtime/answers/<qid>.answer` is written by
+#     ONE verb, `orchid answer`, which is not on `_DRIVE_BROKERED_WRITE_VERBS`
+#     (lib/drive.sh) and is named in the broker's own REFUSED list: it `exec`s a
+#     validated argv and there is no seam that reaches it.
+#   * THE TASK AND THE INSTANCE. The record states the task and the
+#     `objection_seq` that stood when the page was raised, and both are compared
+#     as whole lines against the task's state NOW. The seq is what stops an
+#     answer from becoming a reusable token: it is bumped by every
+#     `request-changes` and never reset, so an answer given about the objection
+#     that stood then -- one already cleared, one this arbitration is
+#     superseding, or the SAME words re-raised across a `--waive-attempt` round
+#     that left `attempts` untouched -- authorises nothing about the objection
+#     standing now.
 #   * THE DECISION. The answer must be the arbitration result, spelled exactly:
 #     `approve` and nothing else clears. Not a paraphrase, not a prefix, not
 #     "yes, approve" -- and never anything the arbitration's own `--reason`
-#     says, which is the relaying model's prose. The question must also carry
-#     the remedy clause naming this task's verb (`review_objection_remedy`), so
-#     the page the operator answered is one that told them, in the kernel's own
-#     words, that `approve` settles the objection.
+#     says, which is the relaying model's prose.
+#
+# THE OBJECTION TEXT IS COMPARED EXACTLY, AS A WHOLE LINE, against the canonical
+# stored value -- never as a substring of anything. `review_objection_record`
+# makes that value a fixpoint of the fold every reader applies, so the
+# comparison holds at any length, including an objection longer than
+# REVIEW_OBJECTION_MAX: the record carries the stored bytes and the reader
+# compares the stored bytes, so a long objection relays exactly as a short one
+# does. It is the substring match this replaces that could not -- the page
+# quoted a re-folded, shorter line than the field held.
 #
 # CLEARING ONLY, and that asymmetry is deliberate. `--result request-changes`
 # relayed the same way would replace the operator's recorded words with the
@@ -249,27 +300,23 @@ review_objection_arbiter() {
 # clearing direction is blocked by the refusal, so only the clearing direction
 # needs a way through.
 #
-# THE RESIDUAL, stated rather than hidden: a model may mint a page of its own
-# (`notify` is admitted) whose text quotes the objection and the remedy clause,
-# and an operator who answers that page `approve` has cleared the objection.
-# That page is, word for word, an operator being shown their own objection and
-# the verb that settles it, and answering `approve` to it -- which is the
-# decision. What no page can do is answer itself.
-#
 # EVERY FAILURE IS A REFUSAL, including the ones that are nobody's fault: the
 # answers directory is runtime state, gitignored and sweepable, so a wiped
 # runtime reads exactly like an operator who never answered. That costs them a
 # shell of their own and costs the guarantee nothing, which is the correct
 # direction for a reader whose yes lets a model act with a human's authority.
 #
-# Returns the qid that authorised the arbitration (so the caller can record
-# WHICH answer it acted on, and a reader of the journal can go and read it), or
-# nothing. Never nonzero on "no": callers test the output for emptiness, the
-# same contract review_objection_line and review_objection_arbiter have.
+# Returns the qid that authorised the arbitration -- which the caller must then
+# CONSUME (objection_authority_consume) before it clears anything, so the record
+# is spent once and a crash or a replay finds nothing left to spend. Prints
+# nothing when no authority stands. Never nonzero on "no": callers test the
+# output for emptiness, the same contract review_objection_line and
+# review_objection_arbiter have.
 review_operator_relay() {
-  local repo="${1:-}" task="${2:-}" result="${3:-}" objection="${4:-}"
-  local answers qf qid subject remedy ans
+  local repo="${1:-}" task="${2:-}" result="${3:-}" objection="${4:-}" seq="${5:-}"
+  local answers qid subject ans
   [ -n "$repo" ] && [ -n "$task" ] && [ -n "$objection" ] || return 0
+  case "$seq" in ''|*[!0-9]*) return 0 ;; esac
   [ "$result" = approve ] || return 0
   # Composed rather than taken from lib/common.sh's `orchid_runtime`, which
   # mkdir -p's what it returns: this is a read, and lib/drive.sh's
@@ -277,31 +324,59 @@ review_operator_relay() {
   # reason.
   answers="$repo/.orchid/runtime/answers"
   [ -d "$answers" ] || return 0
-  remedy="$(review_objection_remedy "$task")"
-  for qf in "$answers"/*.question; do
-    # The glob matching nothing yields the pattern itself under bash's default
-    # nullglob-off, which is not a file.
-    [ -f "$qf" ] || continue
+  # The AUTHORITY records are what is walked, not the questions (see
+  # objection_authority_qids), so a page with no record beside it never enters
+  # this loop at all.
+  while IFS= read -r qid; do
+    [ -n "$qid" ] || continue
+    objection_authority_matches "$(objection_authority_file "$repo" "$qid")" \
+      "$task" "$seq" "$objection" || continue
+    # The record points at a page, and the page must still be the one it was
+    # written for: same qid, same subject line. A record whose question has been
+    # swept away authorises nothing, because the thing the operator answered is
+    # gone.
+    [ -f "$answers/$qid.question" ] || continue
     subject=""
-    IFS= read -r subject < "$qf" || true
+    IFS= read -r subject < "$answers/$qid.question" || true
     [ "$subject" = "task: $task" ] || continue
-    # `-e` on both, because neither an objection an operator typed nor a
-    # composed clause is this reader's business to constrain: a value starting
-    # with `-` must not become a grep option. `-F` because both are literal
-    # text, and an objection is free prose that will contain regex characters.
-    grep -qF -e "$objection" "$qf" 2>/dev/null || continue
-    grep -qF -e "$remedy" "$qf" 2>/dev/null || continue
-    qid="$(basename "$qf" .question)"
     [ -f "$answers/$qid.answer" ] || continue
     ans=""
     IFS= read -r ans < "$answers/$qid.answer" || true
-    # `continue`, never `return`: another question may carry this same
-    # objection and hold the operator's actual decision, and a page they
-    # answered `defer` must not hide the one they answered.
+    # `continue`, never `return`: another page may carry a record for this same
+    # instance and hold the operator's actual decision, and a page they answered
+    # `defer` must not hide the one they answered.
     [ "$ans" = "$result" ] || continue
     printf '%s\n' "$qid"
     return 0
-  done
+  done < <(objection_authority_qids "$repo")
+  return 0
+}
+
+# review_objection_page_authority <repo> <task> <page-text> -- exit 0 iff this
+# operator page is the one an authority record belongs beside: the task carries
+# a standing OPERATOR objection and the page really quotes it.
+#
+# The driver's single page site asks this and passes `--objection` on the answer
+# (runners/orchid-drive). Both halves are load bearing. The class, because an
+# objection the run's own orchestrator raised is settled by that orchestrator
+# and never needs a human's authority relayed -- minting one would be handing
+# out a record for a stop that has no operator behind it. And the TEXT, because
+# `operator-decision` is a catch-all kind: a refused advance, an archetype with
+# no edge and an unresolved objection all reach the page loop under it, and only
+# the last is a page about settling an objection. Matched with `grep -qF -e`
+# against the canonical stored line -- a fixed string, and `-e` because an
+# objection is prose an operator typed and one starting with `-` must not become
+# a grep option.
+review_objection_page_authority() {
+  local repo="${1:-}" task="${2:-}" text="${3:-}" tf objection
+  [ -n "$repo" ] && [ -n "$task" ] || return 1
+  tf="$(orchid_state "$repo")/tasks/$task.md"
+  [ -f "$tf" ] || return 1
+  objection="$(fm_get "$tf" unresolved_objection 2>/dev/null || true)"
+  [ -n "$objection" ] || return 1
+  [ "$(review_objection_arbiter "$objection" \
+        "$(fm_get "$tf" unresolved_objection_by 2>/dev/null || true)")" = operator ] || return 1
+  grep -qF -e "$objection" <<<"$text" 2>/dev/null || return 1
   return 0
 }
 

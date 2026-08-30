@@ -1196,7 +1196,7 @@ same concurrency hole was rejected twice, round 3's reviewers returned
 `approve`, and the deterministic path merged it.
 
 ```sh
-orchid task show <id> | grep unresolved_objection   # the objection, and who raised it
+orchid task show <id> | grep -E 'unresolved_objection|objection_seq'   # the objection, who raised it, which instance
 orchid journal show --task <id>                     # every arbitration, in full
 git diff <base_sha>..<candidate_sha>                # what this round actually changed
 ```
@@ -1220,8 +1220,10 @@ orchid task arbitrate <id> --result request-changes --reason "still unguarded on
 
 An approval clears the field and journals the clear; anything else leaves it
 standing. There is no other door — `unblock`, `retry` and `reverify` do not
-clear it, and `orchid task set` refuses the key by name, because none of them
-is an answer to "was this defect fixed". Nor is there a way around it: `orchid
+clear it, and `orchid task set` refuses the key by name (and `objection_seq`
+with it, since rewinding that counter would bring an already-answered page's
+authority back to life), because none of them is an answer to "was this defect
+fixed". Nor is there a way around it: `orchid
 task advance <id> merging` is refused out of `arbitrating` (as are the other
 two destinations an arbitration result derives — `done` and `rework`), because
 it records no arbitration result and would carry the objection into the merge
@@ -1253,15 +1255,34 @@ next actor to reach the repository will carry it out for you:
 orchid answer <qid> approve      # the qid on the page, from BLOCKERS.md or your channel
 ```
 
-The relay is deliberately narrow. `orchid task arbitrate --result approve` run
-by a woken orchestrator is credited as *yours* only when a question about this
-task, quoting this objection and naming this verb, has an answer recording
-exactly `approve` — and `orchid answer` is a verb no orchestrator may run on
-any surface, so the state it reads is state only you can write. An answer of
-anything else, an answer about another task, an answer given about an objection
-you have since superseded: none of them carries. The refusal you would then see
-names the page to answer. Nothing about the model's own reasoning is an input —
-not its `--reason` prose, not a flag, not an environment variable.
+The relay is deliberately narrow, and what it reads is **not the page's words**.
+When the driver raises this stop it writes a small record beside the question —
+`runtime/answers/<qid>.objection`, naming this task, this objection instance and
+the objection's stored line — and that record is the evidence. `orchid task
+arbitrate --result approve` run by a woken orchestrator is credited as *yours*
+only when such a record matches the objection standing right now and its page has
+an answer recording exactly `approve`. Two verbs are what make that state yours:
+`orchid answer`, which no orchestrator may run on any surface, and `orchid
+notify --objection`, the only form that writes the record — and the brokered
+command surface refuses that flag outright. A model **can** raise a page (`orchid
+notify` is admitted to it); what it cannot do is raise one that lends its own
+arbitration your authority, however exactly it quotes you.
+
+An answer of anything else, an answer about another task, an answer about an
+objection you have since superseded — including one you re-raised *in the same
+words*, since the instance rotates even when `--waive-attempt` leaves the round
+number alone — none of them carries. The refusal you would then see names the
+page to answer. Nothing about the model's own reasoning is an input: not its
+`--reason` prose, not a flag, not an environment variable.
+
+The record is **spent** by the arbitration it authorises, so one answer settles
+one decision. If a pass is killed mid-arbitration you may find the objection
+still standing with its page already answered; that is the fail-closed direction,
+and the way through it is to run the arbitration yourself:
+
+```sh
+orchid task arbitrate <id> --result approve --reason "..."   # from your own shell
+```
 
 If the objection is genuinely obsolete
 (the task was re-scoped, the code it named is gone), that is still an

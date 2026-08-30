@@ -468,8 +468,13 @@ incomplete review set is never also reported as a conflict, and vice versa:
    operator's standing objection, so a model woken for some other boundary
    cannot reach this one by naming its id; the one thing that gets past that
    refusal is the operator's own answer to this objection's page, relayed
-   under the bindings described at that verb. `orchid task set` refuses both
-   keys.
+   under the bindings described at that verb. The page that carries that
+   authority is the one the driver raises for this stop, and only that one: the
+   deterministic pass adds `--objection` at its single `orchid notify` site when
+   the task's standing objection is an operator's and the page really quotes it,
+   which is what mints the record an answer can be credited against. `orchid
+   task set` refuses all three keys — the objection, its class, and the
+   `objection_seq` an answer is bound to.
 
 1. **Evidence** — the evidence set is EXACTLY the one the kernel's own
    `reviewing`→`arbitrating` gate counts, and this arm mirrors that gate
@@ -616,18 +621,31 @@ an answer file — so an operator who has decided still needs an actor to record
 the arbitration, and in an unattended run that actor is the woken orchestrator.
 Refusing it there refuses to carry out a decision its owner has already made
 and already made durable. So the class of an arbitration is the ACTOR's unless
-durable operator state authorises it, bound on three axes the relaying model
-does not supply: the TASK (the question's own `task:` header), the OBJECTION
-(the question must carry the standing objection's text, which opens with the
-round it was raised in, so an answer about a superseded objection carries
-nothing) and the DECISION (the answer must record the result, spelled exactly,
-on a page that carries the kernel's own remedy clause naming this task's verb).
-No flag, no environment variable and no word of the arbitration's `--reason` is
-an input; `orchid answer` is on no surface's admitted verb list, so the state
-this credits is state no model can write. Only the CLEARING direction is
-relayed: refusing a relayed `request-changes` costs an operator nothing, since
+durable operator state authorises it — and that state is a structured AUTHORITY
+RECORD the kernel writes beside the page, `runtime/answers/<qid>.objection`,
+never the page's own prose. It states the TASK, the objection INSTANCE
+(`objection_seq`) and the canonical stored objection line, each compared as a
+whole line and none of them a substring match; the page it names must have an
+`.answer` recording the result spelled exactly. Only `orchid notify --objection`
+writes one, and the brokered command surface refuses an unrecognised flag to
+`notify` outright — so a woken model may raise a page (that verb is admitted)
+but cannot raise one that lends its own arbitration a human's authority. No
+flag, no environment variable and no word of the arbitration's `--reason` is an
+input, and `orchid answer` is on no surface's admitted verb list. The record is
+CONSUMED before the objection is cleared, so one answer settles one arbitration
+and a crash or a replay finds nothing left to spend. Only the CLEARING direction
+is relayed: refusing a relayed `request-changes` costs an operator nothing, since
 their objection is already standing, and admitting one would put a model's
 paraphrase on the record under their authority.
+**And every objection is its own instance** (T032 convergence). `objection_seq`
+is bumped by every `--result request-changes` and never reset, because the text
+cannot be the identity: `--waive-attempt` leaves `attempts` where it was, so the
+same defect rejected twice across a waived round writes a byte-identical
+`a<attempt>: <reason>` line, and so does an objection cleared and later
+re-raised in the same words. The counter rotates where the text does not, so an
+answer given about the objection that stood then authorises nothing about the
+one standing now. `orchid task set` refuses that key too — rewinding it by one
+would make an old page's authority live again.
 **And it is the only public door onto the OUTCOME edges** (T032 convergence).
 It used to be one of two: `orchid task advance <id> merging` out of
 `arbitrating` was legal for an operator and for the hand-executed walk, and it

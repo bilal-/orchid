@@ -4,6 +4,9 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
+# lib/objection.sh before lib/review.sh: review_operator_relay reads the
+# authority records that file defines, and `task arbitrate` spends one.
+source "$ORCHID_ROOT/lib/objection.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/findings.sh"
 source "$ORCHID_ROOT/lib/capability.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
@@ -886,8 +889,15 @@ case "$sub" in
       # one a woken model settles, without touching a character of the
       # objection an operator would reread. The two fields are written by one
       # arbitration and refused by one arm, so neither can drift from the other.
-      unresolved_objection|unresolved_objection_by)
-        orchid_die "'$key' is kernel-owned — 'task arbitrate <id> --result request-changes' writes it (recording the arbiter's own class alongside, which is what decides whether a woken orchestrator may settle the stop or only an operator may) and 'task arbitrate <id> --result approve --reason \"...\"' is the ONLY thing that clears it. It is what keeps a deterministic approval from firing on a defect an arbiter already rejected, so it is cleared by a recorded judgment or not at all." ;;
+      #
+      # `objection_seq` is the third, and it is the one that makes an operator's
+      # ANSWER unspendable twice: it is the instance the authority record beside
+      # their page is bound to (lib/objection.sh). Left writable, rewinding it by
+      # one would make a page they answered rounds ago authorise the objection
+      # standing now -- the replay this counter exists to refuse, reachable by a
+      # verb rather than by a forgery.
+      unresolved_objection|unresolved_objection_by|objection_seq)
+        orchid_die "'$key' is kernel-owned — 'task arbitrate <id> --result request-changes' writes it (recording the arbiter's own class alongside, which is what decides whether a woken orchestrator may settle the stop or only an operator may, and rotating the objection instance an operator's answer is bound to) and 'task arbitrate <id> --result approve --reason \"...\"' is the ONLY thing that clears it. It is what keeps a deterministic approval from firing on a defect an arbiter already rejected, so it is cleared by a recorded judgment or not at all." ;;
     esac
     # depends_on ids are checked HERE, at write time (dogfood F30). The
     # scheduler can only ever report an id it cannot satisfy as
@@ -1768,6 +1778,7 @@ case "$sub" in
     obj_prev="$(fm_get "$f" unresolved_objection)"
     obj_prev_by_raw="$(fm_get "$f" unresolved_objection_by)"
     obj_prev_by="$(review_objection_arbiter "$obj_prev" "$obj_prev_by_raw")"
+    obj_prev_seq="$(objection_seq "$repo" "$id")"
     arb_by="$(review_arbiter_class)"
     # ...AND THE OPERATOR MAY HAVE ALREADY DECIDED THIS (T032 convergence,
     # after the attempt-4 arbitration). The stop an operator's objection raises
@@ -1779,32 +1790,51 @@ case "$sub" in
     # the run parked on a question its owner has already answered.
     #
     # So the class of this arbitration is the actor's UNLESS a durable operator
-    # answer authorises it, bound to this task, this objection and this result
-    # -- lib/review.sh's review_operator_relay is the whole of that reading, and
-    # its header is where the four axes and the residual are argued. Nothing the
-    # relaying model supplies is an input: not `--reason` (its own prose), not a
-    # flag (there is none), not an environment variable (the one read here can
-    # only ever make the arbitration a MODEL's). `orchid answer` is off the
-    # brokered verb table, so a woken model cannot write the state this credits.
+    # answer authorises it, bound to this task, THIS OBJECTION INSTANCE and this
+    # result -- lib/review.sh's review_operator_relay is the whole of that
+    # reading, and its header is where the axes are argued. Nothing the relaying
+    # model supplies is an input: not `--reason` (its own prose), not a flag
+    # (there is none), not an environment variable (the one read here can only
+    # ever make the arbitration a MODEL's). The authority is a record the
+    # brokered surface has no argv form to write, beside an answer only `orchid
+    # answer` -- off that surface entirely -- can produce.
     #
-    # The qid is kept, not just the verdict: an arbitration recorded with an
-    # authority its actor did not have on its own must say, durably, which
-    # answer lent it -- the clear below journals it, so a reader of the record
-    # can go and open the operator's page.
+    # The qid is kept, not just the verdict, for two jobs. An arbitration
+    # recorded with an authority its actor did not have on its own must say,
+    # durably, WHICH answer lent it -- the clear below journals it, so a reader
+    # of the record can go and open the operator's page. And the record has to be
+    # SPENT: the consume below deletes it before anything is cleared, so the same
+    # answer cannot authorise a second arbitration, and a crash between the two
+    # leaves the objection standing with no authority left -- the operator pays a
+    # shell of their own and the guarantee pays nothing.
     #
     # READ ONLY WHEN IT IS NEEDED, which is also what keeps it honest in the
     # record: an OPERATOR arbitrating at their own shell needs no relay, and
     # crediting one anyway would put "relayed by ..." on the clear of an
-    # arbitration nobody relayed. The condition is the refusal's own, so the
-    # only arbitration this state can speak for is the one it would otherwise
-    # have refused.
+    # arbitration nobody relayed -- and would spend an authority record the
+    # operator may still need. The condition is the refusal's own, so the only
+    # arbitration this state can speak for is the one it would otherwise have
+    # refused.
     relay_qid=""
     if [ "$obj_prev_by" = operator ] && [ "$arb_by" != operator ]; then
-      relay_qid="$(review_operator_relay "$repo" "$id" "$result" "$obj_prev")"
-      [ -z "$relay_qid" ] || arb_by=operator
+      relay_qid="$(review_operator_relay "$repo" "$id" "$result" "$obj_prev" "$obj_prev_seq")"
+      if [ -n "$relay_qid" ]; then
+        # SPENT BEFORE IT IS ACTED ON, and here rather than beside the clear a
+        # few dozen lines down. Everything after this point can still fail --
+        # the advance can be refused, the process can be killed -- and every one
+        # of those outcomes leaves the objection STANDING. An authority consumed
+        # ahead of them means the replay of a killed arbitration finds nothing to
+        # spend, so a crash costs the operator one more page and costs the
+        # guarantee nothing. Consuming after the clear would invert that: the
+        # window would hold a cleared objection whose authority was still on
+        # disk, spendable against whatever is raised next.
+        objection_authority_consume "$repo" "$relay_qid" \
+          || orchid_die "$id: the operator's answer to $relay_qid authorises this arbitration, but the authority record could not be spent — refusing rather than acting on a record a replay could spend again. Remove $(objection_authority_file "$repo" "$relay_qid") or arbitrate from the operator's own shell."
+        arb_by=operator
+      fi
     fi
     if [ "$obj_prev_by" = operator ] && [ "$arb_by" != operator ]; then
-      orchid_die "$id carries an OPERATOR's unresolved objection, and this arbitration is not the operator's (actor: ${ORCHID_ACTOR:-unset}) — refused, and nothing was written. The standing objection is: \"$obj_prev\". Whether it was answered is the call of the arbiter who raised it, who saw twice what a review of this diff did not; a --result approve here would clear it from the same diff that produced it, and a --result request-changes would replace their words with these. Raise it to the operator instead: orchid notify --task $id \"<what they must decide>\". If they have already decided, they answer the page for this objection ('orchid answer <qid> approve') and this verb will then relay THAT decision — an answer to some other page, or in any other words, is not one."
+      orchid_die "$id carries an OPERATOR's unresolved objection, and this arbitration is not the operator's (actor: ${ORCHID_ACTOR:-unset}) — refused, and nothing was written. The standing objection is: \"$obj_prev\" (instance $obj_prev_seq). Whether it was answered is the call of the arbiter who raised it, who saw twice what a review of this diff did not; a --result approve here would clear it from the same diff that produced it, and a --result request-changes would replace their words with these. Raise it to the operator instead: orchid notify --task $id \"<what they must decide>\". If they have already decided, they answer the page the driver raised for THIS objection ('orchid answer <qid> approve') and this verb will then relay THAT decision — an answer to some other page, to an earlier objection, or in any other words, is not one."
     fi
     if [ "$result" = request-changes ]; then
       # SUPERSEDED, NOT ACCUMULATED: the arbiter's latest word is the operative
@@ -1817,10 +1847,22 @@ case "$sub" in
         journal --task "$id" --kind arbitration \
           "objection superseded by this arbitration — previous: \"$obj_prev\" (raised by: $obj_prev_by)"
       fi
-      # THE CLASS GOES FIRST, and the text goes first when they are cleared
-      # below -- the same asymmetry the advance is bracketed by, for the same
-      # reason: each half fails in the direction that leaves the stop no weaker
-      # than it already was. A class written with no text yet behind it is
+      # THE INSTANCE ROTATES FIRST, then the class, and the text goes first when
+      # they are cleared below -- one asymmetry, the same one the advance is
+      # bracketed by, for the same reason: each half fails in the direction that
+      # leaves the stop no weaker than it already was.
+      #
+      # `objection_seq` leads because it is what an operator's answer is bound
+      # to. A text written under a seq that has not moved yet is an objection an
+      # answer to the PREVIOUS one already authorises -- which is the replay the
+      # counter exists to refuse, reachable through a crash. Bumped first, a
+      # failure between the writes leaves the older text standing under a seq
+      # nothing is bound to: nothing can be relayed, the operator settles it from
+      # their own shell, and no answer is spent on words they never read. It is
+      # never reset, in either direction, because a counter that rewound would
+      # make an old page's authority live again.
+      #
+      # Then the class, because a class written with no text yet behind it is
       # inert (review_objection_arbiter answers "none standing" on an empty
       # objection, whatever the class says), while a text written under a class
       # that has not caught up yet reads as the operator's -- the stricter of
@@ -1828,9 +1870,17 @@ case "$sub" in
       # orchestrator's objection: with the class first, a failure between the
       # two leaves the older text standing as operator-only rather than leaving
       # the operator's own words labelled as a model's.
+      #
+      # AND IT ROTATES WHEN NOTHING ELSE DOES. `--waive-attempt` leaves
+      # `attempts` exactly where it was, so an operator rejecting the same defect
+      # in the same words across a waived round composes a BYTE-IDENTICAL
+      # `a<attempt>: <reason>` line. Every other field on this task would say the
+      # objection had never changed; the seq is the one that says it is a new
+      # one, and an answered page for the old one is refused because of it.
+      fm_set "$f" objection_seq "$(( obj_prev_seq + 1 ))"
       fm_set "$f" unresolved_objection_by "$arb_by"
       fm_set "$f" unresolved_objection \
-        "a$(( $(fm_get "$f" attempts) + 1 )): $(review_objection_line "$reason")"
+        "$(review_objection_record "$(( $(fm_get "$f" attempts) + 1 ))" "$reason")"
     fi
     adv_args=("$id" "$to" --reason "arbitrate($result): $reason")
     [ "$waive" -eq 0 ] || adv_args+=(--waive-attempt)
@@ -1856,7 +1906,7 @@ case "$sub" in
       # operator cleared it while every other trace of the pass says a model
       # ran the verb, and there is nothing to reconcile the two.
       obj_relay_note=""
-      [ -z "$relay_qid" ] || obj_relay_note=" — relayed by ${ORCHID_ACTOR:-unset} from the operator's own answer to $relay_qid"
+      [ -z "$relay_qid" ] || obj_relay_note=" — relayed by ${ORCHID_ACTOR:-unset} from the operator's own answer to $relay_qid, whose authority for objection instance $obj_prev_seq was spent to do it"
       journal --task "$id" --kind arbitration \
         "objection cleared by an explicit arbitration approval — was: \"$obj_prev\" (raised by: $obj_prev_by, cleared by: $arb_by)$obj_relay_note"
       fm_set "$f" unresolved_objection ""

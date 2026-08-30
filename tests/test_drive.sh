@@ -18,6 +18,7 @@ source "$REPO_ROOT/lib/manifest.sh"
 source "$REPO_ROOT/lib/envelope.sh"
 source "$REPO_ROOT/lib/roles.sh"
 source "$REPO_ROOT/lib/resolver.sh"
+source "$REPO_ROOT/lib/objection.sh"
 source "$REPO_ROOT/lib/review.sh"
 # capsuite + ledger: drive_orchestrator_surface resolves the orchestrator the
 # same way the pump would, and resolve_role_available consults both.
@@ -10400,12 +10401,18 @@ red_case "a standing objection over an incomplete round: still the objection, an
 # `orchid answer <qid> approve` records the decision durably, and `orchid task
 # arbitrate` relays it when the actor that next reaches the repository is a
 # woken orchestrator (libexec/orchid-task, and tests/test_task.sh's own block
-# for the whole of that reading). The relay credits an answer only when the
-# QUESTION it was given about names this task, quotes this objection and
-# carries the clause naming the settling verb -- so if this detail stops
-# carrying either of the last two, an operator's answer becomes uncreditable
-# and the run parks on a decision that has already been made, with the refusal
-# blaming their answer rather than the prose that moved.
+# for the whole of that reading).
+#
+# Both halves of the detail still have to be there, for two DIFFERENT readers.
+# The objection's own line is what `review_objection_page_authority` matches to
+# decide this page is the one an authority record belongs beside -- a detail that
+# paraphrased it would leave the driver raising the page and minting nothing, so
+# the operator's answer to it could never be relayed at all. The remedy clause is
+# for the OPERATOR: it is what tells them, in the kernel's own words, that
+# `approve` settles this and which verb records it. (Part AJ below is where the
+# authority itself is pinned. That clause stopped being evidence when the record
+# replaced it -- a page's prose is composable by any model the broker admits to
+# `notify` -- so what it costs now is a human's ability to act, not a relay's.)
 #
 # Three links in that chain. Two of them live here: the DETAIL carries the
 # objection's own line and the remedy clause, and the driver's page text IS the
@@ -10415,10 +10422,10 @@ red_case "a standing objection over an incomplete round: still the objection, an
 # the reader is.
 #
 # RED: a detail that quotes the objection but names the verb in words the
-#      reader does not recognise, or a page text that is not the detail --
-#      each leaves an answered page nothing can act on.
+#      operator cannot act on, or a page text that is not the detail -- each
+#      leaves an answered page nothing can act on.
 # GREEN: one composer for the clause, called by the detail here and by the
-#      relay there, so the two ends cannot drift apart.
+#      page there, so the two ends cannot drift apart.
 # ===========================================================================
 mk_policy_task P57 low high
 mk_review P57 "" approve true '[]'
@@ -10446,5 +10453,189 @@ red_case 'an objection detail missing the objection line or the remedy clause: c
 # pinning a string nobody is shown.
 drv_page_text="$(grep -v '^[[:space:]]*#' "$DRIVE" | grep -F 'page_text=')"
 assert_match 'page_text="judgment boundary \[\$page_kind\] needs an operator: \$page_reason"' "$drv_page_text" \
-  "T032: the operator's page is the boundary's own reason, verbatim — a page composed from anything else carries neither the objection nor the remedy clause the relay reads back"
-green_case 'the objection detail, the page composed from it, and the clause the relay requires: one composer, asserted at both ends'
+  "T032: the operator's page is the boundary's own reason, verbatim — a page composed from anything else carries neither the objection the authority gate matches nor the remedy clause the operator acts on"
+green_case 'the objection detail, the page composed from it, and the clause the operator acts on: one composer, asserted at both ends'
+
+# ===========================================================================
+# Part AJ (T032 convergence, after the attempt-5 arbitration) -- THE AUTHORITY
+# IS A RECORD THE KERNEL WROTE, BOUND TO ONE OBJECTION INSTANCE.
+#
+# Part AI pins the PAGE. This Part pins what makes an answer to that page
+# creditable, which used to be the page's own prose and is now a separate
+# structured record (lib/objection.sh).
+#
+# Why it had to move. `notify` is on `_DRIVE_BROKERED_WRITE_VERBS` -- a woken
+# orchestrator raising a page is the broker working as designed -- so a reader
+# that credited an operator's `approve` because the QUESTION quoted the objection
+# and named the settling verb was reading text the relaying model had composed
+# for itself. The operator's answer was real; what it was an answer TO was not
+# the kernel's page. So the evidence is `runtime/answers/<qid>.objection`, and
+# the only argv form that writes one -- `orchid notify --objection` -- is refused
+# by the brokered surface outright.
+#
+# And why the INSTANCE, not the text. `--waive-attempt` leaves `attempts` where
+# it was, so an operator rejecting the same defect across two waived rounds
+# writes a byte-identical `a<attempt>: <reason>` line: every field on the task
+# says nothing changed. `objection_seq` is a counter rather than a reading of the
+# text, so it rotates where the text cannot, and it never rewinds, so a page
+# answered under an earlier instance can never come back to life.
+#
+# tests/test_task.sh drives all of this through the verbs end to end. What is
+# pinned HERE is the machinery those verbs share: the record's writer and its
+# reader agreeing about the format, the relay refusing every axis of a near
+# miss, the consume really spending it, the predicate that decides which page
+# gets one, and the broker's refusal of the flag that mints it.
+#
+# RED: a record for another task, another instance or another objection text; a
+#      page with no record beside it; a record whose question or answer is
+#      missing or says something else; a page for an orchestrator's objection or
+#      for a stop that is not an objection at all; and `notify --objection`
+#      through the broker.
+# GREEN: the matching record relays, is spent by one consume, and the driver
+#      passes the flag at the one page site it has.
+# ===========================================================================
+AJ_ANSWERS="$POLICY/.orchid/runtime/answers"
+mkdir -p "$AJ_ANSWERS"
+
+mk_policy_task P59 low high
+mk_review P59 "" approve true '[]'
+# DELIBERATELY NOT `$OBJ_TEXT`. P57 above carries that objection, and one of the
+# cases below asks whether the gate reads the TASK it was given or merely the
+# text it was handed — a shared string would answer that question by accident,
+# in the direction that passes.
+AJ_OBJ='a1: the second writer at lib/qux.sh:210 takes no lock at all'
+fm_set "$POLICY/.orchid/tasks/P59.md" unresolved_objection "$AJ_OBJ" \
+  || fail "fixture: P59's objection must be recordable"
+fm_set "$POLICY/.orchid/tasks/P59.md" unresolved_objection_by operator \
+  || fail "fixture: P59's arbiter class must be recordable"
+fm_set "$POLICY/.orchid/tasks/P59.md" objection_seq 4 \
+  || fail "fixture: P59's objection instance must be recordable"
+assert_eq 4 "$(objection_seq "$POLICY" P59)" \
+  "the instance is read off the task, and a fixture that could not set it would make every case below test the 0 default"
+# A task that has never been objected to reads instance 0 rather than failing an
+# arithmetic expansion inside a verb running under `set -u` -- so the first
+# objection is instance 1 and no page can ever be bound to "no objection".
+assert_eq 0 "$(objection_seq "$POLICY" P57)" \
+  "a task with no objection_seq reads 0, so the counter starts moving with the first rejection rather than crashing a reader"
+
+# --- the record's writer and its reader agree, on every field ---------------
+aj_page() {   # <qid> <task> <seq> <objection> -- a kernel page, record and all
+  printf 'task: %s\nnonce: deadbeef\njudgment boundary [operator-decision] needs an operator: %s\n' \
+    "$2" "$4" > "$AJ_ANSWERS/$1.question"
+  objection_authority_write "$POLICY" "$1" "$2" "$3" "$4" \
+    || fail "fixture: the authority record for $1 must be writable"
+}
+aj_page q-aj-ok P59 4 "$AJ_OBJ"
+aj_auth="$(objection_authority_file "$POLICY" q-aj-ok)"
+[ -f "$aj_auth" ] || fail "fixture: objection_authority_file must name the record its own writer just wrote"
+objection_authority_matches "$aj_auth" P59 4 "$AJ_OBJ" \
+  || fail "T032: the record's writer and its reader must agree about the format — if they do not, no page the kernel raises can ever authorise anything"
+# Each axis, alone, refuses. Written as three near misses rather than one
+# because a reader that compared only two of them would pass a single case.
+objection_authority_matches "$aj_auth" P57 4 "$AJ_OBJ" \
+  && fail "T032: a record for another task must not match — an answer that travelled between tasks is the bypass the task binding exists to close"
+objection_authority_matches "$aj_auth" P59 5 "$AJ_OBJ" \
+  && fail "T032: a record for another instance must not match — that is the whole of what stops an answer from outliving the objection it was given about"
+objection_authority_matches "$aj_auth" P59 4 "$AJ_OBJ and one more thing" \
+  && fail "T032: a record whose objection text differs must not match — the compare is the whole line, exactly, never a prefix of it"
+# ...and the reader will not act on a record it does not fully understand.
+printf 'task: P59\nseq: 4\nobjection: %s\nand: something nobody here knows\n' "$AJ_OBJ" > "$AJ_ANSWERS/q-aj-wide.objection"
+objection_authority_matches "$AJ_ANSWERS/q-aj-wide.objection" P59 4 "$AJ_OBJ" \
+  && fail "T032: a record carrying a field this reader does not know must be refused, not parsed as far as it goes — a format that grows a line silently is one whose later fields nobody checks"
+red_case 'an authority record for another task, another instance, another objection, or with a field nobody here knows: matched by none of it'
+
+# --- the relay: the record is necessary, and so is the answered page --------
+aj_relay() { review_operator_relay "$POLICY" P59 approve "$AJ_OBJ" 4; }
+assert_eq "" "$(aj_relay)" \
+  "a record whose page has no answer authorises nothing — a question is what was asked, never what was decided"
+printf 'defer\n' > "$AJ_ANSWERS/q-aj-ok.answer"
+assert_eq "" "$(aj_relay)" \
+  "...and an answer that is not the result authorises nothing either: the decision is the word the operator typed, never a reading of it"
+printf 'approve\n' > "$AJ_ANSWERS/q-aj-ok.answer"
+assert_eq q-aj-ok "$(aj_relay)" \
+  "T032: the operator's answer to the kernel's page for THIS instance is what the relay credits, and it names the qid so the record can say which answer it acted on"
+# The page a model can raise for itself: same subject, the objection quoted, the
+# remedy clause word for word, answered `approve`. No record beside it, because
+# no brokered argv form writes one -- so the relay never sees it at all.
+printf 'task: P59\nnonce: deadbeef\njudgment boundary [operator-decision] needs an operator: an objection recorded by an operator in a previous arbitration of this task is still uncleared: "%s" — settle it with %s\n' \
+  "$AJ_OBJ" "$(review_objection_remedy P59)" > "$AJ_ANSWERS/q-aj-minted.question"
+printf 'approve\n' > "$AJ_ANSWERS/q-aj-minted.answer"
+rm -f "$aj_auth"
+assert_eq "" "$(aj_relay)" \
+  "T032: a page carrying the objection AND the remedy clause, answered approve, must authorise NOTHING without the kernel's record beside it — that page is exactly what a woken model can raise through the broker"
+red_case "a model-minted page quoting the objection and the remedy clause: no record, so no relay, however exactly its prose matches"
+
+# --- and the answered page whose question is gone --------------------------
+# Runtime is sweepable. A record pointing at a question nobody can read is not
+# an operator being shown anything, so it fails closed like every other gap.
+aj_page q-aj-ok P59 4 "$AJ_OBJ"
+printf 'approve\n' > "$AJ_ANSWERS/q-aj-ok.answer"
+assert_eq q-aj-ok "$(aj_relay)" "fixture: it relays again once the record is back"
+mv "$AJ_ANSWERS/q-aj-ok.question" "$AJ_ANSWERS/q-aj-ok.question.gone"
+assert_eq "" "$(aj_relay)" \
+  "T032: a record whose question has been swept away authorises nothing — the operator's page is what they answered, and it is not there"
+mv "$AJ_ANSWERS/q-aj-ok.question.gone" "$AJ_ANSWERS/q-aj-ok.question"
+
+# --- consumed once, and really gone ----------------------------------------
+assert_eq q-aj-ok "$(aj_relay)" "fixture: the record stands before it is spent"
+objection_authority_consume "$POLICY" q-aj-ok \
+  || fail "T032: consuming a record that exists must report success — a caller told otherwise refuses an arbitration the operator authorised"
+[ ! -f "$aj_auth" ] \
+  || fail "T032: the consume must really remove the record; one that survives being spent is an answer a replay spends again"
+assert_eq "" "$(aj_relay)" \
+  "T032: and the identical answer, still sitting beside it, authorises nothing once the record is spent — which is what makes a crash after the consume fail closed"
+objection_authority_consume "$POLICY" q-aj-ok \
+  || fail "T032: consuming an already-spent record must still report success — the postcondition is that nothing is left, and it is already met"
+green_case 'the authority record: relayed once, spent by the consume, and worthless to the replay behind it'
+
+# --- which page gets a record: the driver's own gate -----------------------
+# `operator-decision` is a CATCH-ALL. A refused advance, an archetype with no
+# edge and an uncleared objection all reach the page loop under it, and only the
+# last is a page about settling an objection.
+assert_eq objection "$(decision_of P59)" \
+  "Part AJ premise: P59 stops on its operator objection, so the detail below really is the objection page's own reason"
+aj_detail="$(detail_of P59)"
+review_objection_page_authority "$POLICY" P59 "$aj_detail" \
+  || fail "T032: the driver must mint a record for the page raised from the objection's own detail — if it does not, the operator is paged for a decision their answer can never be relayed on"
+review_objection_page_authority "$POLICY" P59 "integration branch 'main' does not exist" \
+  && fail "T032: another operator-decision stop on the same task must NOT pick up an objection authority — the catch-all kind is not evidence that a page is about the objection"
+review_objection_page_authority "$POLICY" P57 "$aj_detail" \
+  && fail "T032: the gate must read the task it is asked about, not the task the detail happens to name"
+fm_set "$POLICY/.orchid/tasks/P59.md" unresolved_objection_by orchestrator \
+  || fail "fixture: P59's class must be re-recordable"
+review_objection_page_authority "$POLICY" P59 "$aj_detail" \
+  && fail "T032: an objection the run's own orchestrator raised needs no human's authority relayed, so its page mints none — that stop is settled by the actor that raised it"
+fm_set "$POLICY/.orchid/tasks/P59.md" unresolved_objection_by operator \
+  || fail "fixture: P59's class must be restorable"
+fm_set "$POLICY/.orchid/tasks/P59.md" unresolved_objection "" \
+  || fail "fixture: P59's objection must be clearable"
+review_objection_page_authority "$POLICY" P59 "$aj_detail" \
+  && fail "T032: a task with nothing standing mints no authority, whatever a page says about it"
+red_case "a page for another stop, another task, an orchestrator's objection or none at all: no authority record is minted for any of them"
+
+# --- the driver passes the flag, at the one site it pages from --------------
+# Read from the runner's source, comment-stripped per this suite's rule, and
+# read INSIDE drive_notify -- which tests/test_notify_hermes_channel.sh already
+# holds to exactly one call site and to zero raw `notify` invocations. One page
+# site, one gate on it, so there is no second route to a page and no route to a
+# record that is not this one.
+drv_notify_body="$(grep -v '^[[:space:]]*#' "$DRIVE" | sed -n '/^drive_notify()/,/^}/p')"
+assert_match 'review_objection_page_authority' "$drv_notify_body" \
+  "T032: the driver must decide whether to mint an authority from the task's own state, through the shared gate — a page site that decided it here would be a second policy"
+assert_match 'nargs\+=\(--objection\)' "$drv_notify_body" \
+  "T032: ...and pass --objection when it does, since that flag is the only thing that mints the record an operator's answer is relayed on"
+assert_match 'kind" = operator-decision' "$drv_notify_body" \
+  "T032: ...gated on the kind the objection stop is raised under, so no other boundary's page can reach the gate at all"
+green_case "the driver's single page site is the one producer of an objection authority, gated on the shared predicate"
+
+# --- and the brokered surface cannot reach that flag ------------------------
+# The whole trust argument rests here: `notify` is admitted, `--objection` is
+# not, and the broker validates argv before it execs anything, so this refusal
+# costs no repository state at all.
+aj_brk_rc=0
+aj_brk_out="$("$REPO_ROOT/runners/orchid-orchestrator-command" notify --task P59 --objection "a page of my own" 2>&1)" || aj_brk_rc=$?
+assert_eq 17 "$aj_brk_rc" \
+  "T032: the brokered surface must refuse notify --objection with the brokered-command refusal (17), not admit it and not fail for some other reason"
+assert_match "unexpected flag '--objection' to notify" "$aj_brk_out" \
+  "T032: ...and refuse it as the FLAG, so the refusal is legible as 'a model may raise a page, but not one that lends its own arbitration a human's authority' rather than as notify being closed"
+red_case 'notify --objection through the brokered command surface: refused, which is what makes the record evidence about the operator rather than about the model'

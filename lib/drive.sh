@@ -1292,15 +1292,17 @@ drive_review_decision() {
       obj_who="recorded by an operator"
       obj_settler="the operator who raised it"
     fi
-    # THE REMEDY CLAUSE IS THE SHARED LITERAL, not a sentence written here.
-    # This detail becomes the page an operator is sent (runners/orchid-drive
-    # composes `judgment boundary [<kind>] needs an operator: <reason>` and
-    # hands it to `orchid notify` verbatim), and lib/review.sh's
-    # review_operator_relay requires that clause back out of the question
-    # before it will credit the operator's answer to it as a decision about
-    # this objection. Composed from one function so the page and the reader of
-    # the page cannot drift apart -- a reworded copy here would leave an
-    # operator's `approve` uncreditable, with the refusal blaming their answer.
+    # THE OBJECTION'S OWN LINE, VERBATIM, and the remedy clause from its one
+    # composer. This detail becomes the page an operator is sent
+    # (runners/orchid-drive composes `judgment boundary [<kind>] needs an
+    # operator: <reason>` and hands it to `orchid notify` verbatim), and both
+    # halves have a job there. The stored line is what the operator reads and
+    # what `review_objection_page_authority` matches to decide this page is the
+    # one an authority record belongs beside; the remedy clause is what tells
+    # them, in the kernel's own words, which verb settles it. `$objection` is the
+    # canonical stored value (review_objection_record makes it a fixpoint of the
+    # fold above), so quoting it here neither truncates it again nor invents a
+    # second spelling of what the field holds.
     obj_detail="an objection $obj_who in a previous arbitration of this task is still uncleared: \"$objection\" — this pass may not approve on the reviews alone, and a reviewer that flipped to approve without addressing it has not answered the arbiter; $obj_round. Expected: $obj_settler reads the diff, decides whether the objection was met, and settles it with $(review_objection_remedy "$id") --reason \"...\" — an explicit arbitration approval is the only thing that clears it"
     # THE DETAIL IS SHARED; THE DECISION WORD IS NOT. Two literal `printf`s,
     # never one fed a computed word -- INV-13 pins every arm of this function to

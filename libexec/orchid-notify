@@ -4,6 +4,11 @@ source "$ORCHID_ROOT/lib/common.sh"
 # fm_get: the page body below names the originating task's title and attempt
 # number, read from the task file's own frontmatter.
 source "$ORCHID_ROOT/lib/frontmatter.sh"
+# objection_seq / objection_authority_write: `--objection` mints the durable
+# record that lets an operator's answer to THIS page settle the objection it was
+# raised for. That file's header is where the format and the trust argument
+# live; it depends on nothing this tier-1 verb does not already source.
+source "$ORCHID_ROOT/lib/objection.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 
 # `orchid notify` is a plain mutating verb (INV-02): it writes durable
@@ -11,13 +16,33 @@ repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runti
 verb_lock_guard "$repo"
 epoch_require "$repo"
 
-usage="usage: orchid notify [--task <id>] [--choice <value>]... <text>"
-task=""; choices=""
+usage="usage: orchid notify [--task <id>] [--choice <value>]... [--objection] <text>"
+task=""; choices=""; objection_page=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --task)
       [ -n "${2:-}" ] || orchid_die "--task requires a value"
       task="$2"; shift 2 ;;
+    --objection)
+      # THE ONE ARGV FORM THAT MINTS AN OBJECTION AUTHORITY (T032, dogfood F33).
+      #
+      # A page raised with this flag gets a `runtime/answers/<qid>.objection`
+      # record beside its question, and that record is what lets `orchid task
+      # arbitrate` credit the operator's answer to this page when the actor
+      # running the verb is a woken orchestrator relaying their decision. See
+      # lib/objection.sh for the format and lib/review.sh's review_operator_relay
+      # for the reading.
+      #
+      # WHY A FLAG IS THE BOUNDARY. runners/orchid-orchestrator-command admits
+      # `notify [--task <id>] [--choice <value>]... <text>` and refuses anything
+      # else to this verb outright ("unexpected flag"), so the brokered surface a
+      # woken model reaches cannot raise a page that mints one -- while the
+      # deterministic driver, which is not on that surface at all, passes it at
+      # its single page site. The flag is not a claim the caller makes about
+      # itself; every FIELD of the record below is read out of durable task
+      # state, and a caller who reaches this flag can state nothing about the
+      # objection that the task file does not already say.
+      objection_page=1; shift ;;
     --choice)
       # Each --choice names ONE permitted answer (lesson L028 in the answer
       # medium: a page must be able to LIST what `orchid answer` will
@@ -76,6 +101,22 @@ text="$*"
 # Human-facing spelling of the set ("a | b | c") for BLOCKERS.md and the
 # channel page; the machine-facing CSV goes in the .question file.
 choices_display="${choices//,/ | }"
+
+# The objection instance this page is being raised for, READ HERE and refused
+# here -- ahead of the journal append and the BLOCKERS.md write below, so a
+# `--objection` that cannot be honoured raises no blocker at all rather than
+# leaving a page whose authority record silently never appeared. The values are
+# captured now and written after the question, so the record can only ever state
+# what the task said at the moment the operator was paged.
+objection_text=""; objection_instance=""
+if [ "$objection_page" -eq 1 ]; then
+  [ -n "$task" ] || orchid_die "--objection requires --task <id>: an objection authority is a record about one task's standing objection, and a page with no subject names none"
+  [ -f "$state/tasks/$task.md" ] || orchid_die "--objection names no such task: $task"
+  objection_text="$(fm_get "$state/tasks/$task.md" unresolved_objection)" || objection_text=""
+  [ -n "$objection_text" ] \
+    || orchid_die "$task carries no unresolved objection, so there is nothing for this page to authorise settling — raise the page without --objection"
+  objection_instance="$(objection_seq "$repo" "$task")"
+fi
 
 epoch="$(epoch_current "$repo")"
 suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
@@ -195,6 +236,19 @@ mkdir -p "$rt/answers"
   [ -z "$choices" ] || printf 'choices: %s\n' "$choices"
   printf '%s\n' "$text"; } \
   | atomic_write "$rt/answers/$qid.question"
+
+# ...and the AUTHORITY record, LAST of the three runtime writes, for the same
+# fail-closed reason the choices sidecar is written first. The question's
+# existence is what makes a qid answerable; this record's existence is what
+# makes an answer to it relayable by anyone but the operator. A notify
+# interrupted between the two leaves a page an operator can answer and nobody
+# can relay -- a stop they settle from their own shell, which is exactly where
+# the guarantee already stands. The other order would leave a record pointing at
+# a question that was never minted.
+if [ "$objection_page" -eq 1 ]; then
+  objection_authority_write "$repo" "$qid" "$task" "$objection_instance" "$objection_text" \
+    || orchid_die "$qid: the objection authority record could not be written — the page stands and the operator settles it from their own shell, which is the direction this fails in"
+fi
 
 # v1-m4 Task 7 (OUTBOX pattern, INV-01): `orchid notify` is tier-1 and must
 # NEVER spawn (INV-01) -- so when a channel is configured, this only WRITES
