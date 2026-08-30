@@ -455,7 +455,16 @@ buying a fresh implementation pass to reach the same tree.
     PATH restore, or earlier through `orchid_root_stale_gate` where that
     restore would sit past the entry point's first write *or its first
     verdict*, which is where `runners/orchid-pump`, `runners/orchid-tick` and
-    `runners/orchid-service` call it. An entry point that refuses before that
+    `runners/orchid-service` call it. Where that decision is made on ONE ARM
+    only, the rule is stated per arm rather than per file: `orchid status`
+    inspects unattended trust under `--explain` and fires at the restore
+    below it, while PLAIN `orchid status` reaches the identical restore
+    having looked nothing up — so on the plain arm there is no lookup for the
+    gate to be ordered behind, and what is required of it is the other half,
+    that the gate's own comparison is the run's first Git and that it fires
+    above the report. Both arms are RUN in the self-hosted case
+    (`tests/inv/test_INV-15_no_optional_gate.sh`), because a file read as one
+    straight line reads as "decision first" whichever arm executes. An entry point that refuses before that
     line executed nothing but its own gate,
     so there was nothing for this one to stop. The two scheduled runners are
     where the second half of that was paid for: each carries no-op verdicts
@@ -2000,10 +2009,15 @@ semantic correctness beyond declared verification commands.
   arms the stale-root guard reaches a site that fires it, wherever that file
   lives, since the source-time fire covers only `bin/`, `libexec/` and
   `runners/` and the derivation would otherwise be looking exactly where the
-  gate cannot be missed (the universe is `install.sh`, `bin/`, `libexec/`,
-  `runners/`, `scripts/` and `plugins/*/*/*`, and "does the source-time fire
-  reach this path" is answered by running a stub at that path out of a root
-  that really is stale, never by a copy of the pattern that decides it) — and
+  gate cannot be missed (the universe is every file in the shipped inventory
+  that sources the library, and that inventory is WALKED rather than listed —
+  Git's tracked-plus-untracked set in a checkout, a filesystem walk in an
+  extracted archive, with `tests/` and Markdown the two declared exclusions —
+  so a loader under a directory nobody has thought of, or a top-level harness
+  with no `.sh` suffix, is inside it the day it lands; and "does the
+  source-time fire reach this path" is answered by running a stub at that path
+  out of a root that really is stale, never by a copy of the pattern that
+  decides it) — and
   reaches it before its own first write, since a gate placed after a side
   effect guards only what follows it — and no gate, kernel or invariant test, pipes
   a producer into an early-exiting `grep -q` — under `set -o pipefail`
@@ -2033,8 +2047,15 @@ semantic correctness beyond declared verification commands.
   which refused must remove nothing, report nothing and spend the gate's
   comparison as its first Git, and stood down must remove the record having
   spent no Git at all — its ordering pinned on the report edge, since
-  revocation walks no history and so has no position a trace can read; the
-  routes through both scheduled runners that write nothing and answer anyway
+  revocation walks no history and so has no position a trace can read; BOTH
+  ARMS of `orchid status` on that same self-hosted target, since only one of
+  them makes a decision at all — plain `status`, which looks nothing up, must
+  refuse with the gate's comparison as the run's first Git and not one line of
+  its report printed, while the identical run with the gate stood down prints
+  that report; and `status --explain` against a checkout that HAS an
+  acknowledgement must spend the lookup's own Git ahead of the gate's
+  comparison, with the reversed ordering as a fixture in the identical
+  environment; the routes through both scheduled runners that write nothing and answer anyway
   — `pump: not an orchid repo`, the pump's split-brain line, `pump: run
   complete`, the tick's finished-run
   line — which out of a stale root must refuse with none of those verdicts
