@@ -1381,6 +1381,17 @@ is broken by an unrelated `ok`), the identical dispatch call simply succeeds
 on a later tick, with no operator action required.
 
 **3. State-machine walk.**
+
+Treat this numbered walk as one ordered document, not as independent snippets.
+Run r-002 demonstrated the failure mode twice: parallel tasks each made a
+locally coherent insertion into the `implementing` and testing-FAIL arms, but
+the merged prose retained superseded steps, duplicated a closing paragraph,
+and spliced new text into the middle of an old sentence. No per-task diff could
+show the combined ordering defect because no actor saw the combined file.
+After parallel work touches this section, the run-level documentation owner
+must read THE WHOLE WALK from start to finish against the driver before
+acceptance. Numbering is process state here; a correct paragraph in the wrong
+place is a wrong procedure.
 Operate on every active task (up to `concurrency` of them, per the Preamble)
 and every task that is ready to dispatch — never just one. `orchid status
 --explain` names *why* each task is or isn't moving (`waiting-deps`,
@@ -3359,15 +3370,41 @@ Once `orchid status --explain` shows every task `done`:
 1. `orchid run advance accepting --reason "all tasks done"`. Under `orchid
    drive` this step is already taken for you: a pass that reads every task as
    `done` makes exactly this call and then stops at a `run-complete`
-   boundary, which is what wakes an orchestrator for steps 2–3 (the pump
-   never wakes one for a run it believes is still working). Arriving here at
-   `run_status: accepting` with the boundary already recorded is therefore
+   boundary, which hands steps 2–3 to the operator. The pump wakes no
+   orchestrator for this boundary because no shipped command surface admits
+   `orchid run accept`; it raises the durable blocker instead. Arriving here
+   at `run_status: accepting` with the boundary already recorded is therefore
    the normal headless path, not an anomaly.
 2. Run acceptance checks: requirement coverage against
    `.orchid/requirements.md` plus whatever end-to-end acceptance command(s)
-   the operator configured. This is an orchestrator-executed check, not a
-   single verb — `orchid verify` is task-scoped, not run-scoped. Write the
-   result to an evidence file.
+   the operator configured. This is a run-level judgment procedure, not a
+   single verb — `orchid verify` is task-scoped, not run-scoped — and on the
+   shipped headless surfaces the operator executes it because the boundary is
+   operator-only. Write the result to an evidence file, with each fact bound
+   to the place where it was observed:
+
+   - **candidate-local:** run the repository's canonical local-CI command in
+     the candidate checkout. When the repository carries a PATH-restricted
+     no-vendor-CLI proof, name it rather than treating “the suite” as if it
+     implied that environment;
+   - **post-merge integration branch:** after the final candidate has merged,
+     run the canonical command once in a checkout actually parked on the
+     configured `integration_branch`, at the commit being accepted. A task
+     worktree and a merge temp worktree cannot satisfy this item: both are
+     constructed off that branch, so any kernel guard conditioned on branch
+     identity is false there. This is a distinct run, not an inference from
+     task verification or merge revalidation;
+   - **remote CI:** if policy requires hosted CI, record the workflow/run that
+     was observed only after the operator pushed. A local-only run writes
+     `NOT OBSERVED` and the exact operator command to watch; it never calls a
+     remote workflow green by analogy.
+
+   A candidate containing this evidence file cannot have seen itself in the
+   merged tree. It must therefore mark the integration-branch item as an
+   operator step after merge, not pre-fill it as passed. The same discipline
+   applies to third-party beta, publication, tags, pushes, release pins, and
+   every other operator-owned action: omitted evidence is not evidence of
+   success. Only pass the completed, post-merge file to `orchid run accept`.
 3. `orchid run accept --reason "..." --evidence <path-to-evidence-file>` —
    requires `run_status: accepting`; copies the evidence file into
    `.orchid/reviews/acceptance.log` and sets `run_status: complete`, then

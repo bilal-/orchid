@@ -12,6 +12,13 @@ Two things live here, and they answer different questions.
 Neither is a release, and neither is a third-party beta run. Both of those are
 operator-owned and are listed as such at the end of this page.
 
+They are also not the run-level acceptance record. That record distinguishes a
+candidate-local canonical CI run, a post-merge run from a checkout actually on
+the configured integration branch, and hosted CI observed only after an
+operator pushes. The r-002 candidate leaves the last two as operator steps
+rather than claiming a tree or remote workflow it could not see; see
+[r-002-acceptance-evidence.md](./r-002-acceptance-evidence.md).
+
 ## What the harness records, and what it refuses to record
 
 Evidence is **anonymized by construction**. The harness never copies subprocess
@@ -297,6 +304,15 @@ Run it directly:
   preparation, never a candidate hand-off. **`chmod +x`** on a newly added
   `libexec` verb remains a candidate hand-off on a no-shell implementer
   profile.
+- **The post-merge integration-branch suite and hosted CI.** A candidate may
+  supply the commands and leave explicit open rows, but only the operator can
+  run the assembled tree, push it, and observe the workflow. Completed rows
+  are an operator acceptance policy, not a condition enforced by the verb.
+  `orchid run accept` checks that `run_status` is `accepting` and that
+  `--evidence` names an existing file; it does not parse or validate checklist
+  row content. The operator must therefore complete every required row before
+  invoking it. An open row is not a pass; operator policy treats it as
+  blocking even though the verb cannot detect it.
 
 ## See also
 

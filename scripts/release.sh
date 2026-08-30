@@ -17,7 +17,9 @@ usage() {
 usage: scripts/release.sh --tag vX.Y.Z --output DIR [--bash /path/to/bash]
 
 Builds and fully verifies local artifacts from the exact clean tagged commit.
-It does not push, publish, upload, or modify the tag.
+Run it only after the whole-tree formula checksum has been pinned on the
+integration/release branch. It is not candidate acceptance and does not push,
+publish, upload, or modify the tag.
 EOF
 }
 cleanup() {

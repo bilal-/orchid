@@ -10,6 +10,14 @@ This is the plugin `plugins/notify/openclaw/send` covers — orchid's kind=notif
 channel plugin (docs/specs/plugins.md's "notify channel" row: `send
 <question-id> <text>`).
 
+## What the repository acceptance run proves
+
+Orchid's local CI deliberately proves the suite with vendor CLIs unavailable
+on `PATH`; it does not contact OpenClaw or exercise a live channel round trip.
+Thus a green run proves the stubbed send/probe contracts and no-network
+fallback, not delivery to a phone. The build-only status above remains the
+authoritative bound on this guide's claims.
+
 ## What this is (and isn't)
 
 `openclaw` is this milestone's *reference* notify-channel plugin, and the

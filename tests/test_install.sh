@@ -278,28 +278,110 @@ done < <(grep -oE '\]\([^) ]+\)' "$INSTALL_MD" | sed -E 's/^\]\(//; s/\)$//')
 # in its docs_suite_files scan) enforces it resolves, permanently.
 grep -qE '\]\(\.*/?docs/install\.md\)' "$REPO_ROOT/README.md" || fail "README.md's install section does not link to docs/install.md as a markdown link"
 
-# --- PROTOCOL.md verb-existence lint: every `orchid <word>` mention (the
-# first word after `orchid `, anywhere in the file, backtick-wrapped or not)
-# must map to an existing, executable libexec/orchid-<word>; every
-# `runners/orchid-launch` mention must map to an existing, executable runner.
+# --- PROTOCOL.md verb-existence lint: every structurally marked
+# `orchid <word>` invocation must map to an existing, executable
+# libexec/orchid-<word>. An invocation is marked either by a backtick code
+# span or by beginning a command line inside a fenced block; bare prose is not
+# a command. Every `runners/orchid-launch` mention must likewise map to an
+# existing, executable runner.
 # Note: this only covers TOP-LEVEL verbs (e.g. `task`, `jobs`, `run` ->
 # libexec/orchid-task, orchid-jobs, orchid-run) — it does not, and cannot,
 # validate that a subcommand named alongside one (e.g. `task infra-fail`,
-# `jobs gc`) is actually implemented inside that dispatcher; the regex only
-# ever captures the single word right after `orchid `. Subcommand coverage
-# comes from the functional tests for each verb instead (tests/test_task.sh,
-# tests/test_jobs.sh, ...).
+# `jobs gc`) is actually implemented inside that dispatcher; the extractor
+# captures only the single word right after a marked `orchid `. Subcommand
+# coverage comes from the functional tests for each verb instead
+# (tests/test_task.sh, tests/test_jobs.sh, ...).
 PROTOCOL="$REPO_ROOT/PROTOCOL.md"
 [ -f "$PROTOCOL" ] || fail "PROTOCOL.md missing"
 
-verb_count=0
-while IFS= read -r verb; do
-  [ -n "$verb" ] || continue
-  verb_count=$((verb_count + 1))
-  exe="$REPO_ROOT/libexec/orchid-$verb"
-  [ -x "$exe" ] || fail "PROTOCOL.md names 'orchid $verb' but $exe does not exist (or isn't executable)"
-done < <(grep -oE 'orchid [A-Za-z_-]+' "$PROTOCOL" | awk '{print $2}' | sort -u)
-[ "$verb_count" -gt 0 ] || fail "PROTOCOL.md verb lint found no 'orchid <verb>' mentions at all — regex broken?"
+# protocol_verb_names <file> -- names marked top-level invocations using the
+# same policy as tests/test_docs.sh's already-correct doc_verb_names gate.
+protocol_verb_names() {
+  awk '
+    /^[[:space:]]*```/ { infence = 1 - infence; next }
+    {
+      line = $0
+      if (infence && match(line, /^orchid [a-zA-Z][a-zA-Z-]*/))
+        print substr(line, 8, RLENGTH - 7)
+      while (match(line, /`orchid [a-zA-Z][a-zA-Z-]*/)) {
+        print substr(line, RSTART + 8, RLENGTH - 8)
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' "$1"
+}
+
+# protocol_verb_lint <file> -- the production existence check, factored so
+# the RED/GREEN fixtures below exercise this path rather than a private copy
+# of its extractor. Diagnostics go to stdout for the caller to record.
+protocol_verb_lint() {
+  local protocol="$1"
+  local verb_count=0
+  local failed=0
+  local verb exe
+  while IFS= read -r verb; do
+    [ -n "$verb" ] || continue
+    verb_count=$((verb_count + 1))
+    exe="$REPO_ROOT/libexec/orchid-$verb"
+    if [ ! -x "$exe" ]; then
+      printf "PROTOCOL.md names 'orchid %s' but %s does not exist (or isn't executable)\n" "$verb" "$exe"
+      failed=1
+    fi
+  done < <(protocol_verb_names "$protocol" | sort -u)
+  if [ "$verb_count" -eq 0 ]; then
+    printf "PROTOCOL.md verb lint found no marked 'orchid <verb>' invocations at all — extractor broken?\n"
+    failed=1
+  fi
+  return "$failed"
+}
+
+protocol_verb_out="$(protocol_verb_lint "$PROTOCOL")"
+protocol_verb_rc=$?
+if [ "$protocol_verb_rc" -ne 0 ]; then
+  while IFS= read -r protocol_verb_error; do
+    [ -n "$protocol_verb_error" ] || continue
+    fail "$protocol_verb_error"
+  done <<< "$protocol_verb_out"
+fi
+
+# RED: both Markdown forms that mark an invocation must still reach the real
+#      existence check. Anchoring the extractor must not make a nonexistent
+#      or renamed verb disappear from the gate.
+# GREEN: bare prose must not reach that check, including the exact three
+#      phrases that failed formal CI after the already-correct docs gate had
+#      stopped treating English as commands.
+protocol_verb_red="$WORK/install-protocol-verb-red.md"
+printf '%s\n' \
+  'Run `orchid frobnicate --now` to do the thing.' \
+  '' \
+  '```sh' \
+  'orchid quuxify --all' \
+  '```' \
+  > "$protocol_verb_red"
+protocol_verb_red_out="$(protocol_verb_lint "$protocol_verb_red")"
+protocol_verb_red_rc=$?
+[ "$protocol_verb_red_rc" -ne 0 ] \
+  || fail "PROTOCOL.md verb lint accepted marked invocations of nonexistent verbs"
+assert_match "orchid frobnicate" "$protocol_verb_red_out" \
+  "PROTOCOL.md verb lint did not reject a nonexistent verb marked in a code span"
+assert_match "orchid quuxify" "$protocol_verb_red_out" \
+  "PROTOCOL.md verb lint did not reject a nonexistent verb on a fenced command line"
+red_case "the PROTOCOL.md existence lint rejected nonexistent verbs marked in both a code span and a fenced command line"
+
+protocol_verb_green="$WORK/install-protocol-verb-green.md"
+printf '%s\n' \
+  'Run `orchid status` to inspect the repository.' \
+  'The guide discusses orchid code without naming a command.' \
+  'A paragraph may describe orchid itself in ordinary prose.' \
+  'This sentence explains how orchid runs without invoking a verb.' \
+  > "$protocol_verb_green"
+protocol_verb_green_out="$(protocol_verb_lint "$protocol_verb_green")"
+protocol_verb_green_rc=$?
+[ "$protocol_verb_green_rc" -eq 0 ] \
+  || fail "PROTOCOL.md verb lint read bare prose as an invocation: $protocol_verb_green_out"
+[ -z "$protocol_verb_green_out" ] \
+  || fail "PROTOCOL.md verb lint emitted a diagnostic for a passing marked-command/prose fixture: $protocol_verb_green_out"
+green_case "the same existence lint accepted one real marked verb and ignored bare prose containing 'orchid code', 'orchid itself', and 'orchid runs'"
 
 runner_count="$(grep -c 'runners/orchid-launch' "$PROTOCOL")"
 [ "$runner_count" -gt 0 ] || fail "PROTOCOL.md never mentions runners/orchid-launch"
@@ -307,11 +389,11 @@ runner_count="$(grep -c 'runners/orchid-launch' "$PROTOCOL")"
 
 # v1-m2 (Task 10), extended v1.1: PROTOCOL.md's HEADLESS OPERATION section
 # names the other runners by their full `runners/orchid-<name>` path (never
-# bare, unlike libexec verbs, which is why the top-level regex above can't
-# already catch these) -- same existence check as orchid-launch just above,
-# one per runner. The deterministic driver and the brokered command surface
-# join the list: both are named normatively by that section, so a rename that
-# left the prose behind would be caught here.
+# as `orchid <verb>`, which is why the marked-invocation extractor above
+# cannot catch these) -- same existence check as orchid-launch just above, one
+# per runner. The deterministic driver and the brokered command surface join
+# the list: both are named normatively by that section, so a rename that left
+# the prose behind would be caught here.
 for runner in orchid-tick orchid-pump orchid-drive orchid-orchestrator-command; do
   count="$(grep -c "runners/$runner" "$PROTOCOL")"
   [ "$count" -gt 0 ] || fail "PROTOCOL.md never mentions runners/$runner"
@@ -319,10 +401,10 @@ for runner in orchid-tick orchid-pump orchid-drive orchid-orchestrator-command; 
 done
 
 # `orchid jobs review-plan <id>` is a JOBS SUBCOMMAND, not a top-level verb --
-# the top-level regex above only ever captures "jobs" (already checked), so
-# this is a targeted second check: PROTOCOL.md must name the full subcommand,
-# and libexec/orchid-jobs must actually implement a `review-plan)` case arm
-# (not just claim to support it in its own usage string).
+# the marked-invocation extractor above captures only "jobs" (already
+# checked), so this is a targeted second check: PROTOCOL.md must name the full
+# subcommand, and libexec/orchid-jobs must actually implement a `review-plan)`
+# case arm (not just claim to support it in its own usage string).
 review_plan_count="$(grep -c 'jobs review-plan' "$PROTOCOL")"
 [ "$review_plan_count" -gt 0 ] || fail "PROTOCOL.md never mentions 'orchid jobs review-plan'"
 grep -qE '^\s*review-plan\)' "$REPO_ROOT/libexec/orchid-jobs" \
@@ -358,12 +440,12 @@ if grep -qE 'engine.*unavailable.*not implemented by any verb' "$PROTOCOL"; then
 fi
 
 # v1-m3 (Task 6): `orchid-launch ... hook --hook <point>` is a NEW invocation
-# form the top-level verb regex above can't validate on its own (it only
-# ever captures the bare word after "orchid " -- here that word is "notify"/
-# "task"/"jobs"/"merge", all already-existing verbs; the `--hook` flag and
-# the `hook` operation are what's actually new). Same targeted-check pattern
-# as the `jobs review-plan` check above: PROTOCOL.md must name the form, and
-# runners/orchid-launch + libexec/orchid-jobs must actually implement it.
+# form the marked-invocation extractor above can't validate on its own (it
+# captures only the top-level "notify"/"task"/"jobs"/"merge" verb, all of
+# which already exist; the `--hook` flag and the `hook` operation are what's
+# actually new). Same targeted-check pattern as the `jobs review-plan` check
+# above: PROTOCOL.md must name the form, and runners/orchid-launch +
+# libexec/orchid-jobs must actually implement it.
 hook_flag_count="$(grep -c -- '--hook' "$PROTOCOL")"
 [ "$hook_flag_count" -gt 0 ] || fail "PROTOCOL.md never mentions the --hook flag"
 grep -qE -- '--hook' "$REPO_ROOT/runners/orchid-launch" \

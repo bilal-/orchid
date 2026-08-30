@@ -7,6 +7,14 @@ adapter, exposed as a distinct engine identity so a review slot can be
 routed to a fresh, engine-independent-labeled codex session distinct from
 whichever engine implemented the task.
 
+## What the repository acceptance run proves
+
+Orchid's local CI deliberately proves the suite with vendor CLIs unavailable
+on `PATH`; it does not spend quota or launch a live Codex review. Thus a green
+run proves the wrapper and its stubbed adapter contract do not depend on an
+ambient vendor install. The tested status above comes from named adapter
+qualification, not from r-002's local acceptance run.
+
 ## Install / login
 
 Nothing separate to install — this engine **is** `codex` (see

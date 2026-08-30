@@ -124,7 +124,9 @@ flowchart TD
     OP["Operator<br/>terminal + phone"]
     PUMP["runners/orchid-pump<br/>launchd/cron heartbeat, short-lived"]
     TICK["runners/orchid-tick<br/>one bounded tick"]
-    ORCH["Orchestrator engine - claude by default<br/>one power: run orchid verbs in a bash shell"]
+    DRIVE["orchid drive<br/>one deterministic full-task pass"]
+    BOUNDARY{"named judgment boundary<br/>settleable by admitted verb?"}
+    ORCH["Orchestrator engine - claude by default<br/>judgment only when the boundary is settleable"]
     VERBS["Tier-1 verbs - libexec/<br/>orchid task / run / jobs / verify / merge / notify"]
     LAUNCH["runners/orchid-launch<br/>tier 2 - the ONE engine spawner"]
     subgraph ENGINES["Engine adapters - siblings, one role per job, launched per job"]
@@ -142,7 +144,12 @@ flowchart TD
     OP -->|"orchid run start - interactive session"| ORCH
     OP -->|"orchid service install"| PUMP
     PUMP -->|"lease stale? wake the run"| TICK
-    TICK -->|"orchestrate request"| ORCH
+    TICK -->|"always run mechanics first"| DRIVE
+    DRIVE -->|"exit 16 after walking every task"| BOUNDARY
+    BOUNDARY -->|"yes - one bounded orchestrate request"| ORCH
+    BOUNDARY -->|"no - one durable blocker"| OUTBOX
+    DRIVE -->|"structured fields only"| VERBS
+    DRIVE -->|"dispatch eligible jobs"| LAUNCH
     ORCH -->|"verbs only - never hand-edits state"| VERBS
     ORCH -->|"asks the kernel to launch"| LAUNCH
     LAUNCH -->|"request document"| COD
@@ -155,6 +162,7 @@ flowchart TD
     CLA -->|"result envelope"| SPOOL
     SPOOL -->|"orchid jobs reconcile"| VERBS
     VERBS -->|"epoch-fenced git commits"| STATE
+    STATE -.->|"accepting/complete leaves an installed schedule firing"| PUMP
     VERBS -->|"orchid notify writes the question"| OUTBOX
     OUTBOX -->|"pump drains, spawns send"| CHAN
     CHAN --> PHONE
@@ -180,17 +188,23 @@ the integration branch, so a crash anywhere resumes from files.
 
 <!-- Source of truth: PROTOCOL.md "THE TICK - 3. State-machine walk" (the
      feature archetype's walk) and docs/specs/kernel.md "Task lifecycle"
-     (the canonical transition table). Every state and edge below appears
-     in that table; none is invented here. -->
+     (the canonical transition table). State-changing edges come from that
+     table; self-edges below show driver refusals/boundaries that intentionally
+     leave the state unchanged. -->
 ```mermaid
 stateDiagram-v2
     [*] --> pending
     pending --> implementing: deps done - worktree created, base_sha recorded
-    implementing --> testing: implementer envelope ok AND the worktree HEAD moved - candidate_sha set, no commit touches .orchid/
+    implementing --> testing: ok envelope AND a candidate exists - new HEAD, or recorded candidate ahead of base
+    implementing --> implementing: ok envelope + clean unchanged base - refuse, infra-fail, mark, relaunch
+    implementing --> blocked: repeated no-candidate delivery reaches infra_max
+    implementing --> implementing: dirty tree - operator boundary; unreadable - conflict; no attempt
     testing --> reviewing: orchid verify PASS - the evidence log is the only gate (INV-11)
+    testing --> testing: verify REFUSED - HEAD differs from candidate or moves; no attempt
     testing --> rework: verify FAIL - consumes an attempt, and the failing output is captured for the next one
     reviewing --> arbitrating: every required review envelope reconciled for this candidate
     arbitrating --> merging: approve - journaled reason required
+    arbitrating --> arbitrating: unresolved objection persists until equal authority clears it
     arbitrating --> rework: request-changes - journaled reason required
     merging --> done: orchid merge re-runs the suite in a temp worktree, then advances the ref
     merging --> rework: validation failed
@@ -200,6 +214,11 @@ stateDiagram-v2
     rework --> blocked: the same failure signature repeating unchanged - the loop is not converging, so a human is pinged
     blocked --> rework: answer arrives - orchid task unblock or retry, reason recorded
     done --> [*]
+    note left of done
+        task done is not run accepted;
+        candidate-local, post-merge integration-branch,
+        and remote-CI evidence are separate facts
+    end note
     note right of blocked
         blocked is legal from any status
         (infra failures, budget, operator call).
@@ -207,6 +226,12 @@ stateDiagram-v2
         orchid notify - the round trip below.
     end note
 ```
+
+This overview deliberately collapses the infrastructure ladder, verify-failure
+classification, and review-slot routing into their resulting edges; PROTOCOL.md
+is the ordered procedure. It does not collapse the r-002 refusal paths: those
+self-edges are exactly where a superficially successful envelope or suite run
+establishes nothing and the state must not advance.
 
 The same walk, in verbs:
 
@@ -217,8 +242,10 @@ The same walk, in verbs:
    engines never need commit capability, only edit capability
    (`docs/dogfood-notes.md`'s F3 finding, why every implementer adapter
    works this way).
-3. `orchid verify T001` runs your real test command against the candidate
-   commit — deterministic, evidence-logged.
+3. `orchid verify T001` runs your real test command against the recorded
+   candidate commit — deterministic and evidence-logged. It refuses, without
+   spending an attempt, if the checkout is not already at that SHA or moves
+   while the suite runs.
 4. `orchid task advance T001 reviewing` launches the resolved reviewer
    chain (one or two engines, by risk tier); each writes a verdict envelope
    nobody hand-edits.

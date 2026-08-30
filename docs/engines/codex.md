@@ -4,6 +4,14 @@ Status: **default implementer**; also usable as orchestrator/reviewer/critic
 (`role.orchestrator`/`role.plan_critic` fallback chains both list it). This
 is the adapter this guide covers: `plugins/engines/codex/run`.
 
+## What the repository acceptance run proves
+
+Orchid's local CI deliberately proves the suite with vendor CLIs unavailable
+on `PATH`; it does not spend quota or launch a live Codex session. Thus a green
+run proves the kernel and this adapter's stubbed contract do not depend on an
+ambient vendor install. The live claims below come from their named
+manual/dogfood probes, not from r-002's local acceptance run.
+
 ## Install
 
 ```sh

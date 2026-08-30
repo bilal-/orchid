@@ -378,11 +378,15 @@ orchid task unblock <id> --reason "..."
 
 ## 8. Done
 
-Once every task is `done`, the orchestrator runs the acceptance procedure
-itself (`orchid run advance accepting`, coverage + acceptance checks,
-`orchid run accept --reason ... --evidence ...`) and `orchid status` shows
-`run_status: complete`. The integration branch now holds your finished
-product — pushing or deploying it from there is entirely up to you. Orchid's
+Once every task is `done`, the driver advances the run to `accepting` and
+stops. Complete the evidence before accepting: the canonical local-CI command
+must be recorded for the candidate and, after the last candidate merges, run
+once more from a checkout actually parked on the configured integration
+branch. Hosted CI is a third observation, made only after you push; a
+local-only run records it as not observed. Then run `orchid run accept
+--reason ... --evidence ...`, and `orchid status` shows `run_status: complete`.
+The integration branch now holds your finished product — pushing or deploying
+it from there is entirely up to you. Orchid's
 supported verbs do not push; see the
 [threat model](./specs/plugins.md#threat-model-consolidated) before treating
 that prompt policy as containment.

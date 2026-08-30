@@ -30,6 +30,12 @@ usage: scripts/ci-local.sh [--bash /path/to/bash] [--list-shell] [--no-tests]
   --bash PATH    use PATH for syntax checks and every test script
   --list-shell   print every discovered shipped shell script, then exit
   --no-tests     run every static check, run no test script, then exit
+
+With tests enabled this is the local equivalent of the hosted CI command. It
+includes the structurally anchored documentation-verb gate and the hermetic
+suite proof that vendor CLIs are not required on PATH. A green run describes
+the checkout and branch where it ran; it does not claim the merged integration
+branch or hosted CI was observed.
 EOF
 }
 

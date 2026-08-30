@@ -6,15 +6,20 @@ source "$(dirname "$0")/helpers.sh"
 # approach (grep-only, no prose heuristics) so this suite carries zero
 # false-positive risk from trying to parse free text:
 #
-#   1. every `orchid <word>` CODE-SPAN, and every fenced-shell-block line
-#      STARTING with "orchid <word>", in README.md/the two quickstarts
+#   1. every `orchid <word>` CODE-SPAN, and every line INSIDE A FENCED BLOCK
+#      that starts with "orchid <word>", in README.md, PROTOCOL.md, and the
+#      two quickstarts
 #      names a real tier-1 verb (a libexec/orchid-<word> file actually on
 #      disk) -- catches a renamed/typo'd verb before a reader ever hits it.
-#      (Scoped to just these three files deliberately: a prose sentence
-#      elsewhere -- e.g. docs/engines/hermes.md's "orchid never manages
-#      this..." -- would false-positive against the start-of-line half of
-#      this pattern; README/the quickstarts never open a line with prose
-#      starting in lowercase "orchid ", only with real fenced commands.)
+#      Both spellings are MARKED: a code span and a fence are structural
+#      facts about the document, so a bare word after "orchid" in ordinary
+#      prose ("at dispatch orchid creates a worktree") is never read as an
+#      invocation. That reading is what failed r-002/T023 against correct
+#      documentation, and section 1 below has the full account plus the
+#      RED and GREEN cases that hold both halves in place. PROTOCOL.md is in
+#      this set deliberately: its ordinary prose was the r-002/T023 false
+#      positive, so a fix that never exercises that page does not close the
+#      reported defect.
 #   2. every RELATIVE markdown link across this task's docs surface
 #      (`docs_suite_files` below -- README + quickstarts + configuration/
 #      troubleshooting/research + docs/engines/* + docs/extending/*;
@@ -43,13 +48,13 @@ source "$(dirname "$0")/helpers.sh"
 
 KEYFILE="$REPO_ROOT/lib/config-keys.txt"
 
-# docs_suite_files -- the exact surface this task owns: README + the
-# quickstarts + configuration/troubleshooting/research + every engine guide
-# (built-in and reference-adapter alike) + the extending guides (cross-
-# linked, not rewritten, by this task). Deliberately NOT docs/specs/*.md
-# (the normative design spec, untouched by this task -- e.g. kernel.md's
-# task-frontmatter field `blocking_severity` reads exactly like a config
-# key under a naive scan but is not one), docs/plans/*.md, or
+# docs_suite_files -- the exact surface this lint's relative-link/config-key
+# conventions cover: README + quickstarts + configuration/troubleshooting/
+# research + every engine guide (built-in and reference-adapter alike) + the
+# extending guides. Deliberately NOT docs/specs/*.md (the normative design
+# specs are audited by T015 but use different prose conventions -- e.g.
+# kernel.md's task-frontmatter field `blocking_severity` reads exactly like a
+# config key under a naive scan but is not one), docs/plans/*.md, or
 # docs/dogfood-notes.md (historical incident log, not part of the docs
 # bar) -- those pre-date this task and use their own conventions.
 docs_suite_files() {
@@ -77,12 +82,15 @@ docs_suite_files() {
 # ===========================================================================
 required_files="
 README.md
+PROTOCOL.md
 docs/quickstart.md
 docs/quickstart-greenfield.md
+docs/architecture.md
 docs/configuration.md
 docs/troubleshooting.md
 docs/research.md
 docs/beta-qualification.md
+docs/r-002-acceptance-evidence.md
 docs/frontends.md
 docs/engines/codex.md
 docs/engines/claude.md
@@ -97,16 +105,70 @@ while IFS= read -r rel; do
 done <<< "$required_files"
 
 # ===========================================================================
-# 1 -- every `orchid <word>` code-span in README.md + the two quickstarts
-# names a real tier-1 verb.
+# 1 -- every `orchid <word>` code-span in README.md, PROTOCOL.md, and the two
+# quickstarts names a real tier-1 verb.
+#
+# THE EXTRACTOR IS ANCHORED TO HOW A VERB IS WRITTEN, NEVER TO THE BARE WORD
+# AFTER "orchid", and that is r-002/T023's finding rather than a refinement.
+# An earlier form of this gate took every `orchid <word>` it could see and
+# demanded a matching libexec file, so the ordinary English sentence "orchid
+# creates a worktree for the task" failed a task with
+#
+#     PROTOCOL.md names orchid creates but libexec/orchid-creates does not exist
+#
+# against documentation that was correct. It is the same defect as INV-13's
+# purity scan reading `git worktree add` inside a printf as an operation (see
+# tests/inv/test_INV-13_driver_verb_only.sh), and it has the same natural
+# workaround -- reword the prose -- which degrades the documentation to
+# satisfy a linter. The gate is worth keeping; reading English as a command is
+# not, so a name counts only where the page has MARKED it as a command:
+#
+#   * inside a code span -- `orchid <word>` -- anywhere on the page; or
+#   * as the first word of a line INSIDE A FENCED BLOCK, which is how these
+#     four pages spell a command an operator types.
+#
+# The fenced-block half is what closes the prose hole. The check used to take
+# any line merely STARTING with "orchid ", so a paragraph that happened to
+# begin with a lowercase "orchid handles ..." was read as an invocation, and
+# the only thing standing between that and a red suite was a comment asking
+# future authors not to write one. A fence is a structural fact about the
+# document, so nothing about the sentence has to be promised.
 # ===========================================================================
-verb_check_files="README.md docs/quickstart.md docs/quickstart-greenfield.md"
+
+# doc_verb_names <file> -- the verb names <file> documents as invocations, one
+# per line, in both marked spellings. Named once so the loop below and the
+# RED/GREEN probes beside it are judged by the SAME extractor: a probe aimed
+# at a private copy of the pattern proves that copy works and says nothing
+# about the gate.
+doc_verb_names() {
+  awk '
+    /^[[:space:]]*```/ { infence = 1 - infence; next }
+    {
+      line = $0
+      if (infence && match(line, /^orchid [a-zA-Z][a-zA-Z-]*/))
+        print substr(line, 8, RLENGTH - 7)
+      while (match(line, /`orchid [a-zA-Z][a-zA-Z-]*/)) {
+        print substr(line, RSTART + 8, RLENGTH - 8)
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' "$1"
+}
+
+verb_check_files="README.md PROTOCOL.md docs/quickstart.md docs/quickstart-greenfield.md"
 verb_words=""
 for rel in $verb_check_files; do
   f="$REPO_ROOT/$rel"
   [ -f "$f" ] || continue
-  words="$( { grep -oE '`orchid [a-zA-Z][a-zA-Z-]*' "$f" | sed -E 's/`orchid //'
-             grep -oE '^orchid [a-zA-Z][a-zA-Z-]*' "$f" | sed -E 's/^orchid //'; } || true)"
+  # An UNCLOSED fence inverts "inside a fence" for the whole rest of the page,
+  # which would either read every later paragraph as commands or stop reading
+  # every later command block -- silently, and in a file nobody would think to
+  # re-lint. The anchor is only worth what its delimiters are worth, so the
+  # delimiters are counted.
+  fences="$(grep -cE '^[[:space:]]*```' "$f" || true)"
+  [ $((fences % 2)) -eq 0 ] \
+    || fail "$rel has an odd number of code-fence delimiters ($fences) -- the verb extractor below decides what is a command by whether it sits inside a fence, and an unclosed one flips that decision for every line after it"
+  words="$(doc_verb_names "$f" || true)"
   verb_words="$verb_words
 $words"
 done
@@ -114,9 +176,44 @@ verb_count=0
 while IFS= read -r v; do
   [ -n "$v" ] || continue
   verb_count=$((verb_count + 1))
-  [ -x "$REPO_ROOT/libexec/orchid-$v" ] || fail "a code-span names 'orchid $v' but libexec/orchid-$v doesn't exist (or isn't executable)"
+  [ -x "$REPO_ROOT/libexec/orchid-$v" ] || fail "a documented invocation names 'orchid $v' but libexec/orchid-$v doesn't exist (or isn't executable)"
 done < <(printf '%s\n' "$verb_words" | sort -u)
-[ "$verb_count" -gt 0 ] || fail "verb-name extraction from README/quickstarts found nothing -- files missing, or the regex broke"
+[ "$verb_count" -gt 0 ] || fail "verb-name extraction from README/PROTOCOL/quickstarts found nothing -- files missing, or the extractor broke"
+
+# RED: a page that documents an invocation of a verb this repository does not
+#      have must still be CAUGHT. Both marked spellings are fed in, because
+#      anchoring the gate is exactly the change that could have narrowed it
+#      into uselessness, and a gate that finds nothing passes silently.
+# GREEN: the same extractor, fed the English that failed r-002/T023 -- the
+#      word after "orchid" in ordinary prose, both mid-sentence and opening a
+#      line outside any fence -- must yield NOTHING. Without this the RED case
+#      above is satisfied by a matcher that fires on every mention of the
+#      word, which is the gate that cost the attempt.
+verb_probe_red="$WORK/docs-verb-probe-red.md"
+printf '%s\n' \
+  'Run `orchid frobnicate --now` to do the thing.' \
+  '' \
+  '```sh' \
+  'orchid quuxify --all' \
+  '```' \
+  > "$verb_probe_red"
+verb_probe_red_out="$(doc_verb_names "$verb_probe_red")"
+assert_match 'frobnicate' "$verb_probe_red_out" \
+  "docs verb gate: a code span naming a nonexistent verb must be extracted -- anchoring the extractor to marked commands has narrowed it past the failure it exists to catch"
+assert_match 'quuxify' "$verb_probe_red_out" \
+  "docs verb gate: a fenced command line naming a nonexistent verb must be extracted -- the fenced half of the extractor is not reading fences"
+red_case "the documentation verb gate extracted 'frobnicate' from a code span and 'quuxify' from a fenced command line, neither of which has a libexec verb, so it still catches an undocumented or renamed verb"
+
+verb_probe_green="$WORK/docs-verb-probe-green.md"
+printf '%s\n' \
+  'At dispatch orchid creates a worktree and records its base sha.' \
+  'orchid handles the rest of the walk without an operator.' \
+  'A sentence may also say orchid merge in passing without meaning the verb.' \
+  > "$verb_probe_green"
+verb_probe_green_out="$(doc_verb_names "$verb_probe_green")"
+[ -z "$verb_probe_green_out" ] \
+  || fail "docs verb gate: ordinary prose was read as a verb invocation (extracted: $verb_probe_green_out) -- this is the shape that failed r-002/T023 with 'PROTOCOL.md names orchid creates but libexec/orchid-creates does not exist' against correct documentation"
+green_case "the same extractor read three prose sentences naming orchid -- mid-sentence, opening a line, and one naming a real verb in passing -- and extracted nothing, so the gate reads marked commands rather than English"
 
 # ===========================================================================
 # 2 -- every relative markdown link across this task's docs surface
@@ -529,6 +626,29 @@ assert_match "A DECISION IS OUTSTANDING SOMEWHERE" "$drive_help_one_line" \
 assert_match "walked EVERY task" "$drive_help_one_line" \
   "...and that the pass which returns it still advanced every other task"
 
+# T015 owns the cross-cutting help audit. These four behaviors are easy to
+# document only in PROTOCOL.md while leaving the operator's first-line help on
+# the old state machine, which is how r-001 shipped a stale gate description.
+# Fixed strings avoid turning the punctuation in the usage prose into regex.
+grep -qF 'An `ok` implementer envelope is not itself a candidate.' <<<"$drive_help" \
+  || fail "orchid drive --help must say an ok envelope with no candidate is refused rather than advanced"
+grep -qF '`orchid verify` exit 20 is REFUSED, not FAIL' <<<"$drive_help" \
+  || fail "orchid drive --help must distinguish verify tree-drift refusal from a charged candidate failure"
+grep -qF 'An approval is also never deterministic while the task carries an unresolved objection from an earlier arbitration.' <<<"$drive_help_one_line" \
+  || fail "orchid drive --help must say a later review round cannot erase an unresolved objection"
+grep -qF 'Completing the run does not remove an installed schedule; the operator must uninstall it, or use `orchid service teardown` when the checkout is also being removed.' <<<"$drive_help_one_line" \
+  || fail "orchid drive --help must keep the run-complete/service-lifetime boundary visible"
+
+ci_help="$("$BASH" "$REPO_ROOT/scripts/ci-local.sh" --help)" \
+  || fail "scripts/ci-local.sh --help must exit 0"
+ci_help_one_line="$(printf '%s' "$ci_help" | tr -s '[:space:]' ' ')"
+grep -qF 'local equivalent of the hosted CI command' <<<"$ci_help" \
+  || fail "scripts/ci-local.sh --help must identify the command whose local result corresponds to hosted CI"
+grep -qF 'hermetic suite proof that vendor CLIs are not required on PATH' <<<"$ci_help_one_line" \
+  || fail "scripts/ci-local.sh --help must name the hermetic proof included in a full local run"
+grep -qF 'does not claim the merged integration' <<<"$ci_help" \
+  || fail "scripts/ci-local.sh --help must not let a candidate-local run imply the integration-branch row passed"
+
 # ...and the same claim must not survive in any other shipped usage text.
 stale_help="$(grep -rln "adapter never fills findings" "$REPO_ROOT/runners" "$REPO_ROOT/libexec" "$REPO_ROOT/bin" 2>/dev/null || true)"
 [ -z "$stale_help" ] || fail "stale L006 severity-gate claim still shipped in: $stale_help"
@@ -796,8 +916,10 @@ assert_match "prove anything on the channel side will turn that reply into an ac
 QUALIFY_SH="$REPO_ROOT/scripts/beta-qualify.sh"
 REHEARSAL_SH="$REPO_ROOT/tests/test_e2e_release_rehearsal.sh"
 BETA_MD="$REPO_ROOT/docs/beta-qualification.md"
+ACCEPTANCE_MD="$REPO_ROOT/docs/r-002-acceptance-evidence.md"
 [ -f "$QUALIFY_SH" ] || fail "scripts/beta-qualify.sh missing — the beta docs describe a harness that does not exist"
 [ -f "$REHEARSAL_SH" ] || fail "tests/test_e2e_release_rehearsal.sh missing — the release docs describe a rehearsal that does not exist"
+[ -f "$ACCEPTANCE_MD" ] || fail "r-002 acceptance evidence missing — the candidate/post-merge boundary has no owning record"
 
 # The harness's own --help is part of the documentation surface: it is what an
 # operator reads before running it against a repository they cannot share. So
@@ -852,6 +974,13 @@ grep -qF 'never as a pass' "$BETA_MD" \
   || fail "docs/beta-qualification.md must state that an unperformed check is recorded as not-tested, never as a pass"
 grep -qF 'Still operator-owned, and not claimed anywhere in this repository' "$BETA_MD" \
   || fail "docs/beta-qualification.md must keep its operator-owned section heading"
+beta_doc_one_line="$(tr '\n' ' ' < "$BETA_MD" | tr -s '[:space:]' ' ')"
+grep -qF 'Completed rows are an operator acceptance policy, not a condition enforced by the verb.' <<<"$beta_doc_one_line" \
+  || fail "docs/beta-qualification.md must distinguish the operator policy requiring completed rows from what orchid run accept enforces"
+grep -qF '`orchid run accept` checks that `run_status` is `accepting` and that `--evidence` names an existing file; it does not parse or validate checklist row content.' <<<"$beta_doc_one_line" \
+  || fail "docs/beta-qualification.md must state the acceptance verb's actual status/file checks and its advisory checklist boundary"
+grep -qF 'blocks `orchid run accept` until filled' <<<"$beta_doc_one_line" \
+  && fail "docs/beta-qualification.md must not claim orchid run accept parses open checklist rows"
 grep -qF 'genuine third-party beta run' "$BETA_MD" \
   || fail "docs/beta-qualification.md must name a genuine third-party beta run as operator-owned"
 grep -qF 'no file in this repository records' "$BETA_MD" \
@@ -891,6 +1020,33 @@ grep -qF 'A genuine third-party beta run and any publication remain operator-own
   || fail "README.md must state that a third-party beta run and publication remain operator-owned"
 grep -qF 'Neither has happened, and nothing in this repository claims otherwise.' "$REPO_ROOT/README.md" \
   || fail "README.md must state that neither has happened"
+
+# Candidate evidence must remain honest while the operator completes the steps
+# an implementer cannot. The suite and remote rows stay explicitly open; the
+# journal and lesson rows carry their exact operator results without implying
+# that those results accept the run.
+grep -qF 'Status: **NOT YET ACCEPTED. Operator completion is required after merge.**' "$ACCEPTANCE_MD" \
+  || fail "r-002 evidence must identify itself as a candidate hand-off, not completed run acceptance"
+grep -qF 'Canonical candidate-local CI | **NOT RUN**' "$ACCEPTANCE_MD" \
+  || fail "r-002 evidence must say candidate-local CI was not run by the no-shell implementer"
+grep -qF 'Suite on the integration branch itself | **NOT RUN; REQUIRED AFTER MERGE**' "$ACCEPTANCE_MD" \
+  || fail "r-002 evidence must leave the integration-branch suite as an explicit post-merge operator step"
+grep -qF 'Hosted GitHub Actions | **NOT OBSERVED BY THIS RUN**' "$ACCEPTANCE_MD" \
+  || fail "r-002 evidence must state that this local run did not observe remote CI"
+grep -qF 'No third-party beta run has occurred.' "$ACCEPTANCE_MD" \
+  || fail "r-002 evidence must preserve the no-third-party-beta release posture"
+grep -qF 'Nothing was published, pushed, tagged, uploaded, deployed, announced, or' "$ACCEPTANCE_MD" \
+  || fail "r-002 evidence must preserve the no-publication/push/tag/remote posture"
+grep -qF 'The shipped version remains `1.0.0-beta.1`' "$ACCEPTANCE_MD" \
+  || fail "r-002 evidence must keep the shipped version in the beta series"
+grep -qF 'Bootstrap-journal audit' "$ACCEPTANCE_MD" \
+  || fail "r-002 evidence must own the pre-bootstrap dispatch journal audit"
+grep -qF 'Operator result: **117 unmatched dispatch passes.**' "$ACCEPTANCE_MD" \
+  || fail "r-002 evidence must report the operator's exact bootstrap-journal audit result"
+grep -qF 'Operator result: **COMPLETE FOR THE CURRENT CANDIDATE.**' "$ACCEPTANCE_MD" \
+  || fail "r-002 evidence must report the operator's durable lesson reconciliation"
+grep -qF 'The run remains unaccepted.' "$ACCEPTANCE_MD" \
+  || fail "completed journal and lesson audits must not imply run acceptance"
 
 # The threat model owns the one thing the harness really does execute inside a
 # candidate repository.
@@ -988,6 +1144,20 @@ grep -rqF 'unattended_trust_require' "${qualify_caller_roots[@]}" \
 qualify_callers="$(grep -rlF 'beta-qualify' "${qualify_caller_roots[@]}" || true)"
 [ -z "$qualify_callers" ] \
   || fail "docs/specs/operations.md rests part of this decision on qualification being 'never scheduled and never invoked by the kernel', but kernel code now names the harness: $qualify_callers — if that changed on purpose, the third reason has to be remade and this assertion changed with it"
+
+# T012 is the other r-002 decision this reconciliation task owns. Preserve the
+# decision and every rejected alternative together: an outcome without the
+# rejected routes sends the next editor through the same design loop.
+grep -qF 'Review depth (v1.1 — decision, T012)' "$REPO_ROOT/docs/specs/kernel.md" \
+  || fail "docs/specs/kernel.md must identify T012's review-depth section as a recorded decision"
+grep -qF 'Engine independence and review depth are different axes' <<<"$kernel_one_line" \
+  || fail "docs/specs/kernel.md must record T012's choice: medium/high deterministic approval needs depth as well as independence"
+grep -qF 'Rejected: make `review.<tier>` itself refuse to resolve, or refuse to dispatch' <<<"$kernel_one_line" \
+  || fail "docs/specs/kernel.md must retain T012's rejected routing/dispatch refusal alternative"
+grep -qF 'Rejected: a per-task flag deciding whether the criteria' <<<"$kernel_one_line" \
+  || fail "docs/specs/kernel.md must retain T012's rejected per-task flag/prose-scan alternative"
+grep -qF 'Rejected: a `review.require_depth` config key.' <<<"$kernel_one_line" \
+  || fail "docs/specs/kernel.md must retain T012's rejected global depth-disable alternative"
 
 # The release-day checklist must include the local rehearsal.
 grep -qF 'tests/test_e2e_release_rehearsal.sh' "$REPO_ROOT/docs/install.md" \

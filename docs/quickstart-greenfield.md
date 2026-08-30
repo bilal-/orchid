@@ -113,6 +113,11 @@ the run finishes, so the uninstall comes FIRST and removing the
 checkout second — `orchid service teardown` is that pair as one command, and
 removes the worktree only if the uninstall succeeded.
 
+It also includes [the Done procedure](./quickstart.md#8-done): candidate-local
+CI, then a post-merge run from the configured integration-branch checkout,
+then hosted CI only after the operator pushes. A candidate evidence file must
+leave its post-merge row open rather than claim a tree it could not see.
+
 ## Next
 
 - [quickstart.md](./quickstart.md) — the existing-repo path, referenced

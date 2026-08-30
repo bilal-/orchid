@@ -79,6 +79,11 @@ The brokered, judgment-only command surface. Admitted forms:
   run boundary clear --reason <text>
 
 Anything else is refused (exit 17).
+
+The command surface does not grant arbitration authority. In particular, an
+unresolved operator objection remains operator-owned: an approval relayed by a
+model is accepted only when the task records the operator's answer authority
+for that exact objection, round, candidate, and evidence set.
 EOF
 }
 
