@@ -132,16 +132,21 @@ The candidate reconciles these surfaces against the assembled behavior:
   SC1010, and that backticks or angle-bracket placeholders inside a
   double-quoted annotation are parsed as shell syntax.
 
-These are source-level observations only. Their RED/GREEN probes have **not
-been executed by this implementer**; the first two rows of the acceptance
-matrix remain open.
+These were not executed by the implementer. On 2026-08-30 the operator ran
+the focused documentation test and INV-13 production probes against candidate
+`43432aef115cf7866e87da927039a9942719ec4d`; both passed, including the quoted
+boundary path, `bash -c`, `sh -c`, bundled `bash -lc`/`sh -ec`, preceding shell
+options, and command-position `$BASH -c` cases. Bash syntax, warning-level
+ShellCheck on every changed shell file, and the exact
+`scripts/ci-local.sh --bash /bin/bash --no-tests` static gate also passed. The
+canonical full candidate-local CI row remains open until Orchid's formal
+verification runs against the final operator-hand-off SHA.
 
 ## Bootstrap-journal audit
 
-Status: **NOT PERFORMED IN THIS CANDIDATE.** The task rule forbids touching any
-run-state path, so this implementer did not read the journal and cannot
-truthfully report that every pre-bootstrap dispatch has its required operator
-entry.
+Status: **OPERATOR AUDIT COMPLETE; REQUIRED RECORDS ARE MISSING.** The task
+rule forbids an implementer from touching run state, so the operator read the
+journal after the candidate hand-off and recorded the result through Orchid.
 
 The three merge cutoffs visible in Git history are:
 
@@ -149,14 +154,41 @@ The three merge cutoffs visible in Git history are:
 - T010: `df47066e67f5467fc32664337804016aa1acc4e3` (2026-08-11)
 - T006: `416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6` (2026-08-12)
 
-Before acceptance, the operator must read the journal through Orchid's
-read-only journal surface, enumerate every task dispatch preceding each cutoff,
-and pair each dispatch with the bootstrap entry the run procedure required at
-that time. Append the task ids of every unmatched dispatch here, or write
-`none` only after the comparison. Until then the result is **unknown**, not
-“none found.”
+The latest of the three cutoffs is the T006 merge at
+`416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6`, recorded at
+2026-08-12T09:47:20Z. Before that cutoff the journal contains 117 dispatch
+passes and **zero complete four-part bootstrap entries**. The only entry that
+names the bootstrap procedure, at 2026-08-09T16:04:39Z, records the integration
+checkout refresh and its root-file clobber hazard only. It does not record the
+outstanding-job check, mechanical hand-off outcome, or whether exact lint
+locations had to be carried by hand. No later task event is treated as a
+substitute for the one-per-pass record the procedure required.
 
-Operator result: **OPEN — do not accept the run.**
+| Task | Unmatched dispatch passes |
+|---|---:|
+| T001 | 1 |
+| T006 | 16 |
+| T010 | 9 |
+| T013 | 7 |
+| T014 | 7 |
+| T017 | 4 |
+| T018 | 5 |
+| T019 | 16 |
+| T020 | 1 |
+| T021 | 11 |
+| T022 | 9 |
+| T023 | 8 |
+| T024 | 6 |
+| T025 | 6 |
+| T026 | 6 |
+| T027 | 2 |
+| T028 | 1 |
+| T031 | 2 |
+| **Total** | **117** |
+
+Operator result: **117 unmatched dispatch passes.** This is an audit finding,
+not inferred compliance and not a reason to rewrite history. It is recorded as
+a T015 ledger item in the durable journal. The run remains unaccepted.
 
 ## Lesson reconciliation
 
@@ -172,15 +204,25 @@ The published guidance is reconciled in this candidate:
   hand-off. Formula pinning is integration/release-owned; executable mode bits
   remain candidate hand-offs only when a new executable actually exists.
 
-Durable lesson state was **not read or mutated** because this task forbids
-touching run-state paths. Before acceptance, the operator must inspect active
-lessons, retire/update any record that still assigns `Formula/orchid.rb` to an
-implementer candidate, retain L017 only for genuine candidate-local mechanical
-work, ensure L036 carries the constructed-condition/integration-branch rule,
-and add or consolidate the textual-gate and concurrent-procedure lessons above.
-Record the changed lesson ids here.
+After the implementer hand-off, the operator reconciled durable lesson state
+through Orchid's lesson verbs:
 
-Operator result: **OPEN — do not accept the run.**
+- updated L011 (the remaining answer-refusal ownership gap), L032 (general
+  candidate freeze without obsolete Formula advice), L034 (T015 gate
+  oscillation evidence), and L043 (the post-T030 hand-off procedure);
+- retired L013, L014, L016, L017, L018, L020, L023, L025, L026, L027, L031,
+  and L039 because their owning repairs have landed or their candidate-level
+  Formula rule was superseded;
+- added L044 for concurrent edits degrading one ordered procedure and L045 for
+  treating a vendor weekly-quota exit as capacity rather than a generic engine
+  failure;
+- reviewed and retained L036's constructed-condition/integration-branch rule;
+  and
+- left L029 active until T015 itself merges, because its invalidation condition
+  is the repaired documentation gate landing on integration.
+
+Operator result: **COMPLETE FOR THE CURRENT CANDIDATE.** The run remains
+unaccepted, and L029 still requires retirement after this task merges.
 
 ## Mandatory task hand-offs and release posture
 
