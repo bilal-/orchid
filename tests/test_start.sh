@@ -1398,10 +1398,12 @@ green_case 'a branch with no .orchid/ anywhere in its history pushes exactly as 
 # change puts those commits on the target branch just as a merge would, so the
 # leg has to read the magic ref's history and not only its tip.
 #
-# Deliberately asserted AFTER the successful push above, so `refs/remotes/
-# origin/*` now exists and is used as this upload's baseline: that is what
-# proves the baseline excludes only what the remote actually holds, rather than
-# quietly excusing the upload the moment any tracking ref appears.
+# Deliberately asserted AFTER the successful push above, so this repository now
+# HAS a remote-tracking ref (`refs/remotes/origin/feature/clean-history`) --
+# just not one for this upload's target branch. That is what proves a review
+# upload's baseline is the target's tracking ref alone, rather than any
+# tracking ref that happens to exist: an unrelated ref must not excuse it, and
+# an unfetched target must fail closed.
 rc=0
 gstrip37="$(git -C "$r37_g" push origin "feature/stripped:refs/for/$g37_branch%topic=stripped" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "a review upload whose history carries run state must be refused (got: $gstrip37)"
@@ -1436,6 +1438,66 @@ rc=0
 again37="$(git -C "$r37_g" push origin feature/stripped 2>&1)" || rc=$?
 [ "$rc" -eq 0 ] || fail "a ref whose commits the remote ALREADY holds must push without the override (got: $again37)"
 green_case 'once pushed deliberately, a history-carrying ref is exempt on every later push'
+
+# ---------------------------------------------------------------------------
+# T037 -- THE OVERRIDE IS BOUND TO THE REF IT WAS SPENT ON.
+#
+# ORCHID_ALLOW_PUSH=1 says "publish THIS ref anyway". It is one operator, one
+# ref, one deliberate act -- a scratch branch, an archive, orchid's own
+# integration branch -- and the exemption it earns for later pushes has to stop
+# at that destination. Measure "already on the remote" against every tracking
+# ref of the remote instead, and a single override push turns into a permanent
+# repository-wide opt-out: the contaminated commits are parked under
+# `refs/remotes/origin/scratch`, and the identical history then walks onto the
+# product's `main` unrefused because the objects are already there under
+# another name. The objects being present is not the leak; being reachable from
+# `main` is, and that is exactly what the second push would do.
+#
+# The sequence is the one an operator actually performs: add-then-delete
+# history, override-push it to a scratch ref, fetch so the tracking ref is
+# really there, then push the SAME clean-tipped history at a brand-new `main`.
+#
+# RED (before this fix): the push to `main` succeeds, and the override the
+# operator spent on `scratch` is what let it through.
+# ---------------------------------------------------------------------------
+git -C "$r37_g" branch scratch/archive feature/stripped
+rc=0
+ORCHID_ALLOW_PUSH=1 git -C "$r37_g" push origin scratch/archive >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "fixture: the deliberate archive push must succeed under the override"
+git -C "$r37_g" fetch -q origin \
+  || fail "fixture: the fetch that materializes the tracking ref must succeed"
+# Both halves of the precondition, or the case proves nothing: the tracking ref
+# for the scratch destination must really hold the contaminated commits, and
+# the destination about to be pushed must be one the remote has never seen.
+[ -n "$(git -C "$r37_g" rev-list --full-history --max-count=1 refs/remotes/origin/scratch/archive -- .orchid)" ] \
+  || fail "fixture: refs/remotes/origin/scratch/archive must carry the run-state commits, or there is no loose baseline to be tempted by"
+git -C "$r37_g" ls-remote --exit-code --heads "$remote37_g" product/main >/dev/null 2>&1 \
+  && fail "fixture: the product branch must not exist on the remote yet, or its own remote sha would be the baseline"
+
+git -C "$r37_g" branch product/main feature/stripped
+rc=0
+bound37="$(git -C "$r37_g" push origin product/main 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "an override spent on one ref must not exempt the same history pushed at another (got: $bound37)"
+assert_match "in the HISTORY this push publishes" "$bound37" \
+  "and it is the history half speaking, since the tip of this ref is clean"
+git -C "$r37_g" ls-remote --exit-code --heads "$remote37_g" product/main >/dev/null 2>&1 \
+  && fail "and the refused ref must not have landed on the remote"
+red_case 'run state already on the remote under another ref does not exempt a push at a new one'
+
+# The GREEN twin, and the half that keeps the case above from passing for a leg
+# that simply ignores every baseline: a FURTHER push of the ref the override was
+# actually spent on still goes through, because that destination's own remote
+# copy already holds those commits.
+more37b_wt="$W/r37-gerrit-archive"
+git -C "$r37_g" worktree add -q "$more37b_wt" scratch/archive
+printf 'archived\n' > "$more37b_wt/archived.txt"
+git -C "$more37b_wt" add archived.txt
+git -C "$more37b_wt" commit -q -m "further work on the ref the override was spent on"
+git -C "$r37_g" worktree remove --force "$more37b_wt"
+rc=0
+again37b="$(git -C "$r37_g" push origin scratch/archive 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "the destination the override was spent on must stay exempt without it (got: $again37b)"
+green_case 'the ref an override was spent on stays exempt on its own later pushes'
 
 # ===========================================================================
 # 5 -- worktrees: create at an explicit path, reuse only an EXACT integration

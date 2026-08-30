@@ -110,21 +110,35 @@
 # Both questions are therefore asked: the TIP TREE (the shape above), and
 # whether any commit this push makes NEWLY REACHABLE touched `.orchid` at all.
 #
-# "Newly reachable" is measured against what the remote already has, which is
-# what keeps the second question from being a standing refusal on a repository
-# that tracks run state deliberately: the remote's own copy of the ref being
-# pushed (the sha git hands this hook, authoritative and exactly the right
-# baseline), plus the remote-tracking refs for that remote, which is the only
-# baseline a Gerrit upload or a brand-new branch has. Commits the remote is
-# already holding are not published by this push and cannot be its leak. With
-# no baseline available at all the whole history is walked, which fails closed.
+# "Newly reachable" is measured against WHAT THE REMOTE ALREADY HOLDS ON THE
+# DESTINATION REF, and against nothing else. That bound is the whole safety of
+# the exemption, so it is worth saying why the looser reading is wrong: an
+# earlier version excluded every remote-tracking ref of the remote
+# (`--remotes=<name>`), on the reasoning that a commit the remote is holding
+# somewhere is not introduced by this push. But ORCHID_ALLOW_PUSH=1 is a
+# deliberate publication of ONE ref -- a scratch branch, an archive, orchid's
+# own integration branch -- and it must exempt later pushes of THAT ref only.
+# Under the loose baseline, one override push parks the contaminated commits in
+# `refs/remotes/<name>/scratch`, and every later push of that identical history
+# to `main` walks through unrefused because the objects already exist on the
+# remote under another name -- which is precisely the leak, with the override
+# turned into a permanent repository-wide opt-out nobody asked for.
+#
+# So: for an ordinary branch push the baseline is the remote's own copy of the
+# ref being pushed -- the sha git hands this hook, authoritative and free. For a
+# Gerrit upload, where that sha is all zeros by construction, the baseline is
+# the remote-tracking ref for the TARGET branch the change would be submitted
+# onto (`refs/remotes/<name>/<target>`) and only that, when it is present
+# locally. With no baseline available -- a brand-new branch, an unfetched
+# target -- the whole history is walked, which fails closed.
 [ "${ORCHID_ALLOW_PUSH:-0}" = 1 ] && exit 0
 
 integ="__INTEGRATION_BRANCH__"
 # githooks(5): the hook is called with the remote's NAME and URL. The name is
-# what turns `refs/remotes/<name>/*` into a baseline below; when the push names
-# a URL instead of a configured remote there are no tracking refs under it, the
-# existence test fails, and the walk simply has one baseline fewer.
+# what a Gerrit upload's baseline is spelled under (`refs/remotes/<name>/
+# <target>`); when the push names a URL instead of a configured remote there are
+# no tracking refs under it, the lookup fails, and the walk fails closed with no
+# baseline at all.
 remote_name="${1:-}"
 
 # Non-empty output when <commit-ish>'s tree carries durable run state.
@@ -195,27 +209,30 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   # A deletion (all-zero local sha) pushes no tree and can leak nothing.
   case "$local_sha" in *[!0]*) ;; *) continue ;; esac
 
-  # What the remote already holds, and therefore what this push does NOT
-  # publish. Built once here and used by the history walk below.
+  # What the remote already holds ON THIS DESTINATION, and therefore what this
+  # push does NOT publish. Built once here and used by the history walk below.
+  # Bound to the destination ref, never to the remote at large -- see the
+  # header: an unrelated ref's copy of the same objects is not this ref's
+  # exemption, or one override push exempts the whole repository forever.
   #
-  #   * the remote's own copy of the ref being pushed -- git hands it over, so
-  #     it is both authoritative and free. Skipped for a review upload, where
-  #     it is all zeros by construction, and skipped when the object is not
-  #     present locally, where it cannot be walked.
-  #   * every remote-tracking ref of this remote. For a Gerrit upload and for a
-  #     brand-new branch this is the only baseline there is, and it is the
-  #     right one: a commit already on the remote somewhere is not introduced
-  #     by this push. Added only once a tracking ref actually exists, so the
-  #     `--remotes=` glob can never be the thing that makes rev-list fail.
+  #   * an ordinary branch push: the remote's own copy of the ref being pushed.
+  #     git hands the sha over, so it is both authoritative and free. Skipped
+  #     when it is all zeros (a brand-new branch has no copy) and when the
+  #     object is not present locally, where it cannot be walked -- both fail
+  #     closed onto a full-history walk.
+  #   * a Gerrit upload: `refs/for/...` is never advertised, so that sha is
+  #     always zeros and the only honest baseline is the remote-tracking ref for
+  #     the TARGET branch the change would be submitted onto. Used only when it
+  #     resolves locally; an unfetched target leaves no baseline and fails
+  #     closed. No other remote ref stands in for it.
   base=()
   if [ "$review" -eq 0 ]; then
     case "$remote_sha" in
       *[!0]*) git cat-file -e "$remote_sha" 2>/dev/null && base+=("$remote_sha") ;;
     esac
-  fi
-  if [ -n "$remote_name" ] && \
-     [ -n "$(git for-each-ref --count=1 --format='%(refname)' "refs/remotes/$remote_name/" 2>/dev/null)" ]; then
-    base+=("--remotes=$remote_name")
+  elif [ -n "$remote_name" ] && [ -n "$target" ] && \
+       git rev-parse --verify --quiet "refs/remotes/$remote_name/$target^{commit}" >/dev/null 2>&1; then
+    base+=("refs/remotes/$remote_name/$target")
   fi
 
   if carries_run_state "$local_sha"; then
