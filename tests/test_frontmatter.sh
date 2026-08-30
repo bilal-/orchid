@@ -265,3 +265,111 @@ done
 rc=0; miss_err="$(fm_render_task_template "$WORK/no-such-template.md" TR3 t feature claude d 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "fm_render_task_template must refuse a missing template rather than render nothing and succeed"
 assert_match "missing" "$miss_err" "the refusal names the template it could not read"
+
+# ===========================================================================
+# T034 rework -- THE WRITE END REFUSES WHAT THE READ END REFUSES.
+#
+# fm_set guards its OPERANDS (no newline in either) and its OUTPUT's emptiness,
+# and neither question is "is the document still readable". It need not be: awk
+# writes `<key>: <value>` with whatever key it was handed, so a key that is not
+# a key -- a space where an underscore was meant -- appends a line that is not
+# a frontmatter entry. The write used to succeed, and from that moment every
+# reader of the file (fm_check, and therefore `task show`, `orchid doctor` and
+# the driver's task walk) called it DAMAGED. One typo, one destroyed task, by
+# the same mechanism as the newline: a value that cannot be represented in a
+# one-entry-per-line document, written anyway.
+# ===========================================================================
+printf -- '---\nid: T020\ntitle: intact\nstatus: pending\n---\nBody20.\n' > "$WORK/T020.md"
+cp "$WORK/T020.md" "$WORK/T020.before"
+rc=0; badkey_err="$(fm_set "$WORK/T020.md" 'hook guidance' 'shrink the diff' 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "fm_set must refuse a key that cannot be written as a frontmatter entry (it used to write it and report success, leaving the task unreadable)"
+assert_match "malformed frontmatter" "$badkey_err" \
+  "the write-end refusal names the same structural problem the read end would have reported afterwards"
+cmp -s "$WORK/T020.before" "$WORK/T020.md" \
+  || fail "a refused malformed write must leave the file byte-identical, exactly as the newline refusal does"
+fm_check "$WORK/T020.md" id >/dev/null \
+  || fail "...and the file must still be readable -- the whole point is that the refusal is what keeps it that way"
+red_case 'fm_set with a key that cannot be a frontmatter entry: refused, file byte-identical'
+
+# The GREEN twin on the same guard, and the discriminating one: the key the
+# operator meant, one character different, is written.
+fm_set "$WORK/T020.md" hook_guidance 'shrink the diff' \
+  || fail "fm_set must still accept a well-formed key"
+assert_eq 'shrink the diff' "$(fm_get "$WORK/T020.md" hook_guidance)" "a well-formed key round-trips"
+# Unknown-but-well-formed is legal too: this guard refuses keys that cannot be
+# STORED, never keys the kernel does not recognize (plugins and archetypes add
+# their own fields, and a closed list here would be a second schema).
+fm_set "$WORK/T020.md" some-plugin_field-7 v7 \
+  || fail "fm_set must accept an unknown key that is nonetheless a well-formed entry name"
+assert_eq v7 "$(fm_get "$WORK/T020.md" some-plugin_field-7)" "letters, digits, '_' and '-' are all storable"
+green_case 'fm_set with well-formed keys, known and unknown: accepted and stored'
+
+# A file that is ALREADY damaged is a DIFFERENT accident with a different
+# recovery, so it is answered separately. awk copies through the lines it does
+# not match, so a rewrite of a damaged file produces another damaged file --
+# reporting success and burying the damage under a fresh value.
+printf -- '---\nid: T021\ntitle: first half of a value\nand the remainder of that value\nstatus: pending\n---\nBody21.\n' \
+  > "$WORK/T021.md"
+cp "$WORK/T021.md" "$WORK/T021.before"
+rc=0; damaged_err="$(fm_set "$WORK/T021.md" status implementing 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "fm_set against an already-damaged file must not report success -- the rewrite it produces is damaged too"
+assert_match "ALREADY damaged" "$damaged_err" \
+  "the refusal says the file was already wrong, rather than blaming the key it was handed"
+cmp -s "$WORK/T021.before" "$WORK/T021.md" \
+  || fail "a refused write against a damaged file must leave it byte-identical, so a committed copy is still what has to be restored"
+
+# ===========================================================================
+# T034 rework -- fm_write_task_from: THE PRODUCER'S STATUS, READ BEFORE THE
+# RENAME.
+#
+# Every whole-document rewrite is `producer | fm_write_task "$f"`, and in that
+# shape fm_write_task judges the BYTES it was handed while the producer's exit
+# status arrives (through `pipefail`) only afterwards -- too late for anyone to
+# act on. That closes the loud failures and misses the quiet one: a producer
+# that dies partway through a document it was streaming has already emitted the
+# opening `---`, the frontmatter, the closing `---` and part of the body, and
+# that fragment is a perfectly well-formed document. fm_check accepts it, the
+# rename lands it, and the task silently loses its rework history.
+#
+# THE FIXTURE IS DELIBERATELY VALID OUTPUT WITH A FAILED STATUS, because that
+# is the only case the byte check cannot reach: if the producer emitted
+# something fm_check rejects, the existing refusal above would catch it and
+# this case would pass without exercising anything new.
+# ===========================================================================
+fmprod_ok()       { printf -- '---\nid: T022\nstatus: rework\n---\nbody\nand the whole rework history\n'; }
+fmprod_truncated() { printf -- '---\nid: T022\nstatus: rework\n---\nbody\n'; return 1; }
+fmprod_silent()   { return 1; }
+
+printf -- '---\nid: T022\nstatus: rework\n---\nbody\nand the whole rework history\n' > "$WORK/T022.md"
+cp "$WORK/T022.md" "$WORK/T022.before"
+rc=0; prod_err="$(fm_write_task_from "$WORK/T022.md" fmprod_truncated 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "fm_write_task_from must refuse a producer that exited non-zero, however well-formed what it managed to emit was"
+assert_match "fmprod_truncated" "$prod_err" "the refusal names the producer, since that is the thing that failed"
+cmp -s "$WORK/T022.before" "$WORK/T022.md" \
+  || fail "THE TASK LOST ITS BODY: a failed producer's fragment was landed, which is the defect this function exists for"
+# The witness that makes the case above mean something: the fragment IS a
+# document fm_write_task accepts, so nothing but the status distinguished it.
+fmprod_truncated > "$WORK/T022.fragment" || true
+fm_check "$WORK/T022.fragment" id >/dev/null \
+  || fail "fixture witness: the fragment must be a document every shape check accepts, or the status check above is not what refused it"
+red_case 'fm_write_task_from with a producer that exits non-zero after emitting a valid document: refused, task byte-identical'
+
+rc=0; silent_err="$(fm_write_task_from "$WORK/T022.md" fmprod_silent 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "fm_write_task_from must refuse a producer that emitted nothing at all"
+cmp -s "$WORK/T022.before" "$WORK/T022.md" || fail "...and leave the task byte-identical"
+
+# The GREEN twin: a producer that finishes lands, body and all.
+fm_write_task_from "$WORK/T022.md" fmprod_ok \
+  || fail "fm_write_task_from must accept a producer that exited 0 with a complete document"
+assert_match "and the whole rework history" "$(cat "$WORK/T022.md")" "an accepted rewrite lands the whole document"
+green_case 'fm_write_task_from with a producer that exits 0: the document lands'
+
+# Arguments reach the producer, since every real caller passes some (the task
+# file, the id, a timestamp, the operator's reason).
+fmprod_args() { printf -- '---\nid: %s\nstatus: %s\n---\nbody\n' "$1" "$2"; }
+fm_write_task_from "$WORK/T022.md" fmprod_args T022 blocked \
+  || fail "fm_write_task_from must pass its trailing arguments to the producer"
+assert_eq blocked "$(fm_get "$WORK/T022.md" status)" "the producer received its arguments"
+# No staging file is left beside the task: these land in .orchid/tasks/ itself.
+leftover_stage="$(find "$WORK" -name '*.fmprod.*' | wc -l | tr -d ' ')"
+assert_eq 0 "$leftover_stage" "fm_write_task_from removes its staging file on every path, so none are left in the tasks directory"

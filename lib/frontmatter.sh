@@ -145,10 +145,57 @@ fm_write_task() {
   fi
 }
 
+# fm_write_task_from <file> <producer> [args...] -- run <producer> to build a
+# whole task document, and hand it to fm_write_task ONLY when the producer
+# exited 0. The producer writes to stdout exactly as it would in a pipe; what
+# changes is that its status is read BEFORE anything is renamed.
+#
+# T034 rework -- THE HOLE fm_write_task ALONE CANNOT SEE. Every caller spells
+# the rewrite `producer | fm_write_task "$f"`, and in that shape the producer's
+# exit status arrives (through `pipefail`) only after fm_write_task has already
+# decided. fm_write_task judges the BYTES it was handed, which closes the two
+# loud failures -- a producer that emits nothing, and one whose output is not a
+# frontmatter document -- but not the quiet one: a producer that dies partway
+# through a task it was streaming line by line has already emitted the opening
+# `---`, the frontmatter, the closing `---` and part of the body. That fragment
+# is a perfectly well-formed document. fm_check accepts it, the rename lands it,
+# and the task silently loses the tail of its body -- the rework history, the
+# operator guidance, everything appended below the fields. That is the same
+# accident as F34's zero-byte file, one layer up and harder to notice, because
+# what survives looks right.
+#
+# So the producer runs to a staged file and is judged on its STATUS first, and
+# only a producer that finished is allowed to become the task. A producer that
+# failed leaves the previous document in place, exactly as a refused rewrite
+# does.
+#
+# THE PRODUCERS ARE FAIL-CLOSED THEMSELVES, and this is the other half. Callers
+# of this function run under `set -e`, and errexit is suppressed inside any
+# command whose status is being tested -- which is what this function does to
+# the producer by construction. A producer that relied on errexit to abort
+# partway would therefore run ON past its own failed step here and could still
+# return 0. Every producer handed to this function checks its own steps and
+# returns non-zero itself (see orchid-task's refresh_briefs); this function is
+# what makes that return mean something.
+fm_write_task_from() {
+  local f="$1"; shift
+  local stage="" prc=0 rc=0
+  stage="$(mktemp "$f.fmprod.XXXXXX")" || return 1
+  "$@" > "$stage" || prc=$?
+  if [ "$prc" -ne 0 ]; then
+    rm -f "$stage"
+    echo "orchid: refusing to rewrite $f: the producer that builds the replacement document ('$1') exited $prc, so what it emitted is at best a fragment of the task — nothing was written to $f, which is left exactly as it was." >&2
+    return 1
+  fi
+  fm_write_task "$f" < "$stage" || rc=$?
+  rm -f "$stage"
+  return "$rc"
+}
+
 # fm_render_task_template <template> <id> <title> <archetype> <engine> <date>
 # -- render a `templates/task*.md` to stdout with its five __PLACEHOLDER__
-# tokens replaced by the caller's values, LITERALLY. Pipe it into fm_write_task,
-# which is the writing half of the same contract.
+# tokens replaced by the caller's values, LITERALLY. Hand it to
+# fm_write_task_from, which is the writing half of the same contract.
 #
 # T034 rework (attempt-1 gap). `task create` used to render the template with
 #
@@ -274,11 +321,40 @@ fm_render_task_template() {
 # across two lines and landing the remainder as a key of its own. That is the
 # same rule broken by the same accident (`task set` takes the key from the
 # command line too), so the guard is written over the pair.
+#
+# THE REMEDY THIS MESSAGE NAMES IS THE ONE THAT IS ALWAYS TRUE HERE (T034
+# rework). It used to name `orchid task unblock`/`orchid task retry`, and this
+# function does not write only task files -- `orchid run` and `orchid plan`
+# fm_set `run_status` into `.orchid/roadmap.md`, where a task verb is not a
+# remedy at all, and even on a task file those two verbs are legal only from
+# `blocked`/`rework`. A library backstop cannot know either thing. Flattening
+# is the answer that holds for every caller and every file, so that is what it
+# says; the VERB that called it is where a remedy fitted to the file and its
+# current state belongs (orchid-task's _no_newline).
+#
+# AND THE DOCUMENT IT WOULD PRODUCE IS CHECKED, not just its emptiness (T034
+# rework). The two guards above are about the operands arriving intact; neither
+# asks whether what awk wrote is still a readable frontmatter document. It need
+# not be, from either end:
+#
+#   * A KEY THAT IS NOT A KEY. `orchid task set T1 'hook guidance' x` -- a space
+#     where an underscore was meant -- appends `hook guidance: x`, which is not
+#     an entry. One typo in one argument, and every reader of that task
+#     (`task show`, `orchid doctor`, the driver's walk) reports it DAMAGED from
+#     then on. The write end has to refuse what the read end refuses, or a
+#     single `task set` bricks a task exactly as the newline used to.
+#   * A FILE THAT WAS ALREADY DAMAGED. awk copies the lines it does not match
+#     through untouched, so a rewrite of a file carrying a key-less remainder
+#     line produces another one, reports success, and buries the damage under a
+#     fresh value. Naming it here is the difference between "this write is
+#     wrong" and "this file was already wrong", which are different accidents
+#     with different recoveries -- so the original is asked too, and answered
+#     for separately.
 fm_set() {
-  local f="$1" k="$2" v="$3" t=""
+  local f="$1" k="$2" v="$3" t="" why="" was=""
   case "$k$v" in
     *$'\n'*)
-      echo "orchid: refusing to write '$k': task frontmatter is one 'key: value' per line and this key or value contains a newline. Nothing was written and $f is unchanged. Flatten the value to a single line (a literal \\n is stored as those two characters, never expanded), or deliver multi-paragraph prose through the verb that records it in the task BODY -- 'orchid task unblock <id> --reason ...' or 'orchid task retry <id> --reason ...'. Nothing under .orchid/ is ever hand-edited." >&2
+      echo "orchid: refusing to write '$k': frontmatter is one 'key: value' per line and this key or value contains a newline. Nothing was written and $f is unchanged. Flatten it to a single line — a literal \\n is stored as those two characters and read back unchanged, never expanded. Nothing under .orchid/ is ever hand-edited; the verb you called names the remedy that fits this file." >&2
       return 1 ;;
   esac
   t="$(mktemp "$f.fmset.XXXXXX")" || return 1
@@ -288,6 +364,15 @@ fm_set() {
     n==1 && index($0,k": ")==1 { print k ": " v; done=1; next }
     n==1 && $0==k":" { print k ": " v; done=1; next }
     { print }' "$f" > "$t" && [ -s "$t" ]; then
+    if ! why="$(fm_check "$t")"; then
+      rm -f "$t"
+      if ! was="$(fm_check "$f")"; then
+        echo "orchid: refusing to set '$k' in $f: that file is ALREADY damaged ($was), so this write would bury the damage under a fresh value rather than repair it. $f is unchanged. Recover it first — 'orchid task show <id>' and 'orchid doctor' report the same damage against the same path, and a committed copy comes back with 'git checkout <sha> -- <path>'." >&2
+      else
+        echo "orchid: refusing to set '$k' in $f: the document that write would produce cannot be read back ($why). $f is unchanged. A frontmatter entry is 'key: value' on one line, so the key must be a plain name — letters, digits, '_' and '-', starting with a letter or '_'." >&2
+      fi
+      return 1
+    fi
     # The rename is CHECKED, and its failure is a failure of fm_set. `mv` can
     # lose (a read-only directory, a full filesystem) and the bare form left
     # `return 0` to run behind it -- reporting a successful write of a value

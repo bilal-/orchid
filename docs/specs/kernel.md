@@ -1058,13 +1058,42 @@ wrong. Every line between the delimiters must therefore be an entry (`key:`,
 `key: value`, a `#` comment, or blank); anything else is named as malformed
 frontmatter, by the same predicate at the read end and the write end.
 
+The write end applies it to the KEY as well. `task set` takes its key off the
+command line, so `task set <id> 'hook guidance' "..."` — a space where an
+underscore was meant — used to append a line that is not an entry, exit 0, and
+leave the task DAMAGED to every reader from then on. A key must be a plain
+entry name (letters, digits, `_`, `-`, starting with a letter or `_`), refused
+by the verb naming the argument and by `fm_set` checking the document it staged.
+That is a bar on what can be STORED, never on which fields the kernel knows:
+an unknown but well-formed key is legal, since plugins and archetypes add their
+own. A write against a file that is ALREADY damaged is refused too, and said to
+be a different accident: rewriting it would bury the damage under a fresh value.
+
+Whole-document rewrites read their PRODUCER'S STATUS before the rename, not
+only the bytes it emitted (`fm_write_task_from`). A producer that dies partway
+through a task it is streaming has already emitted both delimiters, the
+frontmatter and part of the body, and that fragment is a well-formed document —
+so a byte check accepts it and the task silently loses its rework history, the
+same accident as the zero-byte file one layer up. In a pipe the producer's
+status arrives only after the rename has happened, which is why the rewrite
+arms name their producer instead of piping it, and why each producer checks its
+own steps rather than relying on `set -e` (errexit is suppressed in any command
+whose status is being read).
+
 Every remedy the single-line refusals print is a VERB — flatten the value, or
 record the prose in the task body with `task unblock`/`task retry --reason` —
 never an instruction to open the file, which the protocol forbids without
-qualification. The one exception is recovering a task file already destroyed,
-which `task show` and `doctor` answer with `git checkout <sha> -- <path>`:
-restoring a committed version is not a hand-edit, and no verb rebuilds a task's
-history from nothing.
+qualification. And the verb it names must be one that can be RUN from the
+status the refusal fired in: both of those are gated (`unblock` to `blocked`,
+`retry` to `blocked`/`rework`) while the refusal fires most often on a `pending`
+task being planned, so the message names the one that is legal there — or says
+that none is, and names `task advance <id> blocked --reason` as the edge that
+reaches one, that transition being legal from every status. A remedy the
+operator cannot run is worse than none: it returns them to the file. The one
+exception to verbs-only is recovering a task file already destroyed, which
+`task show` and `doctor` answer with `git checkout <sha> -- <path>`: restoring
+a committed version is not a hand-edit, and no verb rebuilds a task's history
+from nothing.
 
 **Review immutability:** reviewers inspect exactly `base_sha..candidate_sha`;
 any candidate change invalidates reviews (see rebase rule). Incomplete or

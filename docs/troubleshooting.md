@@ -1693,7 +1693,13 @@ cannot be stored there. Two ways forward, both of them verbs:
 - **Send the prose to the task body through the verb that writes it there** —
   `orchid task unblock <id> --reason "..."` or `orchid task retry <id>
   --reason "..."`. Both record the reason in the task BODY, which is the file
-  the implementer's own capsule carries.
+  the implementer's own capsule carries. **Both are status-gated**: `unblock`
+  runs only from `blocked`, `retry` only from `blocked` or `rework`. A task
+  being planned is `pending`, where neither does — take it to one of them with
+  `orchid task advance <id> blocked --reason "..."` (legal from every status)
+  if the prose is guidance rather than a field's value. The refusal you got
+  names whichever of these applies to that task right now, so read it rather
+  than guessing from here.
 
 Do not reach for the file itself. Editing anything under `.orchid/` by hand is
 forbidden outright (PROTOCOL.md's Preamble), and this is the moment it is most
@@ -1712,6 +1718,16 @@ and `id` still resolves — so only the split field is wrong, and silently. That
 is now refused too: `task show`, `orchid doctor` and every frontmatter write
 report `malformed frontmatter: line N is not a 'key: value' entry`, naming the
 line.
+
+**And the same slip in the KEY.** `orchid task set T002 'hook guidance' "..."`
+— a space where an underscore was meant — used to write `hook guidance: ...`,
+exit 0, and leave that task unreadable to every verb from then on. It is
+refused now, naming the argument. A key may hold letters, digits, `_` and `-`
+and must start with a letter or `_`; it does **not** have to be a field the
+kernel knows, since archetypes and plugins add their own. A `task set` against
+a file that is already damaged is refused separately, and says so — rewriting
+it would only bury the damage under a fresh value, so restore the file first
+(below) and set the value afterwards.
 
 **Recovering a file already destroyed** — the frontmatter is recoverable
 wherever it was last committed, and often from a review pack. This is the one

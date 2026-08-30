@@ -554,7 +554,10 @@ sequence in
    nothing. Flatten it (a literal `\n` is stored as those two characters and
    read back unchanged); never work around it by editing the task file, which
    the Preamble forbids outright. A title is one line for the same reason,
-   and `task create` refuses one that is not.
+   and `task create` refuses one that is not. The KEY is held to the same rule
+   — letters, digits, `_` and `-`, starting with a letter or `_` — because
+   `hook guidance` with a space is written as a line that is not an entry at
+   all, and a task carrying one is unreadable to every verb that touches it.
    A task whose deliverable IS a check — a new gate, a
    probe, a lint, a verification command — states its RED case in the
    acceptance criteria, in the Preamble's terms: which failure the check

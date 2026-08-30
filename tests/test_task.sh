@@ -1409,10 +1409,25 @@ grep -qi "awk" <<<"$nl_out" && fail "the refusal must not leak a raw awk error -
 # you can see exactly what line would need to change"), and an earlier wording
 # of this refusal ended "put the prose in the task BODY (below the closing
 # '---' in .orchid/tasks/<id>.md)", which reads as an instruction to do it.
-assert_match "orchid task unblock <id> --reason" "$nl_out" \
-  "the refusal names the verb that records prose in the task BODY, rather than describing where in the file it would go"
 grep -qE 'below the closing' <<<"$nl_out" \
   && fail "the refusal must not point the operator INTO the task file: hand-editing anything under .orchid/ is forbidden outright, so a remedy that describes the file is one nobody is allowed to take"
+# ...AND EVERY VERB IT NAMES CAN BE RUN FROM WHERE IT IS PRINTED (T034 rework).
+# T013 is `pending`, which is where this refusal actually fires -- a long
+# `acceptance_criteria` is written while a task is being planned. The wording
+# that named `orchid task unblock <id> --reason` and `orchid task retry <id>
+# --reason` unconditionally handed the operator two commands that refuse them
+# right back: `unblock` dies "$id is not blocked" and `retry` exits 3 ("illegal
+# retry from pending"). A remedy that cannot be run is worse than none -- it
+# spends the operator's trust and returns them to the file anyway, which is the
+# one place they must not go.
+assert_eq pending "$("$ORCHID_BIN" task show T013 | grep '^status: ' | cut -d' ' -f2)" \
+  "fixture witness: T013 is pending, the status neither body-writing verb accepts -- which is what makes the remedy assertions below discriminating"
+assert_match "no verb writes prose there from status 'pending'" "$nl_out" \
+  "the refusal says so instead of naming a verb that would refuse the operator a second time"
+assert_match "orchid task advance T013 blocked --reason" "$nl_out" \
+  "...and names the edge that reaches a status where one of them IS legal, which is the universal transition every status has"
+assert_match "Flatten it to a single line" "$nl_out" \
+  "...and leads with the answer to the question actually asked: this value, in this field"
 [ -s "$nl_file" ] || fail "THE FILE IS EMPTY: a refused write destroyed the task, which is the whole defect"
 cmp -s "$T034_KEEP/T013.before" "$nl_file" \
   || fail "a refused newline write must leave the task file BYTE-IDENTICAL"
@@ -1428,6 +1443,52 @@ assert_eq "one line of criteria is fine" \
   "$("$ORCHID_BIN" task show T013 | grep '^acceptance_criteria: ' | cut -d' ' -f2-)" \
   "an accepted single-line value is stored verbatim"
 green_case 'task set with a single-line value: accepted and stored verbatim'
+
+# THE KEY IS THE OTHER OPERAND, AND IT DESTROYS A TASK THE SAME WAY (T034
+# rework). `set` takes its key straight off the command line and the write is
+# `<key>: <value>`, so a key that is not a key -- a space where an underscore
+# was meant, which is the slip this field's name invites -- appends a line that
+# is not a frontmatter entry at all. Nothing objected: the write succeeded,
+# `task set` exited 0, and from that moment every reader of the task (`task
+# show`, `orchid doctor`, `task list`, the driver's walk) called it DAMAGED.
+# One typo in one argument, by the same mechanism as the newline -- something
+# that cannot be represented in a one-entry-per-line document, written anyway.
+cp "$nl_file" "$T034_KEEP/T013.keyshape"
+rc=0; badkey_out="$("$ORCHID_BIN" task set T013 'hook guidance' "shrink the diff" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set with a key that cannot be a frontmatter entry must exit NON-ZERO (it used to write it, exit 0, and leave the task unreadable)"
+red_case 'task set with a malformed key: refused, non-zero exit, task byte-identical'
+assert_match "hook guidance" "$badkey_out" \
+  "the refusal quotes the argument that was wrong, which is the one thing a library-level refusal about an unreadable document cannot say"
+assert_match "hook_guidance" "$badkey_out" \
+  "...and shows the key that was meant, since a space for an underscore is the whole mistake"
+cmp -s "$T034_KEEP/T013.keyshape" "$nl_file" \
+  || fail "a refused malformed key must leave the task file BYTE-IDENTICAL, exactly as the newline refusal does"
+"$ORCHID_BIN" task show T013 >/dev/null \
+  || fail "...and the task must still be readable afterwards -- the refusal is what keeps it that way"
+# The GREEN twin, one character apart: the key the operator meant is written.
+"$ORCHID_BIN" task set T013 hook_guidance "shrink the diff" \
+  || fail "the well-formed key one character away must still be accepted"
+assert_eq "shrink the diff" \
+  "$("$ORCHID_BIN" task show T013 | grep '^hook_guidance: ' | cut -d' ' -f2-)" \
+  "an accepted key stores its value"
+green_case 'task set with a well-formed key: accepted and stored'
+
+# THE REMEDY, FROM A STATUS WHERE THE VERB IT NAMES IS LEGAL. The refusal
+# T013 got above says no verb writes prose from `pending`; on a `blocked` task
+# the same refusal must name `unblock`, because there it can actually be run.
+# Both halves matter: a remedy that is always the same sentence is not advice,
+# and a remedy that names an unrunnable verb is worse than silence.
+"$ORCHID_BIN" task create T017 "the remedy follows the status" \
+  || fail "fixture: task create T017 must succeed (a taken id would make the assertions below read another case's task)"
+"$ORCHID_BIN" task advance T017 blocked --reason "fixture blocker for the remedy case" >/dev/null \
+  || fail "fixture: T017 must reach blocked, the status whose body-writing verb is unblock"
+rc=0; blocked_nl_out="$("$ORCHID_BIN" task set T017 acceptance_criteria "$nl_value" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "the newline refusal must fire from blocked too"
+assert_match "orchid task unblock T017 --reason" "$blocked_nl_out" \
+  "from blocked, the refusal names the verb that records prose in the task BODY and is legal right there"
+grep -qE "no verb writes prose there" <<<"$blocked_nl_out" \
+  && fail "...and must not claim none is available, which is only true away from blocked/rework"
+green_case 'the single-line refusal names a body-writing verb that is legal from the task status it fired in'
 
 # `task create` renders its template through fm_render_task_template, not
 # `fm_set` -- a different writer, and one that (since T034's rework) stores what
