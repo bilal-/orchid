@@ -631,9 +631,19 @@ and already made durable. So the class of an arbitration is the ACTOR's unless
 durable operator state authorises it — and that state is a structured AUTHORITY
 RECORD the kernel writes beside the page, `runtime/answers/<qid>.objection`,
 never the page's own prose. It states the TASK, the objection INSTANCE
-(`objection_seq`) and the canonical stored objection line, each compared as a
+(`objection_seq`), the canonical stored objection line, the CANDIDATE the page
+was raised about and the review EVIDENCE it presented, each compared as a
 whole line and none of them a substring match; the page it names must have an
-`.answer` recording the result spelled exactly. Only `orchid notify --objection`
+`.answer` recording the result spelled exactly. The evidence is one digest over
+that candidate, the round, the round's pinned review plan and the accepted review
+envelopes filed against it; both it and the candidate are re-read when the answer
+is spent — because the
+first three bind an answer to a task, an instance and a text, and none of them
+binds it to what the operator was looking at. A rebase, a relaunched reviewer
+slot, a replaced verdict or a repin moves the round while the objection line
+(`a<attempt>: <reason>`, over a counter `--waive-attempt` deliberately leaves
+alone) says nothing about it; relayed past that, their "yes, that is fixed"
+settles a round they never saw. Only `orchid notify --objection`
 writes one, and the brokered command surface refuses an unrecognised flag to
 `notify` outright — so a woken model may raise a page (that verb is admitted)
 but cannot raise one that lends its own arbitration a human's authority. No

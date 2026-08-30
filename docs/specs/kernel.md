@@ -1265,13 +1265,28 @@ consumes an answer file — so an operator who has decided still needs an actor
 to record the arbitration, and in an unattended run that actor is a woken
 orchestrator. `review_operator_relay` (lib/review.sh) is the reader that credits
 one, and what it reads is an AUTHORITY RECORD, never a page's prose:
-`runtime/answers/<qid>.objection`, three lines (`task:`, `seq:`, `objection:`),
+`runtime/answers/<qid>.objection`, five lines (`task:`, `seq:`, `objection:`,
+`candidate:`, `evidence:`),
 written by `orchid notify --objection` and defined in lib/objection.sh. A
 `--result approve` recorded by a non-operator counts as the operator's iff such a
 record names this task, names the objection instance standing now, carries the
-canonical stored objection line byte for byte, and its `<qid>.question` (same
+canonical stored objection line byte for byte, names the candidate and the review
+evidence standing now, and its `<qid>.question` (same
 `task:` header) has an `.answer` recording exactly `approve`. Every field is
-compared as a whole line; nothing is matched as a substring. `orchid answer` is
+compared as a whole line; nothing is matched as a substring, and a sixth line is
+refused rather than ignored (so a record minted before `candidate:`/`evidence:`
+existed matches nothing). `candidate:` is the task's `candidate_sha`, stored
+plainly because it is the term a human reading `runtime/answers/` has to be able
+to see; `evidence:` is `objection_evidence` — one digest over that candidate, the
+round (`attempts` + 1), the pinned review plan for that round and every accepted
+review envelope of it, by name and by content. Both are re-read at the relay and
+compared like the rest. The first three bind an
+answer to a task, an instance and a text; none of them binds it to what the
+operator was looking at, and a rebase, a relaunched slot, a replaced verdict or a
+repin moves the round without moving the objection line (which is
+`a<attempt>: <reason>` over a counter `--waive-attempt` deliberately leaves
+alone). Any of them moving invalidates the answer, and the operator is paged
+again for the round that exists. `orchid answer` is
 on no surface's admitted verb list, and `runners/orchid-orchestrator-command`
 refuses an unrecognised flag to `notify` — so a woken model can raise a page
 (`notify` IS admitted) but cannot raise one that mints an authority, which is

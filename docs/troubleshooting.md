@@ -1261,8 +1261,10 @@ orchid answer <qid> approve      # the qid on the page, from BLOCKERS.md or your
 
 The relay is deliberately narrow, and what it reads is **not the page's words**.
 When the driver raises this stop it writes a small record beside the question —
-`runtime/answers/<qid>.objection`, naming this task, this objection instance and
-the objection's stored line — and that record is the evidence. `orchid task
+`runtime/answers/<qid>.objection`, naming this task, this objection instance, the
+objection's stored line, the candidate it was raised about and a digest of the
+review evidence the page put in front of you — and
+that record is the evidence. `orchid task
 arbitrate --result approve` run by a woken orchestrator is credited as *yours*
 only when such a record matches the objection standing right now and its page has
 an answer recording exactly `approve`. Two verbs are what make that state yours:
@@ -1278,6 +1280,16 @@ words*, since the instance rotates even when `--waive-attempt` leaves the round
 number alone — none of them carries. The refusal you would then see names the
 page to answer. Nothing about the model's own reasoning is an input: not its
 `--reason` prose, not a flag, not an environment variable.
+
+Nor does an answer about a round that has **moved since you read it**. You are
+answering one question — was the objection met by *this* diff and *these*
+reviews? — and the candidate, the round's pinned review plan and the reviews
+filed against it can all change without touching a character of the objection or
+a digit of its instance: a rebase, a relaunched reviewer slot, a replaced
+verdict. The record states a digest of all of that, recomputed when your answer
+would be spent, so any of it moving invalidates the answer and you are paged
+again for the round that actually exists. If you would rather not wait for the
+new page, the arbitration is yours to run from your own shell.
 
 The record is **spent** by the arbitration it authorises, so one answer settles
 one decision. If a pass is killed mid-arbitration you may find the objection

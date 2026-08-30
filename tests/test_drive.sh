@@ -10552,31 +10552,113 @@ assert_eq 4 "$(objection_seq "$POLICY" P59)" \
 assert_eq 0 "$(objection_seq "$POLICY" P57)" \
   "a task with no objection_seq reads 0, so the counter starts moving with the first rejection rather than crashing a reader"
 
+# THE FOURTH AND FIFTH FIELDS (T032 convergence, after the attempt-7
+# arbitration): the CANDIDATE the page was about and the review EVIDENCE it
+# presented. The task, the instance and the text bind an answer to a subject, a
+# rotation and some words; none of them binds it to the round the operator was
+# actually looking at when they typed `approve`.
+AJ_CAND="$(objection_candidate "$POLICY" P59)" \
+  || fail "T032: the candidate P59's objection is about must be readable, or no page the kernel raises can be bound to the diff it was raised about"
+assert_eq "$CAND" "$AJ_CAND" \
+  "T032: ...and it is the task's own candidate_sha, read off the task rather than composed by whoever raised the page"
+AJ_EV="$(objection_evidence "$POLICY" P59)" \
+  || fail "T032: the review evidence of P59's round must be computable, or no page the kernel raises can be bound to the round it was raised for"
+[ -n "$AJ_EV" ] \
+  || fail "T032: ...and it must be a digest, not an empty string — an empty one would compare equal to every record that never carried the field"
+# THE RESTATEMENT IS PINNED AGAINST THE ORIGINAL. objection_evidence composes the
+# round number and the pinned-plan path itself, because it has to be callable
+# from `orchid notify` — a tier-1 verb that cannot source lib/review.sh, where
+# both shapes are defined. Two spellings of one path is exactly the drift that
+# would leave the digest hashing a plan that is not this round's, which is
+# indistinguishable from a round that has no plan at all. Asserted here, where
+# both libraries are loaded, rather than assumed at either end.
+assert_eq 1 "$(review_plan_attempt "$POLICY" P59)" \
+  "T032: the round objection_evidence keys on must be review_plan_attempt's answer for the same task — the digest names the attempt's artifacts, so an off-by-one there digests another round's evidence"
+assert_eq "$POLICY/.orchid/reviews/P59-a1.review-plan.json" "$(review_plan_file "$POLICY" P59)" \
+  "T032: ...and the pinned-plan path it restates must be review_plan_file's, byte for byte — a rename on either side would make the digest report 'no plan' forever, which is the fail-OPEN direction for a field that only matters when a repin has happened"
+
 # --- the record's writer and its reader agree, on every field ---------------
-aj_page() {   # <qid> <task> <seq> <objection> -- a kernel page, record and all
+aj_page() {   # <qid> <task> <seq> <objection> [candidate] [evidence]
   printf 'task: %s\nnonce: deadbeef\njudgment boundary [operator-decision] needs an operator: %s\n' \
     "$2" "$4" > "$AJ_ANSWERS/$1.question"
-  objection_authority_write "$POLICY" "$1" "$2" "$3" "$4" \
+  objection_authority_write "$POLICY" "$1" "$2" "$3" "$4" "${5:-$AJ_CAND}" "${6:-$AJ_EV}" \
     || fail "fixture: the authority record for $1 must be writable"
 }
 aj_page q-aj-ok P59 4 "$AJ_OBJ"
 aj_auth="$(objection_authority_file "$POLICY" q-aj-ok)"
 [ -f "$aj_auth" ] || fail "fixture: objection_authority_file must name the record its own writer just wrote"
-objection_authority_matches "$aj_auth" P59 4 "$AJ_OBJ" \
+objection_authority_matches "$aj_auth" P59 4 "$AJ_OBJ" "$AJ_CAND" "$AJ_EV" \
   || fail "T032: the record's writer and its reader must agree about the format — if they do not, no page the kernel raises can ever authorise anything"
-# Each axis, alone, refuses. Written as three near misses rather than one
-# because a reader that compared only two of them would pass a single case.
-objection_authority_matches "$aj_auth" P57 4 "$AJ_OBJ" \
+# Each axis, alone, refuses. Written as five near misses rather than one
+# because a reader that compared only four of them would pass a single case.
+objection_authority_matches "$aj_auth" P57 4 "$AJ_OBJ" "$AJ_CAND" "$AJ_EV" \
   && fail "T032: a record for another task must not match — an answer that travelled between tasks is the bypass the task binding exists to close"
-objection_authority_matches "$aj_auth" P59 5 "$AJ_OBJ" \
+objection_authority_matches "$aj_auth" P59 5 "$AJ_OBJ" "$AJ_CAND" "$AJ_EV" \
   && fail "T032: a record for another instance must not match — that is the whole of what stops an answer from outliving the objection it was given about"
-objection_authority_matches "$aj_auth" P59 4 "$AJ_OBJ and one more thing" \
+objection_authority_matches "$aj_auth" P59 4 "$AJ_OBJ and one more thing" "$AJ_CAND" "$AJ_EV" \
   && fail "T032: a record whose objection text differs must not match — the compare is the whole line, exactly, never a prefix of it"
-# ...and the reader will not act on a record it does not fully understand.
-printf 'task: P59\nseq: 4\nobjection: %s\nand: something nobody here knows\n' "$AJ_OBJ" > "$AJ_ANSWERS/q-aj-wide.objection"
-objection_authority_matches "$AJ_ANSWERS/q-aj-wide.objection" P59 4 "$AJ_OBJ" \
+objection_authority_matches "$aj_auth" P59 4 "$AJ_OBJ" "${AJ_CAND%?}9" "$AJ_EV" \
+  && fail "T032: a record raised about another candidate must not match — the operator read a diff, and a rebase between the page and the relay puts a different one under the same objection"
+objection_authority_matches "$aj_auth" P59 4 "$AJ_OBJ" "$AJ_CAND" "${AJ_EV}0" \
+  && fail "T032: a record raised against other review evidence must not match — the operator answered about a plan and a set of reviews, and a record that outlives them settles a round they never saw"
+objection_authority_matches "$aj_auth" P59 4 "$AJ_OBJ" "" "$AJ_EV" \
+  && fail "T032: a candidate the caller could not read must be no wildcard — a reader with nothing to compare may credit nothing"
+objection_authority_matches "$aj_auth" P59 4 "$AJ_OBJ" "$AJ_CAND" "" \
+  && fail "T032: ...and neither may an evidence digest it could not compute"
+# ...and the reader will not act on a record it does not fully understand. Two
+# shapes: a field it has never heard of, and the THREE-line record this format
+# used to be, whose missing `candidate:` and `evidence:` lines must refuse rather
+# than read as "bound to no round".
+printf 'task: P59\nseq: 4\nobjection: %s\ncandidate: %s\nevidence: %s\nand: something nobody here knows\n' "$AJ_OBJ" "$AJ_CAND" "$AJ_EV" > "$AJ_ANSWERS/q-aj-wide.objection"
+objection_authority_matches "$AJ_ANSWERS/q-aj-wide.objection" P59 4 "$AJ_OBJ" "$AJ_CAND" "$AJ_EV" \
   && fail "T032: a record carrying a field this reader does not know must be refused, not parsed as far as it goes — a format that grows a line silently is one whose later fields nobody checks"
-red_case 'an authority record for another task, another instance, another objection, or with a field nobody here knows: matched by none of it'
+printf 'task: P59\nseq: 4\nobjection: %s\n' "$AJ_OBJ" > "$AJ_ANSWERS/q-aj-old.objection"
+objection_authority_matches "$AJ_ANSWERS/q-aj-old.objection" P59 4 "$AJ_OBJ" "$AJ_CAND" "$AJ_EV" \
+  && fail "T032: a record minted before the round fields existed must be refused — reading missing lines as 'this answer was about any round' is exactly the credit those fields exist to withhold"
+red_case 'an authority record for another task, another instance, another objection, another candidate, other review evidence, none at all, or with a field nobody here knows: matched by none of it'
+
+# --- and the evidence really MOVES when the round does ----------------------
+# A digest that never changed would pass every case above while binding nothing.
+# Each of the three axes the page presents is walked, and each alone must change
+# it: the candidate the objection is about, the accepted review envelopes of the
+# round, and the pinned review plan it was judged under.
+#
+# The result comes back in a GLOBAL rather than on stdout, and deliberately:
+# `fail` increments a counter in the shell it runs in and prints to stdout, so a
+# helper that asserted inside `$(...)` would swallow both — the FAIL line into
+# the caller's variable and the count into a dead subshell — and every case here
+# would pass silently. (helpers.sh line 41.)
+AJ_EV_NOW=""
+aj_ev_moves() {   # <what moved> -- sets AJ_EV_NOW
+  AJ_EV_NOW="$(objection_evidence "$POLICY" P59 || true)"
+  [ -n "$AJ_EV_NOW" ] \
+    || fail "T032: the evidence must stay computable after $1"
+  [ "$AJ_EV_NOW" != "$AJ_EV" ] \
+    || fail "T032: $1 must change the review evidence of P59's round — an answer relayed past it settles a round the operator never saw"
+}
+mk_review P59 -second approve true '[]'
+aj_ev_moves "a second accepted review envelope arriving in the round"
+AJ_EV_ENVELOPE="$AJ_EV_NOW"
+rm -f "$POLICY/.orchid/reviews/P59-a1-reviewer-second.json"
+assert_eq "$AJ_EV" "$(objection_evidence "$POLICY" P59)" \
+  "T032: ...and the digest is a function of the round's state, not a one-way ratchet — removing that envelope restores it, which is what makes the comparisons above exact rather than merely different"
+printf '1\tagy\tworktree\tdepth\tagy@fixture\n' > "$POLICY/.orchid/reviews/P59-a1.review-plan.json"
+aj_ev_moves "a pinned review plan appearing for the round"
+[ "$AJ_EV_NOW" != "$AJ_EV_ENVELOPE" ] \
+  || fail "T032: a plan and an envelope must not be interchangeable in the digest — a term that collapses is a term that is not being recorded"
+rm -f "$POLICY/.orchid/reviews/P59-a1.review-plan.json"
+fm_set "$POLICY/.orchid/tasks/P59.md" candidate_sha 2222222222222222222222222222222222222222 \
+  || fail "fixture: P59's candidate must be re-pointable"
+aj_ev_moves "the candidate the objection is about being re-pointed"
+assert_eq 2222222222222222222222222222222222222222 "$(objection_candidate "$POLICY" P59)" \
+  "T032: ...and the plain candidate line follows it — that field is the one a human reading runtime/answers/ afterwards can see, so it must be the task's live value and not a copy taken once"
+fm_set "$POLICY/.orchid/tasks/P59.md" candidate_sha "$CAND" \
+  || fail "fixture: P59's candidate must be restorable"
+assert_eq "$AJ_EV" "$(objection_evidence "$POLICY" P59)" \
+  "fixture: the round is back exactly where it started, so the relay cases below run against the evidence the records above were written with"
+assert_eq "$AJ_CAND" "$(objection_candidate "$POLICY" P59)" \
+  "fixture: ...and so is the candidate"
+green_case "the round a page presents: the candidate, the round's accepted envelopes and its pinned plan, each moving the digest on its own, and the candidate moving its own plain line too"
 
 # --- the relay: the record is necessary, and so is the answered page --------
 aj_relay() { review_operator_relay "$POLICY" P59 approve "$AJ_OBJ" 4; }

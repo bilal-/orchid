@@ -108,7 +108,7 @@ choices_display="${choices//,/ | }"
 # leaving a page whose authority record silently never appeared. The values are
 # captured now and written after the question, so the record can only ever state
 # what the task said at the moment the operator was paged.
-objection_text=""; objection_instance=""
+objection_text=""; objection_instance=""; objection_cand=""; objection_ev=""
 if [ "$objection_page" -eq 1 ]; then
   [ -n "$task" ] || orchid_die "--objection requires --task <id>: an objection authority is a record about one task's standing objection, and a page with no subject names none"
   [ -f "$state/tasks/$task.md" ] || orchid_die "--objection names no such task: $task"
@@ -116,6 +116,17 @@ if [ "$objection_page" -eq 1 ]; then
   [ -n "$objection_text" ] \
     || orchid_die "$task carries no unresolved objection, so there is nothing for this page to authorise settling — raise the page without --objection"
   objection_instance="$(objection_seq "$repo" "$task")"
+  # ...and THE ROUND THIS PAGE PRESENTS (T032, dogfood F33). The operator is
+  # being asked whether their objection was met by THIS round: this candidate,
+  # this attempt, the plan it was reviewed under and the reviews that came back.
+  # All of that can move without moving the objection or its instance, so the
+  # record states it and the relay recomputes and compares it. Read here, with
+  # the other two, so the record can only ever state what the task said at the
+  # moment the operator was paged.
+  objection_cand="$(objection_candidate "$repo" "$task")" \
+    || orchid_die "$task carries a standing objection but no candidate_sha, so this page would be about no diff at all and an answer to it could be spent against whatever arrives next — refusing rather than minting an authority bound to nothing. Settle the objection from the operator's own shell: orchid task arbitrate $task --result approve|request-changes --reason \"...\""
+  objection_ev="$(objection_evidence "$repo" "$task")" \
+    || orchid_die "$task: the review evidence this objection page would present could not be identified, so no answer to it could ever be bound to the round it was given about — refusing the page rather than raising one whose answer is relayable against a round that has since moved. Settle the objection from the operator's own shell: orchid task arbitrate $task --result approve|request-changes --reason \"...\""
 fi
 
 epoch="$(epoch_current "$repo")"
@@ -269,6 +280,7 @@ mkdir -p "$rt/answers"
 # a question that was never minted.
 if [ "$objection_page" -eq 1 ]; then
   objection_authority_write "$repo" "$qid" "$task" "$objection_instance" "$objection_text" \
+    "$objection_cand" "$objection_ev" \
     || orchid_die "$qid: the objection authority record could not be written — the page stands and the operator settles it from their own shell, which is the direction this fails in"
 fi
 

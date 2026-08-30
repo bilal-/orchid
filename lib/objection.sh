@@ -58,6 +58,8 @@
 #       task: <task id>
 #       seq: <objection_seq at the moment the page was raised>
 #       objection: <the canonical stored objection line, byte for byte>
+#       candidate: <candidate_sha at the moment the page was raised>
+#       evidence: <objection_evidence at the moment the page was raised>
 #
 # Every field is read out of durable task state by the writer, never taken from
 # the caller, and every field is compared by the reader as a WHOLE LINE, exactly
@@ -66,6 +68,45 @@
 # raised the page: `orchid notify --objection` writes it, and
 # runners/orchid-orchestrator-command refuses that flag structurally ("unexpected
 # flag"), so the surface a woken model reaches cannot produce one.
+#
+# ---------------------------------------------------------------------------
+# 3. THE EVIDENCE (T032 convergence, after the attempt-7 arbitration). The three
+# fields above bind an answer to a TASK, an INSTANCE and a TEXT. None of them
+# binds it to what the operator was actually looking at when they typed
+# `approve`.
+#
+# An operator answering an objection page is answering one question -- "given
+# this round's diff and this round's reviews, was my objection met?" -- and every
+# term of it can move underneath the answer without touching a character of the
+# objection or a digit of the instance: a rebase or a hand-fix re-points
+# `candidate_sha`; a relaunched slot files a second accepted reviewer envelope;
+# `jobs reconcile` overwrites the one already filed with a different verdict; a
+# repin rewrites the pinned review plan the round is judged against. The stored
+# objection line is `a<attempt>: <reason>`, so even the round number only moves
+# when `attempts` does -- and `--waive-attempt` is the documented way to reject a
+# round without moving it. So the answer would be relayed against evidence its
+# author never saw, which is F33's shape with the operator's own `approve` as the
+# instrument.
+#
+# The record therefore gains those two terms. `candidate:` is the diff itself,
+# stored PLAINLY: it is the one term a human reading `runtime/answers/` after the
+# fact has to be able to see, and it is short and fixed-width, so there is no
+# reason to hide it inside a hash. `evidence:` is `objection_evidence` -- one
+# digest over the candidate, the round, the pinned plan and the accepted review
+# envelopes of the round the page was raised for. Both are recomputed at the
+# relay and compared as whole lines like the three above them, so ANY of those
+# moving invalidates the answer rather than being carried past it. The operator
+# is paged again for the round that actually exists, which is the only question
+# they can answer.
+#
+# The second is a DIGEST rather than the fields themselves for one reason: that
+# set is open at the bottom (an envelope's whole content is in it, and a plan's),
+# and a record with an unbounded field is one no reader can compare as a line. A
+# digest is a fixed-width whole-line compare over an arbitrary amount of
+# evidence. The candidate is inside it as well as beside it, and the redundancy
+# is deliberate: the plain line is what a person reads, the digest is what makes
+# `objection_evidence` a complete identity of the round on its own rather than a
+# fragment that only means something next to another field.
 #
 # WHY EXACT-COMPARING THE TEXT AS WELL AS THE SEQ. The seq alone identifies the
 # instance; the text is what the operator was actually shown. Comparing both
@@ -86,12 +127,17 @@
 # drive_page_on_record reads an already-answered page carrying the same text as
 # this stop's page and suppresses the next one (its own header documents that
 # property and why). So the new instance may get no page of its own, and with no
-# page there is no record and nothing to relay. Every part of that fails CLOSED
-# -- the seq refuses the old instance's record, the arbitration is refused, and
-# the task stays on its `operator-decision` boundary where `orchid status`
-# reports it. What is lost is a convenience, not a guarantee: the operator who
-# would have been paged is the operator who typed the objection a moment ago, at
-# a shell, and `orchid task arbitrate` is theirs to run from it.
+# page there is no record and nothing to relay. The evidence field of section 3
+# widens that residual rather than adding a new one: an objection whose text and
+# instance are unchanged while the round's candidate, plan or envelopes have
+# moved composes the same page too, so it can be suppressed the same way. Every
+# part of that fails CLOSED -- the seq refuses the old instance's record, the
+# evidence refuses a record raised against a round that has moved, the
+# arbitration is refused, and the task stays on its `operator-decision` boundary
+# where `orchid status` reports it. What is lost is a convenience, not a
+# guarantee: the operator who would have been paged is the operator who typed the
+# objection a moment ago, at a shell, and `orchid task arbitrate` is theirs to run
+# from it.
 
 # The suffix the authority record is filed under, beside the `.question`,
 # `.answer` and `.choices` files `orchid notify`/`orchid answer` already keep
@@ -113,6 +159,112 @@ objection_seq() {
   printf '%s\n' "$(( 10#$v ))"
 }
 
+# objection_candidate <repo> <task> -- the commit the page is about, plainly.
+# Nonzero (printing nothing) when the task has none, which every caller must
+# treat as "no authority": a page raised about no diff at all is one whose answer
+# could be spent against any diff that arrived afterwards.
+#
+# It exists as a function rather than as an `fm_get` at each end so the WRITER
+# and the READER cannot come to disagree about which field this is -- the same
+# reason objection_authority_file is one path composer rather than two.
+objection_candidate() {
+  local tf v
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
+  tf="$(orchid_state "$1")/tasks/$2.md"
+  [ -f "$tf" ] || return 1
+  v="$(fm_get "$tf" candidate_sha 2>/dev/null || true)"
+  [ -n "$v" ] || return 1
+  printf '%s\n' "$v"
+}
+
+# objection_evidence <repo> <task> -- the digest section 3 above argues for: a
+# deterministic identity of the review evidence this task's arbitration is
+# standing on RIGHT NOW. Prints one hex digest; nonzero (printing nothing) when
+# it cannot be computed at all, which every caller must treat as "no authority".
+#
+# WHAT IS IN IT, and each term is one thing that can move under an answer:
+#
+#   candidate:  the task's `candidate_sha` -- the diff the objection is about.
+#   attempt:    `attempts` + 1, the round the evidence below is filed under. The
+#               same formula lib/review.sh's review_plan_attempt uses, and the
+#               same one `jobs prepare` mints this round's job ids with.
+#   plan:       the pinned review plan for that round, by content, or `-` when
+#               the round has none. A repin changes which slots and which depth
+#               the round is judged against.
+#   envelope:   every accepted review envelope of that round, by NAME and by
+#               CONTENT. The name because an envelope appearing or disappearing
+#               changes the set; the content because reconcile files a replaced
+#               verdict at the same path.
+#
+# COMPUTED HERE RATHER THAN THROUGH lib/review.sh, which owns those two path
+# shapes (`review_plan_file`, `_review_filed_order`). `orchid notify` is the
+# writer, and it is a tier-1 verb that sources lib/common.sh, lib/frontmatter.sh
+# and this file -- lib/review.sh sits behind the whole manifest/roles/resolver/
+# envelope/capsuite/ledger chain and cannot be reached from there (the same
+# constraint that keeps `notify`'s own attempt line from calling
+# review_plan_attempt). The shapes are therefore restated, and tests/test_drive.sh
+# Part AJ pins the restatement against `review_plan_file`/`review_plan_attempt`
+# themselves -- so a rename on either side fails a test rather than silently
+# digesting a plan that is not this round's, which reads exactly like a round
+# that never had one.
+#
+# THE ENVELOPE GLOB IS DELIBERATELY WIDER THAN review_filed_engines'. That reader
+# drops an envelope whose `.status` is not `ok` or whose `.candidate_sha` has
+# moved, because it is deciding whether a slot is COVERED. This is deciding
+# whether anything moved, so a rejected or stale envelope arriving beside the
+# accepted ones is a change like any other -- and reading a JSON field would put
+# `jq` inside a tier-1 verb besides.
+#
+# SORTED, not left in glob order: the digest must be a function of the SET, and
+# `<base>.2.json` globs before `<base>.json` (lib/review.sh's _review_filed_order
+# header has the collation argument). Filing order is not what is being recorded
+# here -- presence and content are -- so the cheaper total order is the right one,
+# as long as it is a total order. LC_ALL=C makes it one on any machine.
+#
+# FAILS CLOSED, and note where that lands. `_orchid_stream_sha256` needs `shasum`
+# or `openssl`; with neither, this returns nonzero, `orchid notify --objection`
+# refuses the page before it writes anything (libexec/orchid-notify), and the
+# operator settles the objection from their own shell. Every other digest in the
+# kernel (plugin_digest, and the trust records built on it) rests on the same two
+# tools, so a machine with neither has no trust boundary to relay across either.
+objection_evidence() {
+  local repo="${1:-}" task="${2:-}" state tf cand attempts attempt plan base f d
+  [ -n "$repo" ] && [ -n "$task" ] || return 1
+  state="$(orchid_state "$repo")"
+  tf="$state/tasks/$task.md"
+  [ -f "$tf" ] || return 1
+  cand="$(fm_get "$tf" candidate_sha 2>/dev/null || true)"
+  attempts="$(fm_get "$tf" attempts 2>/dev/null || true)"
+  # A missing or garbled counter reads as 0 (so the round is 1), exactly as
+  # review_plan_attempt reads it, and `10#` because the guard admits a leading
+  # zero -- `08` is decimal eight everywhere else in the kernel and bare
+  # arithmetic would read it as octal.
+  case "$attempts" in ''|*[!0-9]*) attempts=0 ;; esac
+  attempt=$(( 10#$attempts + 1 ))
+  plan="$state/reviews/$task-a$attempt.review-plan.json"
+  base="$state/reviews/$task-a$attempt-"
+  d="$({
+    printf 'candidate: %s\n' "$cand"
+    printf 'attempt: %s\n' "$attempt"
+    if [ -f "$plan" ]; then
+      printf 'plan: %s\n' "$(_orchid_stream_sha256 < "$plan")"
+    else
+      printf 'plan: -\n'
+    fi
+    for f in "$base"*.json; do
+      # The glob matching nothing yields the pattern itself, which is not a file
+      # -- a round with no envelope filed yet contributes no line, and that is a
+      # state the digest has to be able to name.
+      [ -f "$f" ] || continue
+      printf 'envelope: %s %s\n' "${f##*/}" "$(_orchid_stream_sha256 < "$f")"
+    done | LC_ALL=C sort
+  } | _orchid_stream_sha256)" || return 1
+  # An empty or non-hex roll-up is a digest tool that produced nothing, never an
+  # evidence set that happens to hash to it.
+  case "$d" in ''|*[!0-9a-fA-F]*) return 1 ;; esac
+  printf '%s\n' "$d"
+}
+
 # objection_authority_file <repo> <qid> -- where the record for that page lives.
 # Composed rather than taken from lib/common.sh's `orchid_runtime`, which
 # mkdir -p's what it returns: the readers below must not create the directory
@@ -122,9 +274,10 @@ objection_authority_file() {
   printf '%s/.orchid/runtime/answers/%s.%s\n' "$1" "$2" "$OBJECTION_AUTHORITY_EXT"
 }
 
-# objection_authority_write <repo> <qid> <task> <seq> <objection> -- mint the
-# record. Every argument is a fact the CALLER read out of durable state; this
-# function invents nothing and validates that it was given all of it.
+# objection_authority_write <repo> <qid> <task> <seq> <objection> <candidate>
+# <evidence> --
+# mint the record. Every argument is a fact the CALLER read out of durable state;
+# this function invents nothing and validates that it was given all of it.
 #
 # Rendered into a variable and only then written, never `printf ... |
 # atomic_write`: atomic_write consumes whatever its producer managed to emit and
@@ -132,10 +285,17 @@ objection_authority_file() {
 # TRUNCATED authority record -- and a truncated one is a record whose missing
 # lines the reader compares against empty strings.
 objection_authority_write() {
-  local repo="$1" qid="$2" task="$3" seq="$4" objection="$5" answers body
+  local repo="$1" qid="$2" task="$3" seq="$4" objection="$5"
+  local candidate="${6:-}" evidence="${7:-}" answers body
   [ -n "$repo" ] && [ -n "$qid" ] && [ -n "$task" ] && [ -n "$objection" ] || return 1
+  # The candidate and the evidence digest are as required as the three fields
+  # above them: a record minted without either is one the reader below can only
+  # ever compare against an empty line, which is an authority that binds to no
+  # round at all.
+  [ -n "$candidate" ] && [ -n "$evidence" ] || return 1
   case "$seq" in ''|*[!0-9]*) return 1 ;; esac
-  body="$(printf 'task: %s\nseq: %s\nobjection: %s' "$task" "$seq" "$objection")" || return 1
+  body="$(printf 'task: %s\nseq: %s\nobjection: %s\ncandidate: %s\nevidence: %s' \
+    "$task" "$seq" "$objection" "$candidate" "$evidence")" || return 1
   [ -n "$body" ] || return 1
   answers="$repo/.orchid/runtime/answers"
   mkdir -p "$answers" || return 1
@@ -166,33 +326,47 @@ objection_authority_qids() {
   done
 }
 
-# objection_authority_matches <file> <task> <seq> <objection> -- exit 0 iff that
-# record authorises a decision about exactly this task, this instance and this
-# objection text.
+# objection_authority_matches <file> <task> <seq> <objection> <candidate>
+# <evidence> -- exit
+# 0 iff that record authorises a decision about exactly this task, this instance,
+# this objection text, this candidate and this review evidence.
 #
-# THREE LINES AND NOTHING ELSE. A fourth line is refused rather than ignored,
+# FIVE LINES AND NOTHING ELSE. A sixth line is refused rather than ignored,
 # for the reason lib/review.sh's review_plan_row_valid refuses a sixth column: a
 # record this reader does not fully understand is not one it may act on, and
 # "parse what I recognize and skip the rest" is how a format grows a field that
 # changes the meaning of the ones above it without any reader noticing.
 #
-# Every `read` is `|| true`: a record with fewer than three lines leaves the
+# A record written before the `candidate:` and `evidence:` lines existed
+# therefore stops matching outright, on its empty fourth line, rather than being
+# read as one that binds no round -- which is the fail-closed direction: the
+# operator is paged again for the round that exists now, and the page they
+# answered before the fields existed authorises nothing.
+#
+# Every `read` is `|| true`: a record with fewer than five lines leaves the
 # remaining variables empty, and an empty variable fails the whole-line compare
 # below on its own. Letting the read's status decide instead would make a
 # short record and a mismatched one two different code paths for one answer.
 objection_authority_matches() {
-  local f="$1" a_task="" a_seq="" a_obj="" a_extra=""
+  local f="$1" a_task="" a_seq="" a_obj="" a_cand="" a_ev="" a_extra=""
   [ -f "$f" ] || return 1
+  # A candidate or an evidence digest the CALLER could not read is not a
+  # wildcard: with nothing to compare, no record may match.
+  [ -n "${5:-}" ] && [ -n "${6:-}" ] || return 1
   {
     IFS= read -r a_task   || true
     IFS= read -r a_seq    || true
     IFS= read -r a_obj    || true
+    IFS= read -r a_cand   || true
+    IFS= read -r a_ev     || true
     IFS= read -r a_extra  || true
   } < "$f"
   [ -z "$a_extra" ] || return 1
   [ "$a_task" = "task: $2" ] || return 1
   [ "$a_seq" = "seq: $3" ] || return 1
   [ "$a_obj" = "objection: $4" ] || return 1
+  [ "$a_cand" = "candidate: $5" ] || return 1
+  [ "$a_ev" = "evidence: $6" ] || return 1
   return 0
 }
 

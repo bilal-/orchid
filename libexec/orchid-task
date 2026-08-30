@@ -1790,9 +1790,10 @@ case "$sub" in
     # the run parked on a question its owner has already answered.
     #
     # So the class of this arbitration is the actor's UNLESS a durable operator
-    # answer authorises it, bound to this task, THIS OBJECTION INSTANCE and this
-    # result -- lib/review.sh's review_operator_relay is the whole of that
-    # reading, and its header is where the axes are argued. Nothing the relaying
+    # answer authorises it, bound to this task, THIS OBJECTION INSTANCE, THE
+    # REVIEW EVIDENCE THE PAGE PRESENTED and this result -- lib/review.sh's
+    # review_operator_relay is the whole of that reading, and its header is where
+    # the axes are argued. Nothing the relaying
     # model supplies is an input: not `--reason` (its own prose), not a flag
     # (there is none), not an environment variable (the one read here can only
     # ever make the arbitration a MODEL's). The authority is a record the
@@ -1834,7 +1835,7 @@ case "$sub" in
       fi
     fi
     if [ "$obj_prev_by" = operator ] && [ "$arb_by" != operator ]; then
-      orchid_die "$id carries an OPERATOR's unresolved objection, and this arbitration is not the operator's (actor: ${ORCHID_ACTOR:-unset}) — refused, and nothing was written. The standing objection is: \"$obj_prev\" (instance $obj_prev_seq). Whether it was answered is the call of the arbiter who raised it, who saw twice what a review of this diff did not; a --result approve here would clear it from the same diff that produced it, and a --result request-changes would replace their words with these. Raise it to the operator instead: orchid notify --task $id \"<what they must decide>\". If they have already decided, they answer the page the driver raised for THIS objection ('orchid answer <qid> approve') and this verb will then relay THAT decision — an answer to some other page, to an earlier objection, or in any other words, is not one."
+      orchid_die "$id carries an OPERATOR's unresolved objection, and this arbitration is not the operator's (actor: ${ORCHID_ACTOR:-unset}) — refused, and nothing was written. The standing objection is: \"$obj_prev\" (instance $obj_prev_seq). Whether it was answered is the call of the arbiter who raised it, who saw twice what a review of this diff did not; a --result approve here would clear it from the same diff that produced it, and a --result request-changes would replace their words with these. Raise it to the operator instead: orchid notify --task $id \"<what they must decide>\". If they have already decided, they answer the page the driver raised for THIS objection ('orchid answer <qid> approve') and this verb will then relay THAT decision — an answer to some other page, to an earlier objection, to a round whose candidate, review plan or reviews have moved since they were paged, or in any other words, is not one."
     fi
     if [ "$result" = request-changes ]; then
       # SUPERSEDED, NOT ACCUMULATED: the arbiter's latest word is the operative
