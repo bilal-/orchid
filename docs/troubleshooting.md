@@ -2269,17 +2269,34 @@ want:
   up before this leg shipped gains it on the next `orchid start`; a hook you
   wrote yourself is never touched by either — including one that mentions
   orchid or chains to its guard, since only a file whose *second line* starts
-  with `# orchid pre-push guard` is treated as orchid's own. One shape that upgrade does not
-  reach: a run already past `planning`, where `orchid start` refuses outright
-  because it is a setup command. Until that run rolls over, render the hook
-  yourself from your orchid checkout — `sed
-  's|__INTEGRATION_BRANCH__|orchid/integration|g'
-  /path/to/orchid/templates/pre-push.sh > .git/hooks/pre-push && chmod +x
-  .git/hooks/pre-push`, substituting your own `integration_branch` — which is
-  exactly what those two verbs do. It is the last local
-  gate that sees *every* route, including a squash, a cherry-pick or a rebase
-  that carries the files across without ever making a merge commit, and a
-  hosted MR that is merged where no local hook runs at all.
+  with `# orchid pre-push guard` is treated as orchid's own. It is the last
+  local gate that sees *every* route, including a squash, a cherry-pick or a
+  rebase that carries the files across without ever making a merge commit, and
+  a hosted MR that is merged where no local hook runs at all.
+
+**Your repository is already past `planning` and you want the current guard.**
+`orchid start` refuses a run that has left planning — it is a setup command,
+not a resume — so the upgrade above cannot reach a repository mid-run, which
+is precisely the shape the reported leak came from. Ask for it explicitly, in
+the repository itself, at any `run_status`:
+
+```
+orchid start --refresh-push-guard
+```
+
+That form takes no requirements file and no other option. It re-installs the
+guard from the current template at the path git will actually run it from,
+prints what it did (`installed`, `upgraded`, or `already current`), and does
+nothing else: no branch moves, no commit is made, no run state is written and
+no lock is taken, so it is safe while a run is in flight. It is idempotent —
+run it as often as you like — and it still refuses to overwrite a hook you
+wrote, telling you how to chain to orchid's from your own instead.
+
+If your repository sets `core.hooksPath`, that is where the guard is installed
+and where the printed path points: orchid asks git for the hook path rather
+than assuming `.git/hooks`, so the file always lands where git will execute
+it. `.git/hooks/pre-push` is left alone in that case, because git does not
+read it.
 
 **If your product should not carry run state,** keep the integration branch
 out of the merge chain: take the product changes across on their own (rebase,

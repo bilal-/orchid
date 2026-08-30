@@ -21,7 +21,10 @@
 # If `integration_branch` is ever changed in `orchid.config`, re-run `orchid
 # start` to refresh the name baked in here: `orchid init` cannot be re-run on
 # an initialized repository (it dies with `branch <integ> exists`), so start's
-# existing-repository path is the door that re-renders this file.
+# existing-repository path is the door that re-renders this file. Once the run
+# has left `planning` that door is shut too -- start is a setup command and
+# refuses -- so the explicit route is `orchid start --refresh-push-guard`,
+# which re-renders this file and does nothing else, at any run_status.
 #
 # The SECOND LINE of this file is LOAD-BEARING, not decoration:
 # lib/common.sh's orchid_install_push_guard recognizes its own installed hook

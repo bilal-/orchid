@@ -125,11 +125,12 @@ git -C "$repo" commit -q -m "orchid: initialize run state"
 # place to stop it. `push_guard` (config, default true; any falsy spelling
 # -- false, 0, no -- skips installing it, same convention
 # role_binding_blocking uses) gates whether this runs at all. Hooks live
-# under the git dir, never inside a commit -- `git rev-parse
-# --git-common-dir` resolves the SHARED hooks dir even when invoked from a
-# worktree (task worktrees all share one hooks dir with the main checkout),
-# and is resolved relative to $repo (not the caller's cwd) since init may be
-# invoked with ORCHID_REPO pointing elsewhere.
+# under the git dir, never inside a commit, and at whichever path GIT will
+# actually execute: `orchid_push_guard_path` asks git for that path (`git
+# rev-parse --git-path hooks/pre-push`, honoring `core.hooksPath` and the
+# shared worktree hooks dir alike) rather than deriving one, and resolves it
+# relative to $repo, not the caller's cwd, since init may be invoked with
+# ORCHID_REPO pointing elsewhere.
 # Never overwrites a pre-existing pre-push hook of the user's own -- that
 # hook is authoritative regardless of what it does; skip and say so.
 #

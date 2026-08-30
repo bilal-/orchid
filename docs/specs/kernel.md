@@ -2068,7 +2068,18 @@ integration branch (the name baked in at install time, not read from
 `orchid.config` at push time, since a task worktree has no `orchid.config`
 at all), overridable per-push via `ORCHID_ALLOW_PUSH=1` — a backstop for
 when the no-external-mutation policy above is violated anyway, not a
-replacement for it.
+replacement for it. Because setup refuses a run that has left `planning`,
+that upgrade path stops at the door of the repositories most likely to need
+it, so `orchid start --refresh-push-guard` is the explicit, idempotent
+maintenance route: it installs the guard at any `run_status`, moves no
+branch, writes no run state and takes no lock, and it is a distinct
+invocation rather than a side effect of a setup call that then refuses — a
+mutation nobody can name is a mutation nobody can audit. All three callers
+install, inspect and report the hook at the path **git** resolves (`git
+rev-parse --git-path hooks/pre-push`: `core.hooksPath`, absolute or
+relative, and a linked worktree's shared hooks directory), never at a
+derived `.git/hooks`, because an inert file at a path git does not read is
+worse than no file — it reads as protection.
 
 **Run-state containment (T037 — SHIPPED):** committing `.orchid/` is what
 makes a run durable, and it is also what lets a run's bookkeeping ride the

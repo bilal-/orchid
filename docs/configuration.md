@@ -659,8 +659,9 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   invoking the vendor CLI at all (they have no worktree-read fallback) —
   see [docs/engines/agy.md](./engines/agy.md) and
   [docs/engines/hermes.md](./engines/hermes.md).
-- **`push_guard`** governs whether orchid installs a `.git/hooks/pre-push`
-  guard that refuses pushing `task/*` branches or the integration branch
+- **`push_guard`** governs whether orchid installs a `pre-push` guard — in
+  `.git/hooks/`, or wherever `core.hooksPath` points if you set it —
+  that refuses pushing `task/*` branches or the integration branch
   (defense-in-depth; PROTOCOL.md instructs the model not to push, but that
   prompt policy is not OS/network containment).
   `ORCHID_ALLOW_PUSH=1` overrides it for one push.
@@ -679,7 +680,15 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   an already-initialized repository: init runs exactly once in a repository's
   life (it refuses once the integration branch exists), so a repository set up
   before a newer hook shipped picks it up on the next `orchid start` rather
-  than keeping the old one forever. A hook orchid did not write is never
+  than keeping the old one forever. Once a run has left `planning`, `orchid
+  start` refuses as the setup command it is, so ask for the guard explicitly
+  instead: `orchid start --refresh-push-guard` re-installs it from the current
+  template at any `run_status`, takes no other argument, moves no branch,
+  writes no run state and takes no lock, and is idempotent. Wherever it is
+  installed from, the hook goes at the path **git** will run it from —
+  `core.hooksPath` is honored (absolute or relative), and a linked worktree
+  gets the main checkout's shared hooks directory — so it is never written to
+  a `.git/hooks/` git has been configured to ignore. A hook orchid did not write is never
   overwritten by either verb — it is left alone and reported — and one that
   already matches the current template is left byte-for-byte alone and
   reported not at all. Changing `integration_branch` is picked up the same
