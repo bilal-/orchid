@@ -368,10 +368,16 @@ this section false without touching a byte of it.
    so it leaves the note standing for the operator who reads doctor next. Which schedule those verbs act on comes from the
    binding records rather than from re-hashing `--repo`, so a checkout MOVED
    with `git worktree move` still ends the schedule it really has; and `--repo`
-   must be the checkout git has REGISTERED, so a `cp -R` duplicate — whose
-   copied record agrees with the machine-local half exactly — is refused before
+   must be the checkout that record NAMES, or a path that checkout has left, so
+   a `cp -R` duplicate and a second worktree given the same record — whose
+   copied record agrees with the machine-local half exactly — are refused before
    any scheduler call, record removal or worktree removal rather than ending the
-   original's schedule. Those records are read as UNTRUSTED INPUT: the
+   bound checkout's schedule. A move takes the checkout away from the recorded
+   path and a copy leaves the original standing there, which is the fact that
+   separates them; git's worktree registration is asked as well, in the one
+   direction it can answer, refusing a checkout it registers as some OTHER
+   existing one (every linked worktree is registered at its own path, so "git
+   registers me" says nothing about which record is mine). Those records are read as UNTRUSTED INPUT: the
    repo-local half sits inside the checkout a run's engines write to, and its
    label is joined into `~/.orchid/services/<label>.json` and the plist path as
    a path COMPONENT while its artifact is unloaded and then deleted exactly as

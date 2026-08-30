@@ -3278,8 +3278,12 @@ is normal, never an error:
   step, so an entry that cannot perform the work is failed over rather than
   settled on (INV-16), and the driver's own availability check above asks that
   same question so the budget is never charged for a wakeup the pump then
-  declines — and `exec`s
-  `runners/orchid-tick` — the only path that reaches it, since a pass the
+  declines — and runs
+  `runners/orchid-tick` as a CHILD, exiting with its status verbatim (never
+  `exec`: replacing the pump's process image would run the hand-off past the
+  EXIT handler that decides whether this wake retires its recorded refusal, and
+  a wake is not over until its tick is) — the only path that
+  reaches it, since a pass the
   deterministic policy can resolve on its own goes through
   `runners/orchid-drive` above and never wakes a model — which resolves that
   role again (exit 14 propagates verbatim, for the next

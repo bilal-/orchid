@@ -689,10 +689,17 @@ rm -rf "$WORK2"
 #       schedule; they say nothing about the caller, because a checkout copied
 #       with `cp -R` carries the repo-local half inside it byte for byte. A copy
 #       must refuse before any scheduler call, binding removal or worktree
-#       removal, while the checkout git actually has registered -- including one
-#       that was MOVED -- still tears down normally. And the refusal must not
-#       wedge: once the checkout a record names is GONE, the record is clearable
-#       again, or a directory is guarded by a file no verb can take.
+#       removal, while the checkout the record names -- including one that was
+#       MOVED -- still tears down normally. And the refusal must not wedge: once
+#       the checkout a record names is GONE, the record is clearable again, or a
+#       directory is guarded by a file no verb can take. K14b is the correction
+#       to how that was first decided: git registers EVERY linked worktree at
+#       its own path, so "the registration names me" was never proof of being
+#       the checkout a record names, and a SECOND worktree given that record
+#       passed on it and could end the live one's schedule. Ownership of a
+#       record naming another path is that path being gone; the registration is
+#       asked only in the direction it can answer, refusing a duplicate that
+#       stands beside its original.
 #   K15 RED/GREEN: a recorded refusal is evidence about the LAST wake, not a
 #       property of the label. It must survive a refused wake and a preview, and
 #       be retired by a real (re)install and by a wake that found the target
@@ -1933,11 +1940,15 @@ assert_eq "$mv_label" "$ORCHID_SERVICE_ID_LABEL" \
   "and resolve to the label INSTALL created, never to a hash of the path the checkout now sits at"
 assert_eq twins "$ORCHID_SERVICE_ID_SOURCE" \
   "from BOTH halves -- the machine-local copy is found by LABEL, since finding it by path is the same mistake one indirection further along"
-# And the move is OWNED, which is the half K14 turns on: `git worktree move`
-# re-registers the checkout at its new path, so the ownership proof the copied-
-# checkout refusal rests on must pass here or a legitimate move is refused.
+# And the move is OWNED, which is the half K14/K14b turn on: a move takes the
+# checkout away from the path its record names, so the recorded path is GONE --
+# the one fact that separates it from a copy, which leaves the original standing
+# there. `git worktree move` also re-registers the checkout at its new path,
+# which is what keeps the duplicate refusal from catching it.
 assert_eq "$MV_NEW" "$(orchid_checkout_registered_path "$MV_NEW")" \
-  "and git's own registration now names the moved path, which is what distinguishes a move from a copy"
+  "and git's own registration now names the moved path, so nothing here is a duplicate of another checkout"
+[ ! -e "$MV_WT" ] \
+  || fail "and the path the record names is gone, which is the fact ownership actually turns on"
 rc=0
 orchid_service_binding_owned "$MV_NEW" "$ORCHID_SERVICE_ID_REPO" || rc=$?
 assert_eq 0 "$rc" \
@@ -2020,10 +2031,13 @@ green_case "a teardown of a MOVED worktree ends the schedule install recorded, c
 # bound to a schedule nothing on the machine can name. The leftover this whole
 # task is about, minted by tearing down a backup.
 #
-# The distinction is not in the records at all -- it is in git's own worktree
-# registration, which `git worktree move` rewrites (K13's green arm) and `cp -R`
-# does not. Both are exercised against ONE fixture here so the refusal is
-# provably about ownership and not about the tree being broken.
+# The distinction is not in the records at all. A copy is caught by git's own
+# worktree registration, which still names the ORIGINAL when asked from inside
+# the duplicate -- and separately by the original still standing at the path the
+# record names, which is the fact ownership turns on generally. K14b below is
+# the caller git's registration has nothing against, where only that second fact
+# refuses. Both halves of this one are exercised against ONE fixture here, so
+# the refusal is provably about ownership and not about the tree being broken.
 CP_MAIN="$BIND/cp-main"
 mkdir -p "$CP_MAIN"
 (
@@ -2089,7 +2103,7 @@ assert_eq "$CP_WT" "$(orchid_checkout_registered_path "$CP_COPY")" \
 rc=0
 orchid_service_binding_owned "$CP_COPY" "$ORCHID_SERVICE_ID_REPO" || rc=$?
 [ "$rc" -ne 0 ] \
-  || fail "the ownership predicate itself must reject the copy -- git's registration still names the original, and nothing else on disk tells the two apart"
+  || fail "the ownership predicate itself must reject the copy -- git's registration still names the original, and the original is still standing at the path the record names"
 rc=0
 orchid_service_binding_owned "$CP_WT" "$ORCHID_SERVICE_ID_REPO" || rc=$?
 assert_eq 0 "$rc" \
@@ -2174,6 +2188,156 @@ rc=0
 orchid_service_removal_guard "$CP_COPY" >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "and the copy is removable again -- the ownership rule cost a step, not the verb"
 green_case "a copy left holding a record for a checkout that no longer exists can still clear it, so the ownership refusal never wedges the removal guard"
+
+# -- K14b: git registers EVERY worktree, not the bound one ------------------
+# K14 settled ownership on git's worktree registration and read it in both
+# directions: a registration naming somebody else refused a copy, and a
+# registration naming the caller was taken as PROOF that the caller was the
+# checkout the record names, moved. The second half does not follow, and one
+# more worktree is all it takes to show it: `git worktree add` registers every
+# linked worktree at its own path, so `the registration names me` is equally
+# true of a worktree added five minutes ago that was never bound to anything.
+#
+# Given the bound checkout's record -- copied from it, or written into it by an
+# engine that has the run's own tree to write in -- such a worktree answered the
+# ownership question with its own registration and went straight through: it
+# unloaded the agent the bound checkout was still being driven by, deleted both
+# of that checkout's records and, through `teardown`, would have taken its tree.
+# The victim here is not a backup nobody was using; it is the live integration
+# worktree, reached from a sibling of it.
+#
+# The fixture is therefore two worktrees of ONE repository, both registered,
+# both real, differing only in which one the schedule was installed against.
+IW_MAIN="$BIND/iw-main"
+mkdir -p "$IW_MAIN"
+(
+  cd "$IW_MAIN" || exit 1
+  git init -q .
+  # Same shape as K12/K13/K14: runtime/ ignored and .orchid/ committed, so both
+  # linked worktrees check out an initialized repo and the green arm below
+  # exercises a plain `git worktree remove` rather than a --force.
+  printf '.orchid/runtime/\n' > .gitignore
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: complete\nrun_id: r-iw\n---\n# Roadmap\n' > .orchid/roadmap.md
+  git add .gitignore .orchid
+  git commit -q -m root
+  git worktree add -q -b iw-bound ../iw-bound
+  git worktree add -q -b iw-other ../iw-other
+) || fail "K14b fixture: could not build a main checkout with two linked worktrees"
+[ -d "$BIND/iw-bound" ] || fail "K14b fixture: the bound worktree was not created"
+[ -d "$BIND/iw-other" ] || fail "K14b fixture: the second worktree was not created"
+IW_BOUND="$(cd "$BIND/iw-bound" && pwd -P)"
+IW_OTHER="$(cd "$BIND/iw-other" && pwd -P)"
+trust_repo "$IW_BOUND"
+
+iw_inst="$("$SERVICE" install --repo "$IW_BOUND" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "K14b fixture: the schedule installs against the FIRST worktree (out: $iw_inst)"
+iw_label="$(echo "$iw_inst" | grep -oE "$label_re" | head -n1)"
+iw_plist="$HOME/Library/LaunchAgents/$iw_label.plist"
+iw_mrec="$HOME/.orchid/services/$iw_label.json"
+iw_rec="$IW_BOUND/.orchid/runtime/service.json"
+iw_other_rec="$IW_OTHER/.orchid/runtime/service.json"
+[ -f "$iw_plist" ] || fail "K14b fixture: the install must have placed the plist"
+[ -f "$iw_mrec" ] || fail "K14b fixture: and the machine-local binding"
+[ -f "$iw_rec" ] || fail "K14b fixture: and the repo-local one, which is what gets planted below"
+
+# THE PLANT: the bound worktree's own record, byte for byte, inside the sibling.
+# Nothing else is touched -- the machine-local twin is the VICTIM'S, and it is
+# left exactly as install wrote it, which is what makes the twins agree for the
+# sibling exactly as they do for the checkout they belong to.
+mkdir -p "$IW_OTHER/.orchid/runtime" \
+  || fail "K14b fixture: could not create the sibling's runtime directory"
+cp "$iw_rec" "$iw_other_rec" || fail "K14b fixture: could not plant the record"
+assert_eq "$(cat "$iw_rec")" "$(cat "$iw_other_rec")" \
+  "the planted record is the bound checkout's, byte for byte -- every test the twins apply passes for it"
+
+# THE WITNESSES THAT MAKE THE RED NON-VACUOUS, and there are three: the
+# resolution succeeds, the victim is still standing, and git registers the
+# SIBLING at its own path -- which is the exact answer the old rule accepted as
+# proof of ownership. Without the third, this section would only be re-proving
+# K14's copy refusal against a different directory.
+rc=0
+orchid_service_identity "$IW_OTHER" || rc=$?
+assert_eq 0 "$rc" \
+  "the twins resolve for the sibling: the planted half and the victim's machine-local half agree in every field"
+assert_eq "$iw_label" "$ORCHID_SERVICE_ID_LABEL" \
+  "resolving to the label the VICTIM's schedule was installed under"
+assert_eq "$IW_BOUND" "$ORCHID_SERVICE_ID_REPO" "and naming the victim as the checkout it was installed against"
+assert_eq twins "$ORCHID_SERVICE_ID_SOURCE" "from both halves, so nothing earlier in the resolution can be what refuses this"
+[ -d "$IW_BOUND" ] || fail "K14b fixture: the victim checkout must still be standing, or this is the orphan case instead"
+assert_eq "$IW_OTHER" "$(orchid_checkout_registered_path "$IW_OTHER")" \
+  "THE FINDING, in one line: git's own registration names the SIBLING for the sibling -- every linked worktree is registered at its own path, so a registration naming the caller was never evidence that the caller is the checkout the record names"
+
+rc=0
+orchid_service_binding_owned "$IW_OTHER" "$ORCHID_SERVICE_ID_REPO" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "THE FINDING: a separately registered worktree holding another checkout's record must NOT own that binding -- the victim is still standing and this is not it"
+
+# RED, through the door that removes most, with launchd ANSWERING "no such job"
+# so that nothing but ownership can be what stops it.
+rc=0
+iw_red_td="$(svc_teardown_notfound 'launchctl (unload|list)' --repo "$IW_OTHER" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "a teardown run in a sibling worktree holding the bound checkout's record must refuse (out: $iw_red_td)"
+assert_match 'not the checkout that binding was installed against' "$iw_red_td" \
+  "with the ownership refusal -- the records agree, so no other refusal applies here"
+assert_match 'matching records are not ownership' "$iw_red_td" "stated in the terms an operator can check"
+assert_match 'STILL THERE' "$iw_red_td" \
+  "and naming the fact that decided it: the checkout the record names is still standing"
+case "$iw_red_td" in
+  *"$IW_BOUND"*) ;;
+  *) fail "and the refusal must name the checkout that DOES own the schedule, since that is where the operator has to run it" ;;
+esac
+[ -f "$iw_plist" ] || fail "and the victim's plist survives: a sibling has no business unloading its agent"
+[ -f "$iw_mrec" ] || fail "and its machine-local binding, the only name that outlives its checkout"
+[ -f "$iw_rec" ] || fail "and its own repo-local binding, which is what keeps its removal guard refusing"
+[ -d "$IW_BOUND" ] || fail "and the victim's tree is untouched -- through teardown, that is what was at stake"
+[ -d "$IW_OTHER" ] || fail "and so is the sibling: a refusal removes nothing at all"
+[ -s "$SCHED_LOG" ] \
+  && fail "and launchd is asked nothing: an unowned binding is refused ahead of every scheduler call"
+
+rc=0
+iw_red_un="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$IW_OTHER" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "and an uninstall from the sibling refuses for the same reason (out: $iw_red_un)"
+assert_match 'not the checkout that binding was installed against' "$iw_red_un" "with the same resolution and the same refusal"
+[ -f "$iw_plist" ] || fail "and again the victim's schedule stands"
+[ -f "$iw_mrec" ] || fail "and again its machine-local binding"
+[ -s "$SCHED_LOG" ] && fail "and again launchd is asked nothing"
+red_case "a separately registered worktree given the bound checkout's binding record refuses before any scheduler call, and preserves the victim's schedule, both records and its tree"
+
+# GREEN twin: the identical teardown, the identical stubbed launchd answer, run
+# in the worktree the schedule was actually installed against.
+rc=0
+iw_green="$(svc_teardown_notfound 'launchctl (unload|list)' --repo "$IW_BOUND" 2>&1)" || rc=$?
+assert_eq 0 "$rc" \
+  "the identical teardown succeeds in the worktree the binding was installed against (out: $iw_green)"
+assert_match "$iw_label" "$iw_green" "and it is that schedule it reports having ended"
+assert_match 'removed the integration worktree' "$iw_green" "and the removal half then runs"
+[ -f "$iw_plist" ] && fail "the plist must be gone, or the red arm proves only that this verb never removes anything"
+[ -f "$iw_mrec" ] && fail "and the machine-local binding with it"
+[ -d "$IW_BOUND" ] && fail "and the worktree that owned the schedule is removed"
+green_case "the same teardown ends the schedule and removes the checkout when it is run in the worktree the binding names"
+
+# ...and the sibling is not WEDGED by the refusal, which is the half that keeps
+# a moved checkout working. Ownership of a record naming another path is the
+# recorded checkout being GONE -- that is what a `git worktree move` leaves
+# (K13), what a plain rename leaves, and what the teardown above has just left
+# here. The rule refuses a live victim, never a registered worktree as such.
+[ -f "$iw_other_rec" ] || fail "K14b: the sibling must still hold the planted record, or there is no wedge to disprove"
+[ ! -e "$IW_BOUND" ] || fail "K14b: and the checkout it names must be gone, or this is the RED case again"
+rc=0
+orchid_service_binding_owned "$IW_OTHER" "$IW_BOUND" || rc=$?
+assert_eq 0 "$rc" \
+  "the sibling owns the leftover record once the checkout it names is gone -- nothing is left for a removal to harm, and this is the same arm a MOVED worktree is accepted by"
+rc=0
+orchid_service_removal_guard "$IW_OTHER" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "K14b: and that record must still be guarding the sibling, or the uninstall below releases nothing"
+rc=0
+iw_orphan="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$IW_OTHER" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "so the uninstall the guard names can clear it (out: $iw_orphan)"
+[ -f "$iw_other_rec" ] && fail "and the stale record is gone"
+green_case "the ownership rule refuses a live victim without wedging a worktree left holding a record for a checkout that no longer exists"
 
 # -- K15: a refusal is evidence about the LAST wake ------------------------
 # The two arms of K2/K2c record, machine-locally, that this schedule woke and

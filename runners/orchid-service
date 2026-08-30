@@ -229,8 +229,10 @@ EOF
 # of one schedule with two paths -- and it fails the other way: the resolution
 # succeeds, names the ORIGINAL checkout's label, and the removal ends a schedule
 # that is still driving somebody else's tree. orchid_service_binding_owned
-# settles it on git's own worktree registration, which `git worktree move`
-# rewrites and `cp -R` does not.
+# settles it on whether the checkout that record names is STILL STANDING -- a
+# move leaves nothing behind, a copy leaves the original exactly where the
+# record says it is -- with git's worktree registration refusing a duplicate
+# that sits beside its original.
 #
 # AND BEFORE EITHER QUESTION, WHETHER THE RECORD IS SAYING ANYTHING ORCHID COULD
 # HAVE WRITTEN. `.orchid/runtime/service.json` is inside the checkout the run's
@@ -305,12 +307,32 @@ _svc_identity() {
   # Acted on, a removal inside the copy unloads the agent the ORIGINAL checkout
   # is still being driven by, deletes both records, and leaves that checkout
   # bound to a schedule nothing can name -- this task's leftover, minted by
-  # tearing down a backup. The move it must not be confused with is the one K13
-  # exists for, and git tells them apart: see orchid_service_binding_owned.
+  # tearing down a backup. A record naming another checkout is equally what a
+  # SEPARATELY ADDED worktree holds when the run's own engines write one into
+  # it, and it must not be able to answer for that checkout either. The move it
+  # must not be confused with is the one K13 exists for, and what tells them
+  # apart is whether the recorded checkout is still standing: see
+  # orchid_service_binding_owned.
+  #
+  # TWO FACTS CAN REFUSE HERE AND THEY ARE NOT THE SAME SENTENCE. Ordinarily
+  # the recorded checkout is still standing, and that is what is said. But a
+  # caller git registers as ANOTHER existing checkout is refused even when the
+  # recorded path is gone (a copy of a checkout that had itself been moved), and
+  # in that state "it is still there" would be a false diagnosis and the
+  # recorded path a dead end to send an operator to. So the second sentence and
+  # the checkout the re-run names are chosen from which fact actually refused.
   if ! orchid_service_binding_owned "$repo" "$ORCHID_SERVICE_ID_REPO"; then
+    local owner="$ORCHID_SERVICE_ID_REPO"
+    local why=""
+    if [ -e "$ORCHID_SERVICE_ID_REPO" ]; then
+      why="$(orchid_service_repo_record "$repo") names a checkout that is STILL THERE, and a record naming another checkout is what a copy of the bound one carries and what a separately added worktree can be given"
+    else
+      owner="$(orchid_checkout_registered_path "$repo")" || owner="$ORCHID_SERVICE_ID_REPO"
+      why="git's worktree registration names $owner for this path, so this is a COPY of that checkout rather than that checkout"
+    fi
     echo "orchid: refusing to remove anything for $repo: this is not the checkout that binding was installed against ($ORCHID_SERVICE_ID_REPO)" >&2
-    echo "orchid: the records here match, and matching records are not ownership — a checkout COPIED from the bound one carries an identical $(orchid_service_repo_record "$repo"), and $ORCHID_SERVICE_ID_REPO is still standing with git's worktree registration still naming it rather than this path (a checkout MOVED — with 'git worktree move', or a plain rename that leaves nothing behind — is accepted here)" >&2
-    orchid_die "ending the schedule from here would unload the agent $ORCHID_SERVICE_ID_REPO is still driven by and clear the only records naming it; run it against that checkout instead: $(_svc_rerun_command "$ORCHID_SERVICE_ID_REPO")"
+    echo "orchid: the records here match, and matching records are not ownership — $why (a checkout MOVED — with 'git worktree move', or a plain rename — leaves nothing behind at the recorded path and is accepted here)" >&2
+    orchid_die "ending the schedule from here would unload an agent this checkout does not own and clear the only records naming it; run it against $owner instead: $(_svc_rerun_command "$owner")"
   fi
   SVC_LABEL="$ORCHID_SERVICE_ID_LABEL"
   SVC_ARTIFACT="$ORCHID_SERVICE_ID_ARTIFACT"
@@ -1285,12 +1307,13 @@ _svc_teardown() {
 
   # WHICH SCHEDULE THIS IS, AND WHETHER THIS CHECKOUT OWNS IT, BEFORE ANYTHING
   # ELSE IS ASKED -- ahead even of the removal-half refusals below. A checkout
-  # that is a COPY of the bound one (see _svc_identity) has no teardown to
-  # perform at all: it is not the tree the schedule drives and not the tree git
-  # has registered, so every question after this one would be answered about the
-  # wrong checkout, and the refusal it earns must be the one that names the real
-  # one. Resolution is pure -- it reads two records and, only when they name
-  # another path, git's own registration -- so asking it here costs a refusal
+  # that is a COPY of the bound one, or a sibling worktree holding its record
+  # (see _svc_identity), has no teardown to perform at all: it is not the tree
+  # the schedule drives, so every question after this one would be answered
+  # about the wrong checkout, and the refusal it earns must be the one that
+  # names the real one. Resolution is pure -- it reads two records and, only
+  # when they name another path, that path's own existence and git's worktree
+  # registration -- so asking it here costs a refusal
   # nothing and leaves both records exactly where `uninstall` can still find
   # them. `_svc_uninstall_*` resolves again for itself below; it is the same
   # reads over the same files, and an arm that trusted a caller to have resolved

@@ -267,35 +267,45 @@ committed) and re-run from the checkout the schedule was installed against — t
 machine-local half is untouched, and a removal run there resolves the label from
 it. `orchid doctor` prints that label and the path it is bound to.
 
-**A checkout that was COPIED does not inherit the schedule.** Agreement between
-the two records says which schedule they are about; it says nothing about who is
-entitled to end it. A `cp -R` of a bound checkout — a backup, a snapshot
-restored beside the original — copies `.orchid/runtime/service.json` with
-everything else, so the duplicate's records agree with the machine-local half
-exactly as the original's do. Run there, a removal would unload the agent the
-*original* is still being driven by, delete both records, and leave that
-checkout bound to a schedule nothing on the machine can name. So `uninstall` and
-`teardown` also require `--repo` to be the checkout **git** has registered,
-which is what tells a copy from a move: `git worktree move` rewrites the
-registration, `cp -R` cannot. A copy is refused before any `launchctl`/`crontab`
-call, before either record is touched, and before any worktree is removed:
+**Another checkout holding that record does not inherit the schedule.**
+Agreement between the two records says which schedule they are about; it says
+nothing about who is entitled to end it. A `cp -R` of a bound checkout — a
+backup, a snapshot restored beside the original — copies
+`.orchid/runtime/service.json` with everything else, so the duplicate's records
+agree with the machine-local half exactly as the original's do; a *second linked
+worktree* of the same repository can end up with the same file, copied in or
+written there by a run's own engines. Run in either, a removal would unload the
+agent the checkout that record names is still being driven by, delete both
+records, and leave that checkout bound to a schedule nothing on the machine can
+name. So `uninstall` and `teardown` require `--repo` to be the checkout the
+record names, or a path that checkout has **left**: the fact that decides it is
+whether anybody is still standing there to be harmed. `git worktree move` and a
+plain rename leave nothing behind; a copy leaves the original exactly where the
+record says it is. The refusal comes before any `launchctl`/`crontab` call,
+before either record is touched, and before any worktree is removed:
 
 ```
-orchid: refusing to remove anything for /path/to/copy: this is not the checkout
+orchid: refusing to remove anything for /path/to/other: this is not the checkout
   that binding was installed against (/path/to/original)
-orchid: the records here match, and matching records are not ownership — a
-  checkout COPIED from the bound one carries an identical
-  /path/to/copy/.orchid/runtime/service.json, while git's worktree registration
-  still names /path/to/original rather than this path ...
+orchid: the records here match, and matching records are not ownership —
+  /path/to/other/.orchid/runtime/service.json names a checkout that is STILL
+  THERE, and a record naming another checkout is what a copy of the bound one
+  carries and what a separately added worktree can be given ...
 ```
 
 Run the command against the checkout it names. The refusal applies only while
-that checkout is **still there**: once the original is gone — torn down, or
-plainly renamed, which is the case git cannot speak for because it registers
-only linked worktrees — there is no other checkout left for a removal to harm,
-so the record naming it becomes the caller's to clear. That is deliberate: a
-copy left holding a record for a path that no longer exists would otherwise be
-guarded against removal by a file no verb could take.
+that checkout is **still there**: once it is gone — torn down, moved, or plainly
+renamed — there is no other checkout left for a removal to harm, so the record
+naming it becomes the caller's to clear. That is deliberate: a directory left
+holding a record for a path that no longer exists would otherwise be guarded
+against removal by a file no verb could take.
+
+Git's worktree registration is asked as well, in the one direction it can answer:
+a checkout git registers as *some other* existing checkout is a copy of it and is
+refused outright, even where the recorded path has since gone. It cannot answer
+the other way round — every linked worktree is registered at its own path, so
+"git registers me" is equally true of a worktree added five minutes ago that was
+never bound to anything.
 
 **`--dry-run` previews an uninstall without performing it.** It prints the
 `launchctl`/`crontab` command it would run and names the plist (or `pump.cron`

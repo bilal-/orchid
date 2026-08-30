@@ -1890,10 +1890,17 @@ orchid_checkout_git_alive() {
 # that is most of what the verb does -- and `git worktree repair` exists to
 # rewrite it after a move somebody made by hand. A COPY rewrites neither: the
 # copy's `.git` file names the SAME administrative directory, whose `gitdir`
-# still names the ORIGINAL checkout. So "the registration names me" is exactly
-# "I am the checkout git knows about, not a duplicate of it", which is the
-# question orchid_service_binding_owned below has to answer and which no
-# comparison of record CONTENT can (a copy carries byte-identical records).
+# still names the ORIGINAL checkout. So "the registration names SOMEBODY ELSE"
+# is exactly "I am a duplicate of that checkout", which no comparison of record
+# CONTENT can establish (a copy carries byte-identical records) and which is
+# half of what orchid_service_binding_owned below has to decide.
+#
+# ONLY HALF, AND THE HALF THAT REFUSES. The converse does not follow: every
+# linked worktree is registered at its own path, so "the registration names me"
+# is true of a worktree added five minutes ago that was never bound to
+# anything. Read as a proof of ownership it let such a worktree act on a
+# neighbour's binding record; see the paragraph on it in
+# orchid_service_binding_owned.
 #
 # READ, NEVER RUN, for the same reason orchid_checkout_git_alive directly above
 # reads rather than runs: this is asked on a refusal path, where a `git` that
@@ -2337,24 +2344,45 @@ orchid_service_identity() {
 # further and reads no file. Only a record naming a DIFFERENT path has anything
 # to prove.
 #
-# AND THERE ARE EXACTLY TWO WAYS TO ARRIVE THERE HONESTLY.
+# AND THERE IS EXACTLY ONE FACT ON DISK THAT PROVES IT: THE RECORDED PATH IS
+# GONE. A checkout cannot show that it used to be somewhere else -- nothing is
+# written down when a directory changes name -- so what is asked instead is
+# whether anybody else is still standing there to be harmed. `git worktree move`
+# leaves nothing behind, a plain rename leaves nothing behind, and a `cp -R`
+# leaves the original exactly where the record says it is. That single test
+# accepts every honest move and refuses every duplicate whose original is alive,
+# and where it is generous -- a copy whose original has since been deleted -- it
+# is generous deliberately: there is then no other checkout for the removal to
+# harm, the schedule's only remaining claimant is the caller, and refusing would
+# strand the leftover this whole mechanism exists to make removable (a record a
+# refusal leaves behind has to stay clearable, or a checkout is wedged by a file
+# no verb can take).
 #
-#   1. `git worktree move` re-registers the worktree at its new location, so
-#      git's own registration names the caller. That is the proof a copy cannot
-#      manufacture, because nothing about copying a directory touches the
-#      original's administrative directory.
-#   2. THE RECORDED PATH IS GONE. git can only speak for a linked worktree, and
-#      a plain checkout that was renamed leaves no registration to ask -- which
-#      would make its binding unclearable at the new path and its removal guard
-#      permanently stuck, the one outcome the guard must never have (a record it
-#      leaves behind has to stay clearable, or a checkout is wedged by a file no
-#      verb can take). The distinguishing fact is that a MOVE leaves nothing
-#      behind and a COPY leaves the original standing. It is the weaker of the
-#      two and deliberately second: it admits a copy whose original has since
-#      been deleted, and in exactly that case there is no other checkout left
-#      for the removal to harm -- the schedule's only remaining claimant is the
-#      caller, and refusing would strand the leftover this whole mechanism
-#      exists to make removable.
+# WHERE IT IS STRICT it stays recoverable, which is what makes the strictness
+# affordable: a checkout moved off a path that has since been RE-CREATED is
+# refused here, and the refusal names the recorded path to re-run against --
+# where there is no repo-local record any more, so the machine-local store
+# answers by that exact path and the removal proceeds from the cheap arm above.
+#
+# GIT'S REGISTRATION IS THE OTHER HALF, AND IT ONLY EVER REFUSES. It used to
+# stand as an alternative PROOF -- "`git worktree move` re-registers the
+# worktree at its new path, so a registration naming the caller is the thing a
+# copy cannot manufacture" -- and that reasoning does not survive contact with a
+# second worktree. Every linked worktree git knows about is registered at its
+# own path, including one added yesterday that was never installed against
+# anything: `reg = caller` says "I am not a copy of somebody", not "I am the
+# checkout this record names". So a worktree added beside the bound one and
+# given that checkout's record -- copied out of it, or written by an engine with
+# the run's own tree to write in -- answered the question with its own
+# registration and went on to unload the bound checkout's agent and delete both
+# of its records, while that checkout stood there being driven. The registration
+# is therefore asked in the one direction it can answer soundly: a caller git
+# registers as SOME OTHER existing checkout is a duplicate of it and is refused
+# outright, ahead of the test above and regardless of what the record names.
+# Unreadable, pruned, or naming a path that is itself gone, it says nothing and
+# the recorded-path test decides alone -- which is what keeps a copy of a linked
+# worktree able to clear the leftover record of an original that has since been
+# torn down.
 #
 # AN EMPTY RECORDED PATH IS OWNED, deliberately. That is the identity source
 # `none` -- an install predating the binding record, where the label is the
@@ -2365,8 +2393,8 @@ orchid_service_binding_owned() {
   local repo="$1" recorded="$2" reg
   [ -n "$recorded" ] || return 0
   [ "$recorded" != "$repo" ] || return 0
-  if reg="$(orchid_checkout_registered_path "$repo")"; then
-    [ "$reg" != "$repo" ] || return 0
+  if reg="$(orchid_checkout_registered_path "$repo")" && [ "$reg" != "$repo" ]; then
+    return 1
   fi
   [ ! -e "$recorded" ]
 }
