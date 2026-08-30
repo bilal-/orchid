@@ -15,6 +15,16 @@ source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/heartbeat.sh"
 
+# The stale-root gate, fired explicitly (INV-15). An engine adapter lives
+# outside bin/, libexec/ and runners/, so lib/common.sh's source-time fire does
+# not cover this path: loading the library above ARMED the guard and left the
+# firing to this file. It is worth the line because an adapter executes
+# $ORCHID_ROOT's own libraries and role profiles, so a stale installation root
+# is precisely the stale-adapter shape lesson L018 records. Idempotent, and a
+# no-op for every root not parked on its configured integration branch, so an
+# ordinary run pays nothing for it.
+orchid_root_stale_gate
+
 req="${1:?usage: run <request.json>}"
 job_id="$(jq -r .job_id "$req")";         task="$(jq -r .task "$req")"
 operation="$(jq -r .operation "$req")";   worktree="$(jq -r .worktree "$req")"
@@ -43,8 +53,12 @@ write_envelope() {  # status extra-json
 REFUSAL='{"failure_kind":"capability"}'
 
 classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
-  if printf '%s' "$1" | grep -qiE 'rate limit|usage limit|429'; then echo rate_limited
-  elif printf '%s' "$1" | grep -qiE 'login|auth|unauthorized'; then echo auth
+  # Herestrings, for the reason plugins/engines/claude/run's classify carries
+  # in full (T016's sweep of the class T010 named): a `printf | grep -q` on a
+  # whole vendor transcript can be decided by which process the scheduler ran
+  # last, and misclassifies a rate limit as a plain failure.
+  if grep -qiE 'rate limit|usage limit|429' <<<"$1"; then echo rate_limited
+  elif grep -qiE 'login|auth|unauthorized' <<<"$1"; then echo auth
   else echo failed
   fi
 }
@@ -146,8 +160,10 @@ fi
 # fall through to malformed rather than being read as an approval.
 verdict_line="$(printf '%s\n' "$stdout" | grep -iE '^VERDICT:[[:space:]]*(approve|request-changes)[[:space:]]*$' | tail -n1 || true)"
 verdict=""
-if printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$'; then verdict=approve
-elif printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$'; then verdict=request-changes
+# Herestrings, same rule as classify above (T016's sweep of the class T010
+# named); plugins/engines/claude/run carries the argument in full.
+if grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$' <<<"$verdict_line"; then verdict=approve
+elif grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$' <<<"$verdict_line"; then verdict=request-changes
 fi
 if [ -z "$verdict" ]; then
   # No output ever reaches the launcher's job log otherwise: `stdout` here is

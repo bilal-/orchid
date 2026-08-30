@@ -71,26 +71,45 @@ done
 # hazards they are forbidden from open-coding.
 code_of() { grep -vE '^[[:space:]]*#' "$1"; }
 
-# RED: a real `fm_set` line, run through `code_of`, must SURVIVE. Every
-#      negative scan in this file passes when it matches nothing, and a
-#      `code_of` that returned nothing -- a renamed file, a stripper that ate
-#      too much -- produces exactly that: a driver that wrote frontmatter,
-#      removed files, evaluated strings and read prose summaries would pass
-#      all six of them at once, silently. This is the single point every one
-#      of those scans depends on, so it is the one fed a known-bad input.
-# GREEN: the same line COMMENTED OUT must be dropped, because the exclusion
-#      is what lets both files document the hazards they are forbidden from
-#      open-coding -- without it the gate would flag its own prose.
-code_of_probe="$WORK/inv13-code-of-probe.sh"
-printf '%s\n' '# fm_set in a comment is documentation' 'fm_set "$f" status done' \
-  > "$code_of_probe"
-code_of_probe_out="$(code_of "$code_of_probe")"
-assert_eq 1 "$(grep -c 'fm_set' <<<"$code_of_probe_out")" \
-  "INV-13 self-check: code_of must keep a real fm_set line and drop the commented one (kept $(grep -c 'fm_set' <<<"$code_of_probe_out") of 2) -- if it dropped both, every negative scan below would pass over a driver that mutates state directly"
-red_case "INV-13's comment stripper KEPT a real fm_set line, so the negative scans below are reading executable code rather than nothing"
-grep -q 'in a comment' <<<"$code_of_probe_out" \
-  && fail "INV-13 self-check: code_of kept a COMMENT line -- the exclusion that lets both files document the hazards they are forbidden from open-coding is gone, and every scan below would flag its own prose"
-green_case "the same stripper DROPPED the commented-out fm_set, so its exclusion still works and the RED case above is not a stripper that keeps everything"
+# THE PURITY SCAN ITSELF, named once so the shipped libraries and this file's
+# own RED/GREEN probes are judged by the SAME pattern. An earlier round aimed
+# the two cases at `code_of` instead -- so the RED case demonstrated a helper
+# working, not this gate detecting the failure it exists for, and its label
+# said the check had "KEPT" a line, which is the ACCEPTING direction wearing
+# the rejecting name. A proof aimed at the wrong function, or labelled the
+# wrong way round, is indistinguishable in the record from a real one.
+POLICY_IMPURE='fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:space:]]+(add|remove)|^[[:space:]]*(rm|mv|cp)[[:space:]]'
+
+# policy_impurity <file> -- the lines of <file> that make it something other
+# than read-only policy: a mutation, or a reach for a verb. Silent for a pure
+# library. `grep -n` reads its input to EOF, so this pipeline has never been
+# exposed to the SIGPIPE race the capture below section 1 exists for.
+policy_impurity() { code_of "$1" | grep -nE "$POLICY_IMPURE" || true; }
+
+# RED: a synthetic policy library containing a real `fm_set` line must be
+#      FLAGGED by policy_impurity -- the gate's own scan, fed the exact input
+#      it exists to reject. Every negative scan in this file passes when it
+#      matches nothing, so an unexercised one is indistinguishable from a
+#      clean tree: a driver that wrote frontmatter, removed files, evaluated
+#      strings and read prose summaries would pass all six at once, silently.
+# GREEN: the same line COMMENTED OUT must be ACCEPTED by the same scan,
+#      because the comment exclusion is what lets both files document the
+#      hazards they are forbidden from open-coding -- without it the gate
+#      would flag its own prose, and its RED case above would be a matcher
+#      that rejects everything.
+policy_probe="$WORK/inv13-policy-probe.sh"
+printf '%s\n' 'fm_set "$f" status done' > "$policy_probe"
+assert_match 'fm_set' "$(policy_impurity "$policy_probe")" \
+  "INV-13 self-check: the purity scan must FLAG a policy library that writes frontmatter -- if it does not, the six scans below are passing over whatever the driver and its policy libraries actually do"
+red_case "INV-13's purity scan flagged a synthetic policy library carrying a real fm_set line, so the negative scans below are capable of finding a mutation rather than merely matching nothing"
+
+policy_probe_ok="$WORK/inv13-policy-probe-commented.sh"
+printf '%s\n' '# fm_set in a comment is documentation' 'echo "pure policy"' \
+  > "$policy_probe_ok"
+policy_probe_ok_out="$(policy_impurity "$policy_probe_ok")"
+[ -z "$policy_probe_ok_out" ] \
+  || fail "INV-13 self-check: the purity scan flagged a COMMENTED fm_set ($policy_probe_ok_out) -- the exclusion that lets both files document the hazards they are forbidden from open-coding is gone, so the gate would flag its own prose and the RED case above would be a matcher that rejects everything"
+green_case "the same purity scan ACCEPTED a library whose only fm_set is in a comment, so the flag above is mutation detection rather than a pattern that hits every mention"
 
 # Every POSITIVE assertion below matches against this capture, never against a
 # live `code_of ... | grep -q` pipeline. Under helpers.sh's `set -uo pipefail`,
@@ -110,7 +129,9 @@ drv_code="$(code_of "$DRIVER")"
 # see).
 # ===========================================================================
 for p in "${POLICIES[@]}"; do
-  if code_of "$p" | grep -nE 'fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:space:]]+(add|remove)|^[[:space:]]*(rm|mv|cp)[[:space:]]'; then
+  p_impure="$(policy_impurity "$p")"
+  if [ -n "$p_impure" ]; then
+    printf '%s\n' "$p_impure"
     fail "INV-13: $p must be read-only policy — it mutates, or reaches for a verb"
   fi
 done

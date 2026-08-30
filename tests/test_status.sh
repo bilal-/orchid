@@ -30,7 +30,7 @@ scratch="$WORK/uninit"; mkdir -p "$scratch"
 rc=0; out="$(ORCHID_REPO="$scratch" HOME="$HOME" "$ORCHID_BIN" status 2>&1)" || rc=$?
 [ "$rc" -eq 0 ] || fail "status must exit 0 in an uninitialized repo"
 assert_match "run_status: \(uninitialized\)" "$out" "status prints (uninitialized) marker"
-echo "$out" | grep -qi "no such file\|awk:" && fail "status must not leak fm_get's stderr for a missing roadmap"
+grep -qi "no such file\|awk:" <<<"$out" && fail "status must not leak fm_get's stderr for a missing roadmap"
 
 # v1-m3 Task 2: split-brain checkout (F7) -- .orchid/tasks/ exists (a task
 # verb ran against this checkout) but roadmap.md does not (durable state
@@ -44,7 +44,7 @@ assert_eq "WARNING: split-brain checkout (.orchid state without roadmap.md — r
 assert_match "^run_status: \(uninitialized\)$" "$out_sb" "status still prints run_status after the split-brain warning"
 
 # healthy fixture (the main $WORK repo on orchid/integration) is unaffected.
-echo "$("$ORCHID_BIN" status)" | grep -q "split-brain" && fail "status must not warn split-brain on a healthy checkout"
+grep -q "split-brain" <<<"$("$ORCHID_BIN" status)" && fail "status must not warn split-brain on a healthy checkout"
 
 # ===========================================================================
 # v1-m4 Task 5: static status page (`orchid status --html`)
@@ -110,13 +110,13 @@ assert_match '\.orchid/runtime/status\.html$' "$page" "status --html prints the 
 [ -f "$page" ] || fail "status --html must actually write the page at the path it printed"
 
 content="$(cat "$page")"
-echo "$content" | grep -q '<!doctype html' || fail "page must be a self-contained HTML document (doctype)"
-echo "$content" | grep -qF '<script src=' && fail "page must not load any external script (self-contained, no JS)"
-echo "$content" | grep -qF '<link' && fail "page must not link any external resource (inline CSS only, no <link> tags)"
-echo "$content" | grep -qF '<script>alert(1)</script>' && fail "task title must be HTML-escaped, never embedded raw"
-echo "$content" | grep -qF '&lt;script&gt;alert(1)&lt;/script&gt;' || fail "task title's < > must appear HTML-escaped in the page"
-echo "$content" | grep -qF "$qid" || fail "open blocker qid must appear in the page"
-echo "$content" | grep -qF "waiting on operator input" || fail "open blocker text must appear in the page"
+grep -q '<!doctype html' <<<"$content" || fail "page must be a self-contained HTML document (doctype)"
+grep -qF '<script src=' <<<"$content" && fail "page must not load any external script (self-contained, no JS)"
+grep -qF '<link' <<<"$content" && fail "page must not link any external resource (inline CSS only, no <link> tags)"
+grep -qF '<script>alert(1)</script>' <<<"$content" && fail "task title must be HTML-escaped, never embedded raw"
+grep -qF '&lt;script&gt;alert(1)&lt;/script&gt;' <<<"$content" || fail "task title's < > must appear HTML-escaped in the page"
+grep -qF "$qid" <<<"$content" || fail "open blocker qid must appear in the page"
+grep -qF "waiting on operator input" <<<"$content" || fail "open blocker text must appear in the page"
 # Review fix (Minor #6): the nonce is the one secret in the answer path and
 # belongs only to BLOCKERS.md/the outbound channel message -- this static
 # page (the "check from another room" surface, possibly screen-shared) must
@@ -127,10 +127,10 @@ echo "$content" | grep -qF "waiting on operator input" || fail "open blocker tex
 # pipeline nonzero -- so `&& fail` is skipped in exactly the case this line
 # exists to catch. Piped, this assertion could never fire.
 grep -qF "$blocker_nonce" <<<"$content" && fail "open blocker's nonce must never appear on the status page"
-echo "$content" | grep -qF "acme-engine" || fail "engines ledger row must appear in the page"
-echo "$content" | grep -qF 'T001' || fail "task table must list T001 in the page"
-echo "$content" | grep -qF 'T002' || fail "task table must list T002 in the page"
-echo "$content" | grep -qF 'waiting-deps (T001)' || fail "task table must include T002's explain predicate"
+grep -qF "acme-engine" <<<"$content" || fail "engines ledger row must appear in the page"
+grep -qF 'T001' <<<"$content" || fail "task table must list T001 in the page"
+grep -qF 'T002' <<<"$content" || fail "task table must list T002 in the page"
+grep -qF 'waiting-deps (T001)' <<<"$content" || fail "task table must include T002's explain predicate"
 
 # -- the declared answer set on the open-blockers panel (v1-m4 T009) --------
 # Scoped to the panel, because the journal tail below it echoes every
@@ -182,11 +182,11 @@ assert_eq 1 "$combo_stdout_lines" \
 [ -f "$combo_stdout" ] \
   || fail "status --html --explain must write the page named on stdout"
 combo_content="$(cat "$combo_stdout")"
-echo "$combo_content" | grep -qF '<h2>Unattended trust</h2>' \
+grep -qF '<h2>Unattended trust</h2>' <<<"$combo_content" \
   || fail "status --html --explain must include the unattended trust section"
-echo "$combo_content" | grep -qF '<strong>gate:</strong> denied' \
+grep -qF '<strong>gate:</strong> denied' <<<"$combo_content" \
   || fail "status --html --explain must surface a denied unattended gate"
-echo "$combo_content" | grep -qF 'acknowledge with: orchid trust unattended' \
+grep -qF 'acknowledge with: orchid trust unattended' <<<"$combo_content" \
   || fail "the denied HTML explanation must include actionable provenance"
 
 combo_reason='reviewed for status HTML provenance coverage'
@@ -197,17 +197,17 @@ trusted_combo_lines="$(printf '%s\n' "$trusted_combo_stdout" | wc -l | tr -d ' '
 assert_eq 1 "$trusted_combo_lines" \
   "trusted status --html --explain stdout remains exactly one page-path line"
 trusted_combo_content="$(cat "$trusted_combo_stdout")"
-echo "$trusted_combo_content" | grep -qF '<strong>gate:</strong> allowed' \
+grep -qF '<strong>gate:</strong> allowed' <<<"$trusted_combo_content" \
   || fail "status --html --explain must surface an allowed unattended gate"
-echo "$trusted_combo_content" | grep -qF "$combo_reason" \
+grep -qF "$combo_reason" <<<"$trusted_combo_content" \
   || fail "status --html --explain must surface operator-authored provenance"
-echo "$trusted_combo_content" | grep -qF 'acknowledged at' \
+grep -qF 'acknowledged at' <<<"$trusted_combo_content" \
   || fail "status --html --explain must surface the acknowledgement timestamp"
 HOME="$MACHINE_HOME" "$ORCHID_BIN" trust revoke "$WORK" >/dev/null
 
 # Atomic write: no leftover tmp artifact beside the page (atomic_write's
 # own mktemp+mv idiom -- confirms the --html path actually used it).
-list_dir_entries "$(dirname "$page")" | grep -q '\.tmp\.' \
+grep -q '\.tmp\.' <<<"$(list_dir_entries "$(dirname "$page")")" \
   && fail "status --html must not leave a stray atomic-write tmp file behind"
 
 # Answering a blocker must drop it from the "open blockers" section on the
@@ -231,14 +231,14 @@ printf 'rollback,reroll\n' > ".orchid/runtime/answers/$qid_lost.choices"
 "$ORCHID_BIN" answer "$qid_lost" rollback >/dev/null
 page2="$("$ORCHID_BIN" status --html)"
 blockers_section="$(awk '/Open blockers/,/Journal/' "$page2")"
-echo "$blockers_section" | grep -qF "$qid" && fail "an ANSWERED blocker must no longer be listed in Open blockers"
-echo "$blockers_section" | grep -qi 'no open blockers' || fail "Open blockers must say so once the only blocker is answered"
+grep -qF "$qid" <<<"$blockers_section" && fail "an ANSWERED blocker must no longer be listed in Open blockers"
+grep -qi 'no open blockers' <<<"$blockers_section" || fail "Open blockers must say so once the only blocker is answered"
 
 # Last-10 journal entries: the just-added blocker/blocker_resolved entries
 # must be in the page's journal section.
 journal_section="$(awk '/Journal \(last 10\)/,0' "$page2")"
-echo "$journal_section" | grep -qF "$qid" || fail "journal tail must include the recent blocker entry"
-echo "$journal_section" | grep -qF 'blocker_resolved' || fail "journal tail must include the recent blocker_resolved entry"
+grep -qF "$qid" <<<"$journal_section" || fail "journal tail must include the recent blocker entry"
+grep -qF 'blocker_resolved' <<<"$journal_section" || fail "journal tail must include the recent blocker_resolved entry"
 
 # status_page is config-able: point it at a custom relative path (resolved
 # under .orchid/, same as every other runtime/ path) and confirm the page
@@ -259,7 +259,7 @@ html_stderr="$(cat "$html_stderr_file")"
 html_stdout_lines="$(printf '%s\n' "$html_stdout" | wc -l | tr -d ' ')"
 assert_eq 1 "$html_stdout_lines" \
   "status --html stdout is EXACTLY one line (the path), even on a split-brain checkout"
-echo "$html_stdout" | grep -qF '.orchid/runtime/status.html' \
+grep -qF '.orchid/runtime/status.html' <<<"$html_stdout" \
   || fail "status --html stdout must be the page path on a split-brain checkout too"
 [ -f "$html_stdout" ] || fail "the path --html printed on stdout must be a real file even on a split-brain checkout"
 assert_match "WARNING: split-brain checkout" "$html_stderr" \

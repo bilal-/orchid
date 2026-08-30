@@ -328,7 +328,7 @@ committed files.
 - [PROTOCOL.md](../PROTOCOL.md) — the tick procedure every front-end
   executes; the normative walk behind diagram 2.
 - [specs/kernel.md](./specs/kernel.md) — tiers, transition table,
-  invariants INV-01..INV-14, command surfaces, judgment boundaries.
+  invariants INV-01..INV-15, command surfaces, judgment boundaries.
 - [specs/plugins.md](./specs/plugins.md) — adapter contract, trust model,
   notify channels.
 - [frontends.md](./frontends.md) — which agent products can drive the

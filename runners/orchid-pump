@@ -6,7 +6,12 @@ set -euo pipefail
 # does exactly one shot per invocation. Every no-op outcome below exits 0
 # (cron-friendly: "nothing to do right now" is a normal poll result, never an
 # error); only when it hands off does its exit code become the driver's or the
-# tick's own.
+# tick's own. The two GATES are the exception, and they exit non-zero. They sit
+# at different heights on purpose: the unattended-trust gate stays BELOW the
+# no-op arms, so an operator polling a repository they have not acknowledged
+# still gets told there is no run here; the stale-root gate sits ABOVE them,
+# because "nothing to do right now" decided by a kernel nobody has looked at is
+# an answer rather than a no-op (T016).
 #
 # v1.1 Track 2 changed WHAT it hands off to. The deterministic driver
 # (`orchid drive`) now gets the pass first and does nearly all of it. An LLM
@@ -81,6 +86,35 @@ fi
 repo="${ORCHID_REPO:-$PWD}"
 state="$(orchid_state "$repo")"
 
+# THE MACHINE-LOCAL TRUST LOOKUP, THEN THE STALE-ROOT GATE, ABOVE THE THREE
+# NO-OP VERDICTS BELOW -- because those verdicts are the first thing this
+# entry point produces that an operator acts on.
+#
+# The gate used to sit further down, below all three, on the reasoning that
+# they write nothing. That is the reasoning `orchid trust show` carried and
+# lost: what these lines produce is an ANSWER ABOUT THIS REPOSITORY -- "there
+# is no run here", "you are on the wrong checkout", "the run is finished" --
+# read out of the very tree whose staleness is the finding, and a cron log
+# full of `pump: run complete` from a pre-merge kernel is exactly an operator
+# acting on code nobody has looked at. A gate reached only on the route that
+# would have written something guards the writes and abandons the reports.
+#
+# unattended_trust_inspect comes FIRST and the gate SECOND, which is the
+# ordering libexec/orchid-doctor and `orchid trust show` are held to for the
+# same reason: Orchid drives its own repository, so ORCHID_REPO and
+# ORCHID_ROOT can be one directory, and then the gate's `git diff --cached`
+# against the root is a query against the target -- forbidden before an
+# acknowledgement for it has been looked for. The inspection prints nothing,
+# writes nothing, and with no identity-keyed candidate spends no Git at all,
+# so putting it first costs the gate none of its reach.
+#
+# It is also the SAME inspection the unattended-trust gate below consumes, via
+# unattended_trust_require_loaded: root verification is never cached between
+# processes, but re-inspecting inside one process would walk an acknowledged
+# target's whole history twice on every scheduled poll for nothing.
+unattended_trust_inspect "$repo"
+orchid_root_stale_gate
+
 # 1. Not initialized (none of `.orchid/tasks`, `.orchid/journal.md`, or
 # `.orchid/roadmap.md` exist) -- deliberately checked with `orchid_state`
 # alone, BEFORE calling `orchid_runtime` (which `mkdir -p`s
@@ -139,12 +173,34 @@ fi
 # below cannot be opened before the gate has passed. Tell the gate so it also
 # records the refusal in the machine-local trust store, where `orchid doctor`
 # will surface it.
+#
+# _loaded, because the inspection this decides on is the one already made
+# above the three verdicts; nothing between here and there writes to the
+# machine-local store, and re-running it would re-walk an acknowledged
+# target's history for an answer this process already holds.
 if [ "$pump_service_log" -eq 1 ]; then
-  unattended_trust_require "$repo" "unattended pump" scheduled || exit 1
+  unattended_trust_require_loaded "$repo" "unattended pump" scheduled || exit 1
 else
-  unattended_trust_require "$repo" "unattended pump" || exit 1
+  unattended_trust_require_loaded "$repo" "unattended pump" || exit 1
 fi
 
+# The stale-root gate fired above, at the first line its own contract allows:
+# after the machine-local lookup and before the first line that produces
+# anything at all (T016). lib/common.sh armed it when this file sourced it and
+# left the firing to this file, because a trust-boundary entry point may not
+# spend a `git` while it might still be looking for an acknowledgement.
+# `_orchid_entry_restore_operator_path` below would also fire it, but it sits
+# past `orchid_runtime` and past the service log's creation, so a stale kernel
+# would have written into the target repository before being stopped. A gate
+# reached after the first side effect is reached too late: what stops the
+# writes it does not precede is only where the next author happens to put the
+# call. The call is idempotent and self-disarming, so the restore below stays
+# exactly where the operator PATH is actually needed.
+#
+# tests/inv/test_INV-15_no_optional_gate.sh section 6 pins both edges of this
+# by running the pump out of a genuinely stale root and weighing the refusal
+# against `.orchid/runtime` -- and both edges of the reach above, against the
+# no-op verdicts.
 rt="$(orchid_runtime "$repo")"
 if [ "$pump_service_log" -eq 1 ]; then
   # Keep a service log strictly inside the acknowledged checkout. The

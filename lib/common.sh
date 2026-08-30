@@ -17,8 +17,28 @@ orchid_die() { echo "orchid: $*" >&2; exit 1; }
 # __orchid_entry_defer_restore=1 before sourcing this file and calls the helper
 # only after its authorization decision when later work genuinely needs the
 # operator PATH.
+#
+# IT IS ALSO WHERE THE STALE-ROOT GATE FIRES for such an entry point (T016).
+# Declared here, ahead of the function, because the function is CALLED on the
+# line below its definition -- long before the gate at the bottom of this file
+# has armed anything -- and `0` is what keeps that early call from reaching
+# functions that are not defined yet. See the gate's own block at the end of
+# this file for why the git half may not run at source time at all.
+_ORCHID_ROOT_STALE_ARMED=0
 _orchid_entry_restore_operator_path() {
   [ "${__orchid_entry_context:-}" = 1 ] || return 0
+  # A trust-boundary entry point calls this the moment its authorization
+  # decision is made and later work needs the operator PATH -- which is
+  # exactly the first moment the unattended-trust contract permits this
+  # process to touch a repository with `git`. Fired BEFORE the PATH is
+  # restored, so the gate's own git comes off the fixed entry PATH the caller
+  # is still holding rather than off an operator PATH a target repository
+  # could have contributed to. Disarmed first, so a second call cannot fire
+  # it twice.
+  if [ "${_ORCHID_ROOT_STALE_ARMED:-0}" = 1 ] && _orchid_kernel_entry_point; then
+    _ORCHID_ROOT_STALE_ARMED=0
+    _orchid_root_stale_fire
+  fi
   if [ "${__orchid_entry_path_was_set:-}" = x ]; then
     PATH="${__orchid_entry_operator_path-}"
     export PATH
@@ -405,6 +425,29 @@ _orchid_head_branch_ondisk() {
 #      is TOUCHING A REPOSITORY, and `git` is the only thing here that would.
 #      tests/test_stale_root.sh check 11 fences precisely that, and fences
 #      nothing about subshell count.
+#
+#      THIS FUNCTION IS NOW THE BRANCH HALF ALONE, and that split is T016's
+#      fix (lesson L036). The paragraph above argued that the content half
+#      was safe because it "is reachable only for a checkout parked on the
+#      integration branch, which is orchid's own root and never a repository
+#      a run was pointed at". That argument is wrong, and it was wrong for
+#      the one checkout orchid is actually developed and self-hosted in:
+#      $ORCHID_ROOT IS parked on the integration branch there, so the content
+#      half ran -- at SOURCE time, ahead of every verb's own code and
+#      therefore ahead of lib/trust.sh's gate -- and spent a `git` before any
+#      acknowledgement had been found. tests/test_unattended_trust.sh's
+#      fast-guard shim fails on ANY git or mktemp before an acknowledgement,
+#      and it did: the identical commit was green on every branch name but
+#      that one, which is exactly why nothing caught it. A revalidation
+#      environment that differs from the deployed environment in the one
+#      dimension under test converts a real failure into a silent pass.
+#
+#      So the content half moved OUT of source time (orchid_root_stale_
+#      content plus _orchid_root_stale_fire below). Nothing about WHAT is
+#      compared changed -- the index, the same pathspec, the same fail-open
+#      -- only WHEN it may be asked, and the answer is: not until the process
+#      is past the point where it could still be looking for an
+#      acknowledgement.
 #   2. This checkout's INDEX does not match HEAD for the kernel paths.
 #
 #      THE INDEX, not the working tree, and that is the difference between a
@@ -498,7 +541,7 @@ _orchid_head_branch_ondisk() {
 # Read-only: it only ever inspects, exactly like orchid_stale_checkout. The
 # branch it found is published so the refusal below can name it.
 orchid_root_stale() {
-  local root="${1:-${ORCHID_ROOT:-}}" integ cur staged unstaged
+  local root="${1:-${ORCHID_ROOT:-}}" integ cur
   # config_get reads "$HOME/.orchid/config" unguarded, and this is the one
   # caller that runs at SOURCE time -- ahead of any verb's own environment
   # setup, and in a headless context (launchd, cron) where HOME can genuinely
@@ -516,6 +559,22 @@ orchid_root_stale() {
   [ -n "$cur" ] || return 1
   integ="$(config_get "$root" integration_branch orchid/integration)"
   [ "$cur" = "$integ" ] || return 1
+  ORCHID_ROOT_STALE_BRANCH="$cur"
+}
+
+# orchid_root_stale_content [root] -- condition 2, the half that needs `git`.
+# True (exit 0) when this checkout's INDEX does not match HEAD for the kernel
+# paths, having published what it saw; false when it matches, when git cannot
+# answer, or when there is no root.
+#
+# SPLIT OUT OF orchid_root_stale SO IT CANNOT RUN AT SOURCE TIME. Its caller
+# is _orchid_root_stale_fire below, and the only two moments that call THAT
+# are past the unattended-trust contract's boundary. Nothing else in the
+# kernel calls it, and a caller that wants the whole question asks the two in
+# order the way the gate at the bottom of this file does.
+orchid_root_stale_content() {
+  local root="${1:-${ORCHID_ROOT:-}}" staged unstaged
+  [ -n "$root" ] || return 1
   # ORCHID_KERNEL_PATHS, never a literal list repeated here: see its own
   # comment above for what is deliberately outside it, and orchid_refresh_
   # kernel below for the restore that has to agree with it path for path. A
@@ -532,7 +591,6 @@ orchid_root_stale() {
   # subprocess -- so this never runs for a root that was going to be allowed.
   unstaged="$(git -C "$root" diff --name-only -- \
     "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null || echo '?')"
-  ORCHID_ROOT_STALE_BRANCH="$cur"
   ORCHID_ROOT_STALE_INDEX="$staged"
   ORCHID_ROOT_STALE_UNSTAGED="$unstaged"
 }
@@ -617,8 +675,10 @@ orchid_root_stale() {
 #
 # Cost: two builtin file reads, `kill -0`, and -- only once those have passed
 # -- `hostname` and the `ps` inside _pid_start. It is evaluated only after
-# orchid_root_stale has already said yes, i.e. only when a refusal is certain
-# and a `git` has already run, and it reads only under $ORCHID_ROOT -- orchid's
+# orchid_root_stale_content has already said yes, i.e. only when a refusal is
+# certain and a `git` has already run -- and that content half is itself
+# reached only from _orchid_root_stale_fire, past the point where an
+# acknowledgement could still be pending. It reads only under $ORCHID_ROOT -- orchid's
 # own installation, never a repository a run was merely pointed at -- so it
 # adds nothing in front of the unattended-trust gate. It deliberately does not
 # call orchid_runtime, which would `mkdir` on a read-only question.
@@ -2297,6 +2357,38 @@ trust_store_remove() {  # abs-dir -- atomic delete of any record for that path
 # other `git` call it makes; this check claims no stronger boundary than the
 # verb around it already has.
 #
+# WHAT MAY HAPPEN AT SOURCE TIME, AND WHAT MAY NOT (T016, lesson L036). The
+# paragraph above is about binary LOOKUPS. The stronger rule, and the one the
+# unattended-trust contract actually imposes, is about REPOSITORY WORK: a
+# process that may still be looking for an acknowledgement may not spend a
+# `git` on any repository, and a source-time check lands in front of that
+# lookup however the gate itself is written. This block used to spend one --
+# not on every root, only on a root parked on the integration branch, which is
+# precisely the self-hosted checkout orchid develops and runs itself from, so
+# it was invisible everywhere except the one place it mattered.
+#
+# So the block below no longer asks the whole question. It ARMS, from file
+# reads alone, and then decides WHO may fire:
+#
+#   * A kernel entry point with no authorization boundary to cross -- every
+#     ordinary verb, and the runners that gate on nothing -- fires here, at
+#     source time, exactly as before. There is no acknowledgement pending in
+#     such a process, so there is nothing for the git to land in front of.
+#   * A TRUST-BOUNDARY entry point (it set __orchid_entry_defer_restore=1
+#     before sourcing this file) does NOT fire here. It fires from
+#     _orchid_entry_restore_operator_path above, which is the line where that
+#     entry point states its authorization decision is made. If it refuses
+#     before reaching that line, nothing fires and nothing needed to: it ran
+#     no protocol, spawned no adapter and executed nothing but its own gate.
+#   * A process that is not executing one of orchid's own entry points at all
+#     -- a test sourcing this library, a helper reaching for one function --
+#     never fires it. Such a process is not running a verb, so there is no
+#     verb to refuse, and _orchid_kernel_entry_point below is what says so.
+#
+# The one thing that is NOT reordered is the refusal's reach for a verb that
+# does run: every arm still ends in the same two refusals, with the same text
+# and the same exit statuses, before the verb's own work.
+#
 # `orchid help` and an unknown verb still answer (bin/orchid handles both
 # without sourcing anything). EVERYTHING ELSE REFUSES, `doctor` and `status`
 # included, and that is the deliberate answer to the obvious objection: those
@@ -2409,13 +2501,76 @@ Retry in a moment — the window is one ref advance and one restore wide. If ret
   exit "$ORCHID_STALE_ROOT_TEMPFAIL"
 }
 
+# _orchid_kernel_entry_point -- is the program this process is EXECUTING one
+# of orchid's own entry points, rather than something that merely sourced this
+# library?
+#
+# Asked of the OUTERMOST BASH_SOURCE entry, which is the file bash is running
+# (this library sits below it on that stack), never of `$0`. `$0` is whatever
+# the caller typed, and tests/helpers.sh carries the whole argument for why
+# deciding a gate's applicability from it fails open for two of the three ways
+# a person actually invokes a file. The directory is resolved with `cd` +
+# `pwd -P` -- both shell builtins, so this costs no binary lookup and no
+# subprocess of its own -- because a runner started as `./orchid-pump` from
+# inside runners/ arrives with no directory component for a pattern to bind
+# to, and a checkout reached through a symlinked path (macOS /var/folders ->
+# /private/var/folders) must compare equal to its physical spelling.
+#
+# FAILS CLOSED. Every path that cannot establish an answer -- an empty stack,
+# a directory that cannot be entered -- returns "yes, this is an entry point",
+# so an unresolvable spelling costs a refusal rather than silently standing a
+# safety gate down. The only way to get "no" out of it is a resolved directory
+# that demonstrably is not one of orchid's three executable roots.
+_orchid_kernel_entry_point() {
+  local main dir
+  main="${BASH_SOURCE[$(( ${#BASH_SOURCE[@]} - 1 ))]}"
+  [ -n "$main" ] || return 0
+  dir="${main%/*}"
+  [ "$dir" != "$main" ] || dir="."
+  dir="$(cd "$dir" 2>/dev/null && pwd -P)" || return 0
+  [ -n "$dir" ] || return 0
+  case "$dir/${main##*/}" in
+    */bin/orchid|*/libexec/orchid-*|*/runners/orchid-*) return 0 ;;
+  esac
+  return 1
+}
+
+# _orchid_root_stale_fire -- ask condition 2 and refuse on it. This is the
+# only caller of orchid_root_stale_content, and the only place a `git` is
+# spent on $ORCHID_ROOT's behalf; both of its own call sites are past the
+# point where an acknowledgement could still be pending.
+#
 # Which refusal, never whether. `orchid merge`'s own advance-then-refresh
 # window is asked about LAST, so it costs nothing until a refusal is already
-# certain, and so the ordering the branch check owes the unattended-trust gate
-# is unchanged: it reads only under $ORCHID_ROOT and spawns no `git`.
-if [ "${ORCHID_ALLOW_STALE_ROOT:-}" != 1 ] && orchid_root_stale; then
+# certain.
+_orchid_root_stale_fire() {
+  orchid_root_stale_content "${ORCHID_ROOT:-}" || return 0
   if _orchid_kernel_refresh_inflight "${ORCHID_ROOT:-}"; then
     _orchid_stale_root_inflight_die
   fi
   _orchid_stale_root_die
+}
+
+# orchid_root_stale_gate -- fire the armed gate NOW, for a trust-boundary
+# entry point that holds the fixed entry PATH for its whole run and therefore
+# never calls _orchid_entry_restore_operator_path. Without it such an entry
+# point would arm the gate and never fire it, which is a gate skipped by
+# omission -- the class INV-15 exists for, and the reason that invariant
+# derives its entry-point list rather than trusting a written one.
+#
+# Idempotent, and a no-op when nothing is armed, so a caller may place it at
+# the earliest point its own contract allows without asking whether some other
+# site got there first.
+orchid_root_stale_gate() {
+  [ "${_ORCHID_ROOT_STALE_ARMED:-0}" = 1 ] || return 0
+  _ORCHID_ROOT_STALE_ARMED=0
+  _orchid_root_stale_fire
+}
+
+if [ "${ORCHID_ALLOW_STALE_ROOT:-}" != 1 ] && orchid_root_stale; then
+  _ORCHID_ROOT_STALE_ARMED=1
+  if [ "${__orchid_entry_defer_restore:-0}" != 1 ] && _orchid_kernel_entry_point; then
+    _ORCHID_ROOT_STALE_ARMED=0
+    _orchid_root_stale_fire
+  fi
 fi

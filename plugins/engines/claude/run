@@ -15,6 +15,16 @@ source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/heartbeat.sh"
 
+# The stale-root gate, fired explicitly (INV-15). An engine adapter lives
+# outside bin/, libexec/ and runners/, so lib/common.sh's source-time fire does
+# not cover this path: loading the library above ARMED the guard and left the
+# firing to this file. It is worth the line because an adapter executes
+# $ORCHID_ROOT's own libraries and role profiles, so a stale installation root
+# is precisely the stale-adapter shape lesson L018 records. Idempotent, and a
+# no-op for every root not parked on its configured integration branch, so an
+# ordinary run pays nothing for it.
+orchid_root_stale_gate
+
 req="${1:?usage: run <request.json>}"
 job_id="$(jq -r .job_id "$req")";         task="$(jq -r .task "$req")"
 operation="$(jq -r .operation "$req")";   worktree="$(jq -r .worktree "$req")"
@@ -34,8 +44,16 @@ write_envelope() {  # status extra-json
     | atomic_write "$output"
 }
 classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
-  if printf '%s' "$1" | grep -qiE 'rate limit|usage limit|429'; then echo rate_limited
-  elif printf '%s' "$1" | grep -qiE 'login|auth|unauthorized'; then echo auth
+  # HERESTRINGS, never `printf ... | grep -q` (T016's sweep of the class T010
+  # named). $1 is the whole of a vendor CLI's combined output, so it is the
+  # LARGEST producer any matcher in this tree is fed: `grep -q` exits at its
+  # first match, SIGPIPEs a `printf` with most of that still to write, and
+  # under this adapter's `set -o pipefail` the kill-by-signal status becomes
+  # the pipeline's. A genuine rate-limit notice then classifies as plain
+  # `failed`, lib/ledger.sh charges an attempt instead of scheduling the
+  # backoff, and the bigger the transcript the likelier it is.
+  if grep -qiE 'rate limit|usage limit|429' <<<"$1"; then echo rate_limited
+  elif grep -qiE 'login|auth|unauthorized' <<<"$1"; then echo auth
   else echo failed
   fi
 }
@@ -444,8 +462,13 @@ fi
 # fall through to malformed rather than being read as an approval.
 verdict_line="$(printf '%s\n' "$stdout" | grep -iE '^VERDICT:[[:space:]]*(approve|request-changes)[[:space:]]*$' | tail -n1 || true)"
 verdict=""
-if printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$'; then verdict=approve
-elif printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$'; then verdict=request-changes
+# Herestrings, same rule as classify above (T016's sweep of the class T010
+# named). $verdict_line is one line, so the race is remote here — but the
+# shape is the thing that gets copied into the next adapter, where the
+# producer is not one line, and tests/inv/test_INV-15_no_optional_gate.sh
+# holds the whole shipped tree to the shape rather than to a risk estimate.
+if grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$' <<<"$verdict_line"; then verdict=approve
+elif grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$' <<<"$verdict_line"; then verdict=request-changes
 fi
 if [ -z "$verdict" ]; then
   write_envelope malformed '{}'

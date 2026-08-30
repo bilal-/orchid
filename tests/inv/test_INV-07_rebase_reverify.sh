@@ -97,7 +97,11 @@ assert_eq "$integ_after_parallel" "$merge_base" "rebased branch now sits directl
 [ ! -f ".orchid/reviews/T001-merge.log" ] || fail "INV-07: stale merge evidence must not survive the rebase-reset"
 rc=0; err="$("$ORCHID_BIN" task advance T001 reviewing 2>&1 1>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "INV-07: reviewing must be refused before re-verify (stale evidence gone -> INV-11 gate)"
-echo "$err" | grep -qi "verify" || fail "INV-07: die message must mention verify (got: $err)"
+# A herestring, never `echo "$err" | grep -qi` (T016/INV-15 section 5): under
+# helpers.sh's `set -o pipefail` the SIGPIPE grep's first match sends `echo`
+# becomes the pipeline's status, so a die message that DOES mention verify can
+# read as one that does not.
+grep -qi "verify" <<<"$err" || fail "INV-07: die message must mention verify (got: $err)"
 assert_eq testing "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "INV-07: refused advance leaves status at testing"
 
 # --- Walk the rebased candidate through verify + review again; merge must

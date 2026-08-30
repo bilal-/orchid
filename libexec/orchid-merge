@@ -229,7 +229,7 @@ if [ "$integ_head" != "$base_sha" ]; then
       # being checked out elsewhere (e.g. the operator's own working copy), in
       # which case name both the branch and the exact checkout path (parsed
       # from `git worktree list`) instead of a bare "cannot create" message.
-      if printf '%s' "$wt_err" | grep -qiE "already (checked out|used by worktree)"; then
+      if grep -qiE "already (checked out|used by worktree)" <<<"$wt_err"; then
         # git's own message conventions differ by version ("already checked
         # out at '<path>'" vs "already used by worktree at '<path>'") but both
         # end in "at '<path>'" — extract directly; fall back to parsing

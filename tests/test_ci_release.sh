@@ -25,10 +25,10 @@ for expected in \
   scripts/ci-local.sh \
   scripts/pin-formula.sh \
   scripts/release.sh; do
-  printf '%s\n' "$shell_list" | grep -qxF "$expected" \
+  grep -qxF "$expected" <<<"$shell_list" \
     || fail "shell discovery omitted $expected"
 done
-printf '%s\n' "$shell_list" | grep -q '^\.orchid/' \
+grep -q '^\.orchid/' <<<"$shell_list" \
   && fail "shell discovery must never inspect run state under .orchid"
 
 # --- the outer half of the merge-gate recursion guard (T007) ---------------
@@ -109,10 +109,10 @@ chmod +x "$discovery_fixture/root-helper" \
 fixture_shell_list="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" --list-shell)" \
   || fail "archive-layout shell discovery failed"
 for expected in root-helper plugins/example/run skills/example/helpers/check templates/hook.sh; do
-  printf '%s\n' "$fixture_shell_list" | grep -qxF "$expected" \
+  grep -qxF "$expected" <<<"$fixture_shell_list" \
     || fail "archive-layout shell discovery omitted $expected"
 done
-printf '%s\n' "$fixture_shell_list" | grep -qxF tests/not-shell \
+grep -qxF tests/not-shell <<<"$fixture_shell_list" \
   && fail "shell discovery included a non-shell executable"
 
 lint_disable='# shellcheck '
@@ -218,7 +218,7 @@ printf '%s\n' '#!/usr/bin/env bash' "$mtime_helper_doc" 'file_mtime() {' \
   "$mtime_inside" '  printf %s "$mt"' '}' \
   > "$discovery_fixture/lib/common.sh"
 scoped_ok_out="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" 2>&1 || true)"
-printf '%s\n' "$scoped_ok_out" | grep -q 'platform-specific stat format' \
+grep -q 'platform-specific stat format' <<<"$scoped_ok_out" \
   && fail "CI rejects a platform-specific stat format INSIDE lib/common.sh's own file_mtime helper — that block is the one place the format belongs"
 
 # Rejected: the same format one line past the helper's closing brace.
@@ -512,9 +512,9 @@ assert_eq "$fixture_sha" "$(sha256_file "$release_out/orchid-1.2.3.tar.gz")" \
 archive_list="$(tar -tzf "$release_out/orchid-1.2.3.tar.gz")"
 printf '%s\n' "$archive_list" | grep -v '^orchid-1.2.3/' \
   && fail "release archive contains an entry outside its canonical prefix"
-printf '%s\n' "$archive_list" | grep -q '^orchid-1.2.3/\.orchid/' \
+grep -q '^orchid-1.2.3/\.orchid/' <<<"$archive_list" \
   && fail "release archive leaked .orchid run state"
-printf '%s\n' "$archive_list" | grep -q '^orchid-1.2.3/Formula/' \
+grep -q '^orchid-1.2.3/Formula/' <<<"$archive_list" \
   && fail "release archive included the external tap formula"
 
 # Hostile Git state outside the tagged tree must not alter archive bytes. Git
@@ -846,7 +846,7 @@ assert_eq "$pre_sha" "$(sha256_file "$pre_out/orchid-$pre_version.tar.gz")" \
 pre_list="$(tar -tzf "$pre_out/orchid-$pre_version.tar.gz")"
 printf '%s\n' "$pre_list" | grep -v "^orchid-$pre_version/" \
   && fail "prerelease archive contains an entry outside its suffixed prefix"
-printf '%s\n' "$pre_list" | grep -qxF "orchid-$pre_version/release/metadata.conf" \
+grep -qxF "orchid-$pre_version/release/metadata.conf" <<<"$pre_list" \
   || fail "prerelease archive is missing release/metadata.conf under its suffixed prefix"
 
 # ===========================================================================
@@ -1037,7 +1037,7 @@ live_pin_pattern="${live_pin_pattern}[^\"]*pin-formula[.]sh\"?[[:space:]]+[-]-ch
 live_pin_removed_line='  freshness_out="$("$BASH" "$'
 live_pin_removed_line="${live_pin_removed_line}REPO_ROOT/scripts/pin-formula.sh\" "
 live_pin_removed_line="${live_pin_removed_line}--check 2>&1)\" || rc=\$?"
-printf '%s\n' "$live_pin_removed_line" | grep -Eq "$live_pin_pattern" \
+grep -Eq "$live_pin_pattern" <<<"$live_pin_removed_line" \
   || fail "the per-candidate freshness-gate tripwire no longer matches the line it forbids -- the scan below proves nothing"
 
 while IFS= read -r shell_file; do

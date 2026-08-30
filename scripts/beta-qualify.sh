@@ -23,6 +23,12 @@
 # ("Qualification runs the target verify= command, and takes no
 # acknowledgement"). Read that before adding a gate here.
 #
+# ONE GATE THIS FILE DOES FIRE, and it is not that one: the stale-root gate,
+# below. It asks about ORCHID_ROOT -- whether the Orchid checkout this harness
+# is ITSELF running out of is pre-merge code -- and asks nothing at all about
+# --repo. It authorizes nothing and records nothing. The two are different
+# subjects and the same spec section says so.
+#
 # ---------------------------------------------------------------------------
 # THE EVIDENCE RULE (the reason this file is shaped the way it is)
 # ---------------------------------------------------------------------------
@@ -73,6 +79,49 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 ORCHID_ROOT="$ROOT"
 export ORCHID_ROOT
 ORCHID_BIN="$ROOT/bin/orchid"
+
+# THE STALE-ROOT GATE, FIRED HERE AND NOT BESIDE THE OTHER LIBRARIES (INV-15).
+#
+# lib/common.sh is loaded at the TOP of this file, ahead of everything, for one
+# reason: loading it ARMS the stale-root guard, and this file is not one of the
+# three executable roots (bin/, libexec/, runners/) that lib/common.sh fires
+# that guard at source time for -- see its _orchid_kernel_entry_point. Loaded
+# further down beside lib/roles.sh and lib/resolver.sh, as it used to be, the
+# guard was armed here and fired nowhere: a gate skipped by omission, which is
+# exactly the class INV-15 exists for. `orchid_root_stale_gate` fires whatever
+# is armed from wherever it is called, which is why a harness outside those
+# three directories must call it explicitly.
+#
+# AHEAD OF THE PARSE, not after it, and deliberately unlike libexec/orchid-
+# trust's per-subcommand placement. The kernel does not have one answer here,
+# and this comment used to claim it did -- that every kernel entry point
+# refuses before it looks at its own arguments, `--help` included. It is true
+# of the entry points that fire at their operator-PATH restore, which
+# lib/common.sh reaches before their argument loops (libexec/orchid-doctor is
+# the clearest: it refuses ahead of even parsing `--greenfield`). It is NOT
+# true of the two verbs that fire the gate by an explicit call of their own,
+# libexec/orchid-trust and runners/orchid-service: both dispatch on a
+# subcommand first and answer `-h`, `--help`, `help` and a bare invocation with
+# their usage text ABOVE that call, so that a mistyped verb is answered with
+# its own diagnosis rather than a refusal about the checkout. Their rule is
+# that a usage text names no repository, resolves no record, and reports
+# nothing an operator could act on about a target; both are held to it, and to
+# the acting arm that must still refuse, by
+# tests/inv/test_INV-15_no_optional_gate.sh section 8.
+#
+# THIS file is placed ahead of its parse anyway, and on its own footing rather
+# than on that claim, because what it produces is not a usage text: anonymized
+# qualification EVIDENCE an operator decides a beta on and -- unless
+# --no-run-verify is passed -- one in-place run of the target repository's own
+# verify= command. Neither may be produced by a kernel nobody has looked at,
+# and neither may be reached before this call.
+#
+# Idempotent, and a no-op for every root not parked on its configured
+# integration branch: an installed prefix, an extracted archive, an ordinary
+# development checkout. It costs a stale self-hosted checkout a refusal and
+# costs everything else nothing.
+source "$ROOT/lib/common.sh"
+orchid_root_stale_gate
 
 QUALIFY_SCHEMA=1
 REPO=""
@@ -128,6 +177,13 @@ Genuine third-party beta runs and public release remain operator-owned. This
 harness does not perform them and never records that they happened.
 
 Exit: 0 qualified, 1 not qualified, 2 usage or precondition failure.
+
+Before any of that, this harness refuses outright if the Orchid checkout IT is
+running out of is itself stale -- parked on its integration branch with kernel
+files staged, i.e. pre-merge code -- because evidence produced by a build that
+cannot describe itself is worse than none. That refusal names itself in full on
+stderr, exits 1, and is nothing to do with --repo. ORCHID_ALLOW_STALE_ROOT=1 in
+front of the command is the documented, per-invocation way past it.
 EOF
 }
 
@@ -201,8 +257,13 @@ trap cleanup EXIT
 # re-deriving any of it here: a qualification harness that disagreed with the
 # kernel about which implementer is configured would qualify the wrong profile.
 # ORCHID_REPO is what repo-local plugin discovery keys on (lib/resolver.sh).
+#
+# lib/common.sh is NOT loaded here. It is loaded at the top of this file, above
+# the argument parse, because loading it is what arms the stale-root gate this
+# harness then fires; see that block for why the gate may not sit below a
+# parse. These three still load here, after --repo has been resolved, since
+# repo-local discovery is what they are for.
 export ORCHID_REPO="$REPO"
-source "$ROOT/lib/common.sh"
 source "$ROOT/lib/manifest.sh"
 source "$ROOT/lib/roles.sh"
 source "$ROOT/lib/resolver.sh"

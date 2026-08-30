@@ -100,7 +100,13 @@ ledger_mark() {
       ;;
     rate_limited)
       local backoff until
-      if echo "$retry_after" | grep -qE '^[1-9][0-9]*$'; then
+      # A HERESTRING, never `echo ... | grep -q` (T016's sweep of the class
+      # T010 named): `grep -q` exits at its first match and SIGPIPEs the
+      # producer, and under `set -o pipefail` the pipeline reports the
+      # producer's kill-by-signal status rather than grep's own 0 -- so a
+      # value that DID match reads as one that did not, and a valid
+      # `retry_after` is silently replaced by the configured backoff.
+      if grep -qE '^[1-9][0-9]*$' <<<"$retry_after"; then
         backoff="$retry_after"
       else
         backoff="$(config_get "$repo" rate_limit_backoff_s 3600)"

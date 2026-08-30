@@ -27,7 +27,7 @@ with_timeout() {
 }
 
 is_auth_failure() {  # combined stdout+stderr text
-  printf '%s' "$1" | grep -qiE 'login|auth|unauthorized|not authenticated|api.?key'
+  grep -qiE 'login|auth|unauthorized|not authenticated|api.?key' <<<"$1"
 }
 
 PROMPT='Reply with exactly OK'
@@ -41,7 +41,7 @@ set -e
 stderr_a="$(cat "$err_file")"
 combined_a="$stdout_a"$'\n'"$stderr_a"
 
-if [ "$rc_a" -eq 0 ] && printf '%s' "$stdout_a" | grep -qiE '\bOK\b'; then
+if [ "$rc_a" -eq 0 ] && grep -qiE '\bOK\b' <<<"$stdout_a"; then
   echo "PROBE-RESULT: WORKED (form: \`agy -p -\` with prompt on stdin; reply: $(printf '%s' "$stdout_a" | tr '\n' ' ' | head -c 200))"
   exit 0
 fi
@@ -63,7 +63,7 @@ stderr_b="$(cat "$err_file")"
 combined_b="$stdout_b"$'\n'"$stderr_b"
 rm -f "$prompt_file"
 
-if [ "$rc_b" -eq 0 ] && printf '%s' "$stdout_b" | grep -qiE '\bOK\b'; then
+if [ "$rc_b" -eq 0 ] && grep -qiE '\bOK\b' <<<"$stdout_b"; then
   echo "PROBE-RESULT: WORKED (form: \`agy -p < file\` stdin redirection; reply: $(printf '%s' "$stdout_b" | tr '\n' ' ' | head -c 200))"
   exit 0
 fi

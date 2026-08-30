@@ -1644,6 +1644,52 @@ They are the verbs you want most in this state, and they are refused anyway.
 `orchid help` and an unknown verb still answer (neither sources anything);
 everything else, diagnostics included, stops.
 
+No arm of `orchid trust` is exempt either, and one of them used to be.
+`orchid trust unattended` and `orchid trust revoke` refuse because each leaves
+a machine-local record behind that outlives the process that made it, and
+neither may be made by code nobody has looked at. `orchid trust show` refuses
+too, and the reason it stopped being an exception is the reason `doctor` and
+`status` never were one: what it produces is the report you decide on — the
+gate verdict, the record it resolved, the root verification, the provenance —
+and out of a stale checkout that report is produced by the pre-merge code.
+Writing nothing durable is not the same as having nothing to protect.
+
+That leaves the unattended-trust contract untouched, which is what the old
+exemption was written for — but not for the reason this page used to give.
+What the contract forbids is Git spent on *the repository under inspection*
+before an acknowledgement for it has been found. This refusal compares orchid's
+own installation root against its own `HEAD`, and it spends even that only from
+a root parked on the integration branch. It used to say here that the root is
+*never* the repository you asked about, and that is not true of orchid, which is
+self-hosted. `ORCHID_ROOT` is not where you are standing; it is the installation
+the verb resolved from its own path. Run a separately installed `orchid` against
+a checkout and the two really are different directories — that is nearly every
+invocation, and it is why the claim went unchallenged. But run a checkout's own
+`bin/orchid` against that same checkout — orchid developing and driving itself,
+`orchid doctor` on its own tree, that tree named to its own `orchid trust show`
+or `orchid trust revoke` — and the root *is* the target, so that comparison is a
+query against it.
+
+So the order is what keeps the contract, not the choice of directory: each of
+those verbs makes its machine-local trust decision **first** and fires the
+stale-root gate **second**, both still ahead of anything it prints or removes.
+`show` looks the acknowledgement up; `revoke` derives the identity of the record
+it would remove, which costs no Git either. As everywhere else on this page, the
+way through is `ORCHID_ALLOW_STALE_ROOT=1` in front of the one command, so what
+you are about to read is knowably the stale kernel's answer.
+
+`./install.sh` refuses too, and it is the one entry point here that is not a
+verb. What it produces is a machine-scoped wiring: your `orchid` becomes a
+symlink into the checkout you ran it from, and so do the front-end skill
+bundles. Run out of a stale checkout, that installs the pre-merge tree *as* your
+orchid, at the one step nobody re-runs afterwards. `--uninstall` is behind the
+same refusal, because which symlinks a pre-merge installer decides are its own
+is decided by the pre-merge tree. The installer's own closing `orchid doctor`
+is not this check and could not be — it runs only when you are standing in some
+*other* repository, so it is skipped in exactly the case where the source
+checkout is the one at risk. Same way through:
+`ORCHID_ALLOW_STALE_ROOT=1 ./install.sh`.
+
 The reason is not consistency for its own sake. **A diagnosis read out of a
 stale checkout is produced by the stale code.** `orchid doctor` here runs the
 checks the pre-merge tree carries, so it can pass a checkout the merged

@@ -204,7 +204,7 @@ assert_eq 0 "$remaining" "uninstall removes exactly the one plist file (no colla
 out="$("$SERVICE" uninstall --repo "$WORK" --dry-run 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] || fail "uninstall must refuse when nothing is installed for this repo"
 assert_match 'no service installed|not installed' "$out" "uninstall names the nothing-installed refusal plainly"
-echo "$out" | grep -q 'DRY-RUN' && fail "a refused uninstall must never print a launchctl command -- there is nothing to reverse"
+grep -q 'DRY-RUN' <<<"$out" && fail "a refused uninstall must never print a launchctl command -- there is nothing to reverse"
 
 # ===========================================================================
 # G -- status on a never-installed repo degrades gracefully (installed: no,
@@ -237,7 +237,7 @@ assert_match "ORCHID_REPO='$repo_canon'" "$line" "cron line carries ORCHID_REPO 
 assert_match "TMPDIR='$parent'" "$line" "cron line carries TMPDIR set to the repo's parent (same rationale as the plist), single-quoted"
 assert_match ' --service-log >> /dev/null 2>&1 ' "$line" \
   "cron sends scheduler-owned output to /dev/null and delegates logging to the gated pump"
-echo "$line" | grep -qF 'pump.log' \
+grep -qF 'pump.log' <<<"$line" \
   && fail "cron must never open the target-controlled pump.log path before the pump trust gate"
 assert_match "# orchid-service:$label" "$line" "cron line carries the marker comment used to find/remove it later"
 assert_match 'DRY-RUN:.*crontab' "$out" "linux install --dry-run prints (never runs) the crontab pipeline"

@@ -90,7 +90,14 @@ red_case "verify evidence recorded a real FAIL, flipped to PASS only when the un
 "$ORCHID_BIN" task create T002 "no-command"
 rc=0; err="$("$ORCHID_BIN" verify T002 2>&1 1>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "verify with no command source must exit nonzero"
-echo "$err" | grep -qi "verification_commands\|verify" || fail "die message must reference the missing verification source (got: $err)"
+# HERESTRINGS throughout this file, never `echo "$err" | grep -qi` and never
+# `tail -n1 <log> | grep -q` (T016/INV-15 section 5): `grep -q` exits at its
+# first match and SIGPIPEs the producer, and under helpers.sh's `set -o
+# pipefail` that kill-by-signal status becomes the pipeline's -- so a die
+# message that DOES name verify reads as one that does not, and the `&& fail`
+# sanity line below is skipped exactly when the evidence really does record
+# the wrong exit.
+grep -qi "verification_commands\|verify" <<<"$err" || fail "die message must reference the missing verification source (got: $err)"
 [ ! -f ".orchid/reviews/T002-verify.log" ] || fail "no evidence log should be written when there is nothing to run"
 
 # INV-11 kernel enforcement: `task advance <id> reviewing` from `testing`
@@ -109,7 +116,7 @@ head_sha="$(git -C "$WORK" rev-parse HEAD)"
 [ ! -f .orchid/reviews/T003-verify.log ] || fail "sanity: no evidence log should exist yet for T003"
 rc=0; err="$("$ORCHID_BIN" task advance T003 reviewing 2>&1 1>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "INV-11: reviewing with no verify evidence at all must be refused"
-echo "$err" | grep -qi "verify" || fail "INV-11: die message must mention verify (got: $err)"
+grep -qi "verify" <<<"$err" || fail "INV-11: die message must mention verify (got: $err)"
 assert_eq testing "$("$ORCHID_BIN" task show T003 | grep '^status: ' | cut -d' ' -f2)" "INV-11: refused advance leaves status at testing"
 
 # (b) evidence exists but the last line records a FAIL -> still refused.
@@ -118,17 +125,17 @@ assert_eq testing "$("$ORCHID_BIN" task show T003 | grep '^status: ' | cut -d' '
 "$ORCHID_BIN" task set T003 verification_commands "false"
 rc=0; "$ORCHID_BIN" verify T003 >/dev/null 2>&1 || rc=$?
 assert_eq 1 "$rc" "fixture: real verify FAIL for T003"
-tail -n1 .orchid/reviews/T003-verify.log | grep -q "^exit: 0$" && fail "sanity: fixture evidence should record a nonzero exit"
+grep -q "^exit: 0$" <<<"$(tail -n1 .orchid/reviews/T003-verify.log)" && fail "sanity: fixture evidence should record a nonzero exit"
 rc=0; err="$("$ORCHID_BIN" task advance T003 reviewing 2>&1 1>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "INV-11: reviewing after a FAIL verify run must be refused"
-echo "$err" | grep -qi "verify" || fail "INV-11: die message must mention verify (got: $err)"
+grep -qi "verify" <<<"$err" || fail "INV-11: die message must mention verify (got: $err)"
 
 # (c) evidence exists and the last line is a real passing verify -> advance
 # succeeds. Same honest-fixture approach: a real `orchid verify` PASS run.
 "$ORCHID_BIN" task set T003 verification_commands "true"
 rc=0; "$ORCHID_BIN" verify T003 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "fixture: real verify PASS for T003"
-tail -n1 .orchid/reviews/T003-verify.log | grep -q "^exit: 0$" || fail "sanity: fixture evidence should record exit 0"
+grep -q "^exit: 0$" <<<"$(tail -n1 .orchid/reviews/T003-verify.log)" || fail "sanity: fixture evidence should record exit 0"
 "$ORCHID_BIN" task advance T003 reviewing >/dev/null || fail "INV-11: reviewing after a passing verify run must be permitted"
 assert_eq reviewing "$("$ORCHID_BIN" task show T003 | grep '^status: ' | cut -d' ' -f2)" "INV-11: T003 advanced to reviewing"
 green_case "with the condition satisfied, the same command PASSed, the evidence logged 'exit: 0', and the same gate let the advance to reviewing THROUGH -- so the refusals above are the gate reading a real outcome rather than a verb that always refuses"
@@ -171,7 +178,7 @@ new_cand="$(git -C "$WORK" commit-tree "$head_sha^{tree}" -p "$head_sha" -m "rew
 
 rc=0; err="$("$ORCHID_BIN" task advance T004 reviewing 2>&1 1>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "rework: reviewing must be refused before re-verify of the new candidate (stale evidence invalidated -> INV-11 gate)"
-echo "$err" | grep -qi "verify" || fail "rework: die message must mention verify (got: $err)"
+grep -qi "verify" <<<"$err" || fail "rework: die message must mention verify (got: $err)"
 assert_eq testing "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d' ' -f2)" "rework: refused advance leaves status at testing"
 
 rc=0; verify_at "$new_cand" T004 || rc=$?
@@ -223,7 +230,7 @@ new_cand2="$(git -C "$WORK" commit-tree "$head_sha^{tree}" -p "$head_sha" -m "se
 
 rc=0; err="$("$ORCHID_BIN" task advance T004 reviewing 2>&1 1>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "merging->rework: reviewing must be refused before re-verify of the newest candidate (stale evidence invalidated -> INV-11 gate)"
-echo "$err" | grep -qi "verify" || fail "merging->rework: die message must mention verify (got: $err)"
+grep -qi "verify" <<<"$err" || fail "merging->rework: die message must mention verify (got: $err)"
 assert_eq testing "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d' ' -f2)" "merging->rework: refused advance leaves status at testing"
 
 rc=0; verify_at "$new_cand2" T004 || rc=$?
@@ -249,7 +256,7 @@ assert_eq reviewing "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d'
 "$ORCHID_BIN" task advance T005 testing >/dev/null
 rc=0; "$ORCHID_BIN" verify T005 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "fixture: real verify PASS for T005"
-tail -n1 .orchid/reviews/T005-verify.log | grep -q "^exit: 0$" || fail "sanity: T005 evidence records exit 0"
+grep -q "^exit: 0$" <<<"$(tail -n1 .orchid/reviews/T005-verify.log)" || fail "sanity: T005 evidence records exit 0"
 assert_match "^candidate: $head_sha$" "$(cat .orchid/reviews/T005-verify.log)" "sanity: T005 evidence bound to the pre-bump candidate"
 
 new_cand5="$(git -C "$WORK" commit-tree "$head_sha^{tree}" -p "$head_sha" -m "out-of-band bump")"
@@ -259,7 +266,7 @@ new_cand5="$(git -C "$WORK" commit-tree "$head_sha^{tree}" -p "$head_sha" -m "ou
 [ -f .orchid/reviews/T005-verify.log ] || fail "sanity: stale evidence log still present (rm-based invalidation does not fire on a bare task set)"
 rc=0; err="$("$ORCHID_BIN" task advance T005 reviewing 2>&1 1>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "sha-binding: reviewing must be refused when evidence's candidate != task's current candidate_sha, despite a passing exit code"
-echo "$err" | grep -qi "candidate\|verify" || fail "sha-binding: die message must mention candidate/verify (got: $err)"
+grep -qi "candidate\|verify" <<<"$err" || fail "sha-binding: die message must mention candidate/verify (got: $err)"
 assert_eq testing "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" "sha-binding: refused advance leaves status at testing"
 
 rc=0; verify_at "$new_cand5" T005 || rc=$?
@@ -296,7 +303,7 @@ assert_match "^candidate: none$" "$(cat .orchid/reviews/T006-verify.log)" "sanit
 
 rc=0; err="$("$ORCHID_BIN" task advance T006 reviewing 2>&1 1>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "vacuous-none: reviewing must be refused when both evidence and frontmatter candidate are none — a vacuous match, never a real sha"
-echo "$err" | grep -qi "candidate\|verify" || fail "vacuous-none: die message must mention candidate/verify (got: $err)"
+grep -qi "candidate\|verify" <<<"$err" || fail "vacuous-none: die message must mention candidate/verify (got: $err)"
 assert_eq testing "$("$ORCHID_BIN" task show T006 | grep '^status: ' | cut -d' ' -f2)" "vacuous-none: refused advance leaves status at testing"
 
 # ===========================================================================

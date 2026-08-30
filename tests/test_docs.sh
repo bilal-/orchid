@@ -239,11 +239,13 @@ done
 # ===========================================================================
 QUICKSTART_MD="$REPO_ROOT/docs/quickstart.md"
 quickstart_text="$(tr '\n' ' ' < "$QUICKSTART_MD" | tr -s '[:space:]' ' ')"
-printf '%s\n' "$quickstart_text" | grep -qF \
+grep -qF \
   'The URL is immutable: running this exact line later reselects `v1.0.0-beta.1`; it does not upgrade Orchid. To upgrade, select the install URL for a newer immutable released tag.' \
+  <<<"$quickstart_text" \
   || fail "docs/quickstart.md must explain that upgrading requires a newer immutable released tag"
-printf '%s\n' "$quickstart_text" | grep -qF \
+grep -qF \
   'Running this exact line again later is the upgrade command too.' \
+  <<<"$quickstart_text" \
   && fail "docs/quickstart.md falsely calls the immutable v1.0.0-beta.1 URL an upgrade command"
 
 INSTALL_MD="$REPO_ROOT/docs/install.md"
@@ -1136,9 +1138,9 @@ grep -qF 'acknowledged from `testing` only' "$REPO_ROOT/PROTOCOL.md" \
 #
 # Pinned on the folded text because each sentence straddles a hard wrap.
 # ===========================================================================
-printf '%s' "$protocol_one_line" | grep -qF 'Take the hand-off FIRST when both are outstanding' \
+grep -qF 'Take the hand-off FIRST when both are outstanding' <<<"$protocol_one_line" \
   || fail "PROTOCOL.md must state which of the two operator-owned stops before verify to take first — the hand-off advances candidate_sha and expires a prerequisite ack made before it"
-printf '%s' "$kernel_one_line" | grep -qF 'the driver raises the hand-off first' \
+grep -qF 'the driver raises the hand-off first' <<<"$kernel_one_line" \
   || fail "docs/specs/kernel.md must record that the driver raises operator-handoff ahead of task-prerequisite, so the ordering is a documented property and not an accident of the code"
 
 # ...and the docs must not present that supersession as a closed list of
@@ -1148,9 +1150,9 @@ printf '%s' "$kernel_one_line" | grep -qF 'the driver raises the hand-off first'
 # one of them as "the" case invites the maintenance a comparison exists to
 # avoid: a fourth mover added later, and a reader who goes looking for the
 # clear it was supposed to have remembered.
-printf '%s' "$protocol_one_line" | grep -qF 'not a list of verbs to keep in step' \
+grep -qF 'not a list of verbs to keep in step' <<<"$protocol_one_line" \
   || fail "PROTOCOL.md's prerequisite bullet must say the binding is a comparison rather than a list of clearing verbs — merge's rebase-reset is one candidate mover among several (task reverify and the hand-off ack are others), and naming it as the only one is the reading that goes stale"
-printf '%s' "$protocol_one_line" | grep -qF '`orchid task reverify` re-stamps `candidate_sha`' \
+grep -qF '`orchid task reverify` re-stamps `candidate_sha`' <<<"$protocol_one_line" \
   || fail "PROTOCOL.md's prerequisite bullet must name task reverify among the candidate moves that expire an acknowledgement — it re-stamps candidate_sha and reaches testing from blocked without entering rework, so no clear on any rework path sees it"
 
 # ===========================================================================
@@ -1235,13 +1237,13 @@ planning_step2="$(sed -n '/^## PLANNING/,/^## THE TICK/p' "$REPO_ROOT/PROTOCOL.m
 # this sentence", which is a lie about which thing broke.
 [ -n "$planning_step2" ] \
   || fail 'test bug, not a docs failure: the PLANNING-step-2 slice came back empty — one of the sed range markers (## PLANNING, ## THE TICK, "2. Draft the roadmap", "3. ") no longer matches PROTOCOL.md'
-printf '%s' "$planning_step2" | grep -qF 'orchid task create' \
+grep -qF 'orchid task create' <<<"$planning_step2" \
   || fail 'test bug, not a docs failure: the PLANNING-step-2 slice does not contain the task-drafting step it is supposed to be — re-check the sed range before reading the assertions below'
 # Folded, like every other pinned sentence here: this one is hard-wrapped
 # mid-phrase in the source and `grep -F` matches a line at a time.
-printf '%s' "$planning_step2" | grep -qF 'Include `operator_prerequisite` for any task whose verification depends on a step taken OUTSIDE the sandbox' \
+grep -qF 'Include `operator_prerequisite` for any task whose verification depends on a step taken OUTSIDE the sandbox' <<<"$planning_step2" \
   || fail "PROTOCOL.md's PLANNING step 2 must tell the planner to set operator_prerequisite — it is the only moment in a run when that field can be written, so a planner who is not told there is never told at all"
-printf '%s' "$planning_step2" | grep -qF 'this applies to every archetype, not only the `migrate` one' \
+grep -qF 'this applies to every archetype, not only the `migrate` one' <<<"$planning_step2" \
   || fail "PROTOCOL.md's PLANNING step 2 must say the field applies to every archetype — left to templates/task-migrate.md alone, a feature or test task that happens to alter a schema never carries the instruction"
 
 # ===========================================================================

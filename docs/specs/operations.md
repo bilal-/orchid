@@ -225,6 +225,22 @@ announced on stderr at the moment the command is executed, on that path only;
 and `--no-run-verify` opts out, recording the timing probe as `not-tested`
 rather than as a pass.
 
+**One gate the harness does fire, and it is not an exception to any of this,
+because it is not about the target.** `scripts/beta-qualify.sh` calls
+`orchid_root_stale_gate` above its own argument parse. That gate asks about
+`ORCHID_ROOT` — whether the Orchid checkout the harness is *itself* running out
+of is parked on its integration branch with kernel files staged, i.e. whether
+the harness is pre-merge code (lesson L018) — and asks nothing whatever about
+`--repo`. It authorizes nothing and records nothing. What it stops is a build
+that cannot be trusted to describe itself from producing evidence an operator
+decides a beta on, or from running the target's `verify=` command on that
+build's terms. Loading `lib/common.sh` is what arms it, and this file lives
+outside `bin/`, `libexec/` and `runners/`, so nothing fires it unless this file
+does (INV-15). It sits ahead of the parse for the same reason every kernel verb
+refuses before reading its arguments, `--help` included: the text such a build
+would print is its own pre-merge account of itself. `ORCHID_ALLOW_STALE_ROOT=1`
+in front of the command remains the one documented, per-invocation way past it.
+
 Three reasons the unattended acknowledgement is the wrong instrument here.
 
 - **It would invert the documented order.** PROTOCOL.md's HEADLESS OPERATION
@@ -238,8 +254,11 @@ Three reasons the unattended acknowledgement is the wrong instrument here.
   undrivable, closable only by remembering to revoke.
 - **It would gate one command and leave its neighbour open.**
   `unattended_trust_require` guards exactly three surfaces — the pump, a direct
-  tick, and service installation — because nobody is in front of those. `orchid
-  verify` executes repository-supplied commands too — the task's
+  tick, and service installation — because nobody is in front of those. (The
+  two scheduled runners call its `_loaded` half, which decides and reports on
+  an inspection they made earlier so their own stale-root gate could fire
+  between the two; the surfaces are the same three.)
+  `orchid verify` executes repository-supplied commands too — the task's
   `verification_commands`, or this same `orchid.config` `verify=` as its
   fallback — in the foreground, and asks for nothing. Gating qualification but
   not `orchid verify`

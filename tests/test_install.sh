@@ -391,7 +391,7 @@ done
 grep -qF 'hook_guidance' "$PROTOCOL" || fail "PROTOCOL.md never mentions hook_guidance"
 deny_line="$(grep -nE '^\s*status\|attempts\|infra_failures\|id\|created\|updated\|schema\)' "$REPO_ROOT/libexec/orchid-task")"
 [ -n "$deny_line" ] || fail "orchid-task's set deny-list case arm not found -- update this check"
-printf '%s' "$deny_line" | grep -q hook_guidance && fail "hook_guidance must never land in orchid-task's set deny-list"
+grep -q hook_guidance <<<"$deny_line" && fail "hook_guidance must never land in orchid-task's set deny-list"
 
 # ===========================================================================
 # Bootstrap mode (single-line curl|bash install): install.sh, run OUTSIDE

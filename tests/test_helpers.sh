@@ -52,8 +52,8 @@ out="$(cd "$scratch" && PATH="$fakebin:$PATH" bash "$mini" 2>&1)"
 rc=$?
 
 [ "$rc" -ne 0 ] || fail "a test file must die (nonzero exit) when mktemp -d fails, not silently continue with an empty WORK"
-echo "$out" | grep -qi 'mktemp\|WORK' || fail "the die message should name mktemp/WORK as the failure (got: $out)"
-echo "$out" | grep -q 'reached-git-commit' && fail "execution must never reach the cd/git lines once mktemp -d has failed"
+grep -qi 'mktemp\|WORK' <<<"$out" || fail "the die message should name mktemp/WORK as the failure (got: $out)"
+grep -q 'reached-git-commit' <<<"$out" && fail "execution must never reach the cd/git lines once mktemp -d has failed"
 [ ! -d "$scratch/.git" ] || fail "guard failed to stop cd/git from running against the caller's cwd -- a .git dir was created in $scratch (the exact m2 stray-commit mishap)"
 
 # ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ EOF
 out2="$(cd "$cwd2" && bash "$unsourced" 2>&1)"
 rc2=$?
 [ "$rc2" -ne 0 ] || fail "a test file whose helpers.sh never loaded must die, not run git against the caller's cwd"
-echo "$out2" | grep -q 'reached-git-commit' && fail "execution must never reach the git lines when helpers.sh failed to load"
+grep -q 'reached-git-commit' <<<"$out2" && fail "execution must never reach the git lines when helpers.sh failed to load"
 [ ! -d "$cwd2/.git" ] || fail "an unsourced test file git-initialized the caller's cwd ($cwd2) -- the T006 stray-commit incident, again"
 
 # ---------------------------------------------------------------------------
@@ -104,7 +104,7 @@ EOF
 out3="$(cd "$cwd3" && bash "$foreign" 2>&1)"
 rc3=$?
 [ "$rc3" -ne 0 ] || fail "cd_scratch must refuse a directory this run did not create"
-echo "$out3" | grep -q 'reached-git-commit' && fail "execution must never reach the git lines after a refused cd_scratch"
+grep -q 'reached-git-commit' <<<"$out3" && fail "execution must never reach the git lines after a refused cd_scratch"
 [ ! -d "$outsider/.git" ] || fail "cd_scratch cd'd into an unregistered directory and git-initialized it"
 [ ! -d "$cwd3/.git" ] || fail "a refused cd_scratch let git run against the caller's cwd ($cwd3)"
 

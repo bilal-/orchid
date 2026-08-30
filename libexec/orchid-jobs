@@ -299,8 +299,11 @@ gc_reap_unlaunched() {  # manifest now threshold stall_s
   age=$(( now - mtime ))
   [ "$age" -gt "$threshold" ] || return 0   # too young: untouched
   job_id="$(jq -r .job_id "$f")"
+  # A herestring, never `echo ... | grep -q`: see the salvage scan below for
+  # the SIGPIPE-under-pipefail argument (T016's sweep of the class T010
+  # named). Here the cost is a healthy manifest quarantined as gc-suspect.
   suspect=0
-  echo "$job_id" | grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' || suspect=1
+  grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' <<<"$job_id" || suspect=1
   if [ "$suspect" -eq 1 ]; then
     base="$(basename "$f")"
     quarantine_file "$f" gc-suspect
@@ -1709,13 +1712,20 @@ case "$sub" in
       # not steer a read or a write anywhere on disk: skip it (salvage
       # nothing, build nothing from it) and leave it standing for gc, whose
       # own sweep quarantines it as gc-suspect.
+      # HERESTRINGS, never `echo ... | grep -q` (T016's sweep of the class
+      # T010 named): `grep -q` exits at its first match and SIGPIPEs `echo`,
+      # and under `set -o pipefail` that kill-by-signal status becomes the
+      # pipeline's -- so a WELL-FORMED field reads as malformed and a healthy
+      # manifest is quarantined as suspect. It fails in the safe direction,
+      # which is exactly why nobody would ever see it happen; it would present
+      # as a job that intermittently refused to salvage.
       s_suspect=0
-      echo "$s_jid" | grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' || s_suspect=1
-      echo "$s_task" | grep -qE '^[A-Za-z0-9_-]+$' || s_suspect=1
-      echo "$s_attempt" | grep -qE '^[0-9]+$' || s_suspect=1
-      echo "$s_role" | grep -qE '^[A-Za-z0-9_-]+$' || s_suspect=1
+      grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' <<<"$s_jid" || s_suspect=1
+      grep -qE '^[A-Za-z0-9_-]+$' <<<"$s_task" || s_suspect=1
+      grep -qE '^[0-9]+$' <<<"$s_attempt" || s_suspect=1
+      grep -qE '^[A-Za-z0-9_-]+$' <<<"$s_role" || s_suspect=1
       if [ -n "$s_point" ]; then
-        echo "$s_point" | grep -qE '^[A-Za-z0-9_-]+$' || s_suspect=1
+        grep -qE '^[A-Za-z0-9_-]+$' <<<"$s_point" || s_suspect=1
       fi
       if [ -n "$s_log" ]; then
         case "$s_log" in *..*) s_suspect=1 ;; esac
@@ -1914,8 +1924,9 @@ case "$sub" in
       # ..). Anything else is suspect: leave every runtime file in place and
       # just quarantine the manifest itself as gc-suspect so it surfaces,
       # instead of silently reaping it.
+      # A herestring, for the same reason the salvage scan above uses one.
       suspect=0
-      echo "$job_id" | grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' || suspect=1
+      grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' <<<"$job_id" || suspect=1
       case "$log_f" in
         *..*) suspect=1 ;;
       esac

@@ -48,7 +48,7 @@ with_timeout() {
 }
 
 is_auth_failure() {  # combined stdout+stderr text
-  printf '%s' "$1" | grep -qiE 'login|auth|unauthorized|not authenticated|api.?key'
+  grep -qiE 'login|auth|unauthorized|not authenticated|api.?key' <<<"$1"
 }
 
 scratch="$(mktemp -d)"

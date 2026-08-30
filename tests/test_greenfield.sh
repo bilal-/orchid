@@ -33,7 +33,7 @@ reconcile_until_ok() {
   local task="$1" tries=0 out=""
   while [ "$tries" -lt 50 ]; do
     out="$("$ORCHID_BIN" jobs reconcile)"
-    if printf '%s\n' "$out" | grep -Eq "^${task}[[:space:]]ok"; then
+    if grep -Eq "^${task}[[:space:]]ok" <<<"$out"; then
       "$ORCHID_BIN" jobs gc --older-than-s 0 >/dev/null
       printf '%s\n' "$out"
       return 0
@@ -136,7 +136,7 @@ assert_match "greenfield: verify command deferred to scaffold task" "$out_doctor
   "doctor --greenfield: verify check skipped with the greenfield note"
 assert_match "greenfield: root commit pending" "$out_doctor" \
   "doctor --greenfield: integration-branch check accepts unborn HEAD"
-echo "$out_doctor" | grep -q "^FAIL" && fail "doctor --greenfield must report no FAILs pre-init"
+grep -q "^FAIL" <<<"$out_doctor" && fail "doctor --greenfield must report no FAILs pre-init"
 
 # ---------------------------------------------------------------------------
 # init --greenfield: mints the root commit itself, then proceeds through the
@@ -152,7 +152,7 @@ assert_eq "orchid: root" "$(git -C "$repo" log -1 --format=%s HEAD)" "root commi
 integ=orchid/integration
 git -C "$repo" rev-parse --verify -q "$integ" >/dev/null 2>&1 \
   || fail "init --greenfield must create the integration branch"
-git -C "$repo" show "$integ:.orchid/roadmap.md" 2>/dev/null | grep -q "run_status: planning" \
+grep -q "run_status: planning" <<<"$(git -C "$repo" show "$integ:.orchid/roadmap.md" 2>/dev/null)" \
   || fail "init --greenfield: roadmap committed with run_status"
 
 cd "$repo" || exit 1

@@ -145,9 +145,9 @@ gc_out="$("$ORCHID_BIN" jobs gc --older-than-s 86400)"
 assert_match "^gc j-e1-TDEAD-a1-dead0001$" "$gc_out" "gc reaps the dead+old job"
 assert_match "gc-orphan .*j-orphan" "$gc_out" "gc reaps orphan pack dir"
 assert_match "gc-orphan .*j-orphan2" "$gc_out" "gc reaps orphan request file"
-echo "$gc_out" | grep -q "j-young-dead" && fail "gc must not touch the dead-but-young manifest"
-echo "$gc_out" | grep -q "j-live" && fail "gc must not touch the live-pid manifest"
-echo "$gc_out" | grep -q "j-pending" && fail "gc must not touch a pack with a pending spool envelope"
+grep -q "j-young-dead" <<<"$gc_out" && fail "gc must not touch the dead-but-young manifest"
+grep -q "j-live" <<<"$gc_out" && fail "gc must not touch the live-pid manifest"
+grep -q "j-pending" <<<"$gc_out" && fail "gc must not touch a pack with a pending spool envelope"
 
 [ ! -f "$rt/jobs/j-dead.json" ] || fail "gc: dead manifest removed from jobs dir"
 [ -f "$rt/quarantine/j-dead.json.reason-gc-dead" ] || fail "gc: dead manifest quarantined as .reason-gc-dead"
@@ -207,7 +207,7 @@ echo '{"contract":1,"job_id":"j-e1-TPEND-a1-feed0001","task":"TPEND","operation"
 pend_out="$("$ORCHID_BIN" jobs gc --older-than-s 86400)"
 assert_match "gc-pending j-e1-TPEND-a1-feed0001" "$pend_out" \
   "gc names the manifest it is holding back, and why"
-echo "$pend_out" | grep -q "^gc j-e1-TPEND-a1-feed0001$" \
+grep -q "^gc j-e1-TPEND-a1-feed0001$" <<<"$pend_out" \
   && fail "gc must not reap a dead job whose envelope is still pending in the spool"
 [ -f "$rt/jobs/j-pend.json" ] \
   || fail "gc: the manifest a pending envelope still needs must survive — without it reconcile can only quarantine that envelope as unknown-job"
@@ -248,7 +248,7 @@ jq -n --argjson pid "$hostile_pid" --argjson started "$hostile_started" --arg lo
 
 hostile_out="$("$ORCHID_BIN" jobs gc --older-than-s 86400)"
 assert_match "^gc-skip j-hostile\.json \(suspect fields\)$" "$hostile_out" "gc skips the hostile manifest"
-echo "$hostile_out" | grep -Eq "^gc (\.\.|/)" && fail "gc must never echo a reaped path-traversal job_id"
+grep -Eq "^gc (\.\.|/)" <<<"$hostile_out" && fail "gc must never echo a reaped path-traversal job_id"
 
 [ -f "$decoy" ] || fail "gc: decoy file outside runtime must survive"
 [ "$(cat "$decoy")" = "decoy-contents" ] || fail "gc: decoy file contents must be untouched"
@@ -649,7 +649,7 @@ assert_match "TBUDGET	budget-exceeded" "$budget_out" "jobs check reports budget-
 "$ORCHID_BIN" task set TOKBUDGET wallclock_budget_s 28800
 "$ORCHID_BIN" jobs prepare TOKBUDGET implementer implement >/dev/null
 ok_out="$("$ORCHID_BIN" jobs check)"
-echo "$ok_out" | grep -q "TOKBUDGET	budget-exceeded" && fail "jobs check must not report budget-exceeded for a task within budget"
+grep -q "TOKBUDGET	budget-exceeded" <<<"$ok_out" && fail "jobs check must not report budget-exceeded for a task within budget"
 
 # ---------------------------------------------------------------------------
 # T020: `wallclock_budget_s` bounds the current ATTEMPT, not calendar time
@@ -687,7 +687,7 @@ assert_match "TIDLE[[:space:]]budget-exceeded" "$("$ORCHID_BIN" jobs check)" \
 "$ORCHID_BIN" task retry TIDLE --reason "operator resumed it"
 assert_eq rework "$("$ORCHID_BIN" task show TIDLE | grep '^status: ' | cut -d' ' -f2)" "retry parks TIDLE in rework"
 retry_out="$("$ORCHID_BIN" jobs check)"
-echo "$retry_out" | grep -q "TIDLE	budget-exceeded" \
+grep -q "TIDLE	budget-exceeded" <<<"$retry_out" \
   && fail "a task parked in rework has no attempt in flight — jobs check must not report a budget for it (the unconvergent retry loop)"
 
 ORCHID_CONCURRENCY=8 "$ORCHID_BIN" task advance TIDLE implementing
@@ -695,7 +695,7 @@ idle_started="$("$ORCHID_BIN" task show TIDLE | grep '^started_at: ' | cut -d' '
 [ "$idle_started" != "2000-01-01T00:00:00Z" ] \
   || fail "re-dispatch after the idle gap must RE-anchor started_at, not keep the first attempt's"
 idle_out="$("$ORCHID_BIN" jobs check)"
-echo "$idle_out" | grep -q "TIDLE	budget-exceeded" \
+grep -q "TIDLE	budget-exceeded" <<<"$idle_out" \
   && fail "a task re-dispatched after a long idle gap must not be over budget on its FIRST second of work"
 
 # A genuine overrun: this attempt's own anchor (no hand-set started_at at

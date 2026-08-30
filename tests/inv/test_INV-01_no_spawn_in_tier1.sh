@@ -13,10 +13,15 @@ bg_re='(^|[^&])&[[:space:]]*$'
 #      the RED case above is evidence of detection rather than of a matcher
 #      that says yes to everything.
 # Self-check the regex in isolation before trusting it against real files.
-if printf 'foo &&\n' | grep -Eq "$bg_re"; then
+# HERESTRINGS, never `printf ... | grep -Eq` (T016/INV-15 section 5): `grep -q`
+# exits at its first match and SIGPIPEs its producer, and under helpers.sh's
+# `set -o pipefail` that kill-by-signal status becomes the pipeline's -- so a
+# MATCH can be read as no-match. Here it would invert this gate's own two
+# self-checks, which is the one place the file cannot afford it.
+if grep -Eq "$bg_re" <<<'foo &&'; then
   fail "INV-01 self-check: 'foo &&' must not match the background regex"
 fi
-if ! printf 'foo &\n' | grep -Eq "$bg_re"; then
+if ! grep -Eq "$bg_re" <<<'foo &'; then
   fail "INV-01 self-check: 'foo &' must match the background regex"
 fi
 red_case "INV-01's background detector fired on a real trailing '&'"

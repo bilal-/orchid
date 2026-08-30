@@ -23,12 +23,39 @@
 #     `# RED:` annotation, a `# GREEN:` annotation, a `red_case` call and a
 #     `green_case` call. Cheap, and it reads only text -- which is why it is
 #     NOT the load-bearing half and is not trusted on its own for any file.
+#
+#     The gap that leaves, and where it is closed: a NEW file under tests/inv/
+#     can satisfy all four of those and never source tests/helpers.sh at all,
+#     in which case the runtime half below is never installed and the file is
+#     enrolled on paper and enforced nowhere. That is not checked here, it is
+#     checked in tests/inv/test_INV-15_no_optional_gate.sh section 2, which
+#     RUNS every tests/inv/ gate against a stub helpers.sh and requires it to
+#     be observed reaching that load -- so a source line guarded by a variable
+#     nothing sets, or written below an `exit`, fails there too -- and ships
+#     the fixtures that prove each of those is refused. Said here because this
+#     is the file a
+#     reader comes to for the rule, and a rule with a known hole and no
+#     pointer to where it is closed is the hole.
 #   * RUNTIME (tests/helpers.sh's EXIT trap): an ENROLLED file that RECORDS no
 #     RED case, or no GREEN case, when it actually runs FAILS -- whatever its
 #     comments say. A call in a comment, in a heredoc, or in a branch nothing
 #     reaches satisfies the grep above and cannot satisfy this one. Sections 3,
 #     4 and 5 prove that enforcement fires, against fixtures and against a real
 #     repository gate, rather than trusting it.
+#   * IN THE PARENT (tests/run.sh's receipt), because the half above is a TRAP
+#     and a trap is a slot the gate can overwrite. One `trap ... EXIT` of its
+#     own after the source -- which is how a gate that wants its own cleanup is
+#     written -- takes the requirement off the file that carries it, and the
+#     file then records nothing, prints no summary and exits 0. So `red_case`
+#     and `green_case` also append a line naming the file they ran in to the
+#     receipt tests/run.sh names in ORCHID_PROOF_RECEIPT, and the runner
+#     requires that line for every file it launches out of tests/inv/ and for
+#     every file that declared itself enrolled. A gate can disarm its own trap;
+#     it cannot disarm its parent, and it cannot write the line without having
+#     called the recorder. That half is proved in
+#     tests/inv/test_INV-15_no_optional_gate.sh section 2, against two gate
+#     files that print the same bytes and differ only in whether the recorder
+#     was called.
 #
 # ENROLMENT IS A FACT ABOUT THE FILE, NEVER ABOUT HOW IT WAS TYPED. The runtime
 # half used to decide from `$0`, which is whatever the caller wrote on the

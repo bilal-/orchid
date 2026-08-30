@@ -54,6 +54,23 @@ source "$ORCHID_ROOT/lib/capability.sh"
 
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 
+# THE MACHINE-LOCAL LOOKUP, THEN THE STALE-ROOT GATE, ABOVE THE FINISHED-RUN
+# VERDICT BELOW. `_orchid_entry_restore_operator_path` fires this gate too, but
+# it sits under the early exit, so out of a stale installation this runner used
+# to answer "nothing to do" out of the pre-merge tree and leave -- a report
+# about this repository, produced by the code whose staleness is the finding,
+# on the one route where the gate was never reached at all. That is what
+# runners/orchid-pump was corrected for one file over, and the two entry points
+# now do it the same way and in the same order: the inspection first, because
+# Orchid drives its own repository and then ORCHID_REPO and ORCHID_ROOT are one
+# directory, where the gate's index comparison against the root is a query
+# against the target and the unattended-trust contract forbids one before an
+# acknowledgement for it has been looked for. The inspection prints nothing,
+# writes nothing, and spends no Git with no candidate on file. The call below
+# is idempotent and self-disarming, so the restore keeps its place.
+unattended_trust_inspect "$repo"
+orchid_root_stale_gate
+
 # Never spend quota on a finished run: no roadmap (uninitialized) reads as
 # "" here, which also just falls through to the resume step below and lets
 # `orchid run resume` itself refuse with its own "not initialized" message.
@@ -66,8 +83,9 @@ fi
 # This direct runner is an unattended entry point in its own right (the pump
 # is not assumed to be its only caller). Gate before orchid_runtime creates a
 # directory, before `run resume` fences an epoch, and before any adapter is
-# resolved or spawned.
-unattended_trust_require "$repo" "headless tick" || exit 1
+# resolved or spawned. `_loaded` consumes the inspection made above rather than
+# walking an acknowledged target's history a second time in one process.
+unattended_trust_require_loaded "$repo" "headless tick" || exit 1
 _orchid_entry_restore_operator_path
 rt="$(orchid_runtime "$repo")"
 

@@ -468,7 +468,17 @@ _svc_status_linux() {
       echo "DRY-RUN: crontab -l 2>/dev/null | grep -F $(printf '%q' "$marker")"
       echo "  confirmed: unknown (--dry-run -- not queried)"
     else
-      if crontab -l 2>/dev/null | grep -qF "$marker"; then
+      # Captured first, then matched with a herestring -- never `crontab -l |
+      # grep -qF` (T016's sweep of the class T010 named). `grep -q` exits at
+      # its first match and SIGPIPEs `crontab`, and under this file's `set -o
+      # pipefail` that kill-by-signal status becomes the pipeline's, so an
+      # installed schedule reads as "confirmed: no". This is the shape with
+      # the largest real producer in the kernel -- an operator's whole crontab
+      # -- so a long one makes the race likelier rather than rarer, and the
+      # answer is what an operator checking whether `install` took reads.
+      local cron_lines
+      cron_lines="$(crontab -l 2>/dev/null || true)"
+      if grep -qF "$marker" <<<"$cron_lines"; then
         echo "  confirmed: yes"
       else
         echo "  confirmed: no"
@@ -510,15 +520,52 @@ repo_in="${repo_arg:-${ORCHID_REPO:-$PWD}}"
 repo="$(cd "$repo_in" && pwd -P)"
 plat="$(_svc_platform)"
 
+# `install` is the only arm that crosses the unattended boundary, and the
+# stale-root gate below may not sit ahead of it -- so that boundary is crossed
+# HERE, before the dispatch, rather than inside the arm it belongs to.
+# Dry-run still renders and places scheduler artifacts, so it crosses the same
+# boundary as a real install and is gated identically. Status/uninstall remain
+# available after revocation so an operator can always inspect or remove an
+# existing schedule.
+if [ "$sub" = install ]; then
+  [ -d "$repo/.orchid" ] \
+    || orchid_die "cannot install service for uninitialized repo (no .orchid/ found): $repo -- run 'orchid init' first"
+  unattended_trust_require "$repo" "service installation" || exit 1
+fi
+
+# The stale-root gate, at the first line its own contract allows (T016). This
+# runner holds the fixed entry PATH for its whole run and so never calls
+# _orchid_entry_restore_operator_path, which is where lib/common.sh fires the
+# gate for every other trust-boundary entry point -- so without this call the
+# gate would arm here and never fire, and an `orchid service install` run out
+# of a stale integration checkout would render its scheduler artifacts from
+# pre-merge templates.
+#
+# ONE placement, on the straight-line path ABOVE the dispatch, and that is the
+# whole point rather than a tidiness preference. Written once per arm -- which
+# is how this first shipped -- a fourth arm added tomorrow would arm the gate
+# and never fire it, and tests/inv/test_INV-15_no_optional_gate.sh section 4
+# could not see it: that scan asks whether a deferring entry point FILE calls a
+# firing site, and this file would still call one, twice, in the arms nobody
+# added. A gate skipped by omission, inside the guard the invariant against
+# gates skipped by omission exists to protect. Here there is no ACTING arm to
+# forget, because every one of them is below this line.
+#
+# THE USAGE ARM IS ABOVE IT, and that is a rule rather than this file's own
+# exemption. `-h`, `--help`, `help` and a bare invocation are answered by
+# _svc_usage at the dispatch above and exit without reaching this call --
+# exactly as they do in libexec/orchid-trust, the other entry point that fires
+# this gate itself. The gate belongs AFTER the operator's command has been
+# validated, so a mistyped verb is answered with its own diagnosis instead of a
+# refusal about the checkout; and a usage text names no repository, resolves no
+# record and reports nothing an operator could act on about a target, since at
+# that point `--repo` has not even been read. The two verbs are held to that
+# together -- and to the acting arm that must still refuse out of the same stale
+# root -- by tests/inv/test_INV-15_no_optional_gate.sh section 8.
+orchid_root_stale_gate
+
 case "$sub" in
   install)
-    [ -d "$repo/.orchid" ] \
-      || orchid_die "cannot install service for uninitialized repo (no .orchid/ found): $repo -- run 'orchid init' first"
-    # Dry-run still renders and places scheduler artifacts, so it crosses the
-    # same unattended boundary as a real install and is gated identically.
-    # Status/uninstall remain available after revocation so an operator can
-    # always inspect or remove an existing schedule.
-    unattended_trust_require "$repo" "service installation" || exit 1
     interval_s="${interval_arg:-$(config_get "$repo" pump_interval_s 240)}"
     case "$interval_s" in
       ''|*[!0-9]*) orchid_die "--interval-s must be a positive integer (got '$interval_s')" ;;

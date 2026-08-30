@@ -65,8 +65,16 @@ if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
   # Same shape rule scripts/release.sh enforces on the tag: vMAJOR.MINOR.PATCH
   # with an optional semver prerelease suffix (the shipped 1.0.0-beta.1), and
   # nothing that could name a moving ref.
-  printf '%s\n' "$ORCHID_INSTALL_REF" \
-    | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$' || {
+  #
+  # A HERESTRING, never `printf ... | grep -Eq`, which is how this was written.
+  # `grep -q` exits at its first match and SIGPIPEs the producer; this file runs
+  # under `set -o pipefail`, so that kill-by-signal status becomes the
+  # pipeline's and a ref that MATCHED is read as a ref that did not. Fail-closed
+  # here -- a correctly pinned installer refusing to install -- but it is the
+  # shape tests/inv/test_INV-15_no_optional_gate.sh section 5 exists to remove,
+  # and a gate decided by whether the producer finished writing first is not a
+  # gate. `<<<` feeds grep from a temp file: no pipe, no signal, no race.
+  grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$' <<<"$ORCHID_INSTALL_REF" || {
       echo "orchid: stable installer ref is not version-pinned: $ORCHID_INSTALL_REF" >&2
       exit 1
     }
@@ -252,6 +260,62 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# THE STALE-ROOT GATE, FIRED HERE BECAUSE NOTHING ELSE IN THIS FILE FIRES IT
+# (INV-15, lesson L018).
+#
+# What this script produces is a machine-scoped WIRING: the operator's `orchid`
+# becomes a symlink into $ROOT, three skill bundles become symlinks into $ROOT,
+# and ~/.orchid is created from $ROOT's own key list. Every one of those is
+# decided and performed by the code in THIS checkout. Run out of a checkout
+# parked on its configured integration branch with a kernel edit staged, that
+# is the pre-merge tree wiring itself in as the operator's orchid -- which is
+# the whole of L018, at the one moment it is hardest to notice, because
+# installation is the step nobody re-runs afterwards.
+#
+# THE POST-INSTALL `orchid doctor` IS NOT THAT GATE, and the reason is exactly
+# the shape INV-15 exists for. It runs only when cwd is a git repo whose
+# toplevel is not $ROOT (below), so it is skipped precisely in the self-hosted
+# case -- `./install.sh` from inside the orchid checkout itself -- which is the
+# only case in which $ROOT can be the stale integration checkout at all. A gate
+# whose one blind spot is the only environment that can reach the condition is
+# a gate that is reachable and cannot see.
+#
+# AN EXPLICIT CALL, not a source-time fire. lib/common.sh refuses at source time
+# only for bin/orchid, libexec/orchid-* and runners/orchid-* (its
+# _orchid_kernel_entry_point); a file outside those three roots ARMS the guard
+# by loading the library and is left to fire it, so this file must ask. That is
+# scripts/beta-qualify.sh's shape, and tests/inv/test_INV-15_no_optional_gate.sh
+# section 4 derives the whole set rather than trusting either of them to
+# remember.
+#
+# AFTER THE ARGUMENT PARSE, BEFORE THE FIRST MUTATION. After, so a mistyped flag
+# is answered with its own diagnosis rather than a refusal about the checkout --
+# the rule libexec/orchid-trust and runners/orchid-service are already held to.
+# Before, because `--uninstall` is below this line too: which symlinks a
+# pre-merge installer decides are "its own" is decided by the pre-merge tree,
+# and removal is not exempt for being the safe direction (`orchid trust revoke`
+# carries the same argument). Availability is preserved the documented way, per
+# invocation and visible in the transcript: ORCHID_ALLOW_STALE_ROOT=1
+# ./install.sh.
+#
+# The load cannot fail closed against a bootstrap invocation: the block above
+# already exec'd away unless $ROOT holds both anchor files, one of which is this
+# library. And it costs nothing anywhere else -- for every root not parked on
+# its configured integration branch (an extracted archive, a tagged clone at
+# $ORCHID_HOME, an ordinary development checkout) the gate is a no-op that
+# spends no subprocess.
+#
+# ORCHID_ROOT is set from $ROOT rather than inherited, and exported the way
+# scripts/beta-qualify.sh exports it: the guard reads that variable, and an
+# ORCHID_ROOT already in the environment names some other installation, not the
+# checkout whose code is about to be wired in. The `orchid doctor` handoff at
+# the end is unaffected -- bin/orchid resolves and re-exports its own root from
+# its own $0 before dispatching anything.
+ORCHID_ROOT="$ROOT"
+export ORCHID_ROOT
+source "$ROOT/lib/common.sh"
+orchid_root_stale_gate
 
 # link_one src dest: creates dest as a symlink to src, refusing to clobber
 # anything at dest that isn't already a symlink (a real file/dir there is
