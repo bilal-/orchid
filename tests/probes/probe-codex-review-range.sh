@@ -18,7 +18,7 @@ rc=$?
 set -e
 
 if [ "$rc" -ne 0 ]; then
-  if printf '%s' "$help_out" | grep -qiE 'login|auth|unauthorized|not authenticated|api.?key'; then
+  if grep -qiE 'login|auth|unauthorized|not authenticated|api.?key' <<<"$help_out"; then
     echo "PROBE-RESULT: AUTH-UNAVAILABLE (codex exec review --help exited $rc: $(printf '%s' "$help_out" | head -n1))"
     exit 0
   fi
@@ -29,10 +29,10 @@ fi
 usage_line="$(printf '%s\n' "$help_out" | grep -m1 -E '^Usage:' || true)"
 
 has_base=false; has_head=false; has_range=false; has_commit=false
-printf '%s\n' "$help_out" | grep -qiE -- '--base\b'   && has_base=true
-printf '%s\n' "$help_out" | grep -qiE -- '--head\b'   && has_head=true
-printf '%s\n' "$help_out" | grep -qiE -- '(--range\b|\brange\b)' && has_range=true
-printf '%s\n' "$help_out" | grep -qiE -- '--commit\b' && has_commit=true
+grep -qiE -- '--base\b'   <<<"$help_out" && has_base=true
+grep -qiE -- '--head\b'   <<<"$help_out" && has_head=true
+grep -qiE -- '(--range\b|\brange\b)' <<<"$help_out" && has_range=true
+grep -qiE -- '--commit\b' <<<"$help_out" && has_commit=true
 
 if [ "$has_base" = true ] && [ "$has_head" = true ]; then
   finding="YES: explicit --base and --head flags both present ($usage_line)"

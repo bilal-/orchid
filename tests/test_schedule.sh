@@ -55,7 +55,7 @@ assert_match "^concurrency-cap \(1/1\)$" "$blockers" "cap=1, 1 active: concurren
 rm -f "$repo/orchid.config"
 # -- default cap (2): 1 active is still under cap, no concurrency-cap line --
 blockers="$(schedule_dispatch_blockers "$repo" A001)"
-echo "$blockers" | grep -q "concurrency-cap" && fail "default cap=2 with 1 active must not block on concurrency-cap"
+grep -q "concurrency-cap" <<<"$blockers" && fail "default cap=2 with 1 active must not block on concurrency-cap"
 assert_eq "" "$blockers" "default cap=2, 1 non-conflicting active, no deps: fully dispatchable (empty blockers)"
 
 # -- v1-m3 (m2 ledger finding): a non-numeric `concurrency` config value must
@@ -104,7 +104,7 @@ rm -f "$repo/.orchid/tasks"/*.md
 mk_task D000 implementing false "" ""
 mk_task D001 pending false "" ""
 blockers="$(schedule_dispatch_blockers "$repo" D001)"
-echo "$blockers" | grep -q "exclusive-overlap" && fail "no exclusive-overlap when neither task declares exclusive:true"
+grep -q "exclusive-overlap" <<<"$blockers" && fail "no exclusive-overlap when neither task declares exclusive:true"
 
 rm -f "$repo/.orchid/tasks"/*.md
 
@@ -113,8 +113,8 @@ mk_task E000 implementing false "db,cache" ""
 mk_task E001 pending false "db,queue" ""
 blockers="$(schedule_dispatch_blockers "$repo" E001)"
 assert_match "resource-conflict \(db: E000\)" "$blockers" "shared 'db' resource blocks with the active task's id"
-echo "$blockers" | grep -q "resource-conflict (cache" && fail "non-shared resource 'cache' must not appear as a conflict"
-echo "$blockers" | grep -q "resource-conflict (queue" && fail "non-shared resource 'queue' must not appear as a conflict"
+grep -q "resource-conflict (cache" <<<"$blockers" && fail "non-shared resource 'cache' must not appear as a conflict"
+grep -q "resource-conflict (queue" <<<"$blockers" && fail "non-shared resource 'queue' must not appear as a conflict"
 
 rm -f "$repo/.orchid/tasks"/*.md
 
@@ -122,7 +122,7 @@ rm -f "$repo/.orchid/tasks"/*.md
 mk_task F000 implementing false "db" ""
 mk_task F001 pending false "cache" ""
 blockers="$(schedule_dispatch_blockers "$repo" F001)"
-echo "$blockers" | grep -q "resource-conflict" && fail "disjoint resources lists must never conflict"
+grep -q "resource-conflict" <<<"$blockers" && fail "disjoint resources lists must never conflict"
 
 rm -f "$repo/.orchid/tasks"/*.md
 
@@ -135,7 +135,7 @@ assert_match "^waiting-deps \(G000\)$" "$blockers" "unmet dep G000 (not done) bl
 # once the dep is done, waiting-deps must disappear
 mk_task G000 "done" false "" ""
 blockers="$(schedule_dispatch_blockers "$repo" G001)"
-echo "$blockers" | grep -q "waiting-deps" && fail "a done dependency must no longer appear in waiting-deps"
+grep -q "waiting-deps" <<<"$blockers" && fail "a done dependency must no longer appear in waiting-deps"
 assert_eq "" "$blockers" "no deps outstanding, no cap/exclusive/resource issues: fully dispatchable"
 
 # multiple unmet deps: space-separated inside one predicate

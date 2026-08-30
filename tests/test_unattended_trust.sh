@@ -1982,7 +1982,7 @@ assert_match '^unattended_tools: WARNING: jq is reachable on the fixed PATH' \
 tools_status_ok="$(
   HOME="$home" ORCHID_REPO="$tools_repo" "$ORCHID_BIN" status --explain 2>&1
 )"
-echo "$tools_status_ok" | grep -q '^unattended_tools:' \
+grep -q '^unattended_tools:' <<<"$tools_status_ok" \
   && fail "status --explain must stay silent about tools when both PATHs agree"
 
 # ---------------------------------------------------------------------------
@@ -2025,7 +2025,7 @@ report_status="$(
 assert_match '^unattended_tools: WARNING: jq is on the operator PATH but not on the fixed PATH' \
   "$report_status" \
   "the kernel-tool probe still answers the gate's question from the fixed PATH"
-echo "$report_status" | grep -qF '(no engine events yet)' \
+grep -qF '(no engine events yet)' <<<"$report_status" \
   && fail "status --explain must not report an empty ledger just because the fixed PATH lacks jq"
 assert_match '^stub-engine	failing	failures 3$' "$report_status" \
   "status --explain reads the populated ledger on the operator's own PATH"

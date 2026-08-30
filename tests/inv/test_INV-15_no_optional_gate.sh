@@ -446,13 +446,20 @@ ci_local_cut_line() {
 # section, which is the same direction as the comment-stripper's, so the
 # fixture pairs below pin both edges: the unreachable call must be reported,
 # and the live call in the identical file must not.
-ci_code_line() {
+#
+# Spelled as a pair: `_ci_code_line` leaves the answer in CI_CODE and
+# `ci_code_line` prints it. ONE body, because a second comment-stripper is a
+# second classifier and the two would come to disagree -- but section 4's
+# reachability walk asks this of every line of every shipped loader, and a
+# `$(...)` per line is a fork per line. The caller that can use a variable uses
+# the variable; the callers that read a value keep reading one.
+_ci_code_line() {
   local s="$1" tab code
   tab=$'\t'
   # Leading whitespace off first, so a comment-only line is recognizable
   # however deeply it is indented.
   s="${s#"${s%%[![:space:]]*}"}"
-  case "$s" in ''|'#'*) return 0 ;; esac
+  case "$s" in ''|'#'*) CI_CODE=""; return 0 ;; esac
   # A trailing comment off the end, at the first `#` that follows whitespace.
   # Narrow on purpose: `${var#prefix}` and a `#` inside a word keep the code
   # around them intact. The residual error runs in the direction of a comment
@@ -462,7 +469,33 @@ ci_code_line() {
   # section whose ONLY mention of a test script is in comments, and requires
   # it to be reported.
   code="${s%% #*}"
-  printf '%s' "${code%%"$tab"#*}"
+  CI_CODE="${code%%"$tab"#*}"
+}
+CI_CODE=""
+ci_code_line() { _ci_code_line "$1"; printf '%s' "$CI_CODE"; }
+
+# shell_command_word <code> -- leaves in SHELL_WORD the command <code> would
+# INVOKE, stepping over any leading environment assignments.
+#
+# An environment assignment PREFIXES a command rather than being one --
+# scripts/ci-local.sh's own suite line is written that way -- so any that lead
+# the line are stepped over before the question is asked. Each pass removes a
+# non-empty prefix, and a line with no whitespace left is a lone assignment
+# that invokes nothing, so this terminates.
+SHELL_WORD=""
+shell_command_word() {
+  local code="$1" word
+  word="${code%%[[:space:]]*}"
+  while [ "$word" != "$code" ]; do
+    case "$word" in
+      [A-Za-z_]*=*) ;;
+      *) break ;;
+    esac
+    code="${code#"$word"}"
+    code="${code#"${code%%[![:space:]]*}"}"
+    word="${code%%[[:space:]]*}"
+  done
+  SHELL_WORD="$word"
 }
 
 # ci_fn_bodies_running_tests <file> -- the names of <file>'s column-0 shell
@@ -577,21 +610,10 @@ ci_local_late_sections() {
     case "$code" in
       *tests/run.sh*|*ci_run_test*) section_runs=1 ;;
     esac
-    word="${code%%[[:space:]]*}"
-    # An environment assignment PREFIXES a command rather than being one --
-    # scripts/ci-local.sh's own suite line is written that way -- so step over
-    # any that lead the line before asking what it invokes. Each pass removes
-    # a non-empty prefix, and a line with no whitespace left is a lone
-    # assignment that invokes nothing, so this terminates.
-    while [ "$word" != "$code" ]; do
-      case "$word" in
-        [A-Za-z_]*=*) ;;
-        *) break ;;
-      esac
-      code="${code#"$word"}"
-      code="${code#"${code%%[![:space:]]*}"}"
-      word="${code%%[[:space:]]*}"
-    done
+    # Environment assignments stepped over by the shared helper above, so this
+    # walk and section 4's cannot come to disagree about what a line invokes.
+    shell_command_word "$code"
+    word="$SHELL_WORD"
     # Only a name can be a function call, and the guard also keeps a bare `[`
     # or `*` out of the membership pattern below.
     case "$word" in
@@ -1814,6 +1836,138 @@ entry_loads_common() {
   grep -Eq '^[[:space:]]*(source|\.)[[:space:]]+[^#]*lib/common\.sh"' <<<"$1"
 }
 
+# entry_reached <file> <token> -- one of three words:
+#
+#   reached      <file> reaches a line of CODE carrying <token>
+#   unreached    it does not
+#   unjudgeable  the walk lost <file>'s structure and cannot say
+#
+# WHY A WALK AND NOT A grep. `entry_code` above strips the comments, and that
+# closes exactly one of the two ways a firing site can be there and never fire.
+# The other is this file's own subject one level in: a call inside a function
+# body nothing invokes, or on a line below an unconditional `exit`, is code by
+# every textual measure and is reached by nobody. A scan that read either as a
+# fire would clear an entry point that arms the stale-root gate and never
+# spends it -- which is the omission this whole file exists to refuse, wearing
+# a correctly-spelled call as its disguise.
+#
+# It decides exactly the two shapes section 1's derivation decides, for the
+# same reason and by the same rules, because they are the same question asked
+# of a different file:
+#
+#   * a function body. Lines between a column-0 definition and its column-0
+#     `}` belong to that function, not to the run. A token there credits the
+#     file only when something the file REACHES invokes that function --
+#     transitively, so a helper called by a helper called at the top level
+#     still counts, and a pair of functions that only call each other does not.
+#   * dead code. A column-0 `exit` at the top level ends the run, so the walk
+#     stops there rather than reading on: a definition below it is never even
+#     made, let alone called.
+#
+# What it does NOT decide is stated as a not-tested claim at the end of this
+# file: a call under a guard that is false at run time counts as reached (the
+# alternative is evaluating the guard), a call reached other than as a line's
+# leading word is not seen as a call, and a token inside a heredoc is read as
+# code. The first two run toward reporting a file that does fire -- a loud,
+# fixable failure -- and the fixture pairs below pin both edges so this is
+# detection rather than a scan that reports every file or none.
+ENTRY_REACH_DETAIL=""
+entry_reached() {
+  local file="$1" tok="$2" line col0 fn
+  local top_direct=0 top_calls=" " top_call_lines="" fn_direct=" "
+  local fn_edges="" firing changed edge caller callee
+  fn=""
+  ENTRY_REACH_DETAIL=""
+  while IFS= read -r line; do
+    case "$line" in
+      [![:space:]]*) col0=1 ;;
+      *) col0=0 ;;
+    esac
+    _ci_code_line "$line"
+    [ -n "$CI_CODE" ] || continue
+    if [ -n "$fn" ]; then
+      if [ "$col0" -eq 1 ] && [ "$CI_CODE" = '}' ]; then
+        fn=""
+        continue
+      fi
+      case "$CI_CODE" in
+        *"$tok"*)
+          case "$fn_direct" in
+            *" $fn "*) ;;
+            *) fn_direct="$fn_direct$fn " ;;
+          esac
+          ;;
+      esac
+      shell_command_word "$CI_CODE"
+      case "$SHELL_WORD" in
+        [A-Za-z_]*) fn_edges="$fn_edges$fn $SHELL_WORD"$'\n' ;;
+      esac
+      continue
+    fi
+    # A DEFINITION IS NOT A CALL, and it is asked first so that
+    # `orchid_root_stale_gate() {` -- the line that names the gate and fires
+    # nothing -- opens a body rather than being counted as a fire.
+    if [ "$col0" -eq 1 ]; then
+      case "$CI_CODE" in
+        [A-Za-z_]*'('*')'*'{')
+          fn="${CI_CODE%%'('*}"
+          fn="${fn%"${fn##*[![:space:]]}"}"
+          continue
+          ;;
+      esac
+    fi
+    case "$CI_CODE" in *"$tok"*) top_direct=1 ;; esac
+    shell_command_word "$CI_CODE"
+    case "$SHELL_WORD" in
+      [A-Za-z_]*)
+        case "$top_calls" in
+          *" $SHELL_WORD "*) ;;
+          *) top_calls="$top_calls$SHELL_WORD "
+             top_call_lines="$top_call_lines$SHELL_WORD"$'\n' ;;
+        esac
+        ;;
+    esac
+    # Below an unconditional column-0 `exit` the shell reaches nothing at all,
+    # so the walk stops rather than reading on: a body defined down there is
+    # never defined, and a call down there is never made.
+    if [ "$col0" -eq 1 ] && [ "$SHELL_WORD" = exit ]; then break; fi
+  done < "$file"
+  # A function never seen closed swallowed the rest of the file, so everything
+  # after it went unread. Unjudgeable, never clean, for the reason section 1's
+  # missing cut is: a walk that stopped reading must not answer.
+  if [ -n "$fn" ]; then
+    ENTRY_REACH_DETAIL="$fn"
+    printf 'unjudgeable'
+    return 0
+  fi
+  if [ "$top_direct" -eq 1 ]; then printf 'reached'; return 0; fi
+  # Which function bodies REACH the token, closed over the call graph: seed
+  # with the ones that carry it, then add any caller of a member until nothing
+  # is added. The names are shell function names, so none contains a space and
+  # the padded membership tests cannot be satisfied by two adjacent entries.
+  firing="$fn_direct"
+  changed=1
+  while [ "$changed" -eq 1 ]; do
+    changed=0
+    while IFS= read -r edge; do
+      [ -n "$edge" ] || continue
+      caller="${edge%% *}"
+      callee="${edge#* }"
+      case "$firing" in *" $callee "*) ;; *) continue ;; esac
+      case "$firing" in *" $caller "*) continue ;; esac
+      firing="$firing$caller "
+      changed=1
+    done <<<"$fn_edges"
+  done
+  while IFS= read -r edge; do
+    [ -n "$edge" ] || continue
+    case "$firing" in
+      *" $edge "*) printf 'reached'; return 0 ;;
+    esac
+  done <<<"$top_call_lines"
+  printf 'unreached'
+}
+
 # ---------------------------------------------------------------------------
 # THE INVENTORY BOTH FAMILY-SHAPED SCANS IN THIS FILE DRAW FROM, AND IT IS A
 # WALK OF THE TREE RATHER THAN A LIST OF FAMILIES.
@@ -1899,23 +2053,47 @@ shipped_inventory_admits() {
   return 0
 }
 
-# shipped_inventory <root> -- every shipped file under <root>, repo-relative,
-# one per line, in LC_ALL=C order. Takes its root as an argument rather than
-# reading $REPO_ROOT, so the fixture below is judged by the same function the
-# shipped tree is.
+# suite_inventory_admits <root> <relpath> -- the OTHER half of the same tree:
+# everything under tests/ that is not a document.
+#
+# The suite is excluded from the shipped inventory above with a reason, and
+# that reason is about the stale-root partition -- judging a developer's test
+# files by "orchid is running out of a stale installation" would refuse the
+# suite itself. It is not a reason to leave the suite outside the early-exit
+# scan in section 5, where the hazard is the assertion's own exit status and
+# every test file runs under helpers.sh's `set -o pipefail`. So the same walk,
+# the same two discoveries, the same prune list, and a second admit predicate:
+# one place that decides what "under tests/" means, so the scan cannot come to
+# disagree with itself about which files it has read.
+suite_inventory_admits() {
+  case "$2" in
+    tests|tests/*) ;;
+    *) return 1 ;;
+  esac
+  case "$2" in *.md) return 1 ;; esac
+  [ -f "$1/$2" ] || return 1
+  return 0
+}
+
+# shipped_inventory <root> [admit-predicate] -- every file under <root> the
+# predicate admits, repo-relative, one per line, in LC_ALL=C order. Takes its
+# root as an argument rather than reading $REPO_ROOT, so the fixture below is
+# judged by the same function the shipped tree is; takes its predicate as an
+# argument so the suite half of the tree is discovered by this walk rather than
+# by a second one nobody has watched.
 shipped_inventory() {
-  local root rel
+  local root rel admits="${2:-shipped_inventory_admits}"
   root="$(cd "$1" 2>/dev/null && pwd -P)" || root=""
   [ -n "$root" ] || return 0
   {
     if [ "$(shipped_inventory_mode "$root")" = git ]; then
       while IFS= read -r rel; do
-        if shipped_inventory_admits "$root" "$rel"; then printf '%s\n' "$rel"; fi
+        if "$admits" "$root" "$rel"; then printf '%s\n' "$rel"; fi
       done < <(git -C "$root" ls-files --cached --others --exclude-standard)
     else
       while IFS= read -r rel; do
         rel="${rel#./}"
-        if shipped_inventory_admits "$root" "$rel"; then printf '%s\n' "$rel"; fi
+        if "$admits" "$root" "$rel"; then printf '%s\n' "$rel"; fi
       done < <(cd "$root" && find . \( -path './.git' -o -path './.orchid' \) -prune -o -type f -print)
     fi
   } | LC_ALL=C sort
@@ -1983,9 +2161,18 @@ ENTRYSTUB
 }
 
 # entry_gate_violations <file> <relpath> -- non-empty when <file> loads
-# lib/common.sh and nothing on its own text fires the gate that load arms, at
-# the path <relpath> puts it. Pure apart from the probe, so the fixtures below
-# are judged by the same function the shipped tree is.
+# lib/common.sh and nothing it REACHES fires the gate that load arms, at the
+# path <relpath> puts it. Pure apart from the probe, so the fixtures below are
+# judged by the same function the shipped tree is.
+#
+# Reaches, not contains. Every question this asks of the file's body goes
+# through `entry_reached` above rather than through a `grep` over the
+# comment-stripped copy, because a call in an uninvoked function body and a
+# call below an unconditional `exit` both survive comment-stripping and both
+# fire for nobody. That includes the DEFER marker: an assignment the run never
+# reaches never defers anything, so a file carrying it out of reach is judged
+# on the branch that asks whether the source-time fire covers its path, which
+# is what actually decides the question for it.
 #
 # <relpath> is a separate argument rather than derived from <file> so a fixture
 # living in a scratch directory can be asked "and if you shipped HERE?" -- the
@@ -1993,14 +2180,21 @@ ENTRYSTUB
 # libexec/, and a check that could not put the same file in both places could
 # not demonstrate that the location is what decides it.
 entry_gate_violations() {
-  local f="$1" rel="$2" code defers=0 covered
+  local f="$1" rel="$2" code defers=0 covered gate_at
   [ -f "$f" ] || { printf 'no-such-file: %s\n' "$rel"; return 0; }
   code="$(entry_code "$f")"
   entry_loads_common "$code" || return 0
-  grep -q '__orchid_entry_defer_restore=1' <<<"$code" && defers=1
   # The explicit call fires whatever is armed from wherever it sits, so it
-  # settles the question for every path and is asked first.
-  grep -q 'orchid_root_stale_gate' <<<"$code" && return 0
+  # settles the question for every path and is asked first -- but only when the
+  # run gets to it.
+  gate_at="$(entry_reached "$f" 'orchid_root_stale_gate')"
+  case "$gate_at" in
+    reached) return 0 ;;
+    unjudgeable)
+      printf 'entry-reachability-unjudgeable: %s (the reachability walk never saw the function %s closed, so the rest of this file went unread and nothing here can say whether it reaches a firing site — an unread file must not be reported clean)\n' "$rel" "$ENTRY_REACH_DETAIL"
+      return 0 ;;
+  esac
+  [ "$(entry_reached "$f" '__orchid_entry_defer_restore=1')" = reached ] && defers=1
   covered="$(entry_source_time_answer "$rel")"
   case "$covered" in
     unanswerable)
@@ -2009,10 +2203,10 @@ entry_gate_violations() {
   esac
   if [ "$defers" = 0 ]; then
     [ "$covered" = fires ] && return 0
-    printf 'gate-armed-never-fired-off-path: %s (it loads lib/common.sh without deferring the operator-PATH restore, but it does not live under one of the three executable roots lib/common.sh fires the gate at source time for — a stub at this very path was run out of a genuinely stale root and was NOT refused — and it never calls orchid_root_stale_gate, so the gate is armed and never fires)\n' "$rel"
+    printf 'gate-armed-never-fired-off-path: %s (it loads lib/common.sh without deferring the operator-PATH restore, but it does not live under one of the three executable roots lib/common.sh fires the gate at source time for — a stub at this very path was run out of a genuinely stale root and was NOT refused — and it never REACHES a call to orchid_root_stale_gate, so the gate is armed and never fires)\n' "$rel"
     return 0
   fi
-  if grep -q '_orchid_entry_restore_operator_path' <<<"$code"; then
+  if [ "$(entry_reached "$f" '_orchid_entry_restore_operator_path')" = reached ]; then
     [ "$covered" = fires ] && return 0
     # _orchid_entry_restore_operator_path asks _orchid_kernel_entry_point
     # before it fires anything, so off that path it restores the PATH and
@@ -2021,7 +2215,7 @@ entry_gate_violations() {
     printf 'gate-fires-only-through-the-path-restore-off-path: %s (it defers the operator-PATH restore and reaches the gate only through _orchid_entry_restore_operator_path, which fires nothing for a file outside the three executable roots — a stub at this very path was run out of a genuinely stale root and was NOT refused — so this file must call orchid_root_stale_gate)\n' "$rel"
     return 0
   fi
-  printf 'gate-armed-never-fired: %s (it defers the operator-PATH restore, so lib/common.sh arms the stale-root gate and leaves the firing to this file — and this file CALLS neither _orchid_entry_restore_operator_path nor orchid_root_stale_gate, so the gate is armed and never fires)\n' "$rel"
+  printf 'gate-armed-never-fired: %s (it defers the operator-PATH restore, so lib/common.sh arms the stale-root gate and leaves the firing to this file — and this file REACHES a call to neither _orchid_entry_restore_operator_path nor orchid_root_stale_gate, so the gate is armed and never fires)\n' "$rel"
 }
 
 # THE UNIVERSE: every file in the shipped inventory above that actually loads
@@ -2252,6 +2446,113 @@ entry_probe_families="${entry_probe_families# }"
 assert_eq "$entry_loader_families" "$entry_probe_families" \
   "INV-15: every top-level family the walk found a lib/common.sh loader in must have been ASKED whether the source-time fire reaches that far, by running a stub at that family's own depth out of a genuinely stale root. A family with no probe is a partition applied where nothing established it holds, and a probe for a family the walk no longer reaches is a coverage claim about a directory that is gone"
 green_case "the set of top-level families the shipped-file walk found a lib/common.sh loader in was compared against the set this section ran a source-time probe in, and the two are the same set ($entry_loader_families) — so which families are covered has stopped being a question anybody has to keep answering, in the same way the walk stopped 'which directories does this look in' being one"
+
+# ---------------------------------------------------------------------------
+# THE FIRING CALL HAS TO BE ONE THE RUN GETS TO.
+#
+# Every off-path loader above -- install.sh, scripts/beta-qualify.sh, each
+# bundled engine adapter -- is cleared by the same sentence: it calls
+# `orchid_root_stale_gate` itself. Until this pair, "calls" meant the token
+# appeared on a line the comment-stripper had let through, and that is not the
+# same claim. A call inside a function body nothing invokes, and a call on the
+# line after a column-0 `exit`, are both spelled exactly like the real thing
+# and are both reached by nobody: the loader arms the gate, runs to the end,
+# and spends it never, while every scan in this file that reads text says it
+# fires. That is this file's own subject -- a gate satisfied by text that never
+# executes -- turned on the very check that enforces it.
+#
+# So the fixtures below are two PAIRS plus one, and within a pair the two files
+# differ by exactly one line: whether the definition is invoked, and whether
+# the `exit` above the call is unconditional or guarded. The token, its
+# spelling, its indentation and the comment-stripper's verdict on it are
+# identical in all five; the fifth stands alone because it has no dead twin to
+# be paired with -- it is the transitive shape, a firing call two bodies deep
+# that the top level really does reach, and a walk crediting only direct calls
+# would report it. Each is asked at a TOP-LEVEL relpath -- the family
+# whose one member is install.sh -- because that is a family the source-time
+# fire provably does not reach (proved four lines up), so the only thing that
+# can clear one of these files is a firing call the run makes.
+ENTRY_REACH_FIX="$WORK/entry-reach-fixtures"
+mkdir -p "$ENTRY_REACH_FIX"
+
+# write_reach_fixture <path> <shape> -- an off-path loader whose ONLY call to
+# orchid_root_stale_gate is placed by <shape>.
+write_reach_fixture() {
+  local path="$1" shape="$2"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'ROOT="${ORCHID_ROOT:-/nonexistent}"\n'
+    printf 'source "$ROOT/lib/common.sh"\n'
+    case "$shape" in
+      fn-dead|fn-live)
+        printf '_reach_fixture_fire() {\n'
+        printf '  orchid_root_stale_gate\n'
+        printf '}\n'
+        printf 'echo "harness starting"\n'
+        [ "$shape" = fn-live ] && printf '_reach_fixture_fire\n'
+        ;;
+      exit-dead)
+        printf 'echo "harness starting"\n'
+        printf 'exit 0\n'
+        printf 'orchid_root_stale_gate\n'
+        ;;
+      exit-live)
+        printf 'echo "harness starting"\n'
+        printf 'if [ "${INV15_SHORT:-0}" = 1 ]; then\n'
+        printf '  exit 0\n'
+        printf 'fi\n'
+        printf 'orchid_root_stale_gate\n'
+        ;;
+      indirect)
+        # The live half of the transitive case: the call is two bodies deep
+        # and the top level invokes only the outer one. A walk that credited
+        # a body only when the section calls it DIRECTLY would report this,
+        # and it fires the gate every time it runs.
+        printf '_reach_fixture_fire() {\n'
+        printf '  orchid_root_stale_gate\n'
+        printf '}\n'
+        printf '_reach_fixture_guard() {\n'
+        printf '  _reach_fixture_fire\n'
+        printf '}\n'
+        printf '_reach_fixture_guard\n'
+        ;;
+    esac
+    printf 'echo "harness done"\n'
+  } > "$path"
+}
+
+for entry_reach_shape in fn-dead fn-live exit-dead exit-live indirect; do
+  write_reach_fixture "$ENTRY_REACH_FIX/$entry_reach_shape.sh" "$entry_reach_shape"
+done
+
+# The pair's own premise, asserted before either verdict is read: all five
+# fixtures carry the token past the comment-stripper. Without this the two
+# reports below would be equally green for a fixture writer that had stopped
+# emitting the call at all.
+for entry_reach_shape in fn-dead fn-live exit-dead exit-live indirect; do
+  assert_match 'orchid_root_stale_gate' "$(entry_code "$ENTRY_REACH_FIX/$entry_reach_shape.sh")" \
+    "INV-15: the $entry_reach_shape reachability fixture must carry an uncommented orchid_root_stale_gate call, or the pair below compares two files that differ in more than reachability"
+done
+
+entry_reach_fn_dead="$(entry_gate_violations "$ENTRY_REACH_FIX/fn-dead.sh" 'inv15-reach-fn.sh')"
+assert_match 'gate-armed-never-fired-off-path' "$entry_reach_fn_dead" \
+  "INV-15: an off-path loader whose only orchid_root_stale_gate call sits in a function body nothing invokes must be reported — the definition is inert text until something calls it, and this file never does"
+entry_reach_exit_dead="$(entry_gate_violations "$ENTRY_REACH_FIX/exit-dead.sh" 'inv15-reach-exit.sh')"
+assert_match 'gate-armed-never-fired-off-path' "$entry_reach_exit_dead" \
+  "INV-15: an off-path loader whose only orchid_root_stale_gate call sits below a column-0 exit must be reported — the shell reaches nothing down there, so the gate this file arms is spent by nobody"
+red_case "two off-path loaders that each name orchid_root_stale_gate on an uncommented line of their own body were both reported — one with the call inside a function definition nothing invokes, one with it below an unconditional exit — so a firing site the run never gets to is detected rather than read as a fire"
+
+entry_reach_fn_live="$(entry_gate_violations "$ENTRY_REACH_FIX/fn-live.sh" 'inv15-reach-fn.sh')"
+[ -z "$entry_reach_fn_live" ] \
+  || fail "INV-15: the identical loader with one line added — the call to the function that fires — was reported anyway ($entry_reach_fn_live), so what the report above detects is the presence of a definition rather than the absence of a call"
+entry_reach_exit_live="$(entry_gate_violations "$ENTRY_REACH_FIX/exit-live.sh" 'inv15-reach-exit.sh')"
+[ -z "$entry_reach_exit_live" ] \
+  || fail "INV-15: the identical loader with its exit moved inside a conditional was reported anyway ($entry_reach_exit_live), so this walk treats every call it cannot watch run as unreachable, which would make the shipped tree unsatisfiable"
+entry_reach_indirect="$(entry_gate_violations "$ENTRY_REACH_FIX/indirect.sh" 'inv15-reach-indirect.sh')"
+[ -z "$entry_reach_indirect" ] \
+  || fail "INV-15: a loader whose firing call is reached through TWO function bodies, the outer of which the top level invokes, was reported anyway ($entry_reach_indirect) — a helper called by a helper still runs, and a walk that only credits direct calls would push the shipped tree toward inlining its gates"
+green_case "the same derivation cleared three loaders that differ from the two reported ones only in reachability — one that adds the call to the uninvoked definition, one that moves the exit inside a conditional, and one whose firing call is two bodies deep behind a top-level invocation — so the reports above are a firing site the run never reaches being detected rather than a scan that flags every definition, every exit or every call it cannot watch"
 
 # THE ORDER OF THE TWO PRE-REPORT GATES, DERIVED RATHER THAN LISTED.
 #
@@ -2723,18 +3024,25 @@ red_case "the shipped install.sh, run out of a genuinely stale installation root
 # shipped kernel, and a source file written tomorrow is covered without
 # anyone remembering to re-run anything.
 #
-# THE INVARIANT GATES ARE IN THAT GLOB TOO, and they were the omission this
-# section shipped with. `tests/inv/` is where the checks that gate the
-# invariants live -- section 2 above exists solely to make their enrolment
-# real -- and twenty-five of their assertions were written as `echo "$out" |
-# grep -q`. The direction that costs is the one those files use most: a
-# NEGATIVE assertion, `... | grep -q pat && fail`, is skipped by pipefail
-# EXACTLY when `pat` is present, because that is when grep exits first and
-# kills the producer. So the arm that must catch the regression is the one the
-# race switches off, and it switches off silently, in the files whose whole
-# job is to notice. A gate scanning the kernel for a hazard it carries itself
-# is the same defect one level up, which is why the glob below is the kernel
-# AND these files.
+# THE SUITE IS IN THAT WALK TOO, and it was the omission this section shipped
+# with -- twice. `tests/inv/` is where the checks that gate the invariants live
+# -- section 2 above exists solely to make their enrolment real -- and
+# twenty-five of their assertions were written as `echo "$out" | grep -q`. The
+# direction that costs is the one those files use most: a NEGATIVE assertion,
+# `... | grep -q pat && fail`, is skipped by pipefail EXACTLY when `pat` is
+# present, because that is when grep exits first and kills the producer. So the
+# arm that must catch the regression is the one the race switches off, and it
+# switches off silently, in the files whose whole job is to notice.
+#
+# Taking the invariant gates and stopping there was the second omission, and it
+# was the same mistake this file exists to refuse: a list of the files somebody
+# was thinking of. The rest of the suite runs under the identical `set -o
+# pipefail`, asserts the identical way, and carried a hundred and twenty-six
+# of the shape -- among them `orchid status`'s whole HTML page fed to a
+# `grep -qF` that must NOT match, and `orchid jobs gc`'s output fed to three of
+# them. A gate scanning the kernel for a hazard the files that check the gates
+# carry themselves is the same defect one level up, which is why the walk below
+# is the kernel AND every file under tests/.
 #
 # What is flagged is narrow and mechanical: a pipe into `grep`, with a `q` in
 # that grep's flags. A pipe into a grep that reads its input to EOF (-v, -c,
@@ -2755,10 +3063,19 @@ red_case "the shipped install.sh, run out of a genuinely stale installation root
 # logical OR would make this section unsatisfiable against honest code, and an
 # unsatisfiable gate gets weakened rather than obeyed.
 PQ_PIPE_TO_GREP='(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*grep[[:space:]]'
-# `[^|]*` so the `q` has to belong to THIS grep rather than to something
-# further down the pipeline, and `([[:space:]]|$)` so a line that ends on the
-# flag -- with its pattern on a continuation -- is caught like any other.
-PQ_EARLY_EXIT='grep[^|]*[[:space:]]-[A-Za-z]*q[A-Za-z]*([[:space:]]|$)'
+# The flag has to be one of GREP's, so it is looked for in the run of option
+# words that follows `grep` -- zero or more words beginning with `-`, up to the
+# first word that does not. `([[:space:]]|$)` so a line that ends on the flag,
+# with its pattern on a continuation, is caught like any other.
+#
+# The option run is not decoration either, and the suite is what made it
+# necessary. `[ "$(producer | grep -c pat)" -eq 0 ]` carries a `-eq` two words
+# past a grep, and `-eq` satisfies "a dash, some letters, a q": read as a grep
+# flag it turns a read-to-EOF count -- the safest shape there is -- into a
+# report. That is a matcher that cannot be satisfied by honest code, and an
+# unsatisfiable gate gets weakened rather than obeyed. The residual is a `-q`
+# written AFTER grep's pattern, which is declared at the end of this file.
+PQ_EARLY_EXIT='grep([[:space:]]+-[A-Za-z-]+)*[[:space:]]+-[A-Za-z]*q[A-Za-z]*([[:space:]]|$)'
 
 # piped_grep_lines <file> -- every NON-COMMENT line of <file> that pipes into
 # grep, carrying its real line number. The numbers are taken off the unstripped
@@ -2814,31 +3131,67 @@ while IFS= read -r pq_rel; do
   pq_scan_file "$REPO_ROOT/$pq_rel" "$pq_rel"
 done < <(shipped_inventory "$REPO_ROOT")
 
-# ...and `tests/inv/test_*.sh`, by the SAME glob section 2 enrols, so a gate
-# file written tomorrow is covered by both at once: section 2 requires it to
-# be enforced at run time, this requires the assertions it enforces with to
-# mean what they say. It is a second loop rather than an inventory member
-# because the inventory excludes tests/ wholesale and declares why; the rest
-# of tests/ is deliberately still outside -- see the not-tested claim at the
-# end of this file for what that leaves open and why the invariant gates were
-# taken first.
+# ...AND THE WHOLE SUITE, by the same walk with the other admit predicate.
+#
+# It was `tests/inv/test_*.sh` alone, and that was a list wearing a
+# derivation's clothes for the second time in this file. The invariant gates
+# were taken first because they are the files whose whole job is to notice, but
+# the shape is not theirs: every file under tests/ runs under helpers.sh's `set
+# -o pipefail`, and the direction that costs is the one they all use most -- a
+# NEGATIVE assertion, `producer | grep -q pat && fail`, skipped by pipefail
+# EXACTLY when `pat` is present, because that is when grep exits first and
+# kills the producer. A hundred and twenty-six of those were spelled across the
+# suite and the probes when this walk replaced the glob, in the files that
+# decide whether every other gate in this repository is working.
+#
+# Two things stay outside, both because the walk's own predicate says so rather
+# than because a glob missed them: documents (`*.md`, prose is not executed)
+# and anything the prune list drops. Nothing else under tests/ is exempt --
+# including this file, which is why the RED fixture below is assembled from a
+# variable rather than written out.
+pq_suite_seen=0
+pq_suite_list=""
+while IFS= read -r pq_rel; do
+  [ -n "$pq_rel" ] || continue
+  pq_suite_seen=$((pq_suite_seen + 1))
+  pq_suite_list="$pq_suite_list$pq_rel"$'\n'
+  pq_scan_file "$REPO_ROOT/$pq_rel" "$pq_rel"
+done < <(shipped_inventory "$REPO_ROOT" suite_inventory_admits)
+[ "$pq_suite_seen" -ge 60 ] \
+  || fail "INV-15: the early-exit scan reached only $pq_suite_seen file(s) under tests/. The suite is much larger than that, so the walk feeding this half has stopped reaching it and the verdict below says nothing about the files that decide whether every other gate here works"
+# The gates themselves, on their own account: they are the half this scan
+# shipped with, and a suite walk that had stopped reaching tests/inv/ would
+# still clear the assertion above on the strength of the other eighty files.
+# Matched as a whole LINE, never as a substring of the joined list -- a path is
+# a prefix of its own siblings often enough that a substring test would report
+# coverage it does not have.
+pq_inv_seen=0
 for pq_file in "$INV_GLOB_DIR"/test_*.sh; do
   [ -f "$pq_file" ] || continue
-  pq_scan_file "$pq_file" "${pq_file#"$REPO_ROOT"/}"
+  pq_inv_seen=$((pq_inv_seen + 1))
+  pq_rel="${pq_file#"$REPO_ROOT"/}"
+  pq_needle=$'\n'"$pq_rel"$'\n'
+  pq_haystack=$'\n'"$pq_suite_list"
+  case "$pq_haystack" in
+    *"$pq_needle"*) ;;
+    *) fail "INV-15: the suite walk did not reach $pq_rel, so the invariant gates -- the files whose whole job is to notice -- are outside the scan that checks their assertions mean what they say" ;;
+  esac
 done
-[ "$pq_files_seen" -ge 40 ] \
-  || fail "INV-15: the early-exit scan opened only $pq_files_seen file(s). It reads the whole shipped inventory plus every tests/inv/ gate, so a number this small means the walk feeding it has stopped reaching the tree and the verdict below is about almost nothing"
+[ "$pq_inv_seen" -ge 10 ] \
+  || fail "INV-15: only $pq_inv_seen invariant gate file(s) found to check the suite walk against"
+[ "$pq_files_seen" -ge 100 ] \
+  || fail "INV-15: the early-exit scan opened only $pq_files_seen file(s). It reads the whole shipped inventory plus the whole suite, so a number this small means the walk feeding it has stopped reaching the tree and the verdict below is about almost nothing"
 
 # The denominator, asserted before the verdict: a scan that had stopped
 # matching pipes at all would report a clean kernel, and that is the reading
 # this whole file exists to make impossible.
 [ "$pq_examined" -ge 10 ] \
-  || fail "INV-15: only $pq_examined piped-grep line(s) discovered across the $pq_files_seen files scanned — the whole shipped inventory plus every tests/inv/ gate — and the shipped tree has many more, so the early-exit scan below is judging an almost empty set and its silence means nothing"
+  || fail "INV-15: only $pq_examined piped-grep line(s) discovered across the $pq_files_seen files scanned — the whole shipped inventory plus the whole suite — and this tree has many more, so the early-exit scan below is judging an almost empty set and its silence means nothing"
 
 [ -z "$pq_violations" ] \
   || fail "INV-15: a gate pipes a producer into an early-exiting grep. Under set -o pipefail the SIGPIPE that grep's first match sends the producer becomes the pipeline's status, so a MATCH can be read as no-match — the gate is not skipped, it is decided by process scheduling (the class T010's arbitration named). In an invariant file the usual shape is a NEGATIVE assertion — a producer piped into an early-exiting grep, then '&& fail' — and it is skipped exactly when the pattern IS present. Feed the matcher a herestring instead:$pq_violations"
 
-green_case "every one of the $pq_examined pipes into grep found across the $pq_files_seen files scanned — the entire shipped inventory this file WALKS rather than a list of families, plus the tests/inv/ gate files — reads its input to EOF, and none carries a -q whose early exit could SIGPIPE the producer and hand pipefail a kill-by-signal status where a verdict belongs"
+green_case "every one of the $pq_examined pipes into grep found across the $pq_files_seen files scanned — the entire shipped inventory plus all $pq_suite_seen files of the suite, both WALKED by the same two discoveries rather than named by a glob — reads its input to EOF, and none carries a -q whose early exit could SIGPIPE the producer and hand pipefail a kill-by-signal status where a verdict belongs"
 
 # The RED twin, on the same two functions. The fixture also carries the shape
 # INSIDE A COMMENT, because this repository documents this exact hazard in
@@ -2885,19 +3238,24 @@ red_case "INV-15's early-exit derivation reported a gate written as a producer p
   # kill, and a matcher that could not tell this from a pipe would report a
   # shipped invariant gate that is correct as written.
   printf 'is_recorded "$id" || %s "^recorded$" "$ledger"\n' "$pq_q"
+  # A `[` comparison, not a grep flag. `-eq` is a dash followed by letters
+  # with a `q` among them, and the suite is full of this line: a matcher that
+  # read it as `grep -q` would report the safest shape there is -- a count read
+  # to EOF -- and could never be satisfied by an honest test file.
+  printf '[ "$(list_them | grep -c "^x")" -eq 0 ] || die "none"\n'
 } > "$PQ_FIXTURES/gate-without-a-race"
 
 pq_ok_out="$(piped_early_exit_grep "$PQ_FIXTURES/gate-without-a-race")"
 [ -z "$pq_ok_out" ] \
-  || fail "INV-15: a read-to-EOF pipe (-v, -c, a bare -E), a grep -q fed from a herestring, or a grep -q on the right of a logical OR was reported anyway ($pq_ok_out) — none of the three can SIGPIPE a producer, and a scan that flagged them would flag the shipped tree and could never be satisfied"
+  || fail "INV-15: a read-to-EOF pipe (-v, -c, a bare -E), a grep -q fed from a herestring, a grep -q on the right of a logical OR, or a piped grep -c whose count is compared with [ ... -eq 0 ] was reported anyway ($pq_ok_out) — none of the four can SIGPIPE a producer, and a scan that flagged them would flag the shipped tree and could never be satisfied"
 pq_ok_seen=0
 while IFS= read -r pq_line; do
   [ -n "$pq_line" ] || continue
   pq_ok_seen=$((pq_ok_seen + 1))
 done < <(piped_grep_lines "$PQ_FIXTURES/gate-without-a-race")
-[ "$pq_ok_seen" -ge 3 ] \
-  || fail "INV-15: only $pq_ok_seen of the accepting fixture's three piped greps were EXAMINED at all, so leaving them unflagged demonstrates nothing about the flag test — it demonstrates the pipe matcher missing them"
-green_case "the accepting fixture's three read-to-EOF pipes were all examined and none was flagged, and neither the herestring-fed grep -q beside them nor the grep -q on the right of a logical OR was, so the report above discriminates by early exit rather than by the presence of a pipe or of two adjacent pipe characters"
+[ "$pq_ok_seen" -ge 4 ] \
+  || fail "INV-15: only $pq_ok_seen of the accepting fixture's four piped greps were EXAMINED at all, so leaving them unflagged demonstrates nothing about the flag test — it demonstrates the pipe matcher missing them"
+green_case "the accepting fixture's four read-to-EOF pipes were all examined and none was flagged — including the piped grep -c whose count is compared with [ ... -eq 0 ], the shape the suite spells everywhere and a looser flag matcher reads as a grep -q — and neither the herestring-fed grep -q beside them nor the grep -q on the right of a logical OR was flagged either, so the report above discriminates by early exit rather than by the presence of a pipe, of two adjacent pipe characters, or of a dash-letters-q word anywhere on the line"
 
 # ===========================================================================
 # 6 -- A GATE REACHED ONLY AFTER THE FIRST WRITE IS REACHED TOO LATE.
@@ -4704,17 +5062,17 @@ green_case "the same fixture ledger, once a run of the SHIPPED file that really 
 # 11 -- the boundaries of what any of this proves.
 # ===========================================================================
 not_tested "gate-omission-beyond-the-five-families" \
-  "enforcement gates outside the five this file derives — the static sections of scripts/ci-local.sh, the files tests/helpers.sh enrols in the red-case rule (by location under tests/inv/ and by name in PROOF_ENROLLED_FILES), the stale-root guard's reach across every shipped file that loads lib/common.sh, the early-exit matcher shape across the shipped kernel, the bundled plugins and those same gate files, and the enrolment contract of section 10 — the requirement that every shipped entry point whose gate placement only a run can settle has been run here, out of a genuinely stale root, and observed to refuse. A gate that is none of those (a check living only inside one verb, a hook a plugin installs) is held to the same rule by review. What makes the five checkable is that each has a DISCOVERABLE membership: a banner, a glob plus the array beside it, a source line, a syntactic shape, and — for the fifth — a machine-local trust decision paired with a firing site, derived from the same walked inventory as the third. Three of the five are now derived over an inventory that is WALKED rather than listed, so 'which directories does this look in' has stopped being a question anybody has to keep answering; the other two are bounded by tests/inv/ and by scripts/ci-local.sh, which are the files those gates live in. A new gate family belongs here the moment its membership becomes derivable"
+  "enforcement gates outside the five this file derives — the static sections of scripts/ci-local.sh, the files tests/helpers.sh enrols in the red-case rule (by location under tests/inv/ and by name in PROOF_ENROLLED_FILES), the stale-root guard's reach across every shipped file that loads lib/common.sh, the early-exit matcher shape across the shipped kernel, the bundled plugins and every file under tests/, and the enrolment contract of section 10 — the requirement that every shipped entry point whose gate placement only a run can settle has been run here, out of a genuinely stale root, and observed to refuse. A gate that is none of those (a check living only inside one verb, a hook a plugin installs) is held to the same rule by review. What makes the five checkable is that each has a DISCOVERABLE membership: a banner, a glob plus the array beside it, a source line, a syntactic shape, and — for the fifth — a machine-local trust decision paired with a firing site, derived from the same walked inventory as the third. Three of the five are now derived over an inventory that is WALKED rather than listed — and the fourth, the early-exit matcher, over the same walk of the suite half of the same tree — so 'which directories does this look in' has stopped being a question anybody has to keep answering; the one that remains bounded is section 1's, by scripts/ci-local.sh, which is the file that gate lives in. A new gate family belongs here the moment its membership becomes derivable"
 not_tested "section-reachability-beyond-definitions-and-dead-code" \
   "whether a test-script call section 1 credits a late section for is reached on the run that matters, beyond the two shapes that derivation decides: a call inside a column-0 function definition the section never invokes, and a call below an unconditional column-0 exit. Both are decidable from the file alone and both are pinned with a one-line twin that must NOT be reported. What is not decided is a call under a guard — an if, a case arm, a loop over a list that can be empty — which is credited as reached, because deciding otherwise means evaluating the guard rather than reading the file. The shipped file's late sections are of exactly that kind (one runs the suite unconditionally, one loops over a glob), so the residual runs in the direction of CREDITING a section, the same direction as the comment-stripper's: a check that never actually runs a test would be excused from the merge floor rather than a real one dragged into it. Two structural shapes are outside it as well. A function defined or closed at an indent — this repository writes neither — is read as ordinary code, so a call in its body would be credited to whatever section encloses it; and a definition the walk never sees closed swallows every line after it, which is reported as unjudgeable rather than passed, because a scan that stopped reading must not answer clean. The question this derivation answers is the one a comment-stripper cannot: is the call one the shell would ever arrive at, or is it text with a shell's blessing"
 not_tested "gate-reach-into-code-that-arms-nothing" \
   "shipped code that executes out of \$ORCHID_ROOT without loading lib/common.sh at all. Section 4's universe is every file in the shipped inventory that SOURCES the library — and that inventory is now a WALK of the tree (Git's tracked-plus-untracked set in a checkout, a filesystem walk in an extracted archive) rather than a list of directory families, with tests/ and Markdown the two declared exclusions, so a loader under a directory nobody has thought of is inside it — because sourcing the library is what arms the guard and the question this file asks is whether what was armed is fired. A helper that runs kernel code some other way — a plugin's notify sender that shells to the orchid dispatcher rather than sourcing it, a hook script, anything reached through a subprocess — arms nothing here, so it is neither reported nor cleared. The subprocess case is the benign half: whatever it invokes is itself in the universe and fires the gate on its own account. The case that is not covered is a file that reads and acts on \$ORCHID_ROOT's contents directly without loading the library, which no shipped file does today and which this derivation would not notice arriving"
 not_tested "firing-site-reachability-within-an-entry-point" \
-  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the ones sections 4, 6, 8 and 9 execute — which, since section 10, is every member of the derived candidate set plus install.sh, stated as a contract rather than as a count that goes stale the day the set grows. Section 4 is textual in that one respect by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call -- or runs past it BEFORE that work -- which it cannot. (What section 4 no longer takes on trust is the OTHER half of that question, whether a call it found fires anything where the file lives: that is answered by running a stub at the file's own path out of a genuinely stale root, so a firing site that is inert at that location is reported rather than counted.) Section 6 answers both questions for runners/orchid-pump and runners/orchid-tick, section 8 for libexec/orchid-trust and for runners/orchid-service, and section 9 for libexec/orchid-doctor and for libexec/orchid-status — the latter on BOTH its arms, because its lookup runs only under --explain and plain status reaches the identical firing site having decided nothing, which is the one place a line-order reading of a file and a reading of its runs come apart — each by running the entry point and weighing its refusal against a side effect — a write, a report, or a verdict — that really does happen otherwise; that is every member of the set section 4 derives, which section 10 is what makes true rather than a coincidence of who ran what, and section 4 executes one more from OUTSIDE that set — install.sh, the top-level installer, run out of a genuinely stale root with the prefix symlink and the per-user plugin directory as the witnesses, because the only kernel check that file ever carried is its closing doctor run and that one is skipped in exactly the self-hosted shape this refusal is for. Section 6 is also where the ROUTE half of the question is put rather than only the file half: both scheduled runners answer an uninitialised, split-brain or finished repository above their trust gate and leave, and those routes had no fire on them at all, which no scan of either file could have said, because the call is in the text. All four of those verdicts are RUN, each on its own target: an uninitialised directory, a split-brain checkout built to trip a different predicate from the other two, and a finished run put to both runners. Three routes clearing a gate says nothing about a fourth, so none of them is argued from the others. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally on the route to its own work, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no ACTING arm that could forget; section 8 runs its status arm out of a stale root and requires the refusal to land ahead of the report, which is the half a scan of that file cannot answer. libexec/orchid-trust is the one that fires PER SUBCOMMAND, because what the gate must precede is per subcommand, and no ACTING arm of it is exempt any longer: the lookup arm carried an exemption for writing nothing durable, that exemption is gone, and section 8 executes both the acknowledgement, whose side effect is the record it writes, and the lookup, whose side effect is the report an operator acts on. What both files DO have above the call is the usage arm -- -h, --help, help, a bare invocation -- and that is the one route through either of them on which this gate does not fire. It is not left as an omission in one and a decision in the other: section 8 runs both verbs' usage arms out of the same stale root that refuses their acting arms, so the exemption is measured, bounded to the arm that resolves no target and reads no record, and identical in the two files. What is not tested is the claim UNDER it -- that a usage text can never carry anything an operator acts on about a repository -- which is an argument about the content of two here-documents rather than about an ordering, and belongs to review. Section 8 does not run the third arm, revocation; section 9 does, on the self-hosted target, and what is left untested there is narrower than the arm. Its ordering cannot be read off a trace: revocation walks no history by design, so its machine-local half — the bounded identity derivation that decides which record would be unlinked — spends no Git in any environment, and there is no position for an observer to measure. Section 9 measures the two halves that can be: the arm spends no target query of its own at all, so the gate's comparison is the only Git in a refused run and nothing precedes it; and the ORDER is pinned on the report edge instead, since an underivable identity is a diagnosis about the target and out of a stale root it must not be produced. What that leaves untested is the ordering between the derivation and the gate on the route where the derivation SUCCEEDS, which no instrumentation in this file can see. So a trust subcommand added tomorrow that acts and forgets the call is caught by nothing: section 4 sees the file's other call sites and is satisfied, and sections 8 and 9 only ever asked about the arms they run. The ARM is where that loss is now, and it is worth being exact about what section 10 did and did not close. A new ENTRY POINT in the derived class is no longer a proof nobody thought to write: the contract requires that this file ran it out of a genuinely stale root and saw it refuse, so it cannot be enrolled on paper and enforced nowhere. What the contract does not do is decide WHICH route was taken or what had already happened when the refusal landed — that is the per-route weighing sections 6, 8 and 9 do, against a write, a report or a verdict that really happens otherwise, and it is authored per entry point because the side effect worth measuring is different in each. So the contract makes the omission impossible and leaves the ROUTE to the author and to review; the two questions to put to a new one are the ones sections 4, 6, 8 and 9 put to the set they cover: on which route is your gate not reached, and what have you already done by the time it is"
-not_tested "early-exit-matchers-outside-the-kernel-and-the-invariant-gates" \
-  "the rest of tests/. Section 5's glob is the repository top level, the shipped kernel, the bundled plugins and tests/inv/test_*.sh, and the last of those was added because an invariant gate deciding its verdict by a race is the same defect the section scans the kernel for. The other test files carry the shape too, in the hundreds, and they are not covered here: converting them is a mechanical sweep of a different size, and the argument for taking the gates first is that a wrong answer there is a wrong answer about the kernel, whereas a wrong answer in a feature test is a flaky test somebody re-runs. The tell is unchanged wherever it appears, and the direction that costs is the negative assertion: a producer piped into an early-exiting grep, then '&& fail', is skipped exactly when the pattern is present. Spelled in words rather than in code, here and in the failure message above, because these two lines are not comments: this file is inside the glob it runs, so a literal instance of the shape on a line of its own prose is a violation of this invariant reported against this file — which is the right answer, and the reason the wording works around it"
+  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the ones sections 4, 6, 8 and 9 execute — which, since section 10, is every member of the derived candidate set plus install.sh, stated as a contract rather than as a count that goes stale the day the set grows. Section 4 answers three of the four halves of that question and is honest about the fourth. WHETHER THE CALL IS EVER REACHED AT ALL is no longer read off the text: the same reachability walk section 1 uses decides it, so a call inside a function body nothing invokes and a call below an unconditional column-0 exit are both reported rather than counted, transitively through helpers that helpers call, with a RED fixture for each dead shape and a one-line twin for each live one. WHETHER A CALL IT FOUND FIRES ANYTHING WHERE THE FILE LIVES is answered by running a stub at the file's own path out of a genuinely stale root, so a firing site that is inert at that location is reported. What remains textual is the ROUTE: whether every path to that file's own work runs past the call, and runs past it BEFORE that work, which no reading of a file can answer and which sections 6, 8, 9 and 10 answer by running it. Three narrower shapes are the reachability walk's own boundary, all in the direction of REPORTING a file that does fire -- a loud failure somebody fixes -- rather than clearing one that does not: a call under a guard false at run time counts as reached (deciding otherwise means evaluating the guard, and the shipped calls are unconditional); a call reached other than as a line's leading word -- 'if fire_it; then', a call inside a command substitution -- is not seen as a call, which no shipped loader relies on; and a token inside a here-document body is read as code, which over-credits, and is the one of the three that runs the other way. Section 6 answers both questions for runners/orchid-pump and runners/orchid-tick, section 8 for libexec/orchid-trust and for runners/orchid-service, and section 9 for libexec/orchid-doctor and for libexec/orchid-status — the latter on BOTH its arms, because its lookup runs only under --explain and plain status reaches the identical firing site having decided nothing, which is the one place a line-order reading of a file and a reading of its runs come apart — each by running the entry point and weighing its refusal against a side effect — a write, a report, or a verdict — that really does happen otherwise; that is every member of the set section 4 derives, which section 10 is what makes true rather than a coincidence of who ran what, and section 4 executes one more from OUTSIDE that set — install.sh, the top-level installer, run out of a genuinely stale root with the prefix symlink and the per-user plugin directory as the witnesses, because the only kernel check that file ever carried is its closing doctor run and that one is skipped in exactly the self-hosted shape this refusal is for. Section 6 is also where the ROUTE half of the question is put rather than only the file half: both scheduled runners answer an uninitialised, split-brain or finished repository above their trust gate and leave, and those routes had no fire on them at all, which no scan of either file could have said, because the call is in the text. All four of those verdicts are RUN, each on its own target: an uninitialised directory, a split-brain checkout built to trip a different predicate from the other two, and a finished run put to both runners. Three routes clearing a gate says nothing about a fourth, so none of them is argued from the others. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally on the route to its own work, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no ACTING arm that could forget; section 8 runs its status arm out of a stale root and requires the refusal to land ahead of the report, which is the half a scan of that file cannot answer. libexec/orchid-trust is the one that fires PER SUBCOMMAND, because what the gate must precede is per subcommand, and no ACTING arm of it is exempt any longer: the lookup arm carried an exemption for writing nothing durable, that exemption is gone, and section 8 executes both the acknowledgement, whose side effect is the record it writes, and the lookup, whose side effect is the report an operator acts on. What both files DO have above the call is the usage arm -- -h, --help, help, a bare invocation -- and that is the one route through either of them on which this gate does not fire. It is not left as an omission in one and a decision in the other: section 8 runs both verbs' usage arms out of the same stale root that refuses their acting arms, so the exemption is measured, bounded to the arm that resolves no target and reads no record, and identical in the two files. What is not tested is the claim UNDER it -- that a usage text can never carry anything an operator acts on about a repository -- which is an argument about the content of two here-documents rather than about an ordering, and belongs to review. Section 8 does not run the third arm, revocation; section 9 does, on the self-hosted target, and what is left untested there is narrower than the arm. Its ordering cannot be read off a trace: revocation walks no history by design, so its machine-local half — the bounded identity derivation that decides which record would be unlinked — spends no Git in any environment, and there is no position for an observer to measure. Section 9 measures the two halves that can be: the arm spends no target query of its own at all, so the gate's comparison is the only Git in a refused run and nothing precedes it; and the ORDER is pinned on the report edge instead, since an underivable identity is a diagnosis about the target and out of a stale root it must not be produced. What that leaves untested is the ordering between the derivation and the gate on the route where the derivation SUCCEEDS, which no instrumentation in this file can see. So a trust subcommand added tomorrow that acts and forgets the call is caught by nothing: section 4 sees the file's other call sites and is satisfied, and sections 8 and 9 only ever asked about the arms they run. The ARM is where that loss is now, and it is worth being exact about what section 10 did and did not close. A new ENTRY POINT in the derived class is no longer a proof nobody thought to write: the contract requires that this file ran it out of a genuinely stale root and saw it refuse, so it cannot be enrolled on paper and enforced nowhere. What the contract does not do is decide WHICH route was taken or what had already happened when the refusal landed — that is the per-route weighing sections 6, 8 and 9 do, against a write, a report or a verdict that really happens otherwise, and it is authored per entry point because the side effect worth measuring is different in each. So the contract makes the omission impossible and leaves the ROUTE to the author and to review; the two questions to put to a new one are the ones sections 4, 6, 8 and 9 put to the set they cover: on which route is your gate not reached, and what have you already done by the time it is"
+not_tested "early-exit-matchers-outside-the-walked-tree" \
+  "documents, and a flag written after grep's pattern. The whole of tests/ used to stand here: section 5's subject was the shipped tree plus tests/inv/test_*.sh, the gates were taken first because a wrong answer there is a wrong answer about the kernel, and the rest of the suite carried the shape in the hundreds. It is no longer a list — the suite is discovered by the same walk over the same tree with a second admit predicate, so every file under tests/ is scanned and a test file written tomorrow is covered without anyone widening anything. What the predicate still declines is what the shipped one declines: a Markdown document, because prose is not executed and this repository quotes the hazard in its own docs. Inside the scanned files two spellings remain outside the matcher. A grep whose q reaches it AFTER the pattern — 'grep pat -q' — is not read as an early exit, because the flag is looked for in the run of option words that follows grep, which is what stops '[ \"\$(producer | grep -c pat)\" -eq 0 ]' from being reported as one; no file in this tree spells it the other way, and the accepting fixture pins that discrimination in both directions. And a second grep further right on the same line is judged by the same test as the first, which over-reports rather than under-reports. The tell is unchanged wherever it appears, and the direction that costs is the negative assertion: a producer piped into an early-exiting grep, then '&& fail', is skipped exactly when the pattern is present. Spelled in words rather than in code, here and in the failure message above, because these two lines are not comments: this file is inside the walk it runs, so a literal instance of the shape on a line of its own prose is a violation of this invariant reported against this file — which is the right answer, and the reason the wording works around it"
 not_tested "early-exit-matchers-other-than-grep-q" \
-  "producers killed by an early-exiting consumer that is not grep -q. A head -n1, a sed -n 1q, and a bare read in a pipeline all stop reading before their input ends and all SIGPIPE upstream the same way; section 5 derives exactly one consumer because that is the one the shipped tree used, and the sites that pipe into head today discard the status with an explicit fallback rather than branching on it. The tell is the same wherever it appears: a pipeline under set -o pipefail whose right-hand side can stop reading first, so its exit status may be the producer's death rather than the matcher's verdict"
+  "producers killed by an early-exiting consumer that is not grep -q. A head -n1, a sed -n 1q, and a bare read in a pipeline all stop reading before their input ends and all SIGPIPE upstream the same way; section 5 derives exactly one consumer because that is the one the shipped tree and the suite used, and the sites that pipe into head today discard the status with an explicit fallback rather than branching on it. The tell is the same wherever it appears: a pipeline under set -o pipefail whose right-hand side can stop reading first, so its exit status may be the producer's death rather than the matcher's verdict"
 not_tested "recorder-evidence-for-the-shipped-gates-inside-this-file" \
   "whether each SHIPPED enrolled file's own red_case and green_case calls run, observed HERE. Section 2 runs every one of them against a stub helpers.sh and requires the load to be REACHED, which costs one bash startup apiece and says the enforcement is installed; the recorder evidence itself is collected where those files actually run — tests/run.sh, per file, out of the receipt the recorder writes as it runs — and what is proved here is that the runner DEMANDS it, at both enrolment depths, against gate files that differ from their twins in nothing else. Re-running the shipped gates inside this file until each reached its first recorded case would mean partially executing every gate in the tree, this one included, and would say nothing the suite run around it does not already say. Two consequences are the boundary rather than a hole in it. A gate file run with no parent naming a receipt — a lone invocation, or scripts/ci-local.sh's per-file rehearsal of the invariant gates — is held by the EXIT trap alone, which is the trap it may have replaced; and a file that never reaches helpers.sh declares no enrolment at all, which is why the reachability probe above is the half that must stay and why the runner ALSO requires a receipt from everything it launches out of tests/inv/, whatever the child declared"
 not_tested "recorded-label-integrity-outside-the-invariant-gates" \

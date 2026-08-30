@@ -105,7 +105,7 @@ assert_match "repo-local plugins.*trust" "$out" "repo-local plugin note"
 git add -A && git commit -q -m "fixture: engines + config"
 init_out="$("$ORCHID_BIN" init)"
 git rev-parse --verify -q orchid/integration >/dev/null || fail "integration branch"
-git show orchid/integration:.orchid/roadmap.md | grep -q "run_status: planning" || fail "roadmap committed with run_status"
+grep -q "run_status: planning" <<<"$(git show orchid/integration:.orchid/roadmap.md)" || fail "roadmap committed with run_status"
 assert_match "integration branch: orchid/integration" "$init_out" "init prints the integration branch name"
 assert_match "git worktree add \.\./$(basename "$WORK")-orchid orchid/integration && cd \.\./$(basename "$WORK")-orchid" "$init_out" "init prints the exact worktree hint command"
 out1="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || fail "doctor passes post-init"
@@ -394,7 +394,7 @@ printf 'v2: the edit in progress\n' > "$rem_wt/requirements.md"
 printf 'live run state\n' > "$rem_wt/.orchid/live-state.md"
 [ -n "$(git -C "$rem_wt" diff --cached --name-status | grep '^D')" ] \
   || fail "remedy fixture setup: $rem_wt must show the stale-checkout D-row signature"
-git -C "$rem_wt" diff --cached --name-status | grep -qE '^D[[:space:]]+\.orchid/' \
+grep -qE '^D[[:space:]]+\.orchid/' <<<"$(git -C "$rem_wt" diff --cached --name-status)" \
   || fail "remedy fixture setup: the advance must leave a staged deletion UNDER .orchid/, or this Part tests nothing"
 
 # RED -- the half the old text printed, alone. It restores the code, and it
@@ -480,7 +480,7 @@ cfg_commit_out="$(ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$MACHINE
 assert_match "^committed: " "$cfg_commit_out" "config commit prints the new commit sha"
 
 # The edited config landed on the integration branch...
-git -C "$cfg_bare" show orchid/integration:orchid.config | grep -q "^role.implementer=fake$" \
+grep -q "^role.implementer=fake$" <<<"$(git -C "$cfg_bare" show orchid/integration:orchid.config)" \
   || fail "config commit lands the edited orchid.config on the integration branch"
 # ...and EXACTLY orchid.config -- the stray staged deletion never rode along:
 # elsewhere.txt must still exist at the new HEAD, untouched.

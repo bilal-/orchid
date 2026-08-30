@@ -166,7 +166,7 @@ assert_match "orchid plugins test upd implementer" "$out" "stale-capsuite note n
 # capsuite result went stale when nothing about the plugin's content did.
 out="$(HOME="$homeF" ORCHID_REPO="$repoF" "$ORCHID_BIN" plugins update upd)"; rc=$?
 assert_eq 0 "$rc" "a second, no-op update (unchanged source) still succeeds"
-if echo "$out" | grep -q stale; then
+if grep -q stale <<<"$out"; then
   fail "update must not print a stale-capsuite note when installed_digest did not actually change"
 fi
 
@@ -233,7 +233,7 @@ destK="$homeK/.orchid/plugins/engines/sigcheck"
 
 out="$(HOME="$homeK" ORCHID_REPO="$repoK" "$ORCHID_BIN" plugins audit sigcheck)"; rc=$?
 assert_eq 0 "$rc" "audit succeeds before any provenance tamper"
-if echo "$out" | grep -q TAMPERED; then
+if grep -q TAMPERED <<<"$out"; then
   fail "audit must not report TAMPERED before source=/ref= have been touched"
 fi
 

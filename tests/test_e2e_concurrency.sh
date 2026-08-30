@@ -24,7 +24,7 @@ reconcile_until_ok() {
   local task="$1" tries=0 out=""
   while [ "$tries" -lt 50 ]; do
     out="$("$ORCHID_BIN" jobs reconcile)"
-    if printf '%s\n' "$out" | grep -Eq "^${task}[[:space:]]ok"; then
+    if grep -Eq "^${task}[[:space:]]ok" <<<"$out"; then
       printf '%s\n' "$out"
       return 0
     fi
@@ -47,8 +47,8 @@ reconcile_until_both() {
     tick="$("$ORCHID_BIN" jobs reconcile)"
     acc="$acc
 $tick"
-    if printf '%s\n' "$acc" | grep -Eq "^${t1}[[:space:]]ok" && \
-       printf '%s\n' "$acc" | grep -Eq "^${t2}[[:space:]]ok"; then
+    if grep -Eq "^${t1}[[:space:]]ok" <<<"$acc" && \
+       grep -Eq "^${t2}[[:space:]]ok" <<<"$acc"; then
       printf '%s\n' "$acc"
       return 0
     fi

@@ -6221,16 +6221,16 @@ infra_failures: 0
 
 assert_eq 3 "$(drive_failure_lines "$ATT_BODY" | grep -c .)" \
   "exactly three of those seven lines report a failure — the count is what decides whether a hand-off explains the whole round, so both over- and under-counting decide rounds wrongly"
-if ! drive_failure_lines "$ATT_BODY" | grep -Fq "1 failed"; then
+if ! grep -Fq "1 failed" <<<"$(drive_failure_lines "$ATT_BODY")"; then
   fail "a lower-case 'failed' summary IS a failure line: missing it is the direction that laundered a real defect beside an attributed hand-off, which is the whole reason this check exists"
 fi
-if drive_failure_lines "$ATT_BODY" | grep -Fq "infra_failures"; then
+if grep -Fq "infra_failures" <<<"$(drive_failure_lines "$ATT_BODY")"; then
   fail "and orchid's own 'infra_failures:' counter is NOT one — the word boundary excludes '_' exactly so a line orchid itself prints in status output cannot leave every round with an unexplained failure"
 fi
-if drive_failure_lines "$ATT_BODY" | grep -Fq "test_failover"; then
+if grep -Fq "test_failover" <<<"$(drive_failure_lines "$ATT_BODY")"; then
   fail "the runner's own progress line for tests/test_failover.sh must not read as a failure: a failure oracle that fires on every run leaves an unexplained line in EVERY round, and no hand-off is ever waived again"
 fi
-if ! drive_failure_lines "$ATT_BODY" | grep -Fq "Permission denied"; then
+if ! grep -Fq "Permission denied" <<<"$(drive_failure_lines "$ATT_BODY")"; then
   fail "and a raw shell refusal IS a failure line: an unexplained refusal about some other path is something this round must be charged for"
 fi
 

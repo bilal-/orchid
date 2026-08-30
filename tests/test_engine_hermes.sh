@@ -335,6 +335,6 @@ case "$summary_val" in *'[hb '*) fail "heartbeat stub: a heartbeat line leaked i
 # --- 16. `orchid plugins conform plugins/engines/hermes` -> 7/7 (DRYRUN
 # only; never spends real quota, never shells to the real hermes CLI). ------
 conform_out="$("$REPO_ROOT/bin/orchid" plugins conform "$REPO_ROOT/plugins/engines/hermes" 2>&1)"
-rc=0; printf '%s\n' "$conform_out" | grep -q '^7/7 checks passed$' || rc=1
+rc=0; grep -q '^7/7 checks passed$' <<<"$conform_out" || rc=1
 [ "$rc" -eq 0 ] || fail "plugins conform plugins/engines/hermes: expected 7/7, got:
 $conform_out"

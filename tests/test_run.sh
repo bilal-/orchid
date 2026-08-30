@@ -161,7 +161,7 @@ assert_match "L001" "$carry_out" "the refusal names the lesson run new carried f
   || fail "plan defer records the decision on a carried-forward lesson"
 "$ORCHID_BIN" plan apply --reason "second plan" || fail "plan apply works on the fresh run"
 assert_eq "running" "$(grep '^run_status: ' .orchid/roadmap.md | cut -d' ' -f2)" "plan apply advances the fresh run to running"
-git -C "$bare" log --format=%s -1 "orchid/integration" | grep -q "plan apply" \
+grep -q "plan apply" <<<"$(git -C "$bare" log --format=%s -1 "orchid/integration")" \
   || fail "plan apply's commit landed on the integration branch"
 
 # ===========================================================================
@@ -224,7 +224,7 @@ post_bare_integ="$(git -C "$bare" rev-parse orchid/integration)"
 [ "$post_bare_integ" != "$pre_bare_integ" ] || fail "run accept must advance the integration branch"
 assert_eq "orchid: run accepted (r-002)" "$(git -C "$bare" log -1 --format=%s orchid/integration)" \
   "run accept commit message names the current run id"
-git -C "$bare" show "orchid/integration:.orchid/roadmap.md" | grep -q "run_status: complete" \
+grep -q "run_status: complete" <<<"$(git -C "$bare" show "orchid/integration:.orchid/roadmap.md")" \
   || fail "run accept's commit shows run_status complete"
 git -C "$bare" show "orchid/integration:.orchid/tasks/T011.md" >/dev/null 2>&1 \
   || fail "run accept commits ALL durable .orchid/ state -- T011.md was never committed via plan apply"

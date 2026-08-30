@@ -22,7 +22,7 @@ reconcile_until_ok() {
   local task="$1" tries=0 out=""
   while [ "$tries" -lt 50 ]; do
     out="$("$ORCHID_BIN" jobs reconcile)"
-    if printf '%s\n' "$out" | grep -Eq "^${task}[[:space:]]ok"; then
+    if grep -Eq "^${task}[[:space:]]ok" <<<"$out"; then
       "$ORCHID_BIN" jobs gc --older-than-s 0 >/dev/null
       printf '%s\n' "$out"
       return 0
@@ -275,4 +275,4 @@ git merge-base --is-ancestor "$cand1" "$integ" \
 
 final_explain="$("$ORCHID_BIN" status --explain)"
 assert_match "T001[[:space:]]done[[:space:]].*-$" "$final_explain" "status --explain: T001 done, clean"
-echo "$final_explain" | grep -qi "blocked\|FAIL" && fail "final status --explain must be clean"
+grep -qi "blocked\|FAIL" <<<"$final_explain" && fail "final status --explain must be clean"
