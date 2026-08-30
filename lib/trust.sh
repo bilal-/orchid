@@ -1926,11 +1926,44 @@ unattended_trust_acknowledge() {
 # Git command, walks no history, reads no object, and creates no scratch file,
 # so an unrelated record cannot be selected and repository state cannot make
 # removal expensive. Trust-granting decisions keep their full verification.
+#
+# SPLIT IN TWO for the reason unattended_trust_show is split from
+# unattended_trust_show_loaded: a caller which is ITSELF a trust boundary has
+# to be able to put something between the machine-local decision and the thing
+# that decision authorizes. `orchid trust revoke` is that caller, and what it
+# puts between them is the stale-root gate -- whose index comparison, when the
+# target is the self-hosted Orchid checkout this verb was invoked out of, is a
+# query against the target repository. The composed function below is
+# unchanged for every other caller.
 unattended_trust_revoke() {
-  local repo="$1" removed=0
-  _unattended_trust_reset
-  _unattended_trust_identity_discover "$repo" \
+  unattended_trust_revoke_resolve "$1" \
     || orchid_die "cannot revoke unattended trust: $ORCHID_UNATTENDED_DETAIL"
+  unattended_trust_revoke_loaded
+}
+
+# unattended_trust_revoke_resolve <repo> -- decide WHICH record is this
+# repository's, and nothing else. Returns non-zero with
+# ORCHID_UNATTENDED_DETAIL set when no identity can be derived safely; the
+# caller owns whether that becomes a diagnosis or is held behind a gate.
+#
+# This is the whole of revocation's machine-local decision, and it really is a
+# decision rather than a formality: it resolves the trust store, the
+# common-directory device/inode key, and therefore the exact record path the
+# removal below will unlink. It spends no Git, reads no object and creates no
+# scratch file (tests/test_unattended_trust.sh's fast-guard fence measures
+# exactly that), which is what lets it run ahead of a gate that must not query
+# the target before an acknowledgement has been looked for.
+unattended_trust_revoke_resolve() {
+  _unattended_trust_reset
+  _unattended_trust_identity_discover "$1"
+}
+
+# unattended_trust_revoke_loaded -- remove the record and anchor a preceding
+# unattended_trust_revoke_resolve named. Returns zero when something was
+# removed and non-zero when there was nothing to remove, so an idempotent
+# revocation can say which it was. This is the durable half.
+unattended_trust_revoke_loaded() {
+  local removed=0
 
   # Only the outside link is Orchid state. Removing it leaves Git's existing
   # common-directory witness and its contents untouched.
@@ -1959,10 +1992,26 @@ unattended_trust_revoke() {
 # gate — so without a machine-local copy the operator sees a service that runs
 # on time and silently does nothing. Interactive callers already print the same
 # text to the caller's terminal and do not write the log.
+#
+# Split from unattended_trust_require_loaded for the reason the show and
+# revoke pairs are split: an entry point that is itself a trust boundary has to
+# be able to put its own stale-root gate between the machine-local decision and
+# what that decision authorizes -- and a scheduled runner must not pay for the
+# root walk twice to get it. Callers with nothing to interleave keep using this
+# one.
 unattended_trust_require() {
+  unattended_trust_inspect "$1"
+  unattended_trust_require_loaded "$@"
+}
+
+# unattended_trust_require_loaded <repo> <surface> [scheduled] -- the deciding
+# and reporting half, for a caller that has already run
+# unattended_trust_inspect on the same repository and has not written to the
+# machine-local store since. <repo> is still taken, because the refusal names
+# the target the operator would have to acknowledge.
+unattended_trust_require_loaded() {
   local repo="$1" surface="${2:-unattended execution}" scheduled="${3:-}"
   local repo_q refusal_log=""
-  unattended_trust_inspect "$repo"
   [ "$ORCHID_UNATTENDED_STATE" = trusted ] && return 0
   if [ "$scheduled" = scheduled ]; then
     _unattended_capture_line refusal_log \

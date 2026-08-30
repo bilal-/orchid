@@ -254,8 +254,11 @@ Three reasons the unattended acknowledgement is the wrong instrument here.
   undrivable, closable only by remembering to revoke.
 - **It would gate one command and leave its neighbour open.**
   `unattended_trust_require` guards exactly three surfaces — the pump, a direct
-  tick, and service installation — because nobody is in front of those. `orchid
-  verify` executes repository-supplied commands too — the task's
+  tick, and service installation — because nobody is in front of those. (The
+  two scheduled runners call its `_loaded` half, which decides and reports on
+  an inspection they made earlier so their own stale-root gate could fire
+  between the two; the surfaces are the same three.)
+  `orchid verify` executes repository-supplied commands too — the task's
   `verification_commands`, or this same `orchid.config` `verify=` as its
   fallback — in the foreground, and asks for nothing. Gating qualification but
   not `orchid verify`

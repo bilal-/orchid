@@ -1655,13 +1655,28 @@ and out of a stale checkout that report is produced by the pre-merge code.
 Writing nothing durable is not the same as having nothing to protect.
 
 That leaves the unattended-trust contract untouched, which is what the old
-exemption was written for. What the contract forbids is Git spent on *the
-repository under inspection* before an acknowledgement for it has been found.
-This refusal spends none: it compares orchid's own installation root against
-its own `HEAD`, never the repository you asked about, and it spends even that
-only from a root parked on the integration branch. As everywhere else on this
-page, the way through is `ORCHID_ALLOW_STALE_ROOT=1` in front of the one
-command, so what you are about to read is knowably the stale kernel's answer.
+exemption was written for — but not for the reason this page used to give.
+What the contract forbids is Git spent on *the repository under inspection*
+before an acknowledgement for it has been found. This refusal compares orchid's
+own installation root against its own `HEAD`, and it spends even that only from
+a root parked on the integration branch. It used to say here that the root is
+*never* the repository you asked about, and that is not true of orchid, which is
+self-hosted. `ORCHID_ROOT` is not where you are standing; it is the installation
+the verb resolved from its own path. Run a separately installed `orchid` against
+a checkout and the two really are different directories — that is nearly every
+invocation, and it is why the claim went unchallenged. But run a checkout's own
+`bin/orchid` against that same checkout — orchid developing and driving itself,
+`orchid doctor` on its own tree, that tree named to its own `orchid trust show`
+or `orchid trust revoke` — and the root *is* the target, so that comparison is a
+query against it.
+
+So the order is what keeps the contract, not the choice of directory: each of
+those verbs makes its machine-local trust decision **first** and fires the
+stale-root gate **second**, both still ahead of anything it prints or removes.
+`show` looks the acknowledgement up; `revoke` derives the identity of the record
+it would remove, which costs no Git either. As everywhere else on this page, the
+way through is `ORCHID_ALLOW_STALE_ROOT=1` in front of the one command, so what
+you are about to read is knowably the stale kernel's answer.
 
 The reason is not consistency for its own sake. **A diagnosis read out of a
 stale checkout is produced by the stale code.** `orchid doctor` here runs the

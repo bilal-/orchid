@@ -453,10 +453,21 @@ buying a fresh implementation pass to reach the same tree.
     the instant this library finishes loading, and a trust-boundary entry
     point fires it once its authorization decision is made — at its operator
     PATH restore, or earlier through `orchid_root_stale_gate` where that
-    restore would sit past the entry point's first write, which is where
-    `runners/orchid-pump` and `runners/orchid-service` call it. An entry
-    point that refuses before that line executed nothing but its own gate,
-    so there was nothing for this one to stop. `libexec/orchid-trust` never
+    restore would sit past the entry point's first write *or its first
+    verdict*, which is where `runners/orchid-pump`, `runners/orchid-tick` and
+    `runners/orchid-service` call it. An entry point that refuses before that
+    line executed nothing but its own gate,
+    so there was nothing for this one to stop. The two scheduled runners are
+    where the second half of that was paid for: each carries no-op verdicts
+    above its trust gate — `not an orchid repo`, the split-brain line, `run
+    complete` — which write nothing and were therefore left above the fire,
+    and each of those is still an answer about this repository read out of the
+    tree whose staleness is the finding. A cron log filling with `pump: run
+    complete` from a pre-merge kernel is an operator acting on code nobody has
+    looked at. Both now make the machine-local trust lookup and fire the gate
+    above those lines, and consume that one lookup at the trust gate below
+    them rather than walking an acknowledged target's history twice.
+    `libexec/orchid-trust` never
     restores the operator PATH at all, so it calls `orchid_root_stale_gate`
     itself, per subcommand: after the operator's command has been validated
     and before either a durable write to the machine-local trust store or a
@@ -500,11 +511,21 @@ buying a fresh implementation pass to reach the same tree.
     acknowledgement on file, because only then does the machine-local decision
     spend Git of its own and so acquire a position an observer can read; with
     an empty store the correct ordering and the wrong one leave the same trace.
-    Revocation is the one arm that keeps the gate ahead of everything, and
-    deliberately: it is built without inspection so removal stays available
-    when inspection cannot complete, so it has no machine-local decision to put
-    first. That trade is recorded as a `not_tested` claim in the invariant
-    rather than left implicit.
+    Revocation is held to the same order, and the reason it once was not is
+    worth keeping: it is built without inspection, deliberately, so removal
+    stays available on a target inspection cannot complete on — and that was
+    read as having no machine-local decision to put first. It has one.
+    Revocation derives the repository identity, and with it the exact record
+    path it would unlink; that derivation is the bounded, no-Git,
+    no-scratch-file half the availability argument is actually about, so
+    running it ahead of the gate takes nothing away from it. What the arm holds
+    behind the gate is not only the removal but the *diagnosis* of an
+    underivable identity, which is otherwise an answer about the target
+    produced by the pre-merge tree at exactly the point the gate was meant to
+    stop it. The acknowledgement arm keeps the gate first, and that one really
+    is a different case: it is the operator authoring a record rather than
+    looking one up, which is the single path licensed to spend complete
+    verification on the target.
     THE SOURCE-TIME FIRE IS CONDITIONAL ON WHERE THE FILE LIVES, and that is
     the other half of "no gate is optional". `_orchid_kernel_entry_point`
     answers yes only for `bin/orchid`, `libexec/orchid-*` and
@@ -2008,7 +2029,16 @@ semantic correctness beyond declared verification commands.
   lookup walks the target's history and therefore has a position, that walk's
   Git must precede the gate's index comparison, and the previous ordering as a
   fixture in the identical environment must be seen to spend the gate's query
-  first — and a task whose `verification_commands` names nothing but `true` is still
+  first; the third arm, `orchid trust revoke`, on that same self-hosted target,
+  which refused must remove nothing, report nothing and spend the gate's
+  comparison as its first Git, and stood down must remove the record having
+  spent no Git at all — its ordering pinned on the report edge, since
+  revocation walks no history and so has no position a trace can read; the
+  routes through both scheduled runners that write nothing and answer anyway
+  — `pump: not an orchid repo`, `pump: run complete`, the tick's finished-run
+  line — which out of a stale root must refuse with none of those verdicts
+  produced, beside the runs out of a healthy root that must produce all three
+  — and a task whose `verification_commands` names nothing but `true` is still
   gated by `merge_gate` before its ref can advance
 - INV-16 a step is never dispatched to an actor whose manifest does not
   declare what that step's work needs; it becomes an operator hand-off with a

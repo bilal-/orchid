@@ -147,9 +147,12 @@ EOF
 #
 # So `show`, the arm whose target the operator names and most often names as
 # the checkout it is itself being run out of, makes the machine-local trust
-# lookup FIRST and fires the gate after it; the argument is at that arm, and
-# INV-15 section 9 runs it. The other two arms name their own targets in the
-# same way, and each carries below the reason its ordering is the one it has.
+# lookup FIRST and fires the gate after it; `revoke` makes its own -- the
+# bounded identity derivation that decides which record it would unlink --
+# first for the same reason. The argument is at each arm, and INV-15 section 9
+# runs both. `unattended` is the one arm that does not, because it is the
+# operator authoring the acknowledgement rather than looking for one; the
+# reason is below it.
 sub="${1:-}"; [ "$#" -gt 0 ] && shift
 case "$sub" in
   -h|--help|help|"")
@@ -220,28 +223,49 @@ case "$sub" in
   revoke)
     [ "$#" -le 1 ] || orchid_die "usage: orchid trust revoke [<repo>]"
     repo="${1:-${ORCHID_REPO:-$PWD}}"
-    # Do not inspect first: revocation must stay available when inspection
-    # cannot complete. The revoke call itself resolves the repository identity
-    # it acted on.
+    # THE SAME LOOKUP-FIRST ORDERING `show` HAS, FOR THE SAME REASON, AND
+    # WITHOUT COSTING REVOCATION ITS AVAILABILITY.
     #
-    # The gate fires here anyway. Removal is still a durable mutation of the
-    # machine-local store, and "the safe direction" is not a reason to make it
-    # out of a kernel nobody has looked at: which record a pre-merge revoke
-    # resolves, and therefore which acknowledgement it removes, is decided by
-    # the same identity derivation the stale tree carries. Availability is
-    # preserved the documented way, per-invocation and visible in the
-    # transcript, rather than by an exemption: ORCHID_ALLOW_STALE_ROOT=1
-    # orchid trust revoke <repo>.
+    # This arm used to fire the gate above everything, and the reason given was
+    # that it had no machine-local decision to put first: revocation is built
+    # WITHOUT inspection, deliberately, so removal stays available on a target
+    # inspection cannot complete on -- an unsupported Git, a shallow or corrupt
+    # history, an unreadable object. That reason confused inspection with the
+    # decision. Revocation makes one, and it is the decision that matters here:
+    # unattended_trust_revoke_resolve derives the repository identity and with
+    # it the exact record path this run would unlink. It is precisely the
+    # bounded derivation the availability argument is about -- no version
+    # check, no ref, no history, no object, no scratch file, and no Git at all
+    # -- so hoisting it above the gate takes nothing away from that argument.
     #
-    # This arm therefore does NOT get the lookup-first ordering `show` was
-    # given above, and that is a trade rather than an omission: there is no
-    # machine-local decision to put first, because putting one first is the
-    # inspection this arm exists without. Pointed at orchid's own checkout the
-    # gate's comparison is a query against what is, in that one environment,
-    # the target -- stated in INV-15's not_tested record rather than quietly
-    # left out, because the alternative costs revocation its availability.
+    # What it buys is the same thing `show`'s hoist bought. Pointed at Orchid's
+    # own checkout -- the self-hosted case, ORCHID_ROOT and the target one
+    # directory -- the gate's `git diff --cached` against the root IS a query
+    # against the target, and the unattended-trust contract forbids one before
+    # an acknowledgement for the target has been looked for. Now the lookup is
+    # over before the gate can spend it.
+    #
+    # The gate still precedes everything an operator could act on. The removal
+    # below is a durable mutation of the machine-local store, and "the safe
+    # direction" is not a reason to make it out of a kernel nobody has looked
+    # at: which record a pre-merge revoke resolves is decided by the identity
+    # derivation the stale tree carries. And an underivable identity is a
+    # DIAGNOSIS about the target, so it is held here rather than printed --
+    # otherwise the arm would answer out of the pre-merge tree exactly where it
+    # was supposed to refuse. Availability under a stale root is preserved the
+    # documented way, per-invocation and visible in the transcript:
+    # ORCHID_ALLOW_STALE_ROOT=1 orchid trust revoke <repo>.
+    #
+    # tests/inv/test_INV-15_no_optional_gate.sh section 9 runs this arm on the
+    # self-hosted target, both edges of the gate and both edges of that held
+    # diagnosis.
+    revoke_resolved=0
+    unattended_trust_revoke_resolve "$repo" || revoke_resolved=$?
+    revoke_detail="$ORCHID_UNATTENDED_DETAIL"
     orchid_root_stale_gate
-    if unattended_trust_revoke "$repo"; then
+    [ "$revoke_resolved" -eq 0 ] \
+      || orchid_die "cannot revoke unattended trust: $revoke_detail"
+    if unattended_trust_revoke_loaded; then
       echo "unattended trust revoked: ${ORCHID_UNATTENDED_REPO:-$repo}"
     else
       echo "unattended trust already absent: ${ORCHID_UNATTENDED_REPO:-$repo}"
