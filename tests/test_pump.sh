@@ -3,7 +3,10 @@
 # whether an abandoned run is worth waking. It never builds a prompt or reads
 # an envelope; it only checks init state, run_status, lease staleness, and
 # (dry-check only) whether an orchestrator engine is currently resolvable,
-# then `exec`s runners/orchid-tick (Task 7) to do the real work.
+# then hands off to runners/orchid-tick (Task 7) to do the real work, taking its
+# exit code as its own. (That hand-off runs the tick as a CHILD rather than
+# `exec`ing it, so the pump's EXIT trap still fires on a failed tick -- T036,
+# tests/test_service.sh K15b; nothing here changes either way.)
 source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/frontmatter.sh"
 source "$REPO_ROOT/lib/manifest.sh"
@@ -365,9 +368,9 @@ out="$("$PUMP" 2>&1)"; rc=$?
 epoch_after="$(cur_epoch)"
 
 assert_eq 0 "$rc" "pump exits 0 (the tick's own exit code) on a healthy ok tick"
-[ -f "$WORK/marker-stubhealthy" ] || fail "pump execs the tick, which must spawn the healthy primary orchestrator"
+[ -f "$WORK/marker-stubhealthy" ] || fail "pump hands off to the tick, which must spawn the healthy primary orchestrator"
 [ "$epoch_after" -gt "$epoch_before" ] || fail "pump's tick fences a fresh epoch ($epoch_before -> $epoch_after)"
-assert_match "tick: stubhealthy ok" "$out" "pump's output is the tick's own output (exec, not a wrapper)"
+assert_match "tick: stubhealthy ok" "$out" "pump's output is the tick's own output, passed through rather than summarized"
 
 # ===========================================================================
 # D2 -- run_status running + NO lease.json at all (crashed before its first

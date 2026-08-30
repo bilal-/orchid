@@ -158,7 +158,7 @@ orchid_root_stale_gate
 # alone, BEFORE calling `orchid_runtime` (which `mkdir -p`s
 # `.orchid/runtime` as a side effect): an uninitialized directory should be
 # left untouched, not seeded with a runtime dir it never asked for. This is
-# also the reason the pump cannot simply `exec` the tick unconditionally --
+# also the reason the pump cannot simply hand off to the tick unconditionally --
 # the tick's own uninitialized guard (via `orchid run resume`) DIES with
 # exit 1, whereas a cron-invoked pump polling a not-yet-`orchid init`'d
 # directory is a normal, silent no-op, not a failure.
@@ -251,6 +251,15 @@ fi
 # the schedule healthy, and the operator is entitled to the most recent thing
 # that went wrong. So the flag is set here and the clearance is taken at EXIT,
 # by a handler that runs only for a zero status.
+#
+# ONE HANDLER, AND IT COVERS THE SCHEDULED WAKE'S LAST STATEMENT TOO. The tick
+# hand-off at the bottom of this file used to be an `exec`, which no EXIT trap
+# survives, so that one path cleared the note UP FRONT on the pump's own success
+# -- and a wake whose orchestrator then failed reported a clean binding to
+# `orchid doctor` while the schedule went on failing. The tick now runs as a
+# child and its status is this process's, so that exit reaches this handler like
+# every other: a failing tick is a failing wake, and a failing wake retires
+# nothing.
 #
 # NEVER `|| true` AROUND A CLEARANCE THAT MATTERS: orchid_service_refusal_clear
 # is best-effort and always 0 by contract, and this handler adds nothing that
@@ -453,7 +462,7 @@ _pump_iso_to_epoch() {
 # channel is configured. The pump (tier-2, this file) is what actually
 # LAUNCHES the channel plugin's `send`, on every pass -- called from the
 # main body below right after the lease-gate decision (age computed) but
-# BEFORE the stale/fresh branch, and thus BEFORE any exec of the tick: a
+# BEFORE the stale/fresh branch, and thus BEFORE any hand-off to the tick: a
 # fresh lease still drains the outbox (channel-send must never wait for a
 # tick; draining is cheap -- a handful of file stats and, at most, one
 # `send` spawn per queued question).
@@ -924,18 +933,32 @@ fi
 
 # 7. Hand off. The tick does its own `run resume` (fencing a fresh epoch and
 # refreshing the lease), engine pick, adapter spawn, and ledger marking --
-# the pump's job ends here. `exec`, not a plain call: no pump-side work
-# remains afterward, so the tick simply replaces this process and its exit
-# code becomes the pump's own, verbatim.
+# the pump's job ends here, and the tick's exit code becomes this invocation's
+# own, verbatim.
 #
-# WHICH IS WHY THE CLEARANCE IS TAKEN HERE RATHER THAN LEFT TO THE TRAP: `exec`
-# replaces this process image, so no EXIT trap of ours ever runs past this line.
-# The pump's own pass is over and it succeeded -- the target is alive, the
-# unattended gate passed, the drive reported a boundary an orchestrator can
-# settle, and an engine is resolvable for it -- so a note claiming this schedule
-# last woke against a checkout that was gone is as disproven here as at any
-# other exit. What the TICK then makes of the boundary is a different question
-# and not one this record answers. Zero is passed literally: the handler's own
-# guard is about the pump's outcome, and there is no status yet to consult.
-_pump_clear_refusal_on_success 0
-exec "$ORCHID_ROOT/runners/orchid-tick"
+# A CHILD AND AN EXPLICIT `exit`, NOT `exec`, AND THE REASON IS THE REFUSAL
+# RECORD. `exec` replaces this process image, so no EXIT trap of ours can run
+# past that line -- which left exactly one way to retire the note here: taking
+# the clearance unconditionally, before the hand-off, on the reasoning that the
+# PUMP's own pass had succeeded. It had; the WAKE had not. A wake is one thing to
+# everybody who reads its outcome (launchd records its exit status, `orchid
+# doctor` reads the refusal note beside its binding), and this one goes on to run
+# an orchestrator and can end nonzero -- an adapter that wrote no envelope, an
+# engine that failed. Cleared ahead of that, a schedule whose every wake ends in
+# a failing tick reports a clean binding to the one surface an operator can read,
+# with the last thing that actually went wrong deleted by the pass that was about
+# to go wrong again.
+#
+# So the tick runs as a child, its status is this process's, and the ONE handler
+# at the EXIT trap decides -- the same handler, on the same rule, as every other
+# exit from this file: cleared only when the wake as a whole ended zero, with the
+# target having been found healthy. Nothing pump-side runs between the tick's
+# return and that trap, so the hand-off is still the last thing this file does.
+#
+# `|| tick_rc=$?` disables errexit for the command it guards, which is what is
+# wanted here: the tick is an external program whose nonzero status is a value to
+# propagate, not an abort -- and nothing of the pump's runs inside that
+# suppression.
+tick_rc=0
+"$ORCHID_ROOT/runners/orchid-tick" || tick_rc=$?
+exit "$tick_rc"

@@ -697,9 +697,28 @@ rm -rf "$WORK2"
 #       property of the label. It must survive a refused wake and a preview, and
 #       be retired by a real (re)install and by a wake that found the target
 #       healthy and succeeded -- or `orchid doctor` prints a schedule as failing
-#       directly beneath its own line calling that schedule healthy.
+#       directly beneath its own line calling that schedule healthy. K15b carries
+#       that rule through the WHOLE wake: the tick hand-off is the last statement
+#       of a scheduled pass, so a tick that fails is a wake that failed and
+#       retires nothing, while one that succeeds retires the note.
+#   K16 RED/GREEN: the repo-local record is UNTRUSTED INPUT. It lives inside the
+#       checkout a run's engines write to, and its label becomes a path
+#       COMPONENT while its artifact becomes a whole path that is unloaded and
+#       then deleted. Both are held to what `orchid service install` could have
+#       produced, and anything else is refused before any path built from it is
+#       opened, probed, cleared or removed -- while the record install actually
+#       wrote tears the schedule down exactly as before.
 # ===========================================================================
 source "$REPO_ROOT/lib/common.sh"
+# ...and lib/frontmatter.sh for K15b alone, which parks a task at `arbitrating`
+# to stage the judgment boundary a wake has to find before it can reach the
+# tick. Asserted rather than assumed: this file runs without `set -e`, so a
+# source that failed would leave `fm_set` as a silent 127 per call, the task
+# would stay `pending`, the wake would never hand off, and the arm would be
+# testing a pump that stopped three steps earlier.
+source "$REPO_ROOT/lib/frontmatter.sh"
+command -v fm_set >/dev/null 2>&1 \
+  || fail "fixture: lib/frontmatter.sh did not load — K15b's boundary could not be staged"
 
 export ORCHID_SERVICE_OS=Darwin
 make_scratch BIND
@@ -2265,6 +2284,314 @@ st_doctor_reinst="$(st_doctor_lines "$st_label")"
 grep -qF 'last woke and refused' <<<"$st_doctor_reinst" \
   && fail "and doctor must print none beside the service it has just been told is installed"
 green_case "a real install retires the refusal recorded against the schedule it replaces"
+
+# -- K15b: the wake is not over until the TICK is ---------------------------
+# The arms above all end inside the pump, and for those the EXIT trap is the
+# whole story: the note is retired only when the pass ended zero with the target
+# healthy. The pump's last statement was different in kind -- it `exec`ed
+# runners/orchid-tick, which replaces the process image, so no trap of the
+# pump's could ever run after it. That left one way to retire the note on the
+# handoff path: clear it UP FRONT, on the pump's own success, and hand over.
+#
+# The pump's pass had succeeded. THE WAKE HAD NOT. A wake is one thing to
+# everybody who reads its outcome -- launchd keeps its exit status, `orchid
+# doctor` reads the note beside its binding -- and the tick goes on to run an
+# orchestrator, which can fail. So a schedule whose every wake woke a model that
+# wrote no envelope reported a clean binding to the one surface an operator can
+# read, with the last thing that actually went wrong deleted by the pass that was
+# about to go wrong again.
+#
+# Both arms below are ONE fixture and ONE staged refusal, differing only in
+# whether the orchestrator the tick spawns produces an envelope -- so what is
+# proved is the tick's exit status deciding, and not the fixture.
+TK="$BIND/tick-wake"
+TK_ENG="$BIND/tick-engines"
+mkdir -p "$TK" "$TK_ENG"
+
+# mk_tick_engine <name> <ok|fail> -- a stub orchestrator engine (capabilities
+# shell,git, matching roles/orchestrator.role's requires) whose `run` either
+# writes a valid `ok` orchestrate envelope or writes nothing at all. The second
+# is how a HEALTHY target still ends the wake nonzero: runners/orchid-tick treats
+# a missing/invalid envelope as `failed` and its last statement is
+# `[ "$status" = ok ]`.
+mk_tick_engine() {
+  # Split declarations: a multi-assignment `local` cannot see its own earlier
+  # names (SC2318), so `dir` would be built from an empty `name`.
+  local name="$1" mode="$2"
+  local dir="$TK_ENG/$name"
+  mkdir -p "$dir"
+  printf 'manifest_version=1\nid=test/%s\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+    "$name" > "$dir/plugin.conf"
+  if [ "$mode" = ok ]; then
+    cat > "$dir/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"; out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"; task="$(jq -r .task "$req")"
+printf '{"contract":1,"job_id":"%s","task":"%s","operation":"orchestrate","status":"ok","actions":[],"summary":"K15b stub ok"}' \
+  "$jid" "$task" > "$out"
+EOF
+  else
+    cat > "$dir/run" <<'EOF'
+#!/usr/bin/env bash
+# Writes no envelope at all -- an adapter that crashed. The tick marks the
+# engine failed and exits nonzero; nothing about the CHECKOUT is wrong.
+exit 1
+EOF
+  fi
+  chmod +x "$dir/run"
+}
+mk_tick_engine tkfail fail
+mk_tick_engine tkok ok
+
+# tk_lease <age_s> -- a lease old enough that the pump treats the run as
+# abandoned. Re-written before every wake: the tick's own `run resume` refreshes
+# it, so a second pass over the same fixture would otherwise stop at "lease
+# fresh" and never reach the handoff this section is about.
+tk_lease() {
+  local age="$1" now target iso
+  now="$(date -u +%s)"; target=$((now - age))
+  iso="$(date -u -d "@$target" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$target" +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$TK/.orchid/runtime"
+  jq -n --arg t "$iso" '{epoch:1, refreshed_at:$t}' > "$TK/.orchid/runtime/lease.json"
+}
+
+(
+  cd "$TK" || exit 1
+  git init -q .
+  git commit -q --allow-empty -m root
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: running\nrun_id: r-tk\n---\n# Roadmap\n' > .orchid/roadmap.md
+  # pump_wake_max out of the way: this section re-drives ONE unchanged boundary
+  # across several passes, and the wake budget exists to stop exactly that. Its
+  # own RED/GREEN pair lives in tests/test_run.sh.
+  printf 'role.orchestrator=tkfail\npump_wake_max=99\n' > orchid.config
+) || fail "K15b fixture: could not build the tick-handoff repo"
+TK_CANON="$(cd "$TK" && pwd -P)"
+trust_repo "$TK"
+
+# A judgment boundary an ORCHESTRATOR can settle -- a task parked at
+# `arbitrating` over a request-changes review. Anything else and the pump
+# declines the hand-off and never reaches the tick at all.
+TK_EPOCH="$(ORCHID_REPO="$TK" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+[ -n "$TK_EPOCH" ] || fail "K15b fixture: 'run start' gave no epoch, so nothing below is fenced"
+ORCHID_REPO="$TK" ORCHID_EPOCH="$TK_EPOCH" "$ORCHID_BIN" task create TK1 "contested review" >/dev/null \
+  || fail "K15b fixture: could not create the boundaried task"
+TK_CAND=7777777777777777777777777777777777777777
+fm_set "$TK/.orchid/tasks/TK1.md" status arbitrating
+fm_set "$TK/.orchid/tasks/TK1.md" candidate_sha "$TK_CAND"
+mkdir -p "$TK/.orchid/reviews"
+jq -n --arg cand "$TK_CAND" \
+  '{contract:1, job_id:"j-fixture-TK1", task:"TK1", operation:"review", status:"ok",
+    verdict:"request-changes", scope_complete:true, summary:"K15b fixture review",
+    candidate_sha:$cand, findings:[]}' > "$TK/.orchid/reviews/TK1-a1-reviewer.json"
+
+tk_inst="$("$SERVICE" install --repo "$TK" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the tick-handoff fixture installs a schedule first (out: $tk_inst)"
+tk_label="$(echo "$tk_inst" | grep -oE "$label_re" | head -n1)"
+tk_refusal="$HOME/.orchid/services/$tk_label.refusal"
+
+# STAGE THE REFUSAL the way a real one is staged -- a wake against a broken
+# repository -- then put the repository back. From here on the target is healthy
+# and the note is stale; the only question either arm asks is what retires it.
+mv "$TK/.git" "$BIND/tk-gitdir" || fail "K15b fixture: could not set the repository aside"
+printf 'gitdir: %s\n' "$TK/no-such-common-dir" > "$TK/.git"
+rc=0
+ORCHID_REPO="$TK_CANON" "$PUMP" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "K15b fixture: the staging wake must refuse a checkout whose repository is gone"
+[ -f "$tk_refusal" ] || fail "K15b fixture: that refused wake must have recorded its reason"
+rm -f "$TK/.git"
+mv "$BIND/tk-gitdir" "$TK/.git" || fail "K15b fixture: could not restore the repository"
+orchid_checkout_git_alive "$TK_CANON" \
+  || fail "K15b fixture: the target must be healthy again, or both arms below are about a dead checkout"
+
+# RED: a healthy target, a wake that reaches the hand-off, and a tick that ends
+# nonzero. The refusal is the most recent thing that went wrong with this
+# schedule and nothing about this pass disproved it.
+tk_lease 1000
+rc=0
+tk_red="$(ORCHID_ENGINES_DIR="$TK_ENG" ORCHID_REPO="$TK_CANON" "$PUMP" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a wake whose tick failed must exit nonzero (out: $tk_red)"
+assert_match 'tick: tkfail failed' "$tk_red" \
+  "and it must really have reached the tick -- an arm that stopped in the pump would prove nothing about the hand-off"
+[ -f "$tk_refusal" ] \
+  || fail "THE FINDING: a wake that ended in a failing tick must leave the recorded refusal exactly where it found it"
+tk_doctor_red="$(st_doctor_lines "$tk_label")"
+assert_match 'the schedule last woke and refused' "$tk_doctor_red" \
+  "so doctor still reports the schedule as having something wrong with it, which is the only surface a scheduled wake has"
+red_case "a wake that hands off to a failing tick retains the recorded refusal, because the wake did not succeed"
+
+# GREEN twin: the same fixture, the same staged note, the same hand-off -- and an
+# orchestrator that writes its envelope. The wake ends zero, so it has disproved
+# the note as thoroughly as any of the pump's own quiet exits.
+printf 'role.orchestrator=tkok\npump_wake_max=99\n' > "$TK/orchid.config"
+tk_lease 1000
+rc=0
+tk_green="$(ORCHID_ENGINES_DIR="$TK_ENG" ORCHID_REPO="$TK_CANON" "$PUMP" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the identical wake exits 0 once the orchestrator it spawns succeeds (out: $tk_green)"
+assert_match 'tick: tkok ok' "$tk_green" "and it is the same hand-off, differing only in what the tick made of it"
+[ -f "$tk_refusal" ] \
+  && fail "and a wake that ended zero with a healthy target must retire the note it disproved"
+tk_doctor_green="$(st_doctor_lines "$tk_label")"
+grep -qF 'last woke and refused' <<<"$tk_doctor_green" \
+  && fail "so doctor prints no refusal beside this binding either"
+green_case "a wake that hands off to a tick that succeeds retires the refusal, and the two arms differ only in the tick's exit status"
+
+# -- K16: the repo-local record is UNTRUSTED INPUT --------------------------
+# Every removing arm above reads `.orchid/runtime/service.json` and builds paths
+# out of what it says: the machine-local twin to open and delete, the refusal
+# note to clear, the plist to hand `launchctl unload` and then `rm -f`. That file
+# lives inside the checkout a run is driven in -- gitignored, and writable by
+# every engine the run spawns -- so taken at face value those are two
+# arbitrary-path primitives wearing a schedule's clothes:
+#
+#   the LABEL is a path COMPONENT. `../../stolen` resolves the machine-local
+#     record to $HOME/.orchid/services/../../stolen.json and the plist to
+#     $HOME/Library/LaunchAgents/../../stolen.plist -- outside both stores -- and
+#     uninstall unloads and deletes exactly those.
+#   the ARTIFACT is a whole path, unloaded and then removed as it stands.
+#
+# Neither is refused for LOOKING dangerous. Both are checked against what
+# `orchid service install` could have produced (lib/common.sh's
+# orchid_service_label_valid / orchid_service_artifact_valid), which is the only
+# rule that needs no judgment about which other spellings would have been safe.
+FRG="$BIND/forged"
+mkdir -p "$FRG"
+(
+  cd "$FRG" || exit 1
+  git init -q .
+  git commit -q --allow-empty -m root
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: planning\nrun_id: r-frg\n---\n# Roadmap\n' > .orchid/roadmap.md
+) || fail "K16 fixture: could not build the forged-record repo"
+FRG_CANON="$(cd "$FRG" && pwd -P)"
+trust_repo "$FRG"
+frg_inst="$("$SERVICE" install --repo "$FRG" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the forged-record fixture installs a real schedule first (out: $frg_inst)"
+frg_label="$(echo "$frg_inst" | grep -oE "$label_re" | head -n1)"
+frg_plist="$HOME/Library/LaunchAgents/$frg_label.plist"
+frg_rec="$FRG_CANON/.orchid/runtime/service.json"
+frg_mrec="$HOME/.orchid/services/$frg_label.json"
+[ -f "$frg_plist" ] || fail "K16 fixture: the install must have placed the plist"
+[ -f "$frg_rec" ] || fail "K16 fixture: the install must have written the repo-local binding"
+[ -f "$frg_mrec" ] || fail "K16 fixture: the install must have written the machine-local binding"
+cp "$frg_rec" "$BIND/frg-rec.keep" || fail "K16 fixture: could not stash the honest record"
+cp "$frg_mrec" "$BIND/frg-mrec.keep" || fail "K16 fixture: could not stash the honest twin"
+
+# THE DECOYS ARE THE EXACT PATHS THE FORGED LABEL RESOLVES TO, and they are
+# operator files: one where the machine-local record would land, one where the
+# plist would. Both are outside the stores this verb owns.
+FRG_STOLEN_REC="$HOME/stolen.json"
+FRG_STOLEN_PLIST="$HOME/stolen.plist"
+FRG_FAKE_LABEL='../../stolen'
+printf 'an operator file orchid never wrote\n' > "$FRG_STOLEN_PLIST"
+# ...and the forged TWIN, so the twins check passes for the forgery exactly as it
+# does for an honest pair. Without it this section would prove only that
+# mismatched records are refused, which K13 already proves.
+jq --arg l "$FRG_FAKE_LABEL" --arg a "$HOME/Library/LaunchAgents/$FRG_FAKE_LABEL.plist" \
+   '.label = $l | .artifact = $a' "$BIND/frg-rec.keep" > "$FRG_STOLEN_REC" \
+  || fail "K16 fixture: could not stage the forged machine-local twin"
+jq --arg l "$FRG_FAKE_LABEL" --arg a "$HOME/Library/LaunchAgents/$FRG_FAKE_LABEL.plist" \
+   '.label = $l | .artifact = $a' "$BIND/frg-rec.keep" > "$frg_rec" \
+  || fail "K16 fixture: could not stage the forged repo-local record"
+assert_eq "$(cat "$FRG_STOLEN_REC")" "$(cat "$frg_rec")" \
+  "the forged pair is byte-identical, so nothing but the label rule can be what refuses it"
+
+# The containment itself, at the one place a label becomes a path: a label orchid
+# does not derive resolves to nothing at all, so even a caller that skipped the
+# validation upstream cannot be handed a path outside the store.
+rc=0
+orchid_service_machine_record "$FRG_FAKE_LABEL" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "orchid_service_machine_record must refuse a label install could not have derived: it is joined in as a path component"
+rc=0
+orchid_service_refusal_path "$FRG_FAKE_LABEL" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "and so must the refusal path, which uninstall rm -f's"
+rc=0
+orchid_service_identity "$FRG_CANON" || rc=$?
+assert_eq 2 "$rc" \
+  "and the resolution answers with its own third code -- 'this record is not usable' is not the same finding as 'the two records disagree'"
+assert_match "$FRG_FAKE_LABEL" "$ORCHID_SERVICE_ID_REJECTED" \
+  "naming the value it rejected"
+assert_match 'service.json' "$ORCHID_SERVICE_ID_REJECTED" \
+  "and the record it came from, since repairing or deleting that file is the recovery"
+
+# RED, through the verb: nothing removed, nothing unloaded, and the operator's
+# own files untouched.
+rc=0
+frg_red="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$FRG_CANON" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "an uninstall whose record names a label orchid could not have derived must refuse (out: $frg_red)"
+assert_match 'does not name a schedule orchid could have installed' "$frg_red" \
+  "and say what stopped it, in terms that are about the RECORD rather than about the schedule"
+assert_match 'is not one .orchid service install. derives' "$frg_red" \
+  "naming the rule it failed"
+[ -f "$FRG_STOLEN_REC" ] \
+  || fail "THE FINDING: the file the forged label resolves to is an operator's, and a removal must not take it"
+[ -f "$FRG_STOLEN_PLIST" ] || fail "nor the file the forged label's plist path resolves to"
+[ -s "$SCHED_LOG" ] \
+  && fail "and launchd is asked nothing at all -- a record that cannot be believed is refused before any path built from it is probed"
+[ -f "$frg_plist" ] || fail "and the real schedule's plist stands"
+[ -f "$frg_mrec" ] || fail "and so does its machine-local binding"
+red_case "a repo-local record naming a label orchid could not have derived is refused before any path built from it is opened, unloaded or deleted"
+
+# GREEN twin: the same command against the same fixture with the record install
+# actually wrote. If the refusal above were about the fixture rather than about
+# the record's contents, this would refuse too.
+rm -f "$FRG_STOLEN_REC"
+cp "$BIND/frg-rec.keep" "$frg_rec" || fail "K16: could not restore the honest record"
+rc=0
+frg_green="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$FRG_CANON" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the identical uninstall succeeds with the record install wrote (out: $frg_green)"
+[ -f "$frg_plist" ] && fail "and it really removes the schedule's plist"
+[ -f "$frg_mrec" ] && fail "and the machine-local binding"
+[ -f "$FRG_STOLEN_PLIST" ] || fail "while the operator file the forgery pointed at is still none of its business"
+green_case "the same uninstall ends the schedule when the record names the label install derived"
+
+# -- K16b: the same rule for the ARTIFACT ----------------------------------
+# A label that validates says where the plist SHOULD be; the record also says
+# where it IS, and uninstall unloads and deletes that path as it stands
+# (_svc_artifact). Staged in BOTH halves, so the twins agree and ownership holds
+# -- the artifact rule is the only thing left that can refuse it.
+FRG_PRECIOUS="$BIND/precious-launchagent.plist"
+printf 'an operator plist orchid never installed\n' > "$FRG_PRECIOUS"
+frg2_inst="$("$SERVICE" install --repo "$FRG_CANON" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "K16b fixture: re-installs the schedule K16 ended (out: $frg2_inst)"
+[ -f "$frg_plist" ] || fail "K16b fixture: the re-install must have placed the plist"
+cp "$frg_rec" "$BIND/frg-rec.keep" || fail "K16b fixture: could not stash the honest record"
+cp "$frg_mrec" "$BIND/frg-mrec.keep" || fail "K16b fixture: could not stash the honest twin"
+jq --arg a "$FRG_PRECIOUS" '.artifact = $a' "$BIND/frg-rec.keep" > "$frg_rec" \
+  || fail "K16b fixture: could not stage the forged artifact"
+jq --arg a "$FRG_PRECIOUS" '.artifact = $a' "$BIND/frg-mrec.keep" > "$frg_mrec" \
+  || fail "K16b fixture: could not stage the forged artifact in the twin"
+assert_eq "$(cat "$frg_rec")" "$(cat "$frg_mrec")" \
+  "the twins agree about the forged artifact, so the twins check cannot be what refuses it"
+rc=0
+orchid_service_identity "$FRG_CANON" || rc=$?
+assert_eq 2 "$rc" "the resolution rejects the record itself, with the same third code the forged label earns"
+assert_match 'precious-launchagent' "$ORCHID_SERVICE_ID_REJECTED" "naming the path it would have acted on"
+
+rc=0
+frg2_red="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$FRG_CANON" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "an uninstall whose record names an artifact install could not have written must refuse (out: $frg2_red)"
+assert_match 'does not name a schedule orchid could have installed' "$frg2_red" "with the same refusal, since it is the same rule"
+assert_match 'is not a path .orchid service install. writes' "$frg2_red" "naming the half that failed it this time"
+[ -f "$FRG_PRECIOUS" ] \
+  || fail "THE FINDING: an artifact a record names is unloaded and then deleted, so an operator's own file must never be reachable that way"
+[ -s "$SCHED_LOG" ] \
+  && fail "and it is never handed to launchctl either -- the refusal is ahead of every scheduler call"
+[ -f "$frg_plist" ] || fail "and the real plist is left exactly where it was"
+[ -f "$frg_mrec" ] || fail "and the machine-local binding too"
+red_case "a record naming an artifact orchid could not have written is refused before that path is unloaded or removed"
+
+# GREEN twin: the honest artifact, and the same uninstall ends the schedule.
+cp "$BIND/frg-rec.keep" "$frg_rec" || fail "K16b: could not restore the honest record"
+cp "$BIND/frg-mrec.keep" "$frg_mrec" || fail "K16b: could not restore the honest twin"
+rc=0
+frg2_green="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$FRG_CANON" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the identical uninstall succeeds with the artifact install wrote (out: $frg2_green)"
+[ -f "$frg_plist" ] && fail "and the plist it named is the one that goes"
+[ -f "$FRG_PRECIOUS" ] || fail "while the operator's own plist is still standing"
+green_case "the same uninstall ends the schedule when the record names the artifact install wrote"
 
 unset ORCHID_SERVICE_OS
 

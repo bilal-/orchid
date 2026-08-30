@@ -105,9 +105,12 @@ a crontab line.
                comes from the binding records install wrote, not from
                hashing --repo's path, so a checkout MOVED since it was
                installed (`git worktree move`) still ends the schedule it
-               really has. the two records must agree about it, and --repo
-               must be the checkout they name: a record edited by hand is
-               refused, and so is a COPY of the bound checkout, which
+               really has. those records are read as untrusted input: a
+               label or an artifact orchid could not have derived is
+               refused before any path built from it is opened, unloaded
+               or deleted. the two records must also agree about it, and
+               --repo must be the checkout they name: a record edited by
+               hand is refused, and so is a COPY of the bound checkout, which
                carries an identical record but is not the worktree git has
                registered. either way nothing is removed. idempotent: refuses
                cleanly (a plain message, no launchctl/crontab touched) when
@@ -231,6 +234,17 @@ _svc_label() { echo "com.orchid.pump.$(_svc_hash12 "$1")"; }
 # settles it on git's own worktree registration, which `git worktree move`
 # rewrites and `cp -R` does not.
 #
+# AND BEFORE EITHER QUESTION, WHETHER THE RECORD IS SAYING ANYTHING ORCHID COULD
+# HAVE WRITTEN. `.orchid/runtime/service.json` is inside the checkout the run's
+# engines write to, and what a removal takes from it are not descriptions but
+# PATHS: the label is joined into `$HOME/.orchid/services/<label>.json` and
+# `~/Library/LaunchAgents/<label>.plist` as a component, and the artifact is
+# unloaded and then `rm -f`'d exactly as recorded. Believed, `../../..` and an
+# operator's own plist are both reachable that way. So both fields are held to
+# install's own derivation first (lib/common.sh, orchid_service_label_valid /
+# orchid_service_artifact_valid), and nothing below opens, probes, clears or
+# deletes a path until they have passed.
+#
 # Set by _svc_identity and read for the rest of the call. THE REMOVING SUBVERBS
 # ARE THE CALLERS, and `status` is deliberately not one. This resolution fails
 # CLOSED -- records that disagree end the process rather than being guessed at
@@ -246,16 +260,32 @@ SVC_ARTIFACT_PLATFORM=""
 # _svc_identity <repo> -- resolve SVC_LABEL/SVC_ARTIFACT/SVC_ARTIFACT_PLATFORM,
 # or refuse. Falls back to the path hash only when NO record names a schedule
 # here at all (an install predating the binding record); that is a different
-# answer from "the records disagree", which exits.
+# answer from "the records disagree" and from "this record says something install
+# could not have written", each of which exits with its own diagnosis.
 #
-# TWO REFUSALS, ANSWERING TWO QUESTIONS, AND THEY ARE NOT INTERCHANGEABLE. The
-# first is about the RECORDS -- do they name one schedule; the second is about
-# the CALLER -- is this the checkout they were written for. A copied checkout
-# passes the first and is caught only by the second, so neither refusal may be
-# worded as if it covered the other's case.
+# THREE REFUSALS, ANSWERING THREE QUESTIONS, AND THEY ARE NOT INTERCHANGEABLE.
+# The first is about the RECORD ITSELF -- is what it says something install could
+# have written; the second is about the RECORDS TOGETHER -- do they name one
+# schedule; the third is about the CALLER -- is this the checkout they were
+# written for. A copied checkout passes the first two and is caught only by the
+# third, so no refusal may be worded as if it covered another's case.
+#
+# AND THE FIRST IS FIRST BECAUSE IT IS THE ONE ABOUT UNTRUSTED INPUT.
+# `.orchid/runtime/service.json` sits inside the checkout a run's engines write
+# to, and the label and artifact it carries become the paths this file opens,
+# unloads and deletes. Nothing below may act on either until they have been held
+# to what `orchid service install` could have produced -- see
+# orchid_service_label_valid in lib/common.sh, and orchid_service_identity's own
+# third answer.
 _svc_identity() {
-  local repo="$1"
-  if ! orchid_service_identity "$repo"; then
+  local repo="$1" id_rc=0
+  orchid_service_identity "$repo" || id_rc=$?
+  if [ "$id_rc" -eq 2 ]; then
+    echo "orchid: refusing to remove anything for $repo: its binding record does not name a schedule orchid could have installed" >&2
+    echo "orchid: $ORCHID_SERVICE_ID_REJECTED" >&2
+    orchid_die "a label or artifact orchid did not derive is not a schedule to act on — it is a path this verb would unload and delete on a record's say-so; repair or delete that record, then re-run: $(_svc_rerun_command "$repo")"
+  fi
+  if [ "$id_rc" -ne 0 ]; then
     echo "orchid: refusing to remove anything for $repo: its two binding records do not name the same schedule" >&2
     echo "orchid: $(orchid_service_repo_record "$repo") and its machine-local copy must agree on label, platform, repository and artifact — one of them has been edited" >&2
     orchid_die "acting on either half alone would unload another checkout's agent or clear the last name this one has; reconcile or delete the wrong record, then re-run: $(_svc_rerun_command "$repo")"

@@ -230,6 +230,34 @@ orchid: ... reconcile or delete the wrong record, then re-run: orchid service
   teardown --repo /path/to/repo
 ```
 
+**And the record is read as untrusted input.** It lives inside the checkout the
+run is driven in — under `runtime/`, which every engine the run spawns can write
+— while what a removal takes out of it are paths, not descriptions: the label is
+joined into `~/.orchid/services/<label>.json` and
+`~/Library/LaunchAgents/<label>.plist` as a path *component*, and the artifact is
+handed to `launchctl unload` and then deleted exactly as written. So both are
+checked against what `orchid service install` could have produced — a label is
+`com.orchid.pump.` plus twelve hex characters, an artifact is that label's plist
+(macOS) or a `.orchid/runtime/pump.cron` inside a checkout (elsewhere) — and
+anything else is refused before any path built from it is opened, probed or
+removed:
+
+```
+orchid: refusing to remove anything for /path/to/repo: its binding record does
+  not name a schedule orchid could have installed
+orchid: the label recorded in <repo>/.orchid/runtime/service.json ('../../x') is
+  not one 'orchid service install' derives (com.orchid.pump.<12 hex>) ...
+orchid: ... repair or delete that record, then re-run: orchid service teardown
+  --repo /path/to/repo
+```
+
+Unlike a disagreement between the two halves, there is nothing to reconcile
+here: a value orchid does not derive has no honest counterpart to be checked
+against. Delete `.orchid/runtime/service.json` (it is runtime state, never
+committed) and re-run from the checkout the schedule was installed against — the
+machine-local half is untouched, and a removal run there resolves the label from
+it. `orchid doctor` prints that label and the path it is bound to.
+
 **A checkout that was COPIED does not inherit the schedule.** Agreement between
 the two records says which schedule they are about; it says nothing about who is
 entitled to end it. A `cp -R` of a bound checkout — a backup, a snapshot

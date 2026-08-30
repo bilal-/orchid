@@ -2582,7 +2582,7 @@ somewhere.
 
 **The orchestrate step reaches none of that, and needed its own site.** A wake
 is not a job: `runners/orchid-tick` builds its own request document and never
-calls `orchid jobs prepare`, and `runners/orchid-pump` decides whether to exec
+calls `orchid jobs prepare`, and `runners/orchid-pump` decides whether to run
 it from a dry `resolve_role_available` probe whose failure it reports as
 "no capable orchestrator available" and exits 0 on — cron-friendly, and correct
 for every reason that probe usually fails. Where every engine in

@@ -363,13 +363,23 @@ this section false without touching a byte of it.
    wake, retired by a wake that finds the target healthy and succeeds, by a real
    `orchid service install` replacing the schedule, and by `uninstall` removing
    it, so doctor never reports a schedule as failing beside its own line calling
-   that schedule healthy. Which schedule those verbs act on comes from the
+   that schedule healthy. A wake ends where the TICK it hands off to ends: a
+   pass that woke an orchestrator which then failed has not disproved anything,
+   so it leaves the note standing for the operator who reads doctor next. Which schedule those verbs act on comes from the
    binding records rather than from re-hashing `--repo`, so a checkout MOVED
    with `git worktree move` still ends the schedule it really has; and `--repo`
    must be the checkout git has REGISTERED, so a `cp -R` duplicate — whose
    copied record agrees with the machine-local half exactly — is refused before
    any scheduler call, record removal or worktree removal rather than ending the
-   original's schedule. `uninstall` removes the scheduler
+   original's schedule. Those records are read as UNTRUSTED INPUT: the
+   repo-local half sits inside the checkout a run's engines write to, and its
+   label is joined into `~/.orchid/services/<label>.json` and the plist path as
+   a path COMPONENT while its artifact is unloaded and then deleted exactly as
+   written, so both are checked against what `install` could have derived (the
+   `com.orchid.pump.<12 hex>` label; that label's plist, or a
+   `.orchid/runtime/pump.cron` inside a checkout) and anything else is refused
+   before any path built from it is opened, probed, cleared or removed.
+   `uninstall` removes the scheduler
    artifact and clears the binding only once the scheduler has let the job go:
    a macOS unload that fails while `launchctl list` still reports the label
    removes nothing and refuses, since the artifact and the record are the only
