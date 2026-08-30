@@ -103,7 +103,10 @@ case "$sub" in
     # set, so the durable record of "we stopped here, and why" survives
     # regardless.
     #
-    # Schema (schema: 1): {schema, kind, task, reason, epoch, at}. `kind` is
+    # Schema (schema: 1): {schema, kind, task, reason, epoch, at, passes} --
+    # the same enumeration PROTOCOL.md and docs/specs/kernel.md carry, and the
+    # third place a new field has to be added by hand because no gate compares
+    # the three. `passes` is documented at the `set` arm that owns it. `kind` is
     # one of the kernel-owned set in lib/drive.sh (planning, blocked-task,
     # review-evidence, review-conflict, hook-failure, worktree-conflict,
     # operator-handoff, task-prerequisite, run-complete, operator-decision) --

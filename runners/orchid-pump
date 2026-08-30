@@ -247,8 +247,18 @@ fi
 # against this checkout, the no-op names the command that ends it. No binding,
 # no line: a hand-run pump against a complete run is told nothing it did not
 # already know.
+#
+# AND A SCHEDULED WAKE PRINTS IT WHERE NOBODY IS LOOKING. The repo-local
+# service log is not opened until after the unattended trust gate further down
+# (nothing may open a target-controlled path ahead of that gate), so under a
+# real launchd agent or cron line both lines below go to the scheduler's
+# /dev/null, and this arm exits 0 so not even a failure status survives. That
+# is why `orchid doctor` asks the SAME question about every machine-local
+# binding it can see, through the orchid_run_status_terminal predicate both
+# read: the certain-waste half of the finding needs a surface that does not
+# depend on anyone reading THIS invocation's stdout.
 rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null || true)"
-if [ "$rs" = complete ]; then
+if orchid_run_status_terminal "$rs"; then
   echo "pump: run complete"
   if orchid_service_bound "$repo"; then
     echo "pump: nothing will change here again — every further wake is a no-op; uninstall the schedule, THEN remove the checkout: $(orchid_service_uninstall_command "$repo")"

@@ -1259,8 +1259,10 @@ orchid_service_uninstall_command() {
 }
 
 # orchid_service_binding_write <repo> <label> <platform> <artifact> <interval_s>
-# Records both halves, or neither. Nonzero -- with nothing left behind -- when
-# either could not be written.
+# Records both halves, or neither. Nonzero when either could not be written --
+# and never with a residue worse than a repo-local record whose schedule is not
+# there, which is the state `uninstall` exists to clear and the removal guard
+# is deliberately strict about.
 #
 # WHY BOTH ARE REQUIRED. An earlier revision made the machine-local copy best
 # effort, on the reasoning that the schedule is installed either way. That has
@@ -1327,16 +1329,31 @@ orchid_service_binding_write() {
   # reads, so if the process dies between these two renames the residue is a
   # checkout that refuses to be removed (recoverable, and recoverable in the
   # safe direction) rather than one that is removable while its schedule is
-  # live. A failed second rename is reported like any other failure, with the
-  # first record rolled back, so "nonzero means nothing was recorded" stays
-  # true for every caller.
+  # live. A failed second rename is reported like any other failure and leaves
+  # that same conservative residue behind rather than unwinding into the unsafe
+  # one -- see the rollback's own note below.
   if ! mv "$rtmp" "$rec" 2>/dev/null; then
     rm -f "$rtmp" 2>/dev/null || true
     [ -z "$mtmp" ] || rm -f "$mtmp" 2>/dev/null || true
     return 1
   fi
   if [ -n "$mtmp" ] && ! mv "$mtmp" "$mrec" 2>/dev/null; then
-    rm -f "$mtmp" "$rec" 2>/dev/null || true
+    # THE REPO-LOCAL RECORD IS LEFT STANDING, and that is the correction to an
+    # earlier revision that removed it here to keep "nonzero means nothing was
+    # recorded" literally true. It bought that sentence with the one outcome
+    # this whole mechanism exists to prevent: on a RE-install -- the same
+    # checkout, a schedule already live from the previous one -- the record it
+    # deleted was the PREVIOUS binding, not this call's. The operator was left
+    # with a running launchd agent, a removal guard that waves the checkout
+    # through, and nothing anywhere naming the schedule.
+    #
+    # Leaving it is the conservative residue the block above already commits
+    # to: a repo-local record with no fresh schedule behind it is the harmless,
+    # self-correcting state (the guard is merely strict about this checkout,
+    # `uninstall` clears it, and it needs no artifact to do so). $mrec is
+    # untouched by a failed `mv`, so a prior install's machine-local half also
+    # survives and `orchid doctor` still names it.
+    rm -f "$mtmp" 2>/dev/null || true
     return 1
   fi
   return 0
@@ -1376,6 +1393,29 @@ orchid_service_binding_present() {
   mdir="$(orchid_service_machine_dir)" || return 1
   [ -f "$mdir/$label.json" ]
 }
+
+# orchid_run_status_terminal <run_status> -- 0 iff the value names a run state
+# that a run never leaves on its own. Today that is `complete` alone: PROTOCOL's
+# COMPLETION makes `orchid run accept --reason --evidence` the only path into
+# it, and nothing at all leads out, so every scheduled wake against a run in
+# this state is a certain no-op rather than a poll that a later pass might find
+# resolved.
+#
+# A PREDICATE, TAKING THE VALUE. The three surfaces that report a schedule with
+# nothing left to do all ask it: runners/orchid-pump, on the wake itself;
+# `orchid doctor`, about every binding on this machine, which is what an
+# operator can actually read once that wake's output has gone to the
+# scheduler's /dev/null; and `orchid service status`, the verb somebody runs to
+# ask whether a schedule is still needed. They must agree, or one of them keeps
+# a checkout under a schedule another has already called finished. It takes the
+# STRING rather than the repo so this file needs nothing from
+# lib/frontmatter.sh: each caller already reads run_status its own way and
+# simply hands the value over.
+#
+# Scoped to the SERVICE lifetime question deliberately. Other run_status tests
+# in this tree (`run new`'s rollover guard, the driver's run-complete boundary)
+# ask narrower questions of their own and are not folded in here.
+orchid_run_status_terminal() { [ "${1:-}" = complete ]; }
 
 # orchid_service_bound <path> -- 0 iff a pump service records itself as
 # installed against that exact checkout. A plain file test on purpose: this is

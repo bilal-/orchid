@@ -52,6 +52,10 @@ ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
 __orchid_entry_defer_restore=1
 source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/trust.sh"
+# For `status` alone: reading the bound run's own run_status, so an operator
+# asking "is this schedule still doing anything?" is answered rather than
+# merely told a schedule exists. Function definitions only, no side effects.
+source "$ORCHID_ROOT/lib/frontmatter.sh"
 
 PUMP_LOG_TAIL_LINES=20
 
@@ -77,10 +81,11 @@ a crontab line.
                line). idempotent: refuses cleanly (a plain message, no
                launchctl/crontab touched) when nothing is installed for
                --repo -- safe to call blind.
-  status     report installed/loaded state, the binding record, the teardown
-               ordering, and the tail of --repo's .orchid/runtime/pump.log.
-               Always exits 0 -- a status query is never a failure, even
-               when nothing is installed.
+  status     report installed/loaded state, the binding record, whether the
+               bound run has already finished (every wake after that is a
+               certain no-op), the teardown ordering, and the tail of --repo's
+               .orchid/runtime/pump.log. Always exits 0 -- a status query is
+               never a failure, even when nothing is installed.
 
 TEARDOWN ORDERING. A schedule outlives the run it serves: nothing removes it
 when the last task merges. `install` records what it bound itself to (a
@@ -92,9 +97,11 @@ record exists to keep is:
 
 Reversed, a launchd agent / crontab line keeps waking on a schedule against a
 deleted directory, and the record naming the leftover schedule went into the
-bin with it. `orchid doctor` reports any binding whose repository is gone; a
-pump whose target is gone refuses loudly instead of polling forever; and every
-checkout removal orchid itself performs refuses while a binding is live.
+bin with it. `orchid doctor` warns about any binding whose repository is gone,
+and about any whose run has already reached a terminal state -- the certain
+waste the pump can only report to a scheduler's /dev/null; a pump whose target
+is gone refuses loudly instead of polling forever; and every checkout removal
+orchid itself performs refuses while a binding is live.
 
 options:
   --repo <path>    target repo (default: $ORCHID_REPO, else the cwd)
@@ -266,11 +273,23 @@ _svc_render_cron_line() {
 # exactly the thing the live-run finding says is written down nowhere. So it
 # is printed here, next to the schedule it constrains, rather than left to a
 # doc page.
+#
+# It also answers the question an operator is really asking, which is not "is a
+# schedule installed" but "is it still doing anything". A run never leaves a
+# terminal state on its own, so from the last merge onward every wake of this
+# schedule is a certain no-op -- and the pump's own report of that is printed
+# before it opens the repo-local service log, so under a real launchd agent or
+# cron line it goes to /dev/null. Said here, and by `orchid doctor` for every
+# binding on the machine, through the one shared predicate.
 _svc_print_binding() {
-  local repo="$1" rec
+  local repo="$1" rec rs
   rec="$(orchid_service_repo_record "$repo")"
   if [ -f "$rec" ]; then
     echo "  binding:  $rec"
+    rs="$(fm_get "$repo/.orchid/roadmap.md" run_status 2>/dev/null || true)"
+    if orchid_run_status_terminal "$rs"; then
+      echo "  run:      $rs -- this run is over; every further wake of this schedule is a certain no-op"
+    fi
     echo "  teardown: this checkout is bound to a live schedule -- uninstall it BEFORE removing $repo:"
     echo "              $(orchid_service_uninstall_command "$repo")"
   fi

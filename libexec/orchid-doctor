@@ -90,10 +90,32 @@ _orchid_entry_restore_operator_path
 # refusal goes to the scheduler's /dev/null, leaving this the only surface an
 # operator has left.
 #
-# A binding pointing at a live directory is ordinary state, reported so the
-# teardown ordering is visible BEFORE anything is torn down. A binding pointing
-# at a path that is gone is the leftover schedule itself: the launchd agent or
-# crontab line is still firing on its interval against nothing.
+# A binding pointing at a live directory whose run is still under way is
+# ordinary state, reported so the teardown ordering is visible BEFORE anything
+# is torn down. The other two are the two halves of the live-run finding, and
+# both are warned about:
+#
+#   the path is GONE          — the leftover schedule itself: the launchd agent
+#                               or crontab line is firing on its interval
+#                               against nothing.
+#   the RUN is finished       — the certain waste. `run_status` never leaves a
+#                               terminal state on its own, so every wake from
+#                               the last merge onward is a guaranteed no-op.
+#                               runners/orchid-pump says exactly this on each of
+#                               those wakes, but it says it BEFORE the repo-
+#                               local service log is opened (nothing may open a
+#                               target-controlled path ahead of the unattended
+#                               trust gate), so under a real scheduler the line
+#                               goes to /dev/null and the arm exits 0. Doctor is
+#                               where it becomes readable. The predicate is
+#                               shared with the pump (orchid_run_status_terminal,
+#                               lib/common.sh) so the two can never disagree
+#                               about which runs are finished.
+#
+# The run's status is read from the BOUND checkout, not from the repository
+# doctor happens to be run in — the binding names its own target, and an
+# operator asking "what schedules does this machine still owe an uninstall?" is
+# usually not standing in any of them.
 #
 # WARN, never FAIL. The finding is about this machine's scheduler, not about
 # this repository's health, and it must never flip an otherwise clean doctor's
@@ -103,10 +125,19 @@ _orchid_entry_restore_operator_path
 # none.
 while IFS="$(printf '\t')" read -r svc_label svc_repo; do
   [ -n "$svc_label" ] || continue
-  if [ -d "$svc_repo" ]; then
-    echo "ok: pump service installed for $svc_repo (label $svc_label) — uninstall it BEFORE removing that checkout: $(orchid_service_uninstall_command "$svc_repo")"
-  else
+  if [ ! -d "$svc_repo" ]; then
     echo "WARN: pump service $svc_label is still installed for $svc_repo, which no longer exists — the scheduler is waking against a deleted path; remove it with: $(orchid_service_uninstall_command "$svc_repo")"
+    continue
+  fi
+  # An unreadable or absent roadmap leaves this empty, which the predicate
+  # answers `no` for: a binding whose run cannot be read is reported as the
+  # ordinary live one it was before, never as finished on the strength of a
+  # failed read.
+  svc_rs="$(fm_get "$svc_repo/.orchid/roadmap.md" run_status 2>/dev/null || true)"
+  if orchid_run_status_terminal "$svc_rs"; then
+    echo "WARN: pump service $svc_label is still installed for $svc_repo, whose run is $svc_rs — a run never leaves that state on its own, so every further wake is a certain no-op; uninstall the schedule, THEN remove the checkout: $(orchid_service_uninstall_command "$svc_repo")"
+  else
+    echo "ok: pump service installed for $svc_repo (label $svc_label) — uninstall it BEFORE removing that checkout: $(orchid_service_uninstall_command "$svc_repo")"
   fi
 done < <(orchid_service_bindings)
 

@@ -344,7 +344,13 @@ this section false without touching a byte of it.
    scheduler keeps firing against a directory that is gone and the binding
    record naming the leftover schedule went into the bin with it — `orchid
    doctor` reads the machine-local copy under `~/.orchid/services/` and names
-   what is still owed an uninstall. See PROTOCOL.md's COMPLETION.
+   what is still owed an uninstall, both for a binding whose checkout is gone
+   and for one whose run has already reached a terminal state. Doctor is the
+   surface that reaches an operator here: the pump says the same thing on every
+   wake, but it says it before the repo-local service log is opened (nothing
+   may open a path inside the target ahead of the unattended trust gate), so a
+   scheduled wake reports it to the scheduler's `/dev/null`. See PROTOCOL.md's
+   COMPLETION.
 
 ## Remote interaction
 

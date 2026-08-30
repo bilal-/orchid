@@ -509,7 +509,9 @@ rm -rf "$WORK2"
 #       Then the two arms about ORDER: that refusal is reached even when the
 #       run is `complete` (the cheerful no-op must not answer first), and a
 #       `complete` run that still has a schedule bound to it names the
-#       command that ends the certain waste.
+#       command that ends the certain waste — on the pump's own output, and
+#       again through `orchid doctor`, which is the only one of the two a
+#       real scheduler does not send to /dev/null.
 #   K3  RED/GREEN: a checkout carrying a live binding is refused for removal,
 #       naming the uninstall command; one without a binding is not.
 #   K4  uninstall still works once the checkout is gone -- the command
@@ -699,6 +701,62 @@ assert_match 'every further wake is a no-op' "$done_pump" \
 assert_match 'service uninstall --repo' "$done_pump" \
   "and names the command that stops the waste, which nothing anywhere used to do"
 red_case "a completed run with a schedule still installed against it names the command that ends the waste"
+
+# ...and the same fact, said where a SCHEDULED wake can actually be heard.
+# Every line the arm above prints is written before the pump opens its repo-
+# local service log -- nothing may open a target-controlled path ahead of the
+# unattended trust gate -- so a real launchd agent or cron line sends both to
+# /dev/null, and this arm exits 0, so there is not even a nonzero status left
+# behind. Read only from the pump's own output, the remedy for the certain-
+# waste half of the finding is therefore invisible in exactly the configuration
+# it exists for. `orchid doctor` reads the machine-local binding store instead
+# and asks the SAME predicate about the run each binding points at.
+done_label="$(echo "$done_install" | grep -oE "$label_re" | head -n1)"
+done_doctor="$(ORCHID_REPO="$WORK" "$ORCHID_BIN" doctor 2>&1 || true)"
+assert_match "WARN: pump service $done_label is still installed" "$done_doctor" \
+  "doctor warns about a schedule bound to a run that has already finished"
+assert_match 'whose run is complete' "$done_doctor" \
+  "and names the run state that makes every further wake certain waste"
+assert_match 'every further wake is a certain no-op' "$done_doctor" \
+  "and says the waste is guaranteed rather than merely possible"
+assert_match 'uninstall the schedule, THEN remove the checkout' "$done_doctor" \
+  "and states the ordering, not just that a reversal exists"
+# Compared literally, never as a pattern: a scratch path carries `.` and can
+# carry other ERE metacharacters, and a pattern that matched anyway would not be
+# evidence that this path was named.
+case "$done_doctor" in
+  *"$DONE_CANON"*) ;;
+  *) fail "doctor's finished-run warning must name the exact checkout the schedule is bound to" ;;
+esac
+red_case "doctor reports a live schedule whose run has already reached a terminal state"
+
+# GREEN, from the SAME doctor output: a binding whose run is still under way is
+# ordinary state and keeps its `ok:` line. Without this the warning above would
+# be satisfied by a doctor that flagged every binding it could see.
+case "$done_doctor" in
+  *"ok: pump service installed for $BIND_CANON (label $bind_label)"*) ;;
+  *) fail "a binding whose run is still under way must stay an ok: line -- the warning must be about the run's state, not about having a binding at all" ;;
+esac
+green_case "a schedule bound to a run that is still under way is reported as ordinary state"
+
+# And `orchid service status` -- the verb an operator actually runs to ask "is
+# this schedule still needed?" -- answers that question rather than only "yes, a
+# schedule exists". Same predicate again, so the three surfaces cannot disagree.
+done_status="$("$SERVICE" status --repo "$DONE_REPO" --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "status still exits 0 against a finished run (out: $done_status)"
+assert_match '^ +run: +complete ' "$done_status" \
+  "status names the finished run behind the schedule it is reporting"
+assert_match 'every further wake of this schedule is a certain no-op' "$done_status" \
+  "and says what that means for the schedule, not merely what the run_status is"
+red_case "service status names a finished run as the reason its schedule has nothing left to do"
+
+bind_status_live="$("$SERVICE" status --repo "$BIND_REPO" --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "status still exits 0 against a run that is under way"
+grep -qE 'every further wake of this schedule is a certain no-op' <<<"$bind_status_live" \
+  && fail "a schedule whose run is still under way must NOT be reported as certain waste"
+assert_match 'teardown:' "$bind_status_live" \
+  "and still states the teardown ordering, which applies either way"
+green_case "service status leaves a live run's schedule unqualified"
 
 # The same complete run with NO schedule bound is told nothing extra: the line
 # exists to end a real obligation, not to lecture a hand-run pump.

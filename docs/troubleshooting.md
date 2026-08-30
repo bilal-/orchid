@@ -102,6 +102,22 @@ pump: nothing will change here again — every further wake is a no-op; uninstal
   the schedule, THEN remove the checkout: orchid service uninstall --repo <path>
 ```
 
+Those two lines are printed before the pump opens `.orchid/runtime/pump.log`
+(nothing may open a path inside the target before the unattended trust gate
+passes), so a scheduled wake sends them to the scheduler's `/dev/null` and
+`pump.log` stays empty — you will see them by running `runners/orchid-pump`
+from a terminal, not by reading the log. The finished-run finding therefore
+also has a surface that does not depend on catching an invocation's output:
+`orchid doctor`, from anywhere on this machine, reports every binding whose run
+has already reached a terminal state.
+
+```
+WARN: pump service com.orchid.pump.<hash> is still installed for /path/to/repo,
+  whose run is complete — a run never leaves that state on its own, so every
+  further wake is a certain no-op; uninstall the schedule, THEN remove the
+  checkout: orchid service uninstall --repo /path/to/repo
+```
+
 ```sh
 orchid service status --repo "$PWD"    # names the binding and this ordering
 orchid service uninstall --repo "$PWD"

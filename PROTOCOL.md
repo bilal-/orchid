@@ -3374,7 +3374,12 @@ Once `orchid status --explain` shows every task `done`:
    the run reaches `complete` is a certain no-op, but it is a no-op that runs
    forever. The pump says so on each of them while a binding names this
    checkout — `pump: run complete`, then a second line stating that nothing
-   here will change again and naming the uninstall command above.
+   here will change again and naming the uninstall command above. Both lines
+   are printed before the pump opens its repo-local service log (nothing may
+   open a path inside the target ahead of the unattended trust gate), so a
+   SCHEDULED wake sends them to the scheduler's `/dev/null` and the arm exits
+   0 — `orchid doctor` warns about the same binding, from the machine-local
+   copy, and is the surface that actually reaches an operator here.
 
 **TEARDOWN ORDERING.** When the run is over and you are removing the
 integration worktree, the order is not interchangeable:
@@ -3389,9 +3394,10 @@ and the binding record that would have named the leftover schedule was inside
 the directory you just removed. Four things hold this ordering up, because
 documentation alone did not: `orchid service install` records what it bound
 itself to (in the checkout, and in a machine-local copy under
-`~/.orchid/services/` that OUTLIVES the checkout); `orchid doctor` reports any
-binding whose repository is gone; a pump whose target is gone refuses loudly
-instead of polling (HEADLESS OPERATION above); and every checkout removal
+`~/.orchid/services/` that OUTLIVES the checkout); `orchid doctor` warns about
+any binding whose repository is gone AND any whose run has already reached a
+terminal state; a pump whose target is gone refuses loudly instead of polling
+(HEADLESS OPERATION above); and every checkout removal
 orchid itself performs refuses while a binding is live, naming the uninstall
 command. If you removed the worktree first, `orchid doctor` from anywhere on
 the machine names the schedule still owed an uninstall.

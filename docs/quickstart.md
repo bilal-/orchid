@@ -401,7 +401,10 @@ A completed run does not stop a schedule. Nothing does — not the last task
 merging, not `orchid run accept`, not `run_status: complete`. If you installed
 the service in step 6, the launchd agent or crontab line is still firing every
 `pump_interval_s`, and every one of those wakes is now a certain no-op. The
-pump says so on each of them, in its own log, and names the command below.
+pump says so on each of them and names the command below — but it says it
+before it has opened its own `pump.log`, so a scheduled wake reports it to the
+scheduler's `/dev/null` rather than to a log you can read afterwards.
+`orchid doctor` is the surface that does not depend on catching an invocation.
 
 So when you are done with the working checkout, the order matters:
 
@@ -415,9 +418,11 @@ Reversed, you leave a scheduler waking on a timer against a directory that is
 no longer there, and the record naming that leftover schedule was inside the
 directory you just deleted. `orchid service status` names this ordering next
 to the schedule it applies to, and `orchid doctor` — run from anywhere on the
-machine, not just from the repository — reports any binding whose repository
-is gone, with the `orchid service uninstall` command that ends it. The pump
-itself refuses to run, loudly, rather than waking against a deleted path.
+machine, not just from the repository — warns about both ends of this: a
+binding whose repository is gone, and a binding whose run has already reached
+a terminal state, each with the `orchid service uninstall` command that ends
+it. The pump itself refuses to run, loudly, rather than waking against a
+deleted path.
 
 `orchid service uninstall` is safe to run blind: it refuses cleanly, touching
 nothing, when no schedule is installed for that path.
