@@ -466,18 +466,29 @@ buying a fresh implementation pass to reach the same tree.
     action just as surely. No arm is exempt: the trust lookup first performs
     its constant-size, no-Git missing-record decision, then the stale-root gate
     fires before the arm prints its report.
-    `libexec/orchid-doctor` draws the same order for the same reason, and it is
-    the one place the order can be observed to matter: it makes the
+    `libexec/orchid-doctor` draws the same order for the same reason, and the
+    two of them are where the order can be observed to matter: each makes the
     machine-local unattended-trust decision first and fires the gate second,
-    both ahead of its first printed line. When `ORCHID_REPO` and `ORCHID_ROOT`
+    both ahead of its first printed line. When the target and `ORCHID_ROOT`
     are the SAME checkout — which is what self-hosting means, and what anyone
-    running `orchid doctor` from inside an Orchid checkout does — the gate's
+    running `orchid doctor` from inside an Orchid checkout does, or naming that
+    checkout to `orchid trust show`, which is the question that checkout is
+    most often the subject of — the gate's
     `git diff --cached` targets the very repository whose acknowledgement has
     not been looked up yet, so firing it first would spend target-repository
     Git in front of the denial. Everywhere else those two are different
     directories and the ordering costs nothing to get wrong, which is exactly
-    why it is proved by RUNNING doctor in the self-hosted case rather than by
-    reading its source (`tests/inv/test_INV-15_no_optional_gate.sh`).
+    why it is proved by RUNNING both verbs in the self-hosted case rather than
+    by reading their source (`tests/inv/test_INV-15_no_optional_gate.sh`). For
+    the lookup arm that proof also constructs the self-hosted case WITH an
+    acknowledgement on file, because only then does the machine-local decision
+    spend Git of its own and so acquire a position an observer can read; with
+    an empty store the correct ordering and the wrong one leave the same trace.
+    Revocation is the one arm that keeps the gate ahead of everything, and
+    deliberately: it is built without inspection so removal stays available
+    when inspection cannot complete, so it has no machine-local decision to put
+    first. That trade is recorded as a `not_tested` claim in the invariant
+    rather than left implicit.
     THE SOURCE-TIME FIRE IS CONDITIONAL ON WHERE THE FILE LIVES, and that is
     the other half of "no gate is optional". `_orchid_kernel_entry_point`
     answers yes only for `bin/orchid`, `libexec/orchid-*` and
@@ -1975,7 +1986,13 @@ semantic correctness beyond declared verification commands.
   with the gate's own index comparison as the first Git subprocess of the whole
   run — and, with the gate stood down by its documented override and nothing
   else changed, reaches and renders its denial having spent no Git at all —
-  and a task whose `verification_commands` names nothing but `true` is still
+  the shipped `orchid trust show` held to both of those in that same
+  self-hosted environment, plus the ordering itself read off a run: pointed at
+  a self-hosted checkout that HAS an acknowledgement, so the machine-local
+  lookup walks the target's history and therefore has a position, that walk's
+  Git must precede the gate's index comparison, and the previous ordering as a
+  fixture in the identical environment must be seen to spend the gate's query
+  first — and a task whose `verification_commands` names nothing but `true` is still
   gated by `merge_gate` before its ref can advance
 - INV-16 a step is never dispatched to an actor whose manifest does not
   declare what that step's work needs; it becomes an operator hand-off with a

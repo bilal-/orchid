@@ -113,12 +113,21 @@ EOF
 # has been found (tests/test_unattended_trust.sh's fast-guard fence); what
 # lib/common.sh's guard may not spend before that lookup is a subprocess at
 # source time, which is why its content half was moved off source time and into
-# the firing sites (INV-15 section 3). This call is neither. It runs after the
-# library is loaded and the subcommand is validated, the only Git it can spend
-# is against $ORCHID_ROOT -- orchid's own installation, never the repository the
-# operator asked about -- and it spends even that only when the guard is already
-# ARMED. For every root not parked on its configured integration branch, which
-# is every ordinary checkout, it is a no-op that costs nothing.
+# the firing sites (INV-15 section 3). This call is neither: it runs after the
+# library is loaded and the subcommand is validated, and it spends anything at
+# all only when the guard is already ARMED. For every root not parked on its
+# configured integration branch, which is every ordinary checkout, it is a
+# no-op that costs nothing.
+#
+# The one Git it can spend is against $ORCHID_ROOT. That was once written here
+# as "never the repository the operator asked about", and that is not true of
+# orchid, which is self-hosted: point any arm of this verb at orchid's own
+# checkout and $ORCHID_ROOT IS the target. So `show`, the arm whose target the
+# operator names and most often names as this checkout, makes the
+# machine-local trust lookup FIRST and fires the gate after it; the argument
+# is at that arm, and INV-15 section 9 runs it. The other two arms name their
+# own targets in the same way, and each carries below the reason its ordering
+# is the one it has.
 sub="${1:-}"; [ "$#" -gt 0 ] && shift
 case "$sub" in
   -h|--help|help|"")
@@ -140,6 +149,13 @@ case "$sub" in
     done
     [ -n "$reason" ] || orchid_die "usage: orchid trust unattended <repo> --reason <reason>"
     # The decision is made and nothing durable has been written yet.
+    #
+    # No lookup-first ordering here either, and for the opposite reason to
+    # revoke's: this arm is the operator AUTHORING the acknowledgement, which
+    # is the one path licensed to spend complete verification on the target. A
+    # gate query ahead of it is not a query made before an acknowledgement was
+    # looked for -- the operator is standing in front of the terminal saying
+    # which repository to acknowledge, and this run is what puts one on file.
     orchid_root_stale_gate
     unattended_trust_acknowledge "$repo" "$reason"
     echo "unattended trust acknowledged:"
@@ -148,10 +164,34 @@ case "$sub" in
   show)
     [ "$#" -le 1 ] || orchid_die "usage: orchid trust show [<repo>]"
     repo="${1:-${ORCHID_REPO:-$PWD}}"
-    # The decision is made and nothing has been reported yet. The side effect
-    # this arm must precede is the report itself.
+    # THE MACHINE-LOCAL TRUST DECISION PRECEDES THE GATE'S GIT QUERY; BOTH
+    # PRECEDE THIS ARM'S FIRST REPORTED LINE.
+    #
+    # The gate still sits ahead of the side effect this arm must precede --
+    # the report itself, which is what an operator reads before letting a
+    # scheduled run proceed, and which out of a stale checkout would be
+    # produced by pre-merge code nobody has looked at. What moved is the half
+    # in front of it.
+    #
+    # `orchid trust show <repo>` is the one arm whose target is named by the
+    # operator, and the target it is most often pointed at is orchid's own
+    # checkout. There ORCHID_ROOT and $repo are the SAME directory, so the
+    # gate's `git diff --cached` against the root is a query against the
+    # target repository -- and the unattended-trust contract forbids exactly
+    # that before an acknowledgement for the target has been looked for. In
+    # every other environment the two are different directories, which is why
+    # firing first read as harmless: the one case it is wrong in is the one
+    # case no ordinary run reproduces (lesson L036 again).
+    #
+    # unattended_trust_inspect is the constant-size, no-Git denial: with no
+    # identity-keyed candidate it returns untrusted having invoked no Git and
+    # created no scratch file, and only a present, eligible candidate permits
+    # its own target Git work. It prints nothing and writes nothing, so
+    # putting it first costs the gate none of its reach -- the render below
+    # is still downstream of both.
+    unattended_trust_inspect "$repo"
     orchid_root_stale_gate
-    unattended_trust_show "$repo"
+    unattended_trust_show_loaded
     ;;
   revoke)
     [ "$#" -le 1 ] || orchid_die "usage: orchid trust revoke [<repo>]"
@@ -168,6 +208,14 @@ case "$sub" in
     # preserved the documented way, per-invocation and visible in the
     # transcript, rather than by an exemption: ORCHID_ALLOW_STALE_ROOT=1
     # orchid trust revoke <repo>.
+    #
+    # This arm therefore does NOT get the lookup-first ordering `show` was
+    # given above, and that is a trade rather than an omission: there is no
+    # machine-local decision to put first, because putting one first is the
+    # inspection this arm exists without. Pointed at orchid's own checkout the
+    # gate's comparison is a query against what is, in that one environment,
+    # the target -- stated in INV-15's not_tested record rather than quietly
+    # left out, because the alternative costs revocation its availability.
     orchid_root_stale_gate
     if unattended_trust_revoke "$repo"; then
       echo "unattended trust revoked: ${ORCHID_UNATTENDED_REPO:-$repo}"

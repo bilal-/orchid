@@ -72,17 +72,24 @@ source "$(dirname "$0")/../helpers.sh"
 #     pins the other edge -- a usage error out of the same stale root is still
 #     answered as a usage error, so the gate sits after the operator's command
 #     has been validated and not in front of a typo.
-#   * section 9 runs the shipped `orchid doctor` in the one environment where
-#     the order of its two pre-report gates can be wrong: ORCHID_REPO and
-#     ORCHID_ROOT the SAME stale integration checkout, with no acknowledgement
-#     for it anywhere. Refused, it must have printed nothing at all and the
-#     first Git of the whole run must be the gate's own index comparison; with
-#     the gate stood down by its documented override and nothing else changed,
-#     it must reach and render its denial having spent no Git whatsoever. Git
-#     reports its own subprocesses onto the same stream as doctor's output, so
-#     "before the denial" is read off one ordering. Everywhere else those two
-#     paths are different directories and the ordering costs nothing to get
-#     wrong, which is lesson L036's shape exactly.
+#   * section 9 runs the shipped `orchid doctor` AND the shipped `orchid trust
+#     show` in the one environment where the order of their two pre-report
+#     gates can be wrong: the target and ORCHID_ROOT the SAME stale integration
+#     checkout, with no acknowledgement for it anywhere. Refused, each must
+#     have printed nothing at all and the first Git of the whole run must be
+#     the gate's own index comparison; with the gate stood down by its
+#     documented override and nothing else changed, each must reach and render
+#     its denial having spent no Git whatsoever. Git reports its own
+#     subprocesses onto the same stream as the run's output, so "before the
+#     denial" is read off one ordering. Everywhere else those two paths are
+#     different directories and the ordering costs nothing to get wrong, which
+#     is lesson L036's shape exactly.
+#     For the lookup arm the ordering is also read off directly rather than
+#     inferred, which the empty-store runs cannot do: with an acknowledgement
+#     on record the machine-local lookup walks the target's history, so it has
+#     a POSITION, and it must hold it ahead of the gate's index comparison. The
+#     previous ordering, as a fixture in the identical environment, must be
+#     reported.
 #   * section 4 no longer trusts even its own path arithmetic. lib/common.sh
 #     fires the gate at source time only for bin/orchid, libexec/orchid-* and
 #     runners/orchid-*, so a file outside those three arms the guard and is
@@ -95,7 +102,7 @@ source "$(dirname "$0")/../helpers.sh"
 #     proved deleted from the record -- and the fixture that demonstrates it
 #     is RUN, so the deletion is observed rather than asserted about a shell.
 #
-# RED: eighteen, each fed to the SAME derivation or the same shipped verb the
+# RED: twenty-one, each fed to the SAME derivation or the same shipped verb the
 #      section runs over the real tree. A ci-local-shaped file whose static
 #      section sits BELOW the `--no-tests` cut (so it is outside the merge
 #      floor and only reaches tasks that opted into the full suite), and a
@@ -118,6 +125,12 @@ source "$(dirname "$0")/../helpers.sh"
 #      itself, run where ORCHID_REPO and ORCHID_ROOT are one stale
 #      unacknowledged checkout, which must refuse with nothing printed and
 #      with the gate's own index comparison as the first Git of the run.
+#      The shipped `orchid trust show` in that same self-hosted environment,
+#      held to the same three things; a lookup-shaped fixture that is RUN and
+#      really does query its target before rendering its verdict; and the
+#      lookup with its stale-root gate moved back ABOVE the machine-local
+#      trust decision, run against an ACKNOWLEDGED self-hosted target, which
+#      must be seen to spend the gate's index comparison first.
 #      An $ORCHID_ROOT genuinely parked on its configured integration branch
 #      with a staged kernel edit, which must still be REFUSED -- the case that
 #      must be caught. A gate written as a producer piped into `grep -q`. A
@@ -154,7 +167,12 @@ source "$(dirname "$0")/../helpers.sh"
 #      the file and which, run out of that same stale self-hosted checkout
 #      with the gate stood down and nothing else changed, renders its denial
 #      having spent no Git at all -- beside a fixture that spends the
-#      IDENTICAL query one line later and must be left alone;
+#      IDENTICAL query one line later and must be left alone; the shipped
+#      lookup held to both of those in the same self-hosted environment, and
+#      the same lookup against an ACKNOWLEDGED self-hosted target, where the
+#      machine-local decision's own Git must be seen to precede the gate's
+#      index comparison while the refusal and the suppressed report stay
+#      exactly as they were;
 #      same pump against the same repo out of a root that is NOT stale, which
 #      must run and must create the very directory the refusal above proved
 #      absent; the same task, the same tree and the same absent opt-in with a
@@ -1946,8 +1964,13 @@ assert_match 'usage: orchid trust show' "$trust_out" \
   "INV-15: ...and out of a stale root it must still be the USAGE message. The gate belongs after the operator's command has been validated, not in front of a typo's diagnosis — otherwise every mistyped invocation is answered with a refusal about the checkout instead"
 
 # ===========================================================================
-# 9 -- THE SELF-HOSTED DOCTOR, RUN: THE DENIAL COSTS NO TARGET-REPOSITORY GIT,
-# AND A REFUSED DOCTOR REPORTS NOTHING AT ALL.
+# 9 -- THE SELF-HOSTED ENTRY POINTS, RUN: THE DENIAL COSTS NO TARGET-REPOSITORY
+# GIT, AND A REFUSED RUN REPORTS NOTHING AT ALL.
+#
+# Two verbs, in the order they were found to need it: `orchid doctor` first,
+# and then `orchid trust show` -- the arm whose target the operator NAMES, and
+# most often names as Orchid's own checkout. The second half is below the
+# doctor half, after the plumbing both share.
 #
 # `orchid doctor` is the one deferring diagnostic with TWO pre-report gates,
 # and the order of the two only matters in one environment: the one where
@@ -1970,7 +1993,9 @@ assert_match 'usage: orchid trust show' "$trust_out" \
 # made by RUNNING the shipped doctor out of a checkout that really is the
 # self-hosted case, with Git itself reporting every subprocess it spawns.
 #
-# TWO RUNS, because the refusal hides the ordering it is part of:
+# TWO RUNS FOR DOCTOR, because the refusal hides the ordering it is part of
+# (the lookup half below takes a third, for a reason the doctor half does not
+# have):
 #
 #   * With the gate ARMED, doctor must refuse and must have printed NOTHING --
 #     no plugin listing, no readiness verdict, not even its own trust line.
@@ -2041,7 +2066,8 @@ for doctor_dir in bin lib libexec runners plugins roles skills templates; do
   cp -R "$REPO_ROOT/$doctor_dir" "$DOCTOR_ROOT/$doctor_dir"
 done
 cp "$REPO_ROOT/PROTOCOL.md" "$DOCTOR_ROOT/PROTOCOL.md"
-chmod +x "$DOCTOR_ROOT/bin/orchid" "$DOCTOR_ROOT/libexec/orchid-doctor"
+chmod +x "$DOCTOR_ROOT/bin/orchid" "$DOCTOR_ROOT/libexec/orchid-doctor" \
+  "$DOCTOR_ROOT/libexec/orchid-trust"
 
 # The config is AUTHORED, not copied, and it declares exactly one key.
 #
@@ -2125,18 +2151,24 @@ first_traced_git() {
   ' <<<"$1"
 }
 
-# doctor_git_before_denial <combined-output> -- violation lines when a Git
-# subprocess ran before the run rendered its unattended-trust verdict.
+# git_before_verdict <combined-output> <verdict-ere> -- violation lines when a
+# Git subprocess ran before the run rendered its unattended-trust verdict.
 #
 # One pass over one stream, stopping at whichever comes first, so the answer is
 # an ORDERING and not two independent presence tests. A run that rendered no
 # verdict at all is reported too: "no Git ran before the denial" is vacuously
 # true of a run that never denied anything, and reading that as a pass is the
 # same defect this file is about.
-doctor_git_before_denial() {
-  awk '
+#
+# The verdict pattern is a parameter because the two shipped entry points this
+# section runs spell their verdict differently -- doctor prefixes its readiness
+# marker, `orchid trust show` leads with the report's own first line -- and one
+# matcher judged against both is one fewer place for the two measurements to
+# disagree about what "before" means.
+git_before_verdict() {
+  awk -v verdict="$2" '
     settled { next }
-    /^(ok|WARN): unattended trust/ { settled = 1; next }
+    $0 ~ verdict { settled = 1; next }
     /trace: built-in: git / {
       line = $0
       sub(/^.*trace: built-in: git /, "", line)
@@ -2147,6 +2179,11 @@ doctor_git_before_denial() {
     END { if (!settled) print "denial-unreached: the run rendered no unattended-trust verdict at all, so there is no moment in it to measure a Git query against" }
   ' <<<"$1"
 }
+
+DOCTOR_VERDICT_ERE='^(ok|WARN): unattended trust'
+TRUST_SHOW_VERDICT_ERE='^unattended trust: '
+
+doctor_git_before_denial() { git_before_verdict "$1" "$DOCTOR_VERDICT_ERE"; }
 
 # doctor_traced_run <stream-file> <env-assignment>... <command>... -- run a
 # command with Git tracing into <stream-file>, and with the command's OWN
@@ -2335,6 +2372,246 @@ green_case "the identical query, moved to the line after the verdict, was left a
 # adds a THIRD pre-report call to doctor tomorrow whose Git the two runs above
 # happen not to see because that call spends none in this fixture.
 
+# ---------------------------------------------------------------------------
+# THE SECOND SELF-HOSTED ENTRY POINT: `orchid trust show`.
+#
+# Doctor is not the only verb whose target can be Orchid's own checkout, and it
+# is not the one most often pointed at it. `orchid trust show <repo>` takes its
+# target from the operator's own argument, and the repository an operator most
+# often asks that question about is the Orchid installation a scheduled run
+# would execute out of. There ORCHID_ROOT and the target are ONE directory, so
+# the stale-root gate's `git diff --cached` against the root is a query against
+# the target -- and the unattended-trust contract forbids a target query before
+# an acknowledgement for the target has been looked for.
+#
+# That is why the arm now calls unattended_trust_inspect first, fires the gate
+# second, and renders third. Section 8 already runs both edges of the gate on
+# this arm, but it runs them with the root and the target as DIFFERENT
+# directories, which is the environment in which firing first is harmless and
+# therefore the environment in which this defect is invisible -- the same shape
+# as the blind spot lesson L036 was paid for, one verb over.
+#
+# Three runs, on the same self-hosted fixture the doctor runs above use.
+
+# RUN THREE: the contract's own case -- the target is unacknowledged, and the
+# gate is armed. The machine-local lookup must be over before the gate's query,
+# and the report must not be produced at all.
+TRUST_SELFHOST_STREAM="$DOCTOR_PROOF/trust-show-armed.stream"
+doctor_traced_run "$TRUST_SELFHOST_STREAM" \
+  HOME="$DOCTOR_HOME" ORCHID_REPO="$DOCTOR_ROOT" ORCHID_ALLOW_STALE_ROOT='' \
+  "$DOCTOR_ROOT/libexec/orchid-trust" show "$DOCTOR_ROOT"
+trust_selfhost_rc="$DOCTOR_RUN_RC"
+trust_selfhost_out="$(cat "$TRUST_SELFHOST_STREAM")"
+assert_eq 1 "$trust_selfhost_rc" \
+  "INV-15: 'orchid trust show' asked about the very checkout it is running from, that checkout being stale, must refuse (got rc=$trust_selfhost_rc: $trust_selfhost_out)"
+assert_match 'refusing to run: the checkout orchid itself runs from' "$trust_selfhost_out" \
+  "INV-15: ...and it must be the stale-root refusal, not some other failure of the fixture"
+assert_match 'libexec/orchid-version' "$trust_selfhost_out" \
+  "INV-15: the refusal must name the staged kernel path — the gate is not merely reached on this arm in the self-hosted case, it ran and it SAW something"
+case "$trust_selfhost_out" in
+  *'binding_state:'*)
+    fail "INV-15: the refused self-hosted lookup printed its report anyway. That report is the account of whether an unattended run may execute here, produced BY the pre-merge code whose staleness is the finding, and an operator acts on it — so on this arm the gate is reached after the answer it was supposed to precede" ;;
+esac
+trust_selfhost_first_git="$(first_traced_git "$trust_selfhost_out")"
+trust_selfhost_first_git="${trust_selfhost_first_git//\'/}"
+[ -n "$trust_selfhost_first_git" ] \
+  || fail "INV-15: the refused self-hosted lookup spent no observable Git at all, though it cannot have refused without comparing this root's index against HEAD — so this is a run that spent nothing where it must have spent something, and the claim below about WHICH Git ran first would be a claim about an unobserved run"
+case "$trust_selfhost_first_git" in
+  *"diff --cached"*) ;;
+  *) fail "INV-15: the FIRST Git the self-hosted lookup spent was 'git $trust_selfhost_first_git', not the stale-root gate's own index comparison. With an empty machine-local store the trust lookup is supposed to reach its denial without invoking Git at all, so anything ahead of the gate here is a target-repository query made before any acknowledgement had been looked for" ;;
+esac
+red_case "the shipped 'orchid trust show', asked about the one stale integration checkout it is itself running from with no acknowledgement on record, refused with its staged kernel path named, not one line of the report produced, and the stale-root gate's own index comparison as the first Git subprocess of the entire run"
+
+# RUN FOUR: the same target and the same empty store, with the gate stood down
+# by its one documented override. The refusal is what hides the ordering, so
+# standing it down is what makes the denial itself observable -- and what it
+# must show is a denial reached having spent no Git whatsoever.
+TRUST_SELFHOST_OPEN="$DOCTOR_PROOF/trust-show-open.stream"
+doctor_traced_run "$TRUST_SELFHOST_OPEN" \
+  HOME="$DOCTOR_HOME" ORCHID_REPO="$DOCTOR_ROOT" ORCHID_ALLOW_STALE_ROOT=1 \
+  "$DOCTOR_ROOT/libexec/orchid-trust" show "$DOCTOR_ROOT"
+trust_open_rc="$DOCTOR_RUN_RC"
+trust_open_out="$(cat "$TRUST_SELFHOST_OPEN")"
+assert_eq 0 "$trust_open_rc" \
+  "INV-15: with the stale-root gate stood down, the self-hosted lookup must run to its report (got rc=$trust_open_rc: $trust_open_out)"
+assert_match '^unattended trust: untrusted' "$trust_open_out" \
+  "INV-15: ...and it must be the denial, so there is a denial for the ordering below to be measured against. Anything else means this store is not empty and this run is answering a different question"
+trust_open_violations="$(git_before_verdict "$trust_open_out" "$TRUST_SHOW_VERDICT_ERE")"
+[ -z "$trust_open_violations" ] \
+  || fail "INV-15: the self-hosted lookup spent Git before its unattended-trust denial was rendered ($trust_open_violations). The root and the target are the same checkout here, so that is a target-repository query made before any acknowledgement for it had been looked for — and it is invisible in every other environment, because everywhere else those two are different directories"
+# Stronger than the absence above, and worth stating separately: this run does
+# not merely reach its denial before Git, it reaches it having spent NO Git.
+# The observer that would have seen one was witnessed at the top of this
+# section, and the matcher that would have reported one is demonstrated on the
+# two fixtures below, so this emptiness is a measured absence rather than an
+# unobserved run.
+if grep -qF 'trace: built-in: git' <<<"$trust_open_out"; then
+  fail "INV-15: the self-hosted lookup spent a Git subprocess somewhere in a run whose whole job was to say 'no acknowledgement on record'. With no identity-keyed candidate the inspection is documented to invoke no Git, and here the repository it would be invoking it against is the unacknowledged target itself"
+fi
+green_case "the same shipped lookup, on the same self-hosted target with the same empty machine-local store and the gate stood down by its documented override, rendered its denial having spent no Git subprocess whatsoever — so the denial really is reached with no target-repository Git, and the refusal above is that ordering being enforced rather than inherited"
+
+# RUN FIVE: the ordering itself, made observable.
+#
+# Runs three and four cannot tell the two orderings apart on their own, and
+# saying so is the point of this run. With an EMPTY store the machine-local
+# lookup spends nothing, so "the gate's query came first" and "the lookup came
+# first and cost nothing" leave an identical trace. The lookup only acquires a
+# position an observer can read when it has a record to resolve -- because THEN
+# it walks the target's history, and that walk is Git.
+#
+# So this run acknowledges the fixture first, out of a root that is not stale,
+# into a store of its own. The shipped lookup must then spend the walk's Git
+# BEFORE the gate's index comparison, and must still refuse, and must still
+# print nothing. Its RED twin is the previous ordering, run in the identical
+# environment.
+make_scratch TRUST_SELFHOST_HOME
+trust_selfhost_ack_rc=0
+trust_selfhost_ack_out="$(env -u ORCHID_REPO -u ORCHID_EPOCH \
+  HOME="$TRUST_SELFHOST_HOME" ORCHID_ALLOW_STALE_ROOT='' \
+  "$REPO_ROOT/bin/orchid" trust unattended "$DOCTOR_ROOT" \
+  --reason "INV-15 self-hosted lookup ordering fixture" 2>&1)" \
+  || trust_selfhost_ack_rc=$?
+assert_eq 0 "$trust_selfhost_ack_rc" \
+  "INV-15: this checkout's own kernel must be able to acknowledge the self-hosted fixture (got rc=$trust_selfhost_ack_rc: $trust_selfhost_ack_out). Without a record on file the lookup below spends no Git, and the ordering this run exists to observe has nothing to be read off"
+
+# And the record must be one this lookup really resolves, established with the
+# gate stood down before the gate is armed against it. Both halves matter: a
+# record the lookup rejected early would leave the walk unspent, and then the
+# "the lookup's Git came first" reading below would be a reading of a run in
+# which the lookup had no Git to come first with. The Git this run traces is
+# permitted -- an acknowledgement WAS found, which is exactly the condition
+# that licenses target work -- so the pre-verdict matcher is deliberately not
+# pointed at this stream.
+TRUST_ORDER_OPEN="$DOCTOR_PROOF/trust-show-acked-open.stream"
+doctor_traced_run "$TRUST_ORDER_OPEN" \
+  HOME="$TRUST_SELFHOST_HOME" ORCHID_REPO="$DOCTOR_ROOT" \
+  ORCHID_ALLOW_STALE_ROOT=1 \
+  "$DOCTOR_ROOT/libexec/orchid-trust" show "$DOCTOR_ROOT"
+trust_order_open_rc="$DOCTOR_RUN_RC"
+trust_order_open_out="$(cat "$TRUST_ORDER_OPEN")"
+assert_eq 0 "$trust_order_open_rc" \
+  "INV-15: with the gate stood down, the self-hosted lookup must report on the acknowledgement just written (got rc=$trust_order_open_rc: $trust_order_open_out)"
+assert_match '^unattended trust: trusted' "$trust_order_open_out" \
+  "INV-15: ...and it must RESOLVE that record. If this lookup denies, the walk that gives the machine-local decision an observable position never happens, and the ordering measured below would be measured on a lookup that spent nothing"
+assert_match 'trace: built-in: git' "$trust_order_open_out" \
+  "INV-15: ...and resolving it must be observed to cost Git. Root verification is never cached or reused, so a trusted verdict here that traced nothing means this instrumentation cannot see the lookup's own subprocesses, and the ordering below would be read off half a stream"
+
+TRUST_ORDER_GREEN="$DOCTOR_PROOF/trust-show-acked.stream"
+doctor_traced_run "$TRUST_ORDER_GREEN" \
+  HOME="$TRUST_SELFHOST_HOME" ORCHID_REPO="$DOCTOR_ROOT" \
+  ORCHID_ALLOW_STALE_ROOT='' \
+  "$DOCTOR_ROOT/libexec/orchid-trust" show "$DOCTOR_ROOT"
+trust_order_green_rc="$DOCTOR_RUN_RC"
+trust_order_green_out="$(cat "$TRUST_ORDER_GREEN")"
+assert_eq 1 "$trust_order_green_rc" \
+  "INV-15: an acknowledgement does not stand the stale-root gate down — the self-hosted lookup must still refuse (got rc=$trust_order_green_rc: $trust_order_green_out)"
+assert_match 'refusing to run: the checkout orchid itself runs from' "$trust_order_green_out" \
+  "INV-15: ...and it must still be the stale-root refusal"
+case "$trust_order_green_out" in
+  *'binding_state:'*)
+    fail "INV-15: the refused self-hosted lookup printed its report anyway once a record existed for it, so what run three showed was an empty store having nothing to say rather than the gate suppressing the report" ;;
+esac
+# Quote-stripped before matching, for the reason run one's absence check
+# strips: older Git quotes each argument in its trace and newer Git does not,
+# so a raw match on the two words would silently find nothing on the older
+# spelling and this assertion would pass by failing to look.
+trust_order_green_bare="${trust_order_green_out//\'/}"
+assert_match 'diff --cached' "$trust_order_green_bare" \
+  "INV-15: this run must contain the gate's own index comparison — it refused, so the gate fired, and if that query is not in the trace then the ordering read off this stream below is being read off an incomplete observation"
+trust_order_green_first="$(first_traced_git "$trust_order_green_out")"
+trust_order_green_first="${trust_order_green_first//\'/}"
+case "$trust_order_green_first" in
+  *"diff --cached"*)
+    fail "INV-15: the FIRST Git the self-hosted lookup spent was the stale-root gate's own index comparison ('git $trust_order_green_first'), even though a machine-local record for this target existed and resolving it costs Git. The gate is therefore querying the target repository ahead of the lookup that decides whether this target has been acknowledged at all — which is the whole of the contract, and it is observable in no environment but this one" ;;
+  '')
+    fail "INV-15: the self-hosted lookup spent no observable Git at all, though it both resolved a record and refused at the gate — so this stream is not showing what this run spent" ;;
+esac
+green_case "the shipped 'orchid trust show', asked about the self-hosted checkout with an acknowledgement on record, spent the machine-local lookup's own Git first and the stale-root gate's index comparison only after it — so the trust decision really does precede the gate's target query, observed on a run rather than read off the file — and it still refused and still printed nothing"
+
+# The RED twin: the previous ordering, in the identical environment, as a
+# fixture at the shipped verb's own kind of path. `__orchid_entry_defer_restore`
+# is set for the reason libexec/orchid-trust sets it -- so lib/common.sh ARMS
+# the guard and leaves the firing to the file, which is what makes the position
+# of the explicit call the thing under test rather than a source-time fire.
+{ printf '#!/usr/bin/env bash\n'
+  printf 'set -uo pipefail\n'
+  printf '__orchid_entry_defer_restore=1\n'
+  printf 'source "$ORCHID_ROOT/lib/common.sh"\n'
+  printf 'source "$ORCHID_ROOT/lib/trust.sh"\n'
+  printf 'repo="${ORCHID_REPO:-$PWD}"\n'
+  printf 'orchid_root_stale_gate\n'
+  printf 'unattended_trust_inspect "$repo"\n'
+  printf 'unattended_trust_show_loaded\n'
+} > "$DOCTOR_FIXTURES/orchid-inv15-trust-gate-first"
+TRUST_ORDER_RED="$DOCTOR_PROOF/trust-show-gate-first.stream"
+doctor_traced_run "$TRUST_ORDER_RED" \
+  HOME="$TRUST_SELFHOST_HOME" ORCHID_REPO="$DOCTOR_ROOT" \
+  ORCHID_ROOT="$DOCTOR_ROOT" ORCHID_ALLOW_STALE_ROOT='' \
+  /bin/bash "$DOCTOR_FIXTURES/orchid-inv15-trust-gate-first"
+trust_order_red_out="$(cat "$TRUST_ORDER_RED")"
+assert_match 'refusing to run: the checkout orchid itself runs from' "$trust_order_red_out" \
+  "INV-15: the gate-first fixture must reach the same refusal the shipped verb reaches, or it differs from it in more than the one line whose position is the point"
+trust_order_red_first="$(first_traced_git "$trust_order_red_out")"
+trust_order_red_first="${trust_order_red_first//\'/}"
+case "$trust_order_red_first" in
+  *"diff --cached"*) ;;
+  *) fail "INV-15: a trust-shaped entry point that fires the stale-root gate ABOVE its machine-local lookup was expected to spend the gate's index comparison first, and spent 'git $trust_order_red_first' instead — so the GREEN result above is not this measurement discriminating between the two orderings, and would have passed for either of them" ;;
+esac
+red_case "the same lookup with the gate moved above it, run in the identical environment against the identical acknowledged self-hosted target, spent the gate's index comparison as its first Git — so the previous ordering is detected here, and the shipped verb's result is a position being measured rather than a trace that looks the same whatever the file says"
+
+# The RED and GREEN twins for the VERDICT matcher on this arm, exactly as the
+# doctor pair above does it for doctor's: the same two fixtures, differing in
+# the position of one target query, with their stderr discarded the way the
+# kernel discards its own.
+{ printf '#!/usr/bin/env bash\n'
+  printf 'set -uo pipefail\n'
+  printf 'source "$ORCHID_ROOT/lib/common.sh"\n'
+  printf 'source "$ORCHID_ROOT/lib/trust.sh"\n'
+  printf 'repo="${ORCHID_REPO:-$PWD}"\n'
+  printf 'git -C "$repo" rev-list --max-count=1 HEAD >/dev/null 2>/dev/null\n'
+  printf 'unattended_trust_show "$repo"\n'
+} > "$DOCTOR_FIXTURES/orchid-inv15-trust-early-git"
+{ printf '#!/usr/bin/env bash\n'
+  printf 'set -uo pipefail\n'
+  printf 'source "$ORCHID_ROOT/lib/common.sh"\n'
+  printf 'source "$ORCHID_ROOT/lib/trust.sh"\n'
+  printf 'repo="${ORCHID_REPO:-$PWD}"\n'
+  printf 'unattended_trust_show "$repo"\n'
+  printf 'git -C "$repo" rev-list --max-count=1 HEAD >/dev/null 2>/dev/null\n'
+} > "$DOCTOR_FIXTURES/orchid-inv15-trust-late-git"
+
+doctor_fixture_run orchid-inv15-trust-early-git
+trust_early_out="$(cat "$DOCTOR_FIXTURE_STREAM")"
+assert_match '^unattended trust: ' "$trust_early_out" \
+  "INV-15: the early-Git lookup fixture must still reach its verdict line (got: $trust_early_out) — a fixture that died before rendering anything would be reported for the wrong reason"
+assert_match 'git-before-denial: .*rev-list' \
+  "$(git_before_verdict "$trust_early_out" "$TRUST_SHOW_VERDICT_ERE")" \
+  "INV-15: a lookup-shaped entry point that queries its target repository before rendering its unattended-trust verdict must be reported, and reported with the query it made"
+red_case "a lookup-shaped fixture that really did run 'git rev-list' against its target before rendering its verdict was RUN, and the same matcher run four is judged by named that query — so run four's silence is detection rather than a matcher pointed at a verdict line it cannot find"
+
+doctor_fixture_run orchid-inv15-trust-late-git
+trust_late_out="$(cat "$DOCTOR_FIXTURE_STREAM")"
+assert_match '^unattended trust: ' "$trust_late_out" \
+  "INV-15: the late-Git lookup fixture must reach its verdict line too, or the two fixtures differ in more than the one line whose position is the point"
+assert_match 'trace: built-in: git' "$trust_late_out" \
+  "INV-15: the late-Git lookup fixture must actually spend its Git — if GIT_TRACE observed nothing here, the RED case above and run four's clean result are both measurements of an unobserved run"
+trust_late_violations="$(git_before_verdict "$trust_late_out" "$TRUST_SHOW_VERDICT_ERE")"
+[ -z "$trust_late_violations" ] \
+  || fail "INV-15: the late-Git lookup fixture was reported ($trust_late_violations) — it spends the IDENTICAL query one line later, so a matcher that flags it is flagging the presence of Git rather than its position"
+green_case "the identical query, moved to the line after the lookup's verdict, was left alone by the same matcher — and it really did run, observed in the same trace — so what run four measures is a target query that PRECEDES the denial, not a run that touches Git at all"
+
+# Section 4's line-order scan is deliberately NOT extended to
+# libexec/orchid-trust, and the reason is worth writing down rather than
+# leaving as an omission somebody re-derives. That scan compares the FIRST
+# occurrence of each of the two calls in a file, which is the right question
+# for doctor because doctor makes each call exactly once on a straight line.
+# `orchid trust` fires the gate PER SUBCOMMAND -- what the gate must sit
+# between is per subcommand -- so its first orchid_root_stale_gate is the
+# acknowledgement arm's, above the lookup arm's code entirely, and a
+# first-occurrence comparison would report the shipped file for an ordering
+# that is correct in every arm. The lookup arm's ordering is answered by run
+# five instead, which is a stronger answer anyway: it is read off a run.
+
 # ===========================================================================
 # 10 -- the boundaries of what any of this proves.
 # ===========================================================================
@@ -2343,7 +2620,7 @@ not_tested "gate-omission-beyond-the-four-families" \
 not_tested "gate-reach-into-code-that-arms-nothing" \
   "shipped code that executes out of \$ORCHID_ROOT without loading lib/common.sh at all. Section 4's universe is every file under install.sh, bin/, libexec/, runners/, scripts/ and plugins/*/*/* that SOURCES the library, because sourcing it is what arms the guard and the question this file asks is whether what was armed is fired. A helper that runs kernel code some other way — a plugin's notify sender that shells to the orchid dispatcher rather than sourcing it, a hook script, anything reached through a subprocess — arms nothing here, so it is neither reported nor cleared. The subprocess case is the benign half: whatever it invokes is itself in the universe and fires the gate on its own account. The case that is not covered is a file that reads and acts on \$ORCHID_ROOT's contents directly without loading the library, which no shipped file does today and which this derivation would not notice arriving"
 not_tested "firing-site-reachability-within-an-entry-point" \
-  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the three sections 6, 8 and 9 execute. Section 4 is textual in that one respect by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call -- or runs past it BEFORE that work -- which it cannot. (What section 4 no longer takes on trust is the OTHER half of that question, whether a call it found fires anything where the file lives: that is answered by running a stub at the file's own path out of a genuinely stale root, so a firing site that is inert at that location is reported rather than counted.) Section 6 answers both questions for runners/orchid-pump, section 8 for libexec/orchid-trust and section 9 for libexec/orchid-doctor, each by running the entry point and weighing its refusal against a side effect that really does happen otherwise; that is three entry points out of the deferring set. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no arm that could forget. libexec/orchid-trust is the one that fires PER SUBCOMMAND, because what the gate must precede is per subcommand, and NO arm of it is exempt any longer: the lookup arm carried an exemption for writing nothing durable, that exemption is gone, and section 8 executes both the acknowledgement, whose side effect is the record it writes, and the lookup, whose side effect is the report an operator acts on. What section 8 does not run is the third arm, revocation, which carries the same call above the same kind of durable mutation. So a trust subcommand added tomorrow that acts and forgets the call is caught by nothing: section 4 sees the file's other call sites and is satisfied, and section 8 only ever asked about the arms it runs. An entry point that guards its call, or that acts before it, belongs to review, and the two questions to put to it are the ones sections 4, 6 and 8 put to those three: on which route is your gate not reached, and what have you already done by the time it is"
+  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the three sections 6, 8 and 9 execute. Section 4 is textual in that one respect by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call -- or runs past it BEFORE that work -- which it cannot. (What section 4 no longer takes on trust is the OTHER half of that question, whether a call it found fires anything where the file lives: that is answered by running a stub at the file's own path out of a genuinely stale root, so a firing site that is inert at that location is reported rather than counted.) Section 6 answers both questions for runners/orchid-pump, section 8 for libexec/orchid-trust and section 9 for libexec/orchid-doctor, each by running the entry point and weighing its refusal against a side effect that really does happen otherwise; that is three entry points out of the deferring set. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no arm that could forget. libexec/orchid-trust is the one that fires PER SUBCOMMAND, because what the gate must precede is per subcommand, and NO arm of it is exempt any longer: the lookup arm carried an exemption for writing nothing durable, that exemption is gone, and section 8 executes both the acknowledgement, whose side effect is the record it writes, and the lookup, whose side effect is the report an operator acts on. What section 8 does not run is the third arm, revocation, which carries the same call above the same kind of durable mutation. Revocation is also the one arm whose ORDER against the machine-local decision is not covered anywhere: the lookup arm now makes that decision first and section 9 runs it self-hosted, but revocation deliberately makes NO decision to put first -- it is built without inspection so that removal stays available when inspection cannot complete -- so pointed at Orchid's own checkout it still spends the gate's index comparison against what is, in that one environment, the target. That is the availability trade the arm is written for rather than an oversight, and it is stated here instead of tested. So a trust subcommand added tomorrow that acts and forgets the call is caught by nothing: section 4 sees the file's other call sites and is satisfied, and sections 8 and 9 only ever asked about the arms they run. An entry point that guards its call, or that acts before it, belongs to review, and the two questions to put to it are the ones sections 4, 6 and 8 put to those three: on which route is your gate not reached, and what have you already done by the time it is"
 not_tested "early-exit-matchers-outside-the-kernel-and-the-invariant-gates" \
   "the rest of tests/. Section 5's glob is the shipped kernel, the bundled plugins and tests/inv/test_*.sh, and the last of those was added because an invariant gate deciding its verdict by a race is the same defect the section scans the kernel for. The other test files carry the shape too, in the hundreds, and they are not covered here: converting them is a mechanical sweep of a different size, and the argument for taking the gates first is that a wrong answer there is a wrong answer about the kernel, whereas a wrong answer in a feature test is a flaky test somebody re-runs. The tell is unchanged wherever it appears, and the direction that costs is the negative assertion: a producer piped into an early-exiting grep, then '&& fail', is skipped exactly when the pattern is present. Spelled in words rather than in code, here and in the failure message above, because these two lines are not comments: this file is inside the glob it runs, so a literal instance of the shape on a line of its own prose is a violation of this invariant reported against this file — which is the right answer, and the reason the wording works around it"
 not_tested "early-exit-matchers-other-than-grep-q" \
@@ -2351,8 +2628,8 @@ not_tested "early-exit-matchers-other-than-grep-q" \
 not_tested "recorded-label-integrity-outside-the-invariant-gates" \
   "labels recorded anywhere but tests/inv/test_*.sh, and executing punctuation that is not a backtick. Section 2's label scan reads the gate files, because a gate whose own record says something its author did not write is this file's subject at the smallest scale; the rest of tests/ records labels through the same helpers and is not covered. Two shapes inside the scanned files are outside it as well. A recorder call written inside a heredoc body is read as ordinary code, since the scanner tracks quoting and not here-documents — no shipped gate has one, and a fixture that grows one would be reported rather than missed, which is the safe direction. And '\$( )' is deliberately accepted: labels interpolate the counts that make them non-vacuous, and unlike a backtick in a sentence that spelling is visible as code to whoever types it. What is derived here is the punctuation that has actually shipped three times, not every way a shell can be made to run a word"
 not_tested "gate-vacuity-beyond-the-constructed-dimensions" \
-  "environment dimensions other than the three this file constructs: '\$ORCHID_ROOT is parked on the configured integration branch' (section 3, the one lesson L036 was paid for), 'ORCHID_REPO and ORCHID_ROOT are the SAME checkout' and 'the machine-local store holds no acknowledgement for it' (section 9, the self-hosted doctor). Other dimensions in which a revalidation environment differs from a deployed one — a machine with no vendor CLI (tests/test_hermetic_suite.sh constructs that one), a repository with no remote, a HOME that is unset rather than empty — are each somebody's own proof to construct, and none of them is covered here. The question to ask of any new gate is the one this file's header asks: in which environment is the condition you branch on false, and is that the environment you test in"
+  "environment dimensions other than the three this file constructs: '\$ORCHID_ROOT is parked on the configured integration branch' (section 3, the one lesson L036 was paid for), 'the target and ORCHID_ROOT are the SAME checkout' and 'the machine-local store holds no acknowledgement for it' (section 9, the self-hosted doctor and the self-hosted lookup — and, for the lookup only, that same checkout WITH an acknowledgement, which is the dimension that gives the machine-local decision an observable position at all). Other dimensions in which a revalidation environment differs from a deployed one — a machine with no vendor CLI (tests/test_hermetic_suite.sh constructs that one), a repository with no remote, a HOME that is unset rather than empty — are each somebody's own proof to construct, and none of them is covered here. The question to ask of any new gate is the one this file's header asks: in which environment is the condition you branch on false, and is that the environment you test in"
 not_tested "trace-and-output-interleaving-at-sub-line-granularity" \
-  "whether a traced Git dispatch could land INSIDE a partial line the run had already begun. Section 9 reads its ordering off one file that both the run and Git append to, which is sound at write granularity — both open it O_APPEND, so no write is ever placed behind an earlier one — and doctor renders its verdict as a prefix printf followed by the summary, two writes with a gap between them. Nothing in that gap spends Git today (unattended_trust_summary_loaded runs no subprocess at all), so the verdict line arrives whole; if something there ever did, the trace would appear on the verdict's own line and the ordering matcher, which settles at the verdict, would step over it. What is not tested is that property of the gap — only that it holds for the code as it stands"
+  "whether a traced Git dispatch could land INSIDE a partial line the run had already begun. Section 9 reads its ordering off one file that both the run and Git append to, which is sound at write granularity — both open it O_APPEND, so no write is ever placed behind an earlier one — and doctor renders its verdict as a prefix printf followed by the summary, two writes with a gap between them. Nothing in that gap spends Git today (unattended_trust_summary_loaded runs no subprocess at all), so the verdict line arrives whole; if something there ever did, the trace would appear on the verdict's own line and the ordering matcher, which settles at the verdict, would step over it. What is not tested is that property of the gap — only that it holds for the code as it stands. The lookup arm has no such gap at all: unattended_trust_show_loaded writes its verdict as one complete printf, so nothing can land inside it"
 not_tested "git-spent-other-than-by-the-git-binary" \
   "repository work section 9 cannot see because it did not go through a git subprocess. GIT_TRACE is Git reporting its own dispatch, which is what makes the observation survive the fixed bootstrap PATH that a shim on PATH cannot reach — and its blind spot is the mirror of that strength: code that reads .git/ files directly, or that shells to some other tool, spends no Git and is reported by nothing here. lib/common.sh's own branch half is deliberately written that way (_orchid_head_branch_ondisk reads Git's on-disk files rather than spawning a symbolic-ref subprocess), so the shape is not hypothetical in this tree. What the unattended-trust contract forbids before an acknowledgement is a Git command targeting the repository, which is what is measured; a direct on-disk read of the target's admin directory would be a different argument, and it is not made here"

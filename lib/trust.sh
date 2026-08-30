@@ -1735,9 +1735,27 @@ unattended_trust_summary_loaded() {
   fi
 }
 
+# unattended_trust_show <repo> -- inspect, then render.
+#
+# Split in two for the same reason unattended_trust_summary_loaded is separate
+# from the inspection that fills it: a caller which is ITSELF a trust boundary
+# has to be able to put something between the two halves. `orchid trust show`
+# is that caller. When the repository it was asked about is the self-hosted
+# Orchid checkout, ORCHID_REPO and ORCHID_ROOT are one directory, so the
+# stale-root gate's index comparison IS a query against the target -- and the
+# unattended-trust contract forbids that before an acknowledgement for the
+# target has been looked for. So that arm calls the inspection first, fires
+# the gate, and only then renders. Neither half moves for any other caller.
 unattended_trust_show() {
-  local trust_label root_display
   unattended_trust_inspect "$1"
+  unattended_trust_show_loaded
+}
+
+# unattended_trust_show_loaded -- render the report from the ORCHID_UNATTENDED_*
+# globals an earlier unattended_trust_inspect already resolved. Prints
+# everything; decides nothing.
+unattended_trust_show_loaded() {
+  local trust_label root_display
   root_display="${ORCHID_UNATTENDED_ROOT_COMMIT:-${ORCHID_UNATTENDED_ROOT_STATUS:-unavailable}}"
   trust_label="$ORCHID_UNATTENDED_STATE"
   [ "$trust_label" = trusted ] || trust_label=untrusted
