@@ -17,13 +17,17 @@ fm_get() {
 # coming back empty. A file that cannot be parsed must be named as DAMAGED, not
 # reported as a task with nothing in it.
 #
-# Deliberately a shape check, not a schema check: it asks whether the document
-# has frontmatter at all (opens with `---`, closes with `---`) and, when the
-# caller names one, whether a single required key resolves. Template frontmatter
-# carries `# ...` comment lines and optional-empty keys, so anything stricter
-# would reject files that are entirely healthy.
+# Deliberately a STRUCTURAL check, not a schema check: it asks whether the
+# document has frontmatter at all (opens with `---`, closes with `---`), whether
+# every line inside it is an ENTRY, and, when the caller names one, whether a
+# single required key resolves. It never asks which keys are present, what their
+# values mean, or whether they are the ones a task needs -- template frontmatter
+# carries `# ...` comment lines and optional-empty keys, and anything stricter
+# than "each line is `key:`, `key: value`, a comment, or blank" would reject
+# files that are entirely healthy.
 fm_check() {
   local f="$1" k="${2:-}" first="" delims=""
+  local bad_line="" bad_no="" bad_txt=""
   if [ ! -e "$f" ]; then printf 'the file does not exist\n'; return 1; fi
   if [ ! -f "$f" ]; then printf 'the path is not a regular file\n'; return 1; fi
   if [ ! -s "$f" ]; then printf 'the file is EMPTY (0 bytes)\n'; return 1; fi
@@ -39,6 +43,51 @@ fm_check() {
   case "$delims" in ''|*[!0-9]*) delims=0 ;; esac
   if [ "$delims" -lt 2 ]; then
     printf 'unterminated frontmatter: there is no closing --- delimiter\n'; return 1
+  fi
+  # INSIDE the delimiters (T034 rework). Everything above asks whether the
+  # document HAS frontmatter; nothing above looks in it, and the damage this
+  # function exists to name lands in it. A value that arrives carrying a newline
+  # -- an operator pasting prose, a `\n` an older `sed` renderer expanded, an
+  # `awk -v` operand whose escape was processed -- does not empty the file: it
+  # splits one entry across two lines, so the key is truncated at the break and
+  # the REMAINDER sits in the frontmatter as a line belonging to no key. Every
+  # reader here is line-oriented, so that file looks perfectly healthy to all of
+  # them: both delimiters are present, `id` resolves, `task show` prints it, and
+  # only the split field is quietly wrong. This is the one shape of task-file
+  # damage that survives the checks above, and it is the shape the writers this
+  # task hardened used to PRODUCE.
+  #
+  # Four line shapes are legal, which is exactly what the shipped templates and
+  # every live task file use: `key: value`, a valued-later bare `key:`, a `#`
+  # comment, and an empty line. Anything else is a remainder.
+  #
+  # The excerpt is truncated because this function contracts to print ONE line
+  # and a split value carries as much prose as the operator pasted; the line
+  # NUMBER is what locates the damage, and the text is there to make it
+  # recognizable.
+  #
+  # `[[:space:]]`, never a `\t` inside a bracket expression: an escape sequence
+  # there is undefined by POSIX and the awks disagree about it, and this
+  # predicate decides whether live task files are readable on every platform
+  # orchid runs on. The entry pattern requires colon-SPACE (or a bare colon)
+  # for the same reason fm_get reads `k": "` -- a value this pattern admitted
+  # but fm_get could not find would be a check disagreeing with the reader it
+  # exists to protect.
+  bad_line="$(awk '
+    /^---$/ { n++; if (n >= 2) exit; next }
+    n == 1 {
+      if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) next
+      if ($0 ~ /^[A-Za-z_][A-Za-z0-9_-]*:( .*)?$/) next
+      excerpt = $0
+      if (length(excerpt) > 60) excerpt = substr(excerpt, 1, 57) "..."
+      printf "%d\t%s\n", FNR, excerpt
+      exit
+    }' "$f" || true)"
+  if [ -n "$bad_line" ]; then
+    bad_no="${bad_line%%$'\t'*}"; bad_txt="${bad_line#*$'\t'}"
+    printf "malformed frontmatter: line %s is not a 'key: value' entry (%s) — a value split across two lines leaves exactly this behind\n" \
+      "$bad_no" "$bad_txt"
+    return 1
   fi
   if [ -n "$k" ] && [ -z "$(fm_get "$f" "$k")" ]; then
     printf "the frontmatter carries no '%s:' value\n" "$k"; return 1
@@ -61,9 +110,18 @@ fm_check() {
 # rename has already happened, so the caller's own error handling can never be
 # early enough.
 #
-# Shape only (no required key), deliberately: this guard exists to catch a
-# truncated or empty document, and refusing a task file that a repository has
-# been running with for other reasons would turn a rework into a dead end.
+# STRUCTURE only, never a required key: fm_check is called with no key here, so
+# a rewrite is judged on whether the document it would land is READABLE, not on
+# which fields it carries. A rework arm that refused a task for a missing
+# `candidate_sha` would be a dead end where a truncation is a recoverable
+# accident.
+#
+# It does check structure, though (T034 rework), and that is a deliberate
+# widening: a producer that emits a task whose frontmatter has a line belonging
+# to no key has produced damage, and appending a rework brief to a damaged task
+# only buries it deeper. The refusal names the line and leaves the previous
+# document in place to be recovered -- which is the same answer `task show` and
+# `orchid doctor` give about the same file, from the read end.
 fm_write_task() {
   local f="$1" t="" why=""
   t="$(mktemp "$f.fmwrite.XXXXXX")" || return 1
@@ -220,7 +278,7 @@ fm_set() {
   local f="$1" k="$2" v="$3" t=""
   case "$k$v" in
     *$'\n'*)
-      echo "orchid: refusing to write '$k': task frontmatter is one 'key: value' per line and this key or value contains a newline. Nothing was written and $f is unchanged. Flatten the value to a single line, or put multi-paragraph text in the task BODY (below the closing '---')." >&2
+      echo "orchid: refusing to write '$k': task frontmatter is one 'key: value' per line and this key or value contains a newline. Nothing was written and $f is unchanged. Flatten the value to a single line (a literal \\n is stored as those two characters, never expanded), or deliver multi-paragraph prose through the verb that records it in the task BODY -- 'orchid task unblock <id> --reason ...' or 'orchid task retry <id> --reason ...'. Nothing under .orchid/ is ever hand-edited." >&2
       return 1 ;;
   esac
   t="$(mktemp "$f.fmset.XXXXXX")" || return 1

@@ -1045,7 +1045,26 @@ that guidance being advisory input an autonomous round must not stop over.
 Because a destroyed task file is otherwise indistinguishable from a task that
 simply stopped existing, the READ end reports it too: `orchid task show` exits
 non-zero on an empty or unparseable task file (it exited 0 printing nothing),
-and `orchid doctor` FAILs on one by name.
+`orchid doctor` FAILs on one by name, and `orchid task list` renders it as a
+`DAMAGED` row keyed on the filename rather than as a row of empty fields — the
+row the driver's task walk used to skip in silence, which is what let a run
+whose task file had vanished report every task done.
+
+Unreadable means STRUCTURALLY unreadable, not only empty. The residue of a
+split value — one entry cut in half, the remainder left in the frontmatter as a
+line belonging to no key — carries both delimiters and still resolves `id`, so
+it reads as healthy to every line-oriented consumer and only the split field is
+wrong. Every line between the delimiters must therefore be an entry (`key:`,
+`key: value`, a `#` comment, or blank); anything else is named as malformed
+frontmatter, by the same predicate at the read end and the write end.
+
+Every remedy the single-line refusals print is a VERB — flatten the value, or
+record the prose in the task body with `task unblock`/`task retry --reason` —
+never an instruction to open the file, which the protocol forbids without
+qualification. The one exception is recovering a task file already destroyed,
+which `task show` and `doctor` answer with `git checkout <sha> -- <path>`:
+restoring a committed version is not a hand-edit, and no verb rebuilds a task's
+history from nothing.
 
 **Review immutability:** reviewers inspect exactly `base_sha..candidate_sha`;
 any candidate change invalidates reviews (see rebase rule). Incomplete or

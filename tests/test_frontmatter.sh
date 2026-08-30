@@ -114,6 +114,44 @@ rc=0; why="$(fm_check "$WORK/T008.md" id)" || rc=$?
 [ "$rc" -ne 0 ] || fail "fm_check must reject a task document with no id"
 assert_match "no 'id:' value" "$why" "fm_check names the required key that is missing"
 
+# ---------------------------------------------------------------------------
+# THE DAMAGE EVERY CHECK ABOVE LETS THROUGH (T034 rework) -- and the one this
+# repository's own writers used to PRODUCE. A value carrying a newline does not
+# empty the file: it splits one entry across two lines, so the key is truncated
+# at the break and the REMAINDER sits in the frontmatter as a line belonging to
+# no key. That file opens with `---`, closes with `---`, and `id` resolves --
+# so it passes the file/empty/delimiter/required-key checks above, `task show`
+# prints it happily, and only the split field is quietly wrong.
+#
+# The fixture is written as bytes rather than produced by fm_set, deliberately:
+# fm_set refuses this input now, so driving the fixture through it would leave
+# nothing to check. What is on disk here is what the OLD writers left behind,
+# which is also what an older orchid, a bad restore or a hand-edit leaves.
+# ---------------------------------------------------------------------------
+printf -- '---\nid: T010\ntitle: first half of a value\nand the remainder of that value\nstatus: pending\n---\nbody\n' \
+  > "$WORK/T010.md"
+assert_eq T010 "$(fm_get "$WORK/T010.md" id)" \
+  "fixture witness: the split file is one every OTHER check reads as healthy -- id still resolves, which is why this case is needed at all"
+rc=0; why="$(fm_check "$WORK/T010.md" id)" || rc=$?
+[ "$rc" -ne 0 ] || fail "fm_check must reject frontmatter carrying a line that belongs to no key -- that is the residue of a value split across two lines, and every other check in this function passes it"
+assert_match "malformed frontmatter" "$why" "fm_check names the structural problem"
+assert_match "line 4" "$why" \
+  "...and names the LINE, since the rest of the document is readable and nothing else points at the damage"
+assert_match "and the remainder of that value" "$why" \
+  "...and quotes it, so the operator can recognize the value it was cut out of"
+
+# The GREEN twin, and it is the discriminating one: everything a healthy task
+# document legitimately contains -- a comment, a blank line, a bare valued-later
+# key, a value with its own colons and hashes -- plus a BODY whose prose lines
+# would every one of them be rejected if the scan were not scoped to the
+# frontmatter.
+printf -- '---\n# a comment, which templates/task.md uses for depends_on\n\nid: T017\ntitle: a value with: a colon, a #hash and an em-dash — in it\nworktree:\n---\nthis body line belongs to no key\nand neither does this one\n' \
+  > "$WORK/T017.md"
+fm_check "$WORK/T017.md" id >/dev/null \
+  || fail "fm_check must accept comments, blank lines, bare keys and colon-bearing values -- and must not read the BODY as frontmatter"
+green_case 'fm_check over a document with comments, blank lines and prose body: accepted'
+red_case 'fm_check over frontmatter carrying a key-less remainder line: refused, named by line'
+
 # fm_write_task -- the same rewrite-or-refuse rule for the OTHER writer: the
 # rework arms replace a task's whole document by piping an aged body (plus a
 # fresh brief) into it. atomic_write would rename whatever its stdin gave it,
@@ -130,6 +168,20 @@ cmp -s "$WORK/T009.before" "$WORK/T009.md" \
 printf -- '---\nid: T009\nstatus: rework\n---\nbody\n\nrework brief appended\n' \
   | fm_write_task "$WORK/T009.md" || fail "fm_write_task must accept a complete replacement document"
 assert_match "rework brief appended" "$(cat "$WORK/T009.md")" "an accepted whole-document rewrite lands"
+
+# ...and the same structural rule at the WRITE end. A rewrite that would land
+# frontmatter with a key-less remainder line is refused rather than appending a
+# rework brief on top of damage: the arms that call this replace a task's whole
+# document, so whatever they emit is what the task becomes. Non-empty and
+# fully delimited, so nothing else in this function objects to it.
+cp "$WORK/T009.md" "$WORK/T009.structure"
+rc=0
+wt_bad="$(printf -- '---\nid: T009\ntitle: first half\nand the remainder\nstatus: rework\n---\nbody\n' \
+  | fm_write_task "$WORK/T009.md" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "fm_write_task must refuse a replacement whose frontmatter carries a key-less remainder line"
+assert_match "malformed frontmatter" "$wt_bad" "the write-end refusal names the same structural problem the read end does"
+cmp -s "$WORK/T009.structure" "$WORK/T009.md" \
+  || fail "a refused structural rewrite must leave the task byte-identical, exactly as the empty-document refusal does"
 
 # ===========================================================================
 # T034 rework -- fm_render_task_template: LITERAL substitution, at the library

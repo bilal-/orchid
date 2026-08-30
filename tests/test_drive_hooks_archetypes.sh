@@ -379,6 +379,11 @@ assert_eq 1 "$(grep -c '^hook_guidance: ' .orchid/tasks/H6.md)" \
   "and land as exactly one frontmatter line -- a second line would be body text no reader of this field ever sees"
 [ -s .orchid/tasks/H6.md ] || fail "THE TASK FILE IS EMPTY: attaching prose guidance destroyed it mid-run, which is the defect F34 found"
 
+# This is the MECHANIZED half of that step. The hand-executed half -- the same
+# verbs in the same order, run by a front-end reading PROTOCOL.md, with no
+# driver to fold anything -- is pinned in tests/test_hooks.sh's tick-walk,
+# together with the instruction that tells it to fold.
+
 # ===========================================================================
 # A1 -- dispatch targets are read off the DECLARED transitions. No archetype
 # name appears in the driver; these four all resolve through the same lookup.

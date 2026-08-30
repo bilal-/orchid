@@ -1401,6 +1401,18 @@ assert_match "newline" "$nl_out" "the refusal names the constraint it is enforci
 # find. On a NEGATIVE assertion that is the fail-open direction: the leak this
 # line exists to catch would go unreported precisely when it is present.
 grep -qi "awk" <<<"$nl_out" && fail "the refusal must not leak a raw awk error -- that message was the symptom of the file already being gone"
+# THE REMEDY IS A VERB (T034 rework). A refusal is the moment an operator is
+# most willing to open the task file themselves -- a verb has just declined to
+# store what they typed -- so this is the last message that may send them
+# there. PROTOCOL.md's Preamble forbids hand-editing anything under `.orchid/`
+# without qualification ("no frontmatter, no journal, no roadmap -- even when
+# you can see exactly what line would need to change"), and an earlier wording
+# of this refusal ended "put the prose in the task BODY (below the closing
+# '---' in .orchid/tasks/<id>.md)", which reads as an instruction to do it.
+assert_match "orchid task unblock <id> --reason" "$nl_out" \
+  "the refusal names the verb that records prose in the task BODY, rather than describing where in the file it would go"
+grep -qE 'below the closing' <<<"$nl_out" \
+  && fail "the refusal must not point the operator INTO the task file: hand-editing anything under .orchid/ is forbidden outright, so a remedy that describes the file is one nobody is allowed to take"
 [ -s "$nl_file" ] || fail "THE FILE IS EMPTY: a refused write destroyed the task, which is the whole defect"
 cmp -s "$T034_KEEP/T013.before" "$nl_file" \
   || fail "a refused newline write must leave the task file BYTE-IDENTICAL"
@@ -1419,10 +1431,13 @@ green_case 'task set with a single-line value: accepted and stored verbatim'
 
 # `task create` renders its template through fm_render_task_template, not
 # `fm_set` -- a different writer, and one that (since T034's rework) stores what
-# it is handed byte-for-byte. That is why the newline has to be refused HERE, at
-# the door: nothing downstream would object to it any more, so an unguarded
-# newline would land a `title:` line split in two with the remainder sitting in
-# the frontmatter as a key-less line.
+# it is handed byte-for-byte, so an unguarded newline reaches the document as a
+# `title:` line split in two with the remainder sitting in the frontmatter as a
+# key-less line. fm_write_task's structural check refuses THAT document, so no
+# file is written either way; what the door guard adds is the diagnosis. The
+# assertions below are about the message as much as the refusal: which argument
+# was wrong, and what to do instead -- neither of which a backstop refusing an
+# unnamed line of a file the operator never saw can say.
 rc=0; create_nl_out="$("$ORCHID_BIN" task create T012 "$(printf 'title\nwith a newline')" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task create with a newline in the title must be refused"
 assert_match "newline" "$create_nl_out" "the create refusal names the constraint too"
@@ -1433,6 +1448,8 @@ assert_match "newline" "$create_nl_out" "the create refusal names the constraint
 # at one is advice they cannot act on.
 grep -qE 'No task file was created' <<<"$create_nl_out" \
   || fail "the create refusal must say no task file was created, rather than reusing 'task set's remedy, which sends the operator to a path that does not exist"
+grep -qE 'below the closing' <<<"$create_nl_out" \
+  && fail "and the create refusal must not describe the inside of a task file either -- hand-editing .orchid/ is forbidden, and here the file does not even exist"
 red_case 'task create with a newline in the title: refused, non-zero exit, no file written'
 
 # ---------------------------------------------------------------------------
@@ -1545,6 +1562,39 @@ printf 'the frontmatter is gone but the body survived\n' > ".orchid/tasks/T011.m
 rc=0; show_nofm_out="$("$ORCHID_BIN" task show T011 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task show on a frontmatter-less task file must exit non-zero"
 assert_match "no frontmatter" "$show_nofm_out" "task show names the missing frontmatter delimiter"
+
+# ---------------------------------------------------------------------------
+# THE LIST END (T034 rework), while T011 is still damaged. `task list` prints
+# three fields read straight out of frontmatter, so a damaged file used to
+# render as `<tab><tab>` -- a blank line among the tasks. That row is the
+# reason this defect presents as "a task that simply stopped existing":
+#
+#   * an operator scanning the list sees nothing worth reading, which is what
+#     both dogfood operators did before an unrelated grep came back empty;
+#   * the driver's task walk reads this very list and drops any row with an
+#     empty id, so the task is skipped in SILENCE -- and the walk's own count
+#     of what it saw is how a run decides every task is done.
+#
+# The id comes from the FILENAME, which is the kernel's own id-to-path mapping
+# and the one part of a task damage cannot erase.
+# ---------------------------------------------------------------------------
+list_tab="$(printf '\t')"
+rc=0; list_damaged_out="$("$ORCHID_BIN" task list 2>&1)" || rc=$?
+assert_eq 0 "$rc" \
+  "task list must still exit 0 with a damaged task file present -- it is read through a process substitution whose status nobody sees, so the ROW is the signal"
+assert_match "^T011${list_tab}DAMAGED${list_tab}" "$list_damaged_out" \
+  "the damaged task gets a row naming it and saying DAMAGED, never a row of empty fields"
+assert_match "^T011${list_tab}DAMAGED${list_tab}.*no frontmatter" "$list_damaged_out" \
+  "...carrying the same reason task show gave, so the list answers the question rather than only raising it"
+grep -qE "^${list_tab}${list_tab}" <<<"$list_damaged_out" \
+  && fail "no row of empty fields may remain -- that is the row the driver walk skips in silence"
+red_case 'task list with a damaged task file: a DAMAGED row, never a row of empty fields'
+# The GREEN twin on the same output: every intact task in this fixture is still
+# listed normally, so the row above is evidence of detection and not of a list
+# that has started shouting about everything.
+assert_match "^T013${list_tab}pending${list_tab}newline refusal$" "$list_damaged_out" \
+  "an intact task is still listed as id/status/title in the same output"
+green_case 'task list with intact task files: id/status/title rows, unchanged'
 
 # GREEN twin for the read end, in this same file: an intact task file is still
 # printed in full, exit 0.

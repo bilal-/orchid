@@ -946,6 +946,23 @@ assert_match "^FAIL: task file \\.orchid/tasks/TK1\\.md: no frontmatter" "$tskf_
   "doctor distinguishes a frontmatter-less file from an empty one"
 red_case 'orchid doctor over a frontmatter-less task file: FAIL, non-zero exit'
 
+# ...and the shape that is neither empty nor frontmatter-less, which is the one
+# an operator can never find by looking (T034 rework). A value carrying a
+# newline splits one entry in two, leaving the remainder in the frontmatter as
+# a line belonging to no key. Both delimiters are present and `id` still
+# resolves, so this file passed both checks above, `task show` printed it, and
+# only the split field was quietly wrong -- doctor is the check that comes to
+# the operator, so it is the one that has to see this.
+printf -- '---\nschema: 1\nid: TK1\ntitle: first half of a value\nand the remainder of that value\nstatus: pending\n---\nbody\n' \
+  > "$tskf/.orchid/tasks/TK1.md"
+tskf_doctor
+[ "$tskf_rc" -ne 0 ] || fail "doctor must FAIL on a task file whose frontmatter carries a key-less remainder line -- id resolves and both delimiters are there, so nothing else reports it"
+assert_eq "$((tskf_fails_clean + 1))" "$tskf_fails" \
+  "the split value adds exactly one new FAIL too (out: $tskf_out)"
+assert_match "^FAIL: task file \\.orchid/tasks/TK1\\.md: malformed frontmatter: line 5" "$tskf_out" \
+  "doctor names the line the damage is on, since the rest of the document reads normally"
+red_case 'orchid doctor over frontmatter carrying a key-less remainder line: FAIL, non-zero exit'
+
 # And the fixture is restored, so nothing downstream of this file inherits a
 # repo doctor considers damaged.
 printf -- '---\nschema: 1\nid: TK1\ntitle: intact\nstatus: pending\n---\nbody\n' > "$tskf/.orchid/tasks/TK1.md"

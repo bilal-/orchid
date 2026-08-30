@@ -1662,6 +1662,12 @@ one of the task's fields comes back empty; `orchid task list` shows a row with
 no id, status or title; a run behaves as though a task it was working on
 stopped existing.
 
+On a current orchid the same damage announces itself instead: `task list`
+carries a `DAMAGED` row for that task, `task show` exits non-zero saying which
+way the file is broken, `orchid doctor` FAILs naming the path, and a driver
+pass stops at an operator-decision boundary rather than skipping the task in
+silence.
+
 That task's file has been **destroyed, not emptied**. The cause was a value
 containing a newline — typically a multi-paragraph `acceptance_criteria` or
 `hook_guidance` pasted as prose:
@@ -1679,19 +1685,39 @@ file also reported success, and `task show` exited 0 printing nothing.
 
 **Current behaviour.** A newline in a value is refused before anything is
 opened — task frontmatter is one `key: value` per line, and a multi-line value
-cannot be stored there. Put the prose in the task BODY instead (edit
-`.orchid/tasks/<id>.md` below the closing `---`), or flatten it to one line.
+cannot be stored there. Two ways forward, both of them verbs:
+
+- **Flatten it to one line.** A literal `\n` is safe and stores those two
+  characters verbatim — it is **not** expanded into a real newline, so it
+  cannot split the value across two frontmatter lines.
+- **Send the prose to the task body through the verb that writes it there** —
+  `orchid task unblock <id> --reason "..."` or `orchid task retry <id>
+  --reason "..."`. Both record the reason in the task BODY, which is the file
+  the implementer's own capsule carries.
+
+Do not reach for the file itself. Editing anything under `.orchid/` by hand is
+forbidden outright (PROTOCOL.md's Preamble), and this is the moment it is most
+tempting — a verb has just declined to store what you typed.
+
 Frontmatter writes now land through a temp file that is renamed only once the
 rewrite has succeeded and produced a non-empty document, so a failed write
 cannot truncate a task. `orchid task show` exits non-zero on an empty or
 unparseable task file, and `orchid doctor` FAILs on one, naming the path.
 
-Flattening with a literal `\n` is safe and stores those two characters
-verbatim — it is **not** expanded into a real newline, so it cannot split the
-value across two frontmatter lines.
+**The quieter half of the same damage** is a task file that is not empty at
+all: a value split across two lines leaves the key truncated at the break and
+the remainder sitting in the frontmatter as a line belonging to no key. Every
+line-oriented reader treats such a file as healthy — both delimiters are there
+and `id` still resolves — so only the split field is wrong, and silently. That
+is now refused too: `task show`, `orchid doctor` and every frontmatter write
+report `malformed frontmatter: line N is not a 'key: value' entry`, naming the
+line.
 
 **Recovering a file already destroyed** — the frontmatter is recoverable
-wherever it was last committed, and often from a review pack:
+wherever it was last committed, and often from a review pack. This is the one
+place git is the answer rather than a verb: restoring a committed version of a
+file is not a hand-edit, and no verb rebuilds a task's history from nothing.
+Restore first, then go back to verbs.
 
 ```sh
 git log --all --oneline -- .orchid/tasks/T002.md
