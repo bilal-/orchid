@@ -356,7 +356,9 @@ red_case 'fm_write_task_from with a producer that exits non-zero after emitting 
 
 rc=0; silent_err="$(fm_write_task_from "$WORK/T022.md" fmprod_silent 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "fm_write_task_from must refuse a producer that emitted nothing at all"
+assert_match "fmprod_silent" "$silent_err" "an empty producer is refused by name too, not as an unexplained shape failure"
 cmp -s "$WORK/T022.before" "$WORK/T022.md" || fail "...and leave the task byte-identical"
+red_case 'fm_write_task_from with a producer that emits nothing: refused by name, task byte-identical'
 
 # The GREEN twin: a producer that finishes lands, body and all.
 fm_write_task_from "$WORK/T022.md" fmprod_ok \
