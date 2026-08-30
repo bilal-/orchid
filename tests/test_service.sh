@@ -59,14 +59,23 @@ svc_uninstall_real() {
 # launchd. Read alike, the second silently clears the binding record of an agent
 # that is still firing. So the two wrappers below name which one they are
 # staging, and no caller passes a bare "it failed" for a `list` again.
-svc_uninstall_stub() {
-  local fail_re="$1" fail_rc="$2" fail_err="$3"; shift 3
+#
+# Pointed at a SUBVERB, because `teardown` (K12) is the same removal path with
+# `git worktree remove` as its success branch -- every refusal staged here has
+# to be stageable against both doors, or the suite could prove uninstall
+# refuses while teardown walked past the identical failure.
+svc_stub_subverb() {
+  local sub="$1" fail_re="$2" fail_rc="$3" fail_err="$4"; shift 4
   : > "$SCHED_LOG"
   ORCHID_SERVICE_DEBUG_SCHEDULER_LOG="$SCHED_LOG" \
   ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL="$fail_re" \
   ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL_RC="$fail_rc" \
   ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL_ERR="$fail_err" \
-  "$SERVICE" uninstall "$@"
+  "$SERVICE" "$sub" "$@"
+}
+svc_uninstall_stub() {
+  local fail_re="$1" fail_rc="$2" fail_err="$3"; shift 3
+  svc_stub_subverb uninstall "$fail_re" "$fail_rc" "$fail_err" "$@"
 }
 
 # A matching call fails the way a MALFUNCTION does: an ordinary nonzero and a
@@ -653,6 +662,10 @@ rm -rf "$WORK2"
 #       launchd's own "no such job" and refuse on a query that never reached
 #       launchd -- read alike, the second deletes the last name a still-firing
 #       agent has.
+#   K12 RED/GREEN: the ordering every one of the arms above protects is ONE
+#       conditional operation, not two commands. A refused uninstall must never
+#       reach `git worktree remove`; the identical command with the identical
+#       fixture must remove the worktree once the uninstall succeeds.
 # ===========================================================================
 source "$REPO_ROOT/lib/common.sh"
 
@@ -1603,8 +1616,156 @@ svc_uninstall_real --repo "$LBIND" >/dev/null 2>&1
   && fail "linux uninstall must remove the binding record it wrote"
 unset ORCHID_SERVICE_OS
 
+# -- K12: the teardown is ONE conditional operation ------------------------
+# EVERY REFUSAL K7/K8/K11 PROVE WAS UNENFORCEABLE, and that is what this
+# section is about. The ordering was documented everywhere -- this file's own
+# usage text, `install`, `status`, the pump, `orchid doctor` -- as a PAIR of
+# commands: uninstall first, `git worktree remove` second. A pair of commands
+# is run as a pair of commands. So an uninstall that refused because launchd
+# still held the job printed its refusal, and the operator's second line
+# removed the worktree anyway, taking the checkout, the repo-local binding
+# inside it and the last path anything had to the still-loaded agent. The
+# refusals were advisory against exactly the hazard they exist for.
+#
+# `orchid service teardown` makes the removal the SUCCESS BRANCH of the
+# uninstall instead. This proves it in both directions against ONE fixture --
+# a real linked worktree, a real schedule bound to it -- with the twins
+# differing only in what the stubbed `launchctl list` answered, which is the
+# same axis K7/K8/K11 turn on.
+export ORCHID_SERVICE_OS=Darwin
+svc_teardown_failing() {   # the query never answered -- nothing is known
+  local fail_re="$1"; shift
+  svc_stub_subverb teardown "$fail_re" 1 'Operation not permitted' "$@"
+}
+svc_teardown_notfound() {  # launchd ANSWERS that it holds no such job
+  local fail_re="$1"; shift
+  svc_stub_subverb teardown "$fail_re" 113 '' "$@"
+}
+
+TD_MAIN="$BIND/td-main"
+mkdir -p "$TD_MAIN"
+(
+  cd "$TD_MAIN" || exit 1
+  git init -q .
+  # runtime/ gitignored and .orchid/ committed, exactly as a real integration
+  # branch carries them -- so the worktree git sees is CLEAN and the green arm
+  # exercises a plain `git worktree remove`, not a --force that would mask a
+  # removal git had refused.
+  printf '.orchid/runtime/\n' > .gitignore
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: complete\nrun_id: r-td\n---\n# Roadmap\n' > .orchid/roadmap.md
+  git add .gitignore .orchid
+  git commit -q -m root
+  git worktree add -q -b td-integration ../td-wt
+) || fail "K12 fixture: could not build a main checkout with a linked integration worktree"
+[ -d "$BIND/td-wt" ] || fail "K12 fixture: the linked worktree was not created"
+TD_WT="$(cd "$BIND/td-wt" && pwd -P)"
+trust_repo "$TD_WT"
+
+# The composer first, because every surface that names a teardown reads it, and
+# what it names has to depend on whether there is a worktree to remove at all.
+td_cmd="$(orchid_service_teardown_command "$TD_WT")"
+assert_match 'orchid service teardown --repo' "$td_cmd" \
+  "a linked worktree is told the one command whose second half cannot run without its first"
+td_plain="$(orchid_service_teardown_command "$BIND_REPO")"
+assert_match 'orchid service uninstall --repo' "$td_plain" \
+  "an ordinary checkout is told the uninstall, which is the whole of what orchid is owed there"
+# A herestring, never `printf ... | grep -q && fail`: a pipeline whose reader
+# exits at its first match can hand back a signal status on exactly the input
+# that MATCHED, so the negative would pass while the thing it forbids is there.
+grep -qF 'teardown' <<<"$td_plain" \
+  && fail "a main checkout must NOT be told to run 'teardown' -- 'git worktree remove' has nothing to take there, so the verb would refuse"
+
+td_inst="$("$SERVICE" install --repo "$TD_WT" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the teardown fixture installs a schedule against the worktree first (out: $td_inst)"
+td_label="$(echo "$td_inst" | grep -oE "$label_re" | head -n1)"
+td_plist="$HOME/Library/LaunchAgents/$td_label.plist"
+td_rec="$TD_WT/.orchid/runtime/service.json"
+td_mrec="$HOME/.orchid/services/$td_label.json"
+[ -f "$td_plist" ] || fail "K12 fixture: the install must have placed the plist"
+[ -f "$td_rec" ] || fail "K12 fixture: the install must have written the repo-local binding"
+[ -f "$td_mrec" ] || fail "K12 fixture: the install must have written the machine-local binding"
+assert_match 'service teardown --repo' "$td_inst" \
+  "and install names THAT command for a worktree, not an ordering to remember"
+
+# --dry-run holds BOTH halves. A preview that removed the worktree while only
+# PRINTING the launchctl call would perform the reversed ordering under the one
+# flag an operator runs precisely to avoid consequences.
+td_dry="$("$SERVICE" teardown --repo "$TD_WT" --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "teardown --dry-run exits 0 (out: $td_dry)"
+assert_match 'DRY-RUN: git -C .* worktree remove' "$td_dry" \
+  "and prints the removal it would run, verbatim"
+assert_match 'was NOT removed' "$td_dry" "and says plainly that it removed nothing"
+[ -d "$TD_WT" ] || fail "a dry-run teardown must not remove the worktree"
+[ -f "$td_plist" ] || fail "nor the plist"
+[ -f "$td_rec" ] || fail "nor the binding it would need to name the schedule again"
+
+# RED: the uninstall half refuses -- `launchctl unload` failed and the `list`
+# after it never answered, so nothing is known about whether the agent is still
+# loaded. This is K11's red arm reached through the OTHER door, and the thing
+# being proved is what comes after it: no removal.
+rc=0
+td_red="$(svc_teardown_failing 'launchctl (unload|list)' --repo "$TD_WT" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "a teardown whose uninstall could not prove the scheduler stopped must exit nonzero (out: $td_red)"
+assert_match 'launchd could not be asked' "$td_red" \
+  "and refuses for the uninstall's own reason, not a new one"
+assert_match 'left exactly as they were' "$td_red" "and states that it changed nothing"
+assert_match 'then re-run: launchctl list .* && orchid service teardown --repo' "$td_red" \
+  "and names THIS command as the re-run -- told to re-run the uninstall alone, the operator ends the schedule and is handed back the worktree, which is the two-step ordering again"
+[ -d "$TD_WT" ] \
+  || fail "THE FINDING: a refused uninstall must never reach 'git worktree remove' -- the checkout carries the binding record and is what the still-loaded agent points at"
+[ -f "$td_plist" ] || fail "and the plist must survive: it is the only path an unload can name that agent by"
+[ -f "$td_rec" ] || fail "and the repo-local binding, which is what keeps the removal guard refusing"
+[ -f "$td_mrec" ] || fail "and the machine-local copy, the only name that would outlive the checkout"
+td_wt_list="$(git -C "$TD_MAIN" worktree list 2>&1)"
+assert_match 'td-wt' "$td_wt_list" "and git still has the worktree registered"
+rc=0
+orchid_service_removal_guard "$TD_WT" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "and the checkout is still guarded against removal"
+red_case "a teardown whose uninstall could not prove the scheduler stopped removes neither the schedule nor the worktree"
+
+# GREEN twin: the SAME command against the SAME fixture, differing only in what
+# launchctl answered. K7's green arm established that a failed unload with
+# launchd answering "no such job" is the ordinary never-loaded case; here that
+# answer carries the removal through.
+rc=0
+td_green="$(svc_teardown_notfound 'launchctl (unload|list)' --repo "$TD_WT" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the identical teardown succeeds once launchd answers that it holds no such job (out: $td_green)"
+assert_match 'is now safe to remove' "$td_green" "and the uninstall half reaches its ordinary conclusion"
+assert_match 'removed the integration worktree' "$td_green" "and the removal half then runs"
+[ -d "$TD_WT" ] && fail "the worktree must be gone -- otherwise the red arm proves only that this verb never removes anything"
+[ -f "$td_plist" ] && fail "and the plist"
+[ -f "$td_mrec" ] && fail "and the machine-local binding"
+td_wt_list2="$(git -C "$TD_MAIN" worktree list 2>&1)"
+grep -qF 'td-wt' <<<"$td_wt_list2" \
+  && fail "and git must no longer have the worktree registered"
+green_case "the same teardown removes the worktree once the uninstall proved the schedule was gone"
+
+# The refusal that belongs to the REMOVAL half is asked FIRST, with the schedule
+# still installed. A teardown that uninstalled and only then discovered it had
+# nothing to remove would leave the operator in the one state neither command
+# names: no schedule, a checkout still standing, and a verb reporting failure.
+td_reinst="$("$SERVICE" install --repo "$BIND_REPO" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the not-a-worktree fixture re-installs a schedule first (out: $td_reinst)"
+[ -f "$bind_rec" ] || fail "K12 fixture: the re-install must have written the repo-local binding"
+rc=0
+td_notwt="$(svc_teardown_failing 'launchctl' --repo "$BIND_REPO" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "teardown must refuse a checkout that is not a linked worktree (out: $td_notwt)"
+assert_match 'not a linked worktree' "$td_notwt" "and says why"
+assert_match 'nothing was uninstalled and nothing was removed' "$td_notwt" \
+  "and states that the schedule is untouched, so the operator knows what is still owed"
+assert_match 'service uninstall --repo' "$td_notwt" "and names the half that does apply there"
+[ -f "$bind_rec" ] \
+  || fail "the binding must be untouched: this refusal is asked BEFORE the uninstall, not after it"
+[ -s "$SCHED_LOG" ] \
+  && fail "and no scheduler call may have been made at all -- that is what 'before the uninstall' means"
+red_case "teardown refuses a non-worktree checkout before uninstalling anything, naming the uninstall instead"
+unset ORCHID_SERVICE_OS
+
 # ===========================================================================
-# J -- --help / usage documents idempotence for install and uninstall.
+# J -- --help / usage documents idempotence for install and uninstall, and
+# the teardown ordering as the ONE conditional operation it actually is.
 # ===========================================================================
 out="$("$SERVICE" --help 2>&1)"; rc=$?
 assert_eq 0 "$rc" "--help exits 0"
@@ -1616,3 +1777,8 @@ assert_match 'dry-run' "$out" "help documents --dry-run"
 assert_match 'trust unattended' "$out" "help documents the unattended acknowledgement prerequisite"
 assert_match 'TEARDOWN ORDERING' "$out" "help documents the teardown ordering, where an operator reading about install will meet it"
 assert_match 'uninstall the service FIRST' "$out" "and states which of the two steps comes first"
+assert_match 'ONE conditional operation' "$out" \
+  "and that the two steps are one operation rather than an ordering to remember -- an ordering stated as two commands is run as two commands"
+assert_match 'orchid service teardown --repo' "$out" "and names the command that is that operation"
+assert_match 'uninstall --repo <path> && git worktree remove <path>' "$out" \
+  "and, for an operator who would rather run the pair themselves, the chained form -- orchid can refuse only the removals it performs itself"

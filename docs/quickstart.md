@@ -302,7 +302,9 @@ Installs a launchd agent (macOS) or a crontab line (Linux) that runs
 `240`) — a no-op most passes, and a single headless tick whenever the
 interactive session's lease has gone stale. `orchid service status` reports
 whether it's loaded and when it last ran; `orchid service uninstall`
-reverses it.
+reverses it, and `orchid service teardown` does that and removes the
+integration worktree in one conditional operation — see
+[tearing it down](#tearing-it-down).
 
 The pump and direct `runners/orchid-tick` entry point re-check trust on every
 invocation, before creating runtime state, draining the notification outbox,
@@ -414,13 +416,35 @@ before it has opened its own `pump.log`, so a scheduled wake reports it to the
 scheduler's `/dev/null` rather than to a log you can read afterwards.
 `orchid doctor` is the surface that does not depend on catching an invocation.
 
-So when you are done with the working checkout, the order matters:
+So when you are done with the working checkout, the order matters — and it is
+one command, not two:
 
 ```sh
-orchid service uninstall --repo "$PWD"        # FIRST — while the checkout exists
-cd ..
-git worktree remove your-project-orchid       # then this
+orchid service teardown --repo "$PWD"    # uninstall, then remove this worktree
 ```
+
+`orchid service teardown` uninstalls the schedule and removes that worktree
+**only if the uninstall succeeded**. The uninstall refuses whenever it cannot
+prove the scheduler let the job go, and the removal is that refusal's opposite
+branch rather than the next line in your terminal — so a refusal cannot be
+followed by a removal that goes ahead anyway. It exits nonzero with the
+checkout untouched, and `--dry-run` removes neither half.
+
+If you would rather run the two commands yourself, chain them so the second
+cannot run without the first — and run the chain from your **main** checkout,
+because `git worktree remove` needs a repository to run in and the one you are
+removing is about to stop being one:
+
+```sh
+cd /path/to/your-project                                        # the main checkout
+orchid service uninstall --repo /path/to/your-project-orchid \
+  && git worktree remove /path/to/your-project-orchid
+```
+
+Orchid cannot refuse a `git worktree remove` or an `rm -rf` you type on its own
+— that reaches no orchid code at all. The `&&` is what makes the ordering hold
+there, and `orchid service teardown` is that same `&&` in a command you cannot
+half-run — and it finds the main checkout for you, so it works from anywhere.
 
 Reversed, you leave a scheduler waking on a timer against a directory that is
 no longer there, and the record naming that leftover schedule was inside the
@@ -428,7 +452,7 @@ directory you just deleted. `orchid service status` names this ordering next
 to the schedule it applies to, and `orchid doctor` — run from anywhere on the
 machine, not just from the repository — warns about both ends of this: a
 binding whose repository is gone, and a binding whose run has already reached
-a terminal state, each with the `orchid service uninstall` command that ends
+a terminal state, each with the teardown command that ends
 it. The pump itself refuses to run, loudly, rather than waking against a
 deleted path.
 

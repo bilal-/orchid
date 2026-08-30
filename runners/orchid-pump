@@ -260,7 +260,7 @@ rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null || true)"
 if orchid_run_status_terminal "$rs"; then
   echo "pump: run complete"
   if orchid_service_bound "$repo"; then
-    echo "pump: nothing will change here again — every further wake is a no-op; uninstall the schedule, THEN remove the checkout: $(orchid_service_uninstall_command "$repo")"
+    echo "pump: nothing will change here again — every further wake is a no-op; uninstall the schedule, THEN remove the checkout, as one operation: $(orchid_service_teardown_command "$repo")"
   fi
   exit 0
 fi
@@ -284,7 +284,7 @@ if orchid_run_status_awaits_operator "$rs"; then
   echo "pump: run $rs — every task is done and the run is waiting for an operator's acceptance"
   echo "pump: no scheduled wake can perform it: $(orchid_run_accept_command "$repo")"
   if orchid_service_bound "$repo"; then
-    echo "pump: until that happens this schedule can only repeat this pass; if the run is over, uninstall it, THEN remove the checkout: $(orchid_service_uninstall_command "$repo")"
+    echo "pump: until that happens this schedule can only repeat this pass; if the run is over, uninstall it, THEN remove the checkout, as one operation: $(orchid_service_teardown_command "$repo")"
   fi
 fi
 

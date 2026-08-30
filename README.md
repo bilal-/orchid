@@ -429,7 +429,19 @@ orchid service uninstall
 
 Nothing removes that schedule for you — not the last task merging, not
 `orchid run accept`, not a `complete` run. When you tear the working checkout
-down, uninstall the service FIRST and remove the worktree second, or you leave
+down, uninstall the service FIRST and remove the worktree second — as one
+command, so a refused uninstall cannot be followed by a removal that goes
+ahead anyway:
+
+```sh
+orchid service teardown --repo /path/to/project-orchid
+```
+
+That uninstalls the schedule and removes that worktree only if the uninstall
+succeeded, and it finds the main checkout for itself; run raw, the two must be
+chained and run from that main checkout (`orchid service uninstall --repo
+<path> && git worktree remove <path>`), since orchid cannot refuse a `git
+worktree remove` you type on its own. Reversed, you leave
 a scheduler waking on a timer against a deleted directory. `orchid service
 install` records what it bound itself to; `orchid doctor` reports any binding
 whose repository is gone; the pump refuses loudly rather than waking against a

@@ -116,7 +116,8 @@ a schedule really is bound to that checkout:
 ```
 pump: run complete
 pump: nothing will change here again — every further wake is a no-op; uninstall
-  the schedule, THEN remove the checkout: orchid service uninstall --repo <path>
+  the schedule, THEN remove the checkout, as one operation:
+  orchid service teardown --repo <path>
 ```
 
 Those two lines are printed before the pump opens `.orchid/runtime/pump.log`
@@ -132,15 +133,33 @@ has already reached a terminal state.
 WARN: pump service com.orchid.pump.<hash> is still installed for /path/to/repo,
   whose run is complete — a run never leaves that state on its own, so every
   further wake is a certain no-op; uninstall the schedule, THEN remove the
-  checkout: orchid service uninstall --repo /path/to/repo
+  checkout, as one operation: orchid service teardown --repo /path/to/repo
 ```
 
 ```sh
-orchid service status --repo "$PWD"    # names the binding and this ordering
-orchid service uninstall --repo "$PWD"
+orchid service status --repo "$PWD"      # names the binding and this ordering
+orchid service teardown --repo "$PWD"    # uninstall, then remove this worktree
 ```
 
-**Do this BEFORE removing the integration worktree.** Reversed, the scheduler
+**The removal must not be a separate command.** `orchid service teardown`
+removes the worktree only if the uninstall succeeded — and the uninstall
+refuses whenever it cannot prove the scheduler let the job go (the three
+refusals documented further down this section). Run as two lines, that refusal
+scrolls past above
+a removal that goes ahead anyway, taking the checkout, the binding record inside
+it and the last path anything had to the still-loaded agent. If you would rather
+run the pair yourself, chain it so the second cannot run without the first, and
+run the chain from your **main** checkout (`git worktree remove` needs a
+repository to run in) — orchid can refuse only the removals it performs itself,
+never a `git worktree remove` you type:
+
+```sh
+cd /path/to/main-checkout
+orchid service uninstall --repo /path/to/repo \
+  && git worktree remove /path/to/repo
+```
+
+Reversed, the scheduler
 keeps firing against a directory that is no longer there, and the record
 naming the leftover schedule was inside the directory you deleted. If that
 already happened, `orchid doctor` — from anywhere on this machine, not just
@@ -248,6 +267,31 @@ rather than guess (the first line is the unload's own error). Run that
 and it will act on the answer. The plist-already-gone case above refuses the
 same way and for the same reason, with `its plist is already gone` in place of
 the failed unload.
+
+**Every one of those refusals also stops `teardown`.** `orchid service
+teardown` is the same uninstall with `git worktree remove` as its success
+branch, so any of the three refusals above exits nonzero having removed
+nothing at all — no plist, no binding record, and no worktree. Each one's
+`then re-run:` line names the command you actually ran, so a refusal reached
+through `teardown` sends you back to `teardown` rather than to the uninstall
+alone (which would end the schedule and hand you back the worktree — the two
+separate steps again). Two other things it refuses,
+both *before* touching the schedule, so a refusal never leaves you with a
+checkout and no way to name what was scheduling it:
+
+```
+orchid: refusing to tear down /path/to/repo: it is not a linked worktree, so
+  there is nothing 'git worktree remove' can take
+orchid: nothing was uninstalled and nothing was removed — end the schedule
+  alone with: orchid service uninstall --repo /path/to/repo
+```
+
+— `git worktree remove` applies only to a linked worktree (which is what
+`orchid start` creates); against your own main checkout, the uninstall is the
+whole of what orchid is owed. The other is a worktree git considers unclean,
+where `git worktree remove` itself refuses after the schedule is already gone;
+re-run with `--force`, or remove the directory by hand — the ordering has
+already been satisfied at that point.
 
 ## The pump woke an orchestrator over and over and nothing moved
 

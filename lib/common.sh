@@ -1278,6 +1278,58 @@ orchid_service_uninstall_command() {
   echo "orchid service uninstall --repo $q"
 }
 
+# orchid_service_teardown_command <repo> -- the command to name wherever an
+# operator is told to end a schedule AND remove the checkout it drives. One
+# command, not two, and that is the whole of this function.
+#
+# WHY THE ORDERING COULD NOT BE LEFT AS TWO LINES. Every surface that stated it
+# stated it as a pair -- uninstall first, `git worktree remove` second -- and a
+# pair of independent lines is exactly what a shell runs independently. The
+# uninstall REFUSES, by design, whenever it cannot prove the scheduler let the
+# job go: a `launchctl unload` that failed while launchd still holds the job, a
+# plist already gone with the job still loaded, a `launchctl list` that never
+# reached launchd at all. Pasted as two lines, that refusal is a message
+# scrolling past above a removal that runs anyway -- and what the removal then
+# destroys is the checkout, the repo-local binding inside it, and every path by
+# which the still-firing agent could have been found. The refusal has to be
+# load-bearing rather than advisory, so the removal is expressed as the SUCCESS
+# BRANCH of the uninstall (`orchid service teardown`, runners/orchid-service)
+# rather than as a step that follows it.
+#
+# ORCHID CANNOT INTERCEPT A RAW `git worktree remove` OR `rm -rf`, and nothing
+# here pretends otherwise. An operator who types one reaches no orchid code at
+# all; the only removals orchid can refuse are the ones it performs itself
+# (orchid_service_removal_guard, below). What this changes is the command an
+# operator is GIVEN, in every place they are given one, so that running what
+# they were told to run cannot reach the removal without the uninstall having
+# succeeded first.
+#
+# THE REMOVAL HALF IS OMITTED WHERE THERE IS NOTHING TO REMOVE. `git worktree
+# remove` applies only to a LINKED worktree -- which is what `orchid start`
+# creates for a run, and what the teardown ordering has always been about --
+# and a `.git` FILE is precisely what distinguishes one from an ordinary
+# checkout (orchid_checkout_git_alive above reads the same two shapes for the
+# same reason). Against a main checkout, or a path that is already gone, the
+# only thing orchid is owed is the uninstall, so that is all this names: a
+# `teardown` there would refuse, and naming a command that cannot apply is
+# worse than naming none.
+#
+# That test is a STAT and nothing more, which is what makes this callable from
+# runners/orchid-pump's finished-run and awaiting-acceptance lines -- both of
+# which are printed AHEAD of the unattended trust gate. Nothing target-
+# controlled may execute there and no path inside the target may be opened; a
+# `[ -f ]` neither opens nor executes, and the same arm already asks
+# orchid_checkout_git_alive, which reads a line out of that very file.
+orchid_service_teardown_command() {
+  local repo="$1" q
+  if [ -f "$repo/.git" ]; then
+    printf -v q '%q' "$repo"
+    echo "orchid service teardown --repo $q"
+  else
+    orchid_service_uninstall_command "$repo"
+  fi
+}
+
 # orchid_service_binding_write <repo> <label> <platform> <artifact> <interval_s>
 # Records both halves, or neither. Nonzero when either could not be written --
 # and never with a residue worse than a repo-local record whose schedule is not
@@ -1651,12 +1703,18 @@ orchid_service_bound() { [ -f "$(orchid_service_repo_record "$1")" ]; }
 # directory that was just deleted. Every path in this kernel that removes a
 # checkout asks this first, so the rule holds wherever a removal is added
 # later rather than only where one exists today.
+#
+# The command it names comes from orchid_service_teardown_command above, not
+# from the uninstall composer: the operator reading this refusal is mid-removal,
+# so handing them the uninstall alone puts them back at the two independent
+# steps -- and it is a pure `[ -f ]` and an echo, so it costs this predicate
+# none of the "nothing here may itself fail" property its callers depend on.
 orchid_service_removal_guard() {
   local path="$1"
   [ -n "$path" ] || return 0
   orchid_service_bound "$path" || return 0
   echo "orchid: refusing to remove $path: a pump service is still installed against it" >&2
-  echo "orchid: uninstall the schedule FIRST, then remove the checkout -- $(orchid_service_uninstall_command "$path")" >&2
+  echo "orchid: uninstall the schedule FIRST, then remove the checkout, as one operation -- $(orchid_service_teardown_command "$path")" >&2
   return 1
 }
 

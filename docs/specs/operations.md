@@ -343,8 +343,15 @@ this section false without touching a byte of it.
    in step 4 does NOT end with it — nothing ties one to a run's lifetime, so
    every wake from `accepting` onward can only repeat one pass, and every wake
    after completion is a certain no-op that runs forever. Tearing the checkout
-   down is therefore ordered, not interchangeable: `orchid service uninstall
-   --repo <path>` FIRST, `git worktree remove <path>` second. Reversed, the
+   down is therefore ordered, not interchangeable — and is one command rather
+   than two: `orchid service teardown --repo <path>` uninstalls the schedule
+   and removes that worktree only if the uninstall succeeded, so a refusal
+   cannot be followed by a removal that runs anyway. Run raw, the pair must be
+   chained (`orchid service uninstall --repo <path> && git worktree remove
+   <path>`, from the MAIN checkout — `git worktree remove` needs a repository
+   to run in, which `teardown` resolves for itself); orchid can refuse only the
+   removals it performs itself, never a
+   `git worktree remove` an operator types. Reversed, the
    scheduler keeps firing against a directory that is gone and the binding
    record naming the leftover schedule went into the bin with it — `orchid
    doctor` reads the machine-local copy under `~/.orchid/services/` and names
@@ -364,7 +371,13 @@ this section false without touching a byte of it.
    exits nonzero both for that answer and for every way of failing to ask, and a
    query that never reached launchd is treated as a loaded job, not as an
    absence — it refuses, names the failing command and its status, and keeps
-   both binding records and the checkout guard. Doctor is the
+   both binding records and the checkout guard. Every one of those refusals is
+   what `teardown` makes load-bearing: it is the same uninstall, and the
+   worktree removal is its success branch, so a refusal that used to print
+   above a removal an operator ran anyway now stops the removal outright and
+   exits nonzero with the checkout untouched. `teardown` refuses up front,
+   uninstalling nothing, when `--repo` is not a linked worktree, and removes
+   neither half under `--dry-run`. Doctor is the
    surface that reaches an operator here: the pump says the same thing on every
    wake, but it says it before the repo-local service log is opened (nothing
    may open a path inside the target ahead of the unattended trust gate), so a

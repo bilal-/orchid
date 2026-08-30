@@ -3395,7 +3395,10 @@ Once `orchid status --explain` shows every task `done`:
    an operator previously had to wait out `pump_stale_s`, or hand-backdate
    `lease.json`, before `run new` or the pump would touch this run again.
 5. `orchid service uninstall --repo <path>` — **if, and only if, a schedule
-   was installed.** Nothing else removes one: `run accept` does not, a merged
+   was installed.** (If you are also removing the integration worktree, run
+   `orchid service teardown --repo <path>` instead: same uninstall, with the
+   removal as its success branch — see TEARDOWN ORDERING below.)
+   Nothing else removes one: `run accept` does not, a merged
    last task does not, and a completed run does not. Until this runs, the
    launchd agent / crontab line keeps firing on its interval; every wake after
    the run reaches `complete` is a certain no-op, but it is a no-op that runs
@@ -3422,23 +3425,55 @@ Once `orchid status --explain` shows every task `done`:
    remove <label>` as the hand step instead.
 
 **TEARDOWN ORDERING.** When the run is over and you are removing the
-integration worktree, the order is not interchangeable:
+integration worktree, the order is not interchangeable — and it is one
+command, not two:
 
 ```sh
-orchid service uninstall --repo /path/to/project-orchid   # FIRST
-git worktree remove /path/to/project-orchid               # then this
+orchid service teardown --repo /path/to/project-orchid
 ```
+
+`teardown` uninstalls the schedule and then removes that worktree **only if
+the uninstall succeeded**. The removal is the success branch of the uninstall,
+not a step that follows it, and that distinction is the whole of this section.
+Step 5's refusals — a failed `launchctl unload` with the job still loaded, a
+plist already gone with the job still loaded, a `launchctl list` that never
+reached launchd — exist to stop exactly one thing from happening next. Written
+as two lines they could not: the refusal printed, and the second line removed
+the worktree anyway, taking the checkout, the binding record inside it and the
+last path anything had to the still-loaded agent. `teardown` exits nonzero with
+the checkout untouched instead. It refuses up front, uninstalling nothing, when
+`--repo` is not a linked worktree (there is nothing for `git worktree remove` to
+take; run `orchid service uninstall` there instead), and `--dry-run` removes
+neither half.
+
+If you would rather run the two commands yourself, chain them so the second
+cannot run without the first, and run the chain from the **main** checkout —
+`git worktree remove` needs a repository to run in, and the one being removed is
+about to stop being one (`teardown` resolves the main working tree itself, so it
+runs from anywhere):
+
+```sh
+cd /path/to/project        # the main checkout
+orchid service uninstall --repo /path/to/project-orchid \
+  && git worktree remove /path/to/project-orchid
+```
+
+Orchid cannot refuse a `git worktree remove` or an `rm -rf` you type on its own
+— that command reaches no orchid code at all. What it can do is refuse the
+removals it performs itself, and give you one command whose second half cannot
+run without its first.
 
 Reversed, a scheduler is left waking on a timer against a deleted directory,
 and the binding record that would have named the leftover schedule was inside
-the directory you just removed. Four things hold this ordering up, because
-documentation alone did not: `orchid service install` records what it bound
-itself to (in the checkout, and in a machine-local copy under
+the directory you just removed. Five things hold this ordering up, because
+documentation alone did not: `orchid service teardown` is a single conditional
+operation rather than an ordering to remember; `orchid service install` records
+what it bound itself to (in the checkout, and in a machine-local copy under
 `~/.orchid/services/` that OUTLIVES the checkout); `orchid doctor` warns about
 any binding whose repository is gone AND any whose run has already reached a
 terminal state; a pump whose target is gone refuses loudly instead of polling
 (HEADLESS OPERATION above); and every checkout removal
-orchid itself performs refuses while a binding is live, naming the uninstall
+orchid itself performs refuses while a binding is live, naming the teardown
 command. If you removed the worktree first, `orchid doctor` from anywhere on
 the machine names the schedule still owed an uninstall.
 

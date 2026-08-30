@@ -171,12 +171,12 @@ while IFS="$(printf '\t')" read -r svc_label svc_repo; do
   # strength of a failed read.
   svc_rs="$(fm_get "$svc_repo/.orchid/roadmap.md" run_status 2>/dev/null || true)"
   if orchid_run_status_terminal "$svc_rs"; then
-    echo "WARN: pump service $svc_label is still installed for $svc_repo, whose run is $svc_rs — a run never leaves that state on its own, so every further wake is a certain no-op; uninstall the schedule, THEN remove the checkout: $(orchid_service_uninstall_command "$svc_repo")"
+    echo "WARN: pump service $svc_label is still installed for $svc_repo, whose run is $svc_rs — a run never leaves that state on its own, so every further wake is a certain no-op; uninstall the schedule, THEN remove the checkout, as one operation: $(orchid_service_teardown_command "$svc_repo")"
   elif orchid_run_status_awaits_operator "$svc_rs"; then
     echo "WARN: pump service $svc_label is still installed for $svc_repo, whose run is $svc_rs — every task is done and only an operator can accept the run, so no wake of this schedule can move it: $(orchid_run_accept_command "$svc_repo")"
-    echo "  if the run is over instead, uninstall the schedule, THEN remove the checkout: $(orchid_service_uninstall_command "$svc_repo")"
+    echo "  if the run is over instead, uninstall the schedule, THEN remove the checkout, as one operation: $(orchid_service_teardown_command "$svc_repo")"
   else
-    echo "ok: pump service installed for $svc_repo (label $svc_label) — uninstall it BEFORE removing that checkout: $(orchid_service_uninstall_command "$svc_repo")"
+    echo "ok: pump service installed for $svc_repo (label $svc_label) — uninstall it BEFORE removing that checkout, as one operation: $(orchid_service_teardown_command "$svc_repo")"
   fi
   [ -z "$svc_refusal" ] || echo "  the schedule last woke and refused: $svc_refusal"
 done < <(orchid_service_bindings)
