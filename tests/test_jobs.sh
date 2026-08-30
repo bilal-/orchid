@@ -997,7 +997,7 @@ rm -f "$rt/jobs/j-ls-del.json" "$rt/spool/j-e1-TDEL-a1-5555eeee.json"
 ls_m_pump="$(ORCHID_LAUNCHED_BY=pump "$ORCHID_BIN" jobs prepare TLAUNCHP implementer implement)"
 assert_eq "pump" "$(jq -r .launched_by "$ls_m_pump")" \
   "jobs prepare records the automation that owns the launch"
-ls_m_default="$("$ORCHID_BIN" jobs prepare TLAUNCHD implementer implement)"
+ls_m_default="$(ORCHID_LAUNCHED_BY='' ORCHID_LAUNCHER='' "$ORCHID_BIN" jobs prepare TLAUNCHD implementer implement)"
 assert_eq "operator" "$(jq -r .launched_by "$ls_m_default")" \
   "a hand-run launch, inheriting nothing, records operator"
 ls_m_hostile="$(ORCHID_LAUNCHED_BY="$(printf 'ev\til\nx')" "$ORCHID_BIN" jobs prepare TLAUNCHH implementer implement)"
