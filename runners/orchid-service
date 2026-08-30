@@ -1156,10 +1156,34 @@ _svc_teardown() {
   # expansion is the only way that flag reaches git as a flag, and an unquoted
   # expansion in a command that removes a directory is not a thing to leave in
   # this file for the next reader to re-derive as safe.
+  #
+  # `|| rm_rc=$?` DISABLES errexit for the command it guards, which is exactly
+  # what is wanted here and nowhere else in this function: `git` is an external
+  # program, so nothing of orchid's runs inside that suppression -- unlike the
+  # uninstall call above, which is deliberately left bare because the linux
+  # branch depends on errexit to abort its own removals.
+  local rm_rc=0
   if [ "$force" -eq 1 ]; then
-    git -C "$main_wt" worktree remove --force "$repo"
+    git -C "$main_wt" worktree remove --force "$repo" || rm_rc=$?
   else
-    git -C "$main_wt" worktree remove "$repo"
+    git -C "$main_wt" worktree remove "$repo" || rm_rc=$?
+  fi
+  # THE ONE MID-STATE THIS VERB CAN LEAVE, so it is the one state it must name.
+  # The refusals above all fire with nothing done; this failure fires with the
+  # uninstall already succeeded -- git declines a worktree it considers unclean,
+  # and the schedule is gone by then. The ordering is satisfied at that point
+  # (there is no scheduler left to fire at this path), but git's own message
+  # says nothing about a schedule, so an operator reading it cannot tell whether
+  # the half that mattered ran. Worse, the obvious recovery -- re-run the
+  # command that failed -- reports `no service installed for <repo>` and removes
+  # nothing, because the uninstall half is already done. So this names both what
+  # succeeded and the removal command to finish by hand, and never sends them
+  # back to `teardown`.
+  if [ "$rm_rc" -ne 0 ]; then
+    echo "orchid: the schedule for $repo is uninstalled — it will not fire again, and nothing is waking against this path" >&2
+    echo "orchid: only the checkout is left, and 'git worktree remove' refused it (status $rm_rc) — do NOT re-run teardown, there is no schedule left for it to end; finish with:" >&2
+    echo "orchid:   $(_svc_quote_cmd git -C "$main_wt" worktree remove --force "$repo")" >&2
+    orchid_die "the schedule for $repo is uninstalled but the checkout could not be removed"
   fi
   # The reader's own predicate, not the exit status: `git worktree remove`
   # answering 0 is what git did, and this verb's postcondition is that the

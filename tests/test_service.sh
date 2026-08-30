@@ -1742,6 +1742,58 @@ grep -qF 'td-wt' <<<"$td_wt_list2" \
   && fail "and git must no longer have the worktree registered"
 green_case "the same teardown removes the worktree once the uninstall proved the schedule was gone"
 
+# -- K12b: the ONE mid-state this verb can leave, and the recovery it names --
+# The refusals proved above all fire having done nothing. Exactly one failure
+# fires with the uninstall ALREADY SUCCEEDED: git declines a worktree it
+# considers unclean, and by then the schedule is gone. The ordering is satisfied
+# there -- nothing is waking at this path any more -- but git's own message says
+# nothing about a schedule, so an operator reading it cannot tell whether the
+# half that mattered ran. And the obvious recovery, re-running the command that
+# failed, reports `no service installed` and removes nothing, because the
+# uninstall half is done. So the verb has to say both halves itself.
+TD_WT2="$BIND/td-wt2"
+(
+  cd "$TD_MAIN" || exit 1
+  git worktree add -q -b td-integration2 ../td-wt2
+) || fail "K12b fixture: could not add a second linked worktree"
+[ -d "$TD_WT2" ] || fail "K12b fixture: the second linked worktree was not created"
+TD_WT2="$(cd "$TD_WT2" && pwd -P)"
+trust_repo "$TD_WT2"
+td2_inst="$("$SERVICE" install --repo "$TD_WT2" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the unclean-worktree fixture installs a schedule first (out: $td2_inst)"
+td2_label="$(echo "$td2_inst" | grep -oE "$label_re" | head -n1)"
+td2_plist="$HOME/Library/LaunchAgents/$td2_label.plist"
+td2_mrec="$HOME/.orchid/services/$td2_label.json"
+[ -f "$td2_plist" ] || fail "K12b fixture: the install must have placed the plist"
+[ -f "$td2_mrec" ] || fail "K12b fixture: the install must have written the machine-local binding"
+# A TRACKED file modified, which is what `git worktree remove` refuses over.
+# Not an IGNORED one: `.orchid/runtime/` is ignored here precisely so the green
+# arm above exercised a plain removal, and adding a file there would have proved
+# nothing -- git's cleanliness check does not see ignored paths.
+printf '.orchid/runtime/\n# dirty\n' > "$TD_WT2/.gitignore"
+rc=0
+td2_out="$(svc_teardown_notfound 'launchctl (unload|list)' --repo "$TD_WT2" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a teardown whose removal half failed must exit nonzero (out: $td2_out)"
+[ -d "$TD_WT2" ] || fail "K12b fixture: git was supposed to REFUSE this worktree, not remove it"
+assert_match 'is uninstalled' "$td2_out" \
+  "THE FINDING: the one failure that fires AFTER a successful uninstall must say the schedule is gone -- git's own message names no schedule, so the operator cannot otherwise tell which half ran"
+assert_match 'it will not fire again' "$td2_out" \
+  "and say it in the terms the ordering is about: nothing is waking against this path"
+assert_match 'do NOT re-run teardown' "$td2_out" \
+  "and steer off the obvious recovery, which reports 'no service installed' and removes nothing"
+assert_match 'worktree remove [-]-force' "$td2_out" \
+  "and name the command that finishes the job by hand"
+[ -f "$td2_plist" ] && fail "the uninstall half really did complete: no plist survives"
+[ -f "$td2_mrec" ] && fail "nor the machine-local binding"
+[ -f "$TD_WT2/.orchid/runtime/service.json" ] \
+  && fail "nor the repo-local binding, still reachable because the checkout is still standing"
+rc=0
+orchid_service_removal_guard "$TD_WT2" >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" \
+  "and the checkout is no longer guarded -- the guard exists to hold a LIVE schedule, and there is none"
+red_case "a teardown whose worktree removal failed names the schedule it did end and the removal still owed"
+git -C "$TD_MAIN" worktree remove --force "$TD_WT2" >/dev/null 2>&1 || true
+
 # The refusal that belongs to the REMOVAL half is asked FIRST, with the schedule
 # still installed. A teardown that uninstalled and only then discovered it had
 # nothing to remove would leave the operator in the one state neither command

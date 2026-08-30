@@ -288,10 +288,27 @@ orchid: nothing was uninstalled and nothing was removed — end the schedule
 
 — `git worktree remove` applies only to a linked worktree (which is what
 `orchid start` creates); against your own main checkout, the uninstall is the
-whole of what orchid is owed. The other is a worktree git considers unclean,
-where `git worktree remove` itself refuses after the schedule is already gone;
-re-run with `--force`, or remove the directory by hand — the ordering has
-already been satisfied at that point.
+whole of what orchid is owed. The second is a `--repo` whose worktree
+registration or repository git can no longer read.
+
+That leaves exactly one failure that fires with the uninstall *already done* —
+a worktree git considers unclean, which it refuses after the schedule is
+already gone. The ordering is satisfied at that point (nothing is waking
+against that path any more), and the verb says so rather than leaving you with
+git's message, which names no schedule at all:
+
+```
+orchid: the schedule for /path/to/repo is uninstalled — it will not fire again,
+  and nothing is waking against this path
+orchid: only the checkout is left, and 'git worktree remove' refused it (status
+  1) — do NOT re-run teardown, there is no schedule left for it to end; finish
+  with:
+orchid:   git -C /path/to/project worktree remove --force /path/to/repo
+```
+
+Re-running `teardown` there reports `no service installed` and removes nothing,
+which is why it says not to: run that last line, or remove the directory by
+hand.
 
 ## The pump woke an orchestrator over and over and nothing moved
 

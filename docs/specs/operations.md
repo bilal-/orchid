@@ -377,7 +377,12 @@ this section false without touching a byte of it.
    above a removal an operator ran anyway now stops the removal outright and
    exits nonzero with the checkout untouched. `teardown` refuses up front,
    uninstalling nothing, when `--repo` is not a linked worktree, and removes
-   neither half under `--dry-run`. Doctor is the
+   neither half under `--dry-run`. Exactly one of its failures fires with the
+   uninstall already done — `git worktree remove` declining a worktree it
+   considers unclean — and that one names both halves: the schedule is ended
+   and will not fire again, only the checkout is left, and the `--force`
+   removal that finishes it is printed, because re-running `teardown` there
+   would report `no service installed` and remove nothing. Doctor is the
    surface that reaches an operator here: the pump says the same thing on every
    wake, but it says it before the repo-local service log is opened (nothing
    may open a path inside the target ahead of the unattended trust gate), so a
