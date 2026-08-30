@@ -1556,6 +1556,168 @@ orchid_blocker_once() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# THE QUESTION ID, AND WHY IT IS CLAIMED BEFORE ANYTHING IS FILED UNDER IT
+# (T032, dogfood F33 -- convergence after the attempt-6 arbitration).
+#
+# A qid is `q-<epoch>-<four hex>`, and the suffix used to be sixteen bits of
+# /dev/urandom taken and used, with the collision written off in a comment as
+# "improbable and not currently guarded against". Everything an operator
+# boundary owns is then FILED UNDER THAT NAME: the BLOCKERS.md entry,
+# `runtime/answers/<qid>.question`, the `.choices` sidecar, the operator's
+# `.answer`, the `.objection` authority record (lib/objection.sh) and
+# `runtime/outbox/<qid>`. A second page that drew the same suffix did not
+# fail -- it OVERWROTE them, because every one of those writes is an
+# `atomic_write`, and an atomic write is a rename over whatever was there.
+#
+# AND THE CASE THAT BITES IS NOT A RACE. `orchid notify` holds the verb lock, so
+# two pages rarely overlap; what collides is a page raised NOW against a page
+# raised an hour ago, since nothing ever retired the older id. Sixteen bits and
+# a birthday bound mean a repository that raises a hundred boundaries inside one
+# epoch is already several percent likely to have handed the same name out
+# twice, and an epoch spans a whole run.
+#
+# WHAT THAT COSTS IS THE GUARANTEE THIS TASK EXISTS FOR. A page raised for
+# objection instance 1, answered `approve` by the operator and not yet relayed,
+# leaves a `.question`, an `.answer` saying `approve`, and an authority record
+# naming instance 1. Let a page raised later for instance 2 draw the same
+# suffix: it replaces the question and mints a FRESH authority record naming
+# instance 2 -- beside the older answer, which nothing rewrote and which still
+# says `approve`. `review_operator_relay` then finds a record for the objection
+# standing NOW, a question whose subject matches, and an operator's `approve`,
+# and clears an objection the operator answered nothing about. The instance
+# counter that exists precisely to separate those two objections is defeated,
+# because the collision rewrote the record the instance is stored in.
+#
+# So the id is CLAIMED, and the claim is the first durable thing a page does --
+# ahead of the journal line, the BLOCKERS.md entry, the choices sidecar, the
+# question, the authority record and the outbox message, every one of which
+# names it. A claim is never released: `objection_authority_consume` spends the
+# authority record and `orchid answer` may leave a question answered years ago,
+# but neither frees the id, because "nothing is filed here any more" and "this
+# id was never used" have to stay different facts.
+
+# The suffix a claim is filed under, beside the `.question`, `.choices`,
+# `.answer` and `.objection` files a qid may accumulate. One constant because
+# the writer composes exactly this and the reader below globs everything.
+ORCHID_QID_RESERVATION_EXT=reserved
+
+# How many candidates `orchid_qid_reserve` draws before failing closed. Sixteen
+# bits of suffix and a per-epoch namespace make one draw enough in practice;
+# this bounds the loop so an exhausted namespace refuses to publish instead of
+# spinning forever.
+ORCHID_QID_RESERVE_TRIES=64
+
+# _orchid_qid_taken <repo> <qid> -- 0 iff anything has ever been filed under
+# this id.
+#
+# THE RUNTIME TEST IS A GLOB, NOT A LIST OF SUFFIXES. `answers/<qid>.*` matches
+# the claim, the question, the choices sidecar, the answer and the objection
+# authority in one predicate, and it matches the next artifact somebody files
+# beside them without this reader having to be taught about it. An enumeration
+# would go stale exactly once -- silently, and in the direction of handing out
+# an id that is already in use.
+#
+# ...AND BLOCKERS.md, which is the DURABLE half. Everything under `runtime/` is
+# gitignored and sweepable, and the epoch counter a qid is namespaced by lives
+# in that same directory -- so a wipe rewinds the epoch and forgets every claim
+# in one move, and the very next page would start handing out ids that already
+# name entries an operator can still read. BLOCKERS.md is committed and
+# append-only, so it remembers across the wipe. A qid is free only when NEITHER
+# half has heard of it.
+_orchid_qid_taken() {
+  local repo="$1" qid="$2" f blockers line
+  # Composed rather than taken from `orchid_runtime`, which mkdir -p's what it
+  # returns: this is a read, and lib/objection.sh's readers compose the same
+  # path the same way for the same reason.
+  for f in "$repo/.orchid/runtime/answers/$qid".*; do
+    # The glob matching nothing yields the pattern itself under bash's default
+    # nullglob-off, which is not a file.
+    [ -e "$f" ] || continue
+    return 0
+  done
+  [ ! -e "$repo/.orchid/runtime/outbox/$qid" ] || return 0
+  blockers="$(orchid_state "$repo")/BLOCKERS.md"
+  [ -f "$blockers" ] || return 1
+  # libexec/orchid-notify's two header spellings, `## <qid>` and
+  # `## <qid> (task: <id>)`, matched as whole headers rather than as a
+  # substring: a body line quoting an id must not retire it, and a header must
+  # not be missed because it carries a task.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "## $qid"|"## $qid "*) return 0 ;;
+    esac
+  done < "$blockers"
+  return 1
+}
+
+# _orchid_qid_suffix <draw> -- four lowercase hex characters.
+#
+# ENTROPY DECIDES HOW MANY DRAWS THE LOOP TAKES, NEVER WHETHER AN ID IS REUSED.
+# That is the claim's job, and the claim holds against a generator that returned
+# the same four characters every time. So the weak fallback survives -- a
+# machine with neither `xxd` nor `od` able to read /dev/urandom still raises its
+# blockers, exactly as before this guard existed -- but it VARIES WITH THE DRAW
+# NUMBER, because a fallback that did not would make the loop below re-offer one
+# candidate sixty-four times and fail closed on a repository holding a single
+# taken id.
+_orchid_qid_suffix() {
+  local draw="$1" raw s now
+  raw="$(xxd -p -l2 /dev/urandom 2>/dev/null || true)"
+  s="$(printf '%s' "$raw" | tr -cd '0-9a-f')"
+  if [ "${#s}" -lt 4 ]; then
+    raw="$(od -An -tx1 -N2 /dev/urandom 2>/dev/null || true)"
+    s="$(printf '%s' "$raw" | tr -cd '0-9a-f')"
+  fi
+  if [ "${#s}" -lt 4 ]; then
+    now="$(date +%s 2>/dev/null || true)"
+    case "$now" in ''|*[!0-9]*) now=0 ;; esac
+    s="$(printf '%04x' "$(( (now * 65599 + $$ * 7919 + draw * 104729) % 65536 ))")"
+  fi
+  printf '%s\n' "${s:0:4}"
+}
+
+# orchid_qid_reserve <repo> <epoch> -- draw an id nothing has ever been filed
+# under, claim it, and print it. Nonzero with nothing on stdout when no free id
+# could be claimed, which the caller MUST treat as a refusal to publish rather
+# than as permission to fall back to an unclaimed id.
+orchid_qid_reserve() {
+  local repo="$1" epoch="$2" answers qid draw=0
+  [ -n "$repo" ] && [ -n "$epoch" ] || return 1
+  answers="$(orchid_runtime "$repo")/answers"
+  mkdir -p "$answers" || return 1
+  while [ "$draw" -lt "$ORCHID_QID_RESERVE_TRIES" ]; do
+    draw=$(( draw + 1 ))
+    qid="q-${epoch}-$(_orchid_qid_suffix "$draw")"
+    # Cheap first, and it covers the one thing the claim below cannot: an
+    # artifact whose claim is gone. A page raised before claims existed, or one
+    # whose `runtime/` was swept while BLOCKERS.md kept the entry, has a name in
+    # use and no directory saying so.
+    if _orchid_qid_taken "$repo" "$qid"; then continue; fi
+    # ...and THIS is the allocation. `mkdir` is the kernel's exclusive-create
+    # primitive -- `verb_lock_acquire` takes the verb lock with the same call
+    # for the same reason: it is ONE filesystem operation that either creates
+    # the name or fails because somebody already holds it. The test above and
+    # the create are two operations with a window between them, and the create
+    # is what closes it: two allocations that drew the same suffix while both
+    # believed it free cannot both leave here owning it. `orchid notify` does
+    # hold the verb lock, so that overlap is not the ordinary case -- but the
+    # verb lock is breakable by design (see verb_lock_acquire's stale-owner
+    # arm), and a claim that were only as strong as a lock somebody else may
+    # break is not a claim.
+    #
+    # Crash-safe in the only direction that matters: the directory exists from
+    # the moment the call returns, so a notify killed anywhere after this line
+    # leaves the id RETIRED rather than free. An id burned by a crash costs one
+    # draw out of sixty-five thousand; an id handed out twice costs the
+    # operator's answer.
+    mkdir "$answers/$qid.$ORCHID_QID_RESERVATION_EXT" 2>/dev/null || continue
+    printf '%s\n' "$qid"
+    return 0
+  done
+  return 1
+}
+
 # with_timeout <secs> cmd... -- runs cmd (any command form, including a
 # shell function name) with a wall-clock deadline; returns cmd's own exit
 # status, or 124 on timeout. Both the timed command AND the watcher are

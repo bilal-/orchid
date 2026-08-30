@@ -202,6 +202,15 @@ exits/<job_id>              # the engine's own exit status, written by the
                             #   returns at spawn, so an envelope-less job's
                             #   exit code would otherwise be unrecoverable
 engines.json                # availability ledger (per-machine quota state)
+answers/<qid>.reserved      # the qid CLAIM (T032): created with an exclusive
+                            #   `mkdir` BEFORE any journal, BLOCKERS.md,
+                            #   .question, .choices, .answer, .objection or
+                            #   outbox write names that id, and never released
+                            #   — not by an answer, not by a consumed
+                            #   authority. `orchid notify` redraws until a free
+                            #   id comes up and refuses to publish if none
+                            #   does, so a page can never rename an earlier
+                            #   page's question or authority record away
 answers/  logs/
 ```
 
@@ -1268,7 +1277,12 @@ refuses an unrecognised flag to `notify` — so a woken model can raise a page
 (`notify` IS admitted) but cannot raise one that mints an authority, which is
 what makes the record rather than the page the evidence. The record is CONSUMED
 before anything is cleared, so it is spent once and a crash or a replay finds
-nothing left to spend. Only the clearing direction is relayed: refusing a relayed
+nothing left to spend. The qid all three files are keyed by is CLAIMED before
+any of them is written (`runtime/answers/<qid>.reserved`, above) and never
+released: a reused id renames an earlier page's question and authority record
+away while leaving that page's `.answer` beside a record naming the instance
+standing NOW, which is this relay clearing an objection nobody answered —
+assembled out of a collision rather than a forgery. Only the clearing direction is relayed: refusing a relayed
 `request-changes` leaves the operator's objection standing, which is what they
 asked for, while admitting one would record a model's paraphrase under their
 authority. The clear's journal entry names the relaying actor, the qid and the

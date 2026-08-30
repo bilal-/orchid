@@ -2556,3 +2556,213 @@ ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T049 \
 assert_eq merging "$(t4x_status T049)" "the relayed approval lands"
 assert_eq "" "$(t4x_objection T049)" "...and the long objection is cleared"
 green_case 'an objection longer than REVIEW_OBJECTION_MAX: stored within the cap, carried verbatim into the authority, and relayed'
+
+# ============================================================================
+# A QUESTION ID HANDED OUT TWICE IS AN ANSWER SPENT TWICE (T032 convergence,
+# after the attempt-6 arbitration).
+#
+# Everything the blocks above rest on is FILED UNDER THE QID: the `.question`
+# whose subject the relay checks, the `.answer` recording what the operator
+# typed, and the `.objection` authority record naming the instance that answer
+# was given about. `orchid notify` drew that id as sixteen bits of urandom and
+# used it unguarded, and every write under it is an `atomic_write` — a rename
+# over whatever was there. So a page raised later that happened to draw the same
+# suffix REPLACED the question and minted a fresh authority record for the
+# instance standing now, right beside an older `.answer` that nothing rewrote.
+#
+# That composes the exact defect this task exists to close, out of its own
+# machinery: the operator's `approve` about instance 1 sits under a record
+# naming instance 2, every field of `objection_authority_matches` agrees, and
+# `review_operator_relay` clears an objection the operator answered nothing
+# about. The instance counter cannot save it — the collision rewrote the file
+# the instance is stored in.
+#
+# So an id is CLAIMED before anything is filed under it, and never released. The
+# case below forces the collision rather than waiting for the birthday bound:
+# `orchid notify` draws its suffix through `xxd`, so a shim on PATH makes the
+# draw a fixture input. Nothing in the kernel reads the shim's variable; the
+# only thing being replaced is the entropy source, which is exactly the input a
+# real collision varies.
+#
+# RED: a page whose first draw names an id already carrying a question, an
+#      answer and an authority record — the earlier page must come through
+#      byte-identical, and the stale `approve` must authorise nothing.
+# GREEN: the operator answers the page that WAS raised, and it relays; and a
+#      draw that names a free id is claimed as drawn, not skipped.
+# ============================================================================
+make_scratch T50_SHIM
+mkdir -p "$T50_SHIM/bin"
+T50_SEQ="$T50_SHIM/suffixes"
+# A DETERMINISTIC STAND-IN for /dev/urandom, and only for the four hex
+# characters `orchid notify` composes a qid from. `-l2` is the qid draw and
+# `-l8` is the nonce (libexec/orchid-notify mints both through `xxd`); the qid
+# draw pops the next line of the sequence file this fixture writes, and the
+# nonce is a constant because no assertion here turns on it. An exhausted
+# sequence exits non-zero, which is what a machine without `xxd` looks like, so
+# the kernel falls back to its own source and the exact-id assertions below
+# fail loudly rather than passing on a lucky draw.
+cat > "$T50_SHIM/bin/xxd" <<'T50_SHIM_XXD'
+#!/usr/bin/env bash
+set -u
+t50_want=""
+for t50_a in "$@"; do
+  case "$t50_a" in
+    -l2) t50_want=qid ;;
+    -l8) t50_want=nonce ;;
+  esac
+done
+if [ "$t50_want" = qid ] && [ -n "${ORCHID_TEST_QID_SUFFIXES:-}" ] \
+   && [ -s "${ORCHID_TEST_QID_SUFFIXES}" ]; then
+  head -n 1 "$ORCHID_TEST_QID_SUFFIXES"
+  tail -n +2 "$ORCHID_TEST_QID_SUFFIXES" > "$ORCHID_TEST_QID_SUFFIXES.rest"
+  mv "$ORCHID_TEST_QID_SUFFIXES.rest" "$ORCHID_TEST_QID_SUFFIXES"
+  exit 0
+fi
+[ "$t50_want" = nonce ] || exit 1
+printf '%s\n' 'a1b2c3d4e5f60718'
+T50_SHIM_XXD
+chmod +x "$T50_SHIM/bin/xxd"
+
+# `orchid notify` through the shim, with a chosen sequence of draws. The PATH
+# override is scoped to this one call: every other verb in this block draws its
+# entropy the way it always does.
+t50_notify() {   # <task> <suffix>... <page-text> -- draws in the order given
+  local task="$1" page
+  shift
+  : > "$T50_SEQ"
+  while [ $# -gt 1 ]; do
+    printf '%s\n' "$1" >> "$T50_SEQ"
+    shift
+  done
+  page="$1"
+  PATH="$T50_SHIM/bin:$PATH" ORCHID_TEST_QID_SUFFIXES="$T50_SEQ" \
+    "$ORCHID_BIN" notify --task "$task" --objection "$page"
+}
+# A chosen suffix that an earlier page in this file already drew at random would
+# make the exact-id assertions below fail for a reason that is not the feature.
+# One in 65536 per page raised, so it has never happened — but a suite that
+# blamed the kernel for it would send somebody a long way in the wrong
+# direction.
+t50_free() {   # <suffix>
+  local f
+  for f in ".orchid/runtime/answers/q-$ORCHID_EPOCH-$1".*; do
+    [ -e "$f" ] || continue
+    fail "fixture: suffix $1 is already in use in epoch $ORCHID_EPOCH — an earlier page in this file drew it at random (1 in 65536). Nothing about the kernel changed; re-run"
+    return 0
+  done
+}
+
+t4x_new_task T050 "a question id that would be handed out twice"
+t4x_to_arbitrating T050
+T50_OBJ='the two writes at lib/pump.sh:40-72 are still not ordered'
+"$ORCHID_BIN" task arbitrate T050 --result request-changes --reason "$T50_OBJ" >/dev/null \
+  || fail "fixture: T050's first request-changes must succeed"
+t4x_to_arbitrating T050
+# The second rejection is WAIVED, and so is the third below, for the reason the
+# T048 block establishes: `review_objection_record` composes `a<attempts + 1>:`,
+# so only two consecutive waived rounds produce a byte-identical line. That is
+# the sharpest form of this case — with the text identical and the instance the
+# only thing that moved, nothing but the counter can refuse the stale answer,
+# and a collision that rewrites the record the counter lives in erases the one
+# difference there was.
+"$ORCHID_BIN" task arbitrate T050 --result request-changes --waive-attempt --reason "$T50_OBJ" >/dev/null \
+  || fail "fixture: T050's second (waived) request-changes must succeed"
+t4x_to_arbitrating T050
+T50_LINE="$(t4x_objection T050)"
+assert_eq 2 "$(t4x_seq T050)" "fixture: the waived rejection is instance 2"
+
+# The page for instance 2, at an id this fixture picks, answered `approve` and
+# then left alone: the operator decided, and nothing has relayed it yet.
+t50_free c011
+q50_old="$(t50_notify T050 c011 "$(t4x_page T050 "$T50_LINE")")" \
+  || fail "fixture: the page for instance 2 must be raisable"
+assert_eq "q-$ORCHID_EPOCH-c011" "$q50_old" \
+  "fixture: the shim must really be deciding the qid — if the kernel drew this suffix some other way, every collision below is imaginary"
+"$ORCHID_BIN" answer "$q50_old" approve >/dev/null \
+  || fail "fixture: the operator answers the page for instance 2"
+t50_old_question="$(cat ".orchid/runtime/answers/$q50_old.question")"
+t50_old_authority="$(cat "$(t4x_authority "$q50_old")")"
+
+# ...and then, before anything relays it, the objection is re-raised in exactly
+# the same words across another waived round.
+"$ORCHID_BIN" task arbitrate T050 --result request-changes --waive-attempt --reason "$T50_OBJ" >/dev/null \
+  || fail "fixture: T050's third (waived) request-changes must succeed"
+t4x_to_arbitrating T050
+assert_eq "$T50_LINE" "$(t4x_objection T050)" \
+  "fixture: the re-raised objection is byte-identical, so nothing but the instance separates it from the answered one"
+assert_eq 3 "$(t4x_seq T050)" "fixture: ...and the instance rotated to 3"
+
+# THE FORCED COLLISION. The first draw names the id the answered page is filed
+# under; the second names a free one.
+t50_free d0d0
+q50_new="$(t50_notify T050 c011 d0d0 "$(t4x_page T050 "$T50_LINE")")" \
+  || fail "T032: a drawn id that is already in use must cost a redraw, never the page — notify refused to raise this stop at all"
+assert_eq "q-$ORCHID_EPOCH-d0d0" "$q50_new" \
+  "T032: the first draw named an id already carrying a question, an answer and an authority record, so the page must be filed under the next one — an id is claimed before anything is written under it, and a claim is never released"
+assert_eq "$t50_old_question" "$(cat ".orchid/runtime/answers/$q50_old.question")" \
+  "T032: the earlier page's question must be byte-identical afterwards — atomic_write renames over whatever was there, so a reused id destroys the page an operator answered"
+assert_eq "$t50_old_authority" "$(cat "$(t4x_authority "$q50_old")")" \
+  "T032: ...and so must its authority record. Rewritten to the instance standing now, it would turn the operator's answer about instance 2 into an authority for instance 3"
+grep -qxF -e "seq: 2" "$(t4x_authority "$q50_old")" \
+  || fail "T032: the earlier record must still name instance 2 — this is the field a collision silently advances, and the one review_operator_relay matches on"
+assert_eq approve "$(cat ".orchid/runtime/answers/$q50_old.answer")" \
+  "T032: the operator's earlier answer is still exactly the word they typed"
+[ ! -f ".orchid/runtime/answers/$q50_new.answer" ] \
+  || fail "fixture: the page just raised must be unanswered, or the refusal below proves nothing"
+
+# ...so the stale `approve` authorises nothing for the objection standing now.
+rc=0
+t50_out="$(ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T050 \
+  --result approve --reason "both writes are ordered now" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "T032: an answer given about the objection of an earlier instance must not settle the one standing now, however the two pages' ids were drawn"
+assert_match "not the operator" "$t50_out" \
+  "...and it is the operator-authority refusal, not another failure passing for one"
+assert_eq "$T50_LINE" "$(t4x_objection T050)" "and the objection is untouched"
+assert_eq 3 "$(t4x_seq T050)" "...and so is its instance"
+assert_eq arbitrating "$(t4x_status T050)" "...and the task took no transition"
+red_case 'a question id drawn onto an answered page: redrawn, the earlier page untouched, and its approve authorising nothing for the objection standing now'
+
+# --- and the page that WAS raised still opens the door ----------------------
+"$ORCHID_BIN" answer "$q50_new" approve >/dev/null \
+  || fail "fixture: the operator answers the page raised for instance 3"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T050 \
+  --result approve --reason "both writes are ordered now" >/dev/null \
+  || fail "T032: the redraw must leave a page that relays exactly as an uncontended one does — a guard that cost the operator their route would be a wall"
+assert_eq merging "$(t4x_status T050)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T050)" "...and the objection is cleared"
+[ ! -f "$(t4x_authority "$q50_new")" ] \
+  || fail "T032: the authority for instance 3 must be spent by the arbitration it authorised"
+# Spending an authority frees nothing: the id stays claimed, and the answered
+# page beside it stays exactly where it was.
+assert_eq approve "$(cat ".orchid/runtime/answers/$q50_old.answer")" \
+  "T032: consuming one page's authority must not disturb another page's answer"
+[ -e ".orchid/runtime/answers/$q50_old.reserved" ] \
+  || fail "T032: an id must stay claimed after the artifacts under it are consumed — 'nothing is filed here any more' and 'this id was never used' are different facts, and only the claim keeps them apart"
+[ -e ".orchid/runtime/answers/$q50_new.reserved" ] \
+  || fail "T032: ...including the id whose authority was just spent"
+green_case 'the redrawn page: answered and relayed like any other, its authority spent, and both claims outliving the artifacts filed under them'
+
+# --- the twin: a free draw is used as it is drawn ---------------------------
+# The redraw above is only worth anything if the guard is not simply redrawing
+# every time. A guard that answered "taken" to everything would pass the case
+# above and quietly cost a draw on every page ever raised.
+t4x_new_task T051 "a free id is claimed as it is drawn"
+t4x_to_arbitrating T051
+"$ORCHID_BIN" task arbitrate T051 --result request-changes --reason 'the lock is still dropped before the retry at lib/pump.sh:88' >/dev/null \
+  || fail "fixture: T051's request-changes must succeed"
+t4x_to_arbitrating T051
+T51_LINE="$(t4x_objection T051)"
+t50_free e11e
+q51="$(t50_notify T051 e11e "$(t4x_page T051 "$T51_LINE")")" \
+  || fail "fixture: the page for T051's objection must be raisable"
+assert_eq "q-$ORCHID_EPOCH-e11e" "$q51" \
+  "T032: a drawn id nothing has ever been filed under must be claimed as drawn — a guard that redrew regardless would pass the collision case above while telling nobody it had stopped distinguishing anything"
+"$ORCHID_BIN" answer "$q51" approve >/dev/null \
+  || fail "fixture: the operator answers T051's page"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T051 \
+  --result approve --reason "the lock spans the retry now" >/dev/null \
+  || fail "T032: the uncontended page relays exactly as it always did"
+assert_eq merging "$(t4x_status T051)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T051)" "...and T051's objection is cleared"
+green_case 'a free question id: claimed on the first draw, and the page it names relays unchanged'

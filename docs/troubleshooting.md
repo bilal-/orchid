@@ -1288,6 +1288,24 @@ and the way through it is to run the arbitration yourself:
 orchid task arbitrate <id> --result approve --reason "..."   # from your own shell
 ```
 
+Every page's id is **claimed before anything is filed under it**, and never
+released — not by your answer, not by a spent authority. `orchid notify` used to
+draw a question id as sixteen bits of randomness and use it unguarded, so a page
+raised later could land on the id of one raised earlier and rename its
+`.question` and authority record away, leaving the earlier page's `.answer`
+sitting beside a record for the objection standing *now*. That is the same relay
+above clearing an objection nobody answered, assembled out of a collision. If
+you ever see
+
+```
+orchid: could not claim an unused question id in epoch <n> after 64 draws
+```
+
+the page was **not** raised, nothing was journaled and nothing was written under
+a reused id. Either this epoch's id space is genuinely exhausted (that is 65536
+pages inside one run) or `.orchid/runtime/answers` cannot be written to; check
+the directory's permissions and free space before anything else.
+
 If the objection is genuinely obsolete
 (the task was re-scoped, the code it named is gone), that is still an
 arbitration: approve it and say so in the reason, so the record shows a decision

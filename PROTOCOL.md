@@ -640,7 +640,12 @@ but cannot raise one that lends its own arbitration a human's authority. No
 flag, no environment variable and no word of the arbitration's `--reason` is an
 input, and `orchid answer` is on no surface's admitted verb list. The record is
 CONSUMED before the objection is cleared, so one answer settles one arbitration
-and a crash or a replay finds nothing left to spend. Only the CLEARING direction
+and a crash or a replay finds nothing left to spend. The `<qid>` those files are
+keyed by is itself CLAIMED (`runtime/answers/<qid>.reserved`, an exclusive
+`mkdir`) before the first of them is written and never released, because a
+reused id renames an earlier page's question and record away while its `.answer`
+stays — which is this relay clearing an objection nobody answered, assembled out
+of a collision rather than a forgery. Only the CLEARING direction
 is relayed: refusing a relayed `request-changes` costs an operator nothing, since
 their objection is already standing, and admitting one would put a model's
 paraphrase on the record under their authority.

@@ -119,12 +119,34 @@ if [ "$objection_page" -eq 1 ]; then
 fi
 
 epoch="$(epoch_current "$repo")"
-suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
-qid="q-${epoch}-${suffix}"  # collision within one epoch is improbable (16 bits) and not currently guarded against
+
+# THE ID IS CLAIMED BEFORE ANYTHING IS FILED UNDER IT (T032, dogfood F33).
+#
+# This is the FIRST durable write this verb makes, and its position is the
+# whole point: everything below names the qid -- the journal line, the
+# BLOCKERS.md entry, the `.choices` sidecar, the `.question`, the `.objection`
+# authority record and the `runtime/outbox/<qid>` message -- and every one of
+# those writes is an `atomic_write`, which renames over whatever was there. The
+# suffix used to be sixteen bits of urandom taken and used, so a second page
+# that drew the same one silently replaced an earlier page's question and
+# authority record while leaving the operator's `.answer` beside them
+# untouched. lib/common.sh's block above `orchid_qid_reserve` has the full
+# argument for why that is this task's own defect and not a stray improbability.
+#
+# FAIL CLOSED, and note what the refusal costs. `orchid notify` is how a stop
+# reaches a human, so refusing to raise one is not free -- but a page filed
+# under an id already in use is worse than no page, because it destroys the
+# record of a stop that WAS raised and answered. Nothing swallows the refusal
+# either: this verb exits non-zero before writing anything, `orchid_blocker_once`
+# turns that into its own status 2 (write failed, never "already on record"),
+# and runners/orchid-drive runs under `set -e`, so the pass stops rather than
+# continuing as though a human had been paged.
+qid="$(orchid_qid_reserve "$repo" "$epoch")" \
+  || orchid_die "could not claim an unused question id in epoch $epoch after $ORCHID_QID_RESERVE_TRIES draws — refusing to raise this page rather than file it under an id whose question, answer, choices, objection authority or outbox message is already on record"
 
 # -- nonce (v1-m4 Task 7, review round: mint BEFORE any durable write) ------
-# Unrelated to the qid's own 16-bit collision-improbable suffix above: this
-# is what `orchid answer` now requires whenever `answer_allowlist` is
+# Unrelated to the qid's own 16-bit suffix above: this is what `orchid answer`
+# now requires whenever `answer_allowlist` is
 # configured (any caller, local or remote -- see libexec/orchid-answer),
 # and what a channel message echoes back so it can't be spoofed/replayed by
 # anyone who merely guesses or observes a qid.
