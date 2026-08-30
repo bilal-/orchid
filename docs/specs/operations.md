@@ -375,10 +375,19 @@ this section false without touching a byte of it.
    repo-local half sits inside the checkout a run's engines write to, and its
    label is joined into `~/.orchid/services/<label>.json` and the plist path as
    a path COMPONENT while its artifact is unloaded and then deleted exactly as
-   written, so both are checked against what `install` could have derived (the
-   `com.orchid.pump.<12 hex>` label; that label's plist, or a
-   `.orchid/runtime/pump.cron` inside a checkout) and anything else is refused
-   before any path built from it is opened, probed, cleared or removed.
+   written, so both are checked against what `install` could have derived FOR
+   THE CHECKOUT THAT SAME RECORD NAMES — the label must be exactly
+   `com.orchid.pump.` plus the first twelve hex characters of that path's
+   sha256, and the artifact must be exactly that label's plist (macOS) or that
+   path's own `.orchid/runtime/pump.cron` (elsewhere) — and anything else is
+   refused before any path built from it is opened, probed, cleared or removed.
+   A label of the right SHAPE is not enough: every checkout on the machine has
+   one, so a record that borrowed a neighbour's label or a neighbour's
+   `pump.cron` would otherwise have a removal unload that neighbour's agent or
+   delete the file its own `uninstall` and `status` read. Deriving against the
+   RECORDED path rather than against `--repo` is also what keeps a moved
+   checkout removable: after `git worktree move` the record is still honest
+   about where the schedule was installed.
    `uninstall` removes the scheduler
    artifact and clears the binding only once the scheduler has let the job go:
    a macOS unload that fails while `launchctl list` still reports the label

@@ -2593,6 +2593,222 @@ assert_eq 0 "$rc" "the identical uninstall succeeds with the artifact install wr
 [ -f "$FRG_PRECIOUS" ] || fail "while the operator's own plist is still standing"
 green_case "the same uninstall ends the schedule when the record names the artifact install wrote"
 
+# -- K16c: a label of the RIGHT SHAPE naming the WRONG SCHEDULE -------------
+# K16 proves a label that could not be a path component is refused. That is the
+# CONTAINMENT rule, and containment is not identity: `com.orchid.pump.` plus
+# twelve hex characters is the shape of every label on the machine, so a record
+# that swaps its own label for ANOTHER CHECKOUT'S passes it untouched -- and
+# then every plist, binding and refusal path the removal builds is that other
+# checkout's. The forgery needs no invented name and no traversal; it needs the
+# name of a schedule that is really there, which anything with read access to
+# `~/.orchid/services/` or to a sibling checkout's own record already has.
+#
+# So the rule is the DERIVATION, computed rather than recognised: a recorded
+# label must be exactly com.orchid.pump.<first 12 hex of the sha256 of the path
+# that same record says the schedule was installed against>. One checkout, one
+# label; the other 2^48 names of that shape are refused whether or not anything
+# answers to them.
+FRG_VICT="$BIND/victim-checkout"
+mkdir -p "$FRG_VICT"
+(
+  cd "$FRG_VICT" || exit 1
+  git init -q .
+  git commit -q --allow-empty -m root
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: planning\nrun_id: r-vict\n---\n# Roadmap\n' > .orchid/roadmap.md
+) || fail "K16c fixture: could not build the victim checkout"
+FRG_VICT_CANON="$(cd "$FRG_VICT" && pwd -P)"
+trust_repo "$FRG_VICT"
+vict_inst="$("$SERVICE" install --repo "$FRG_VICT" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "K16c fixture: the victim checkout installs its own real schedule (out: $vict_inst)"
+vict_label="$(echo "$vict_inst" | grep -oE "$label_re" | head -n1)"
+vict_plist="$HOME/Library/LaunchAgents/$vict_label.plist"
+vict_mrec="$HOME/.orchid/services/$vict_label.json"
+vict_rec="$FRG_VICT_CANON/.orchid/runtime/service.json"
+[ -f "$vict_plist" ] || fail "K16c fixture: the victim must have a plist to lose"
+[ -f "$vict_mrec" ] || fail "K16c fixture: and a machine-local binding to lose"
+[ -f "$vict_rec" ] || fail "K16c fixture: and a repo-local one"
+
+# The forger re-installs its own schedule, then rewrites its own record to name
+# the VICTIM's label and the victim's plist -- and leaves `repo` alone, so the
+# ownership question (K14) still answers "yes, this checkout" and cannot be what
+# refuses this.
+frg3_inst="$("$SERVICE" install --repo "$FRG_CANON" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "K16c fixture: re-installs the forger's own schedule (out: $frg3_inst)"
+cp "$frg_rec" "$BIND/frg-rec.keep" || fail "K16c fixture: could not stash the honest record"
+# ONLY THE REPO-LOCAL HALF IS FORGED, deliberately. The twin for a borrowed
+# label IS the victim's own machine-local record, so writing one would destroy
+# the very thing the RED case then proves survived.
+jq --arg l "$vict_label" --arg a "$vict_plist" '.label = $l | .artifact = $a' \
+   "$BIND/frg-rec.keep" > "$frg_rec" \
+  || fail "K16c fixture: could not stage the borrowed label"
+assert_eq "$FRG_CANON" "$(jq -r '.repo' "$frg_rec")" \
+  "the forged record still names THIS checkout, so ownership passes and the label rule is what is under test"
+
+# THE WITNESS THAT MAKES THE RED NON-VACUOUS: the borrowed label passes the
+# containment test that used to be the whole rule. If the two predicates were
+# the same predicate, this line would fail and the refusal below would be K16's
+# refusal wearing a new fixture.
+rc=0
+orchid_service_label_valid "$vict_label" || rc=$?
+assert_eq 0 "$rc" \
+  "the borrowed label is shaped exactly like a real one -- it IS a real one -- so nothing about its spelling can be what refuses it"
+rc=0
+orchid_service_machine_record "$vict_label" >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" \
+  "and it resolves to a path inside the service store, which is all containment ever promised"
+# ...and the derivation refuses it, because it is not this checkout's.
+rc=0
+orchid_service_label_derived "$vict_label" "$FRG_CANON" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "a label derived from one checkout's path must not validate against another's"
+rc=0
+orchid_service_label_derived "$vict_label" "$FRG_VICT_CANON" || rc=$?
+assert_eq 0 "$rc" \
+  "while the checkout it WAS derived from still validates it -- the rule is the derivation, not a blanket suspicion of borrowed-looking names"
+
+rc=0
+orchid_service_identity "$FRG_CANON" || rc=$?
+assert_eq 2 "$rc" \
+  "and the resolution answers with the record-rejection code: the fault is in ONE file, and reporting it as a disagreement (1) sends an operator reconciling two halves instead of repairing the one that lies"
+assert_match "$vict_label" "$ORCHID_SERVICE_ID_REJECTED" "naming the label it rejected"
+assert_match 'service.json' "$ORCHID_SERVICE_ID_REJECTED" "and the record it came from"
+assert_eq "" "$ORCHID_SERVICE_ID_LABEL" \
+  "and it resolves to nothing at all -- a rejected record must not leave a label behind for a caller that skipped the status"
+
+# RED, through the verb: the victim keeps its schedule and both its records.
+rc=0
+frg3_red="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$FRG_CANON" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "an uninstall whose record borrows another checkout's label must refuse (out: $frg3_red)"
+assert_match 'does not name a schedule orchid could have installed' "$frg3_red" \
+  "with the record-is-not-usable refusal, since that is the finding"
+assert_match 'is not one .orchid service install. derives' "$frg3_red" "naming the rule it failed"
+[ -f "$vict_plist" ] \
+  || fail "THE FINDING: a borrowed label would unload and delete the plist of the checkout that label really belongs to, and that plist must still be here"
+[ -f "$vict_mrec" ] \
+  || fail "and the machine-local binding that would be the last thing naming that agent must be here too"
+[ -f "$vict_rec" ] || fail "and the victim's own repo-local record with it"
+[ -s "$SCHED_LOG" ] \
+  && fail "and launchd is asked nothing -- the refusal is ahead of every scheduler call, as it is for every other unusable record"
+red_case "a record borrowing another checkout's real label is refused before that other schedule is unloaded or deleted"
+
+# GREEN twin: the same command, the same fixture, the label install derived.
+cp "$BIND/frg-rec.keep" "$frg_rec" || fail "K16c: could not restore the honest record"
+rc=0
+frg3_green="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$FRG_CANON" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the identical uninstall succeeds with this checkout's own label (out: $frg3_green)"
+[ -f "$frg_plist" ] && fail "and the schedule it ends is its own"
+[ -f "$frg_mrec" ] && fail "and its own machine-local binding goes with it"
+[ -f "$vict_plist" ] || fail "while the victim's schedule is still none of its business"
+[ -f "$vict_mrec" ] || fail "and neither is the victim's binding"
+green_case "the same uninstall ends this checkout's own schedule when the record names the label install derived for it"
+
+# -- K16d: the cron artifact is ONE path, not a family ---------------------
+# The linux arm's artifact travels INSIDE the checkout, so its directory is
+# whichever repo the schedule was installed against -- and the rule used to be
+# the only thing that seemed pinnable about it: any absolute path ending
+# `/.orchid/runtime/pump.cron`. Every checkout on the machine has one of those.
+# `uninstall` `rm -f`s the path it is handed (_svc_uninstall_linux), so a record
+# naming a SIBLING run's pump.cron had this delete the file that sibling's
+# `uninstall` and `status` read -- leaving its crontab line installed with
+# nothing local left describing it, which is this task's leftover minted from a
+# neighbour.
+#
+# It is pinnable exactly: to the repo THE RECORD ITSELF NAMES. That is the
+# pre-move path, which is what install wrote, and a moved checkout is still
+# served -- the recorded path is then a file that no longer exists, and
+# _svc_artifact's `-f` guard falls back to the caller's own derivation.
+export ORCHID_SERVICE_OS=Linux
+LFRG="$BIND/lin-forger"
+LVICT="$BIND/lin-victim"
+for d in "$LFRG" "$LVICT"; do
+  mkdir -p "$d"
+  (
+    cd "$d" || exit 1
+    git init -q .
+    git commit -q --allow-empty -m root
+    mkdir -p .orchid/tasks
+    printf -- '---\nrun_status: planning\nrun_id: r-lin\n---\n# Roadmap\n' > .orchid/roadmap.md
+  ) || fail "K16d fixture: could not build $d"
+  trust_repo "$d"
+done
+LFRG_CANON="$(cd "$LFRG" && pwd -P)"
+LVICT_CANON="$(cd "$LVICT" && pwd -P)"
+lvict_inst="$("$SERVICE" install --repo "$LVICT" --interval-s 300 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "K16d fixture: the victim installs a real cron schedule (out: $lvict_inst)"
+lfrg_inst="$("$SERVICE" install --repo "$LFRG" --interval-s 300 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "K16d fixture: and so does the forger (out: $lfrg_inst)"
+lvict_cron="$LVICT_CANON/.orchid/runtime/pump.cron"
+lfrg_cron="$LFRG_CANON/.orchid/runtime/pump.cron"
+lfrg_label="$(echo "$lfrg_inst" | grep -oE "$label_re" | head -n1)"
+lfrg_rec="$LFRG_CANON/.orchid/runtime/service.json"
+lfrg_mrec="$HOME/.orchid/services/$lfrg_label.json"
+[ -f "$lvict_cron" ] || fail "K16d fixture: the victim must have a cron record to lose"
+[ -f "$lfrg_cron" ] || fail "K16d fixture: and the forger one of its own"
+[ -f "$lfrg_rec" ] || fail "K16d fixture: and a repo-local binding to forge"
+[ -f "$lfrg_mrec" ] || fail "K16d fixture: and a machine-local twin to forge with it"
+cp "$lfrg_rec" "$BIND/lfrg-rec.keep" || fail "K16d fixture: could not stash the honest record"
+cp "$lfrg_mrec" "$BIND/lfrg-mrec.keep" || fail "K16d fixture: could not stash the honest twin"
+
+# Staged in BOTH halves -- same reason as K16b: the twins agree, ownership
+# holds, and the artifact rule is the only thing left that can refuse it.
+jq --arg a "$lvict_cron" '.artifact = $a' "$BIND/lfrg-rec.keep" > "$lfrg_rec" \
+  || fail "K16d fixture: could not stage the borrowed artifact"
+jq --arg a "$lvict_cron" '.artifact = $a' "$BIND/lfrg-mrec.keep" > "$lfrg_mrec" \
+  || fail "K16d fixture: could not stage the borrowed artifact in the twin"
+assert_eq "$(cat "$lfrg_rec")" "$(cat "$lfrg_mrec")" \
+  "the twins agree about the borrowed artifact, so the twins check cannot be what refuses it"
+assert_eq "$LFRG_CANON" "$(jq -r '.repo' "$lfrg_rec")" \
+  "and it still names THIS checkout, so ownership cannot be either"
+
+# THE WITNESS: the borrowed path is exactly what the old suffix rule admitted --
+# absolute, no traversal component, ending in the one suffix install writes --
+# and it is a file that really exists, which is what makes deleting it a loss.
+case "$lvict_cron" in
+  /*/.orchid/runtime/pump.cron) ;;
+  *) fail "K16d fixture: the borrowed artifact must be an absolute path with install's own suffix, or this proves nothing" ;;
+esac
+[ -f "$lvict_cron" ] \
+  || fail "K16d fixture: and it must exist, or _svc_artifact would prefer the caller's own derivation and never reach it"
+
+rc=0
+orchid_service_identity "$LFRG_CANON" || rc=$?
+assert_eq 2 "$rc" \
+  "a cron artifact belonging to a DIFFERENT checkout earns the record-rejection code, not a resolution"
+assert_match 'lin-victim' "$ORCHID_SERVICE_ID_REJECTED" "naming the path it would have removed"
+assert_match 'is not a path .orchid service install. writes' "$ORCHID_SERVICE_ID_REJECTED" \
+  "and the rule it failed"
+
+# RED, through the verb: the victim's record survives and its crontab is never
+# touched.
+rc=0
+lfrg_red="$(svc_uninstall_real --repo "$LFRG_CANON" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "an uninstall whose record names another checkout's cron record must refuse (out: $lfrg_red)"
+assert_match 'does not name a schedule orchid could have installed' "$lfrg_red" \
+  "with the record-is-not-usable refusal"
+[ -f "$lvict_cron" ] \
+  || fail "THE FINDING: uninstall rm -f's the artifact it is handed, so a neighbour's cron record must never be reachable through this record"
+[ -f "$LVICT_CANON/.orchid/runtime/service.json" ] \
+  || fail "and the victim's binding is untouched -- it still has to be able to name its own schedule"
+[ -s "$SCHED_LOG" ] \
+  && fail "and no crontab call is made at all: the refusal is ahead of the scheduler here exactly as it is on darwin"
+red_case "a record naming another checkout's cron record is refused before that neighbour's file is removed"
+
+# GREEN twin: the artifact install wrote, and the same uninstall ends this
+# checkout's own schedule while the neighbour keeps its own.
+cp "$BIND/lfrg-rec.keep" "$lfrg_rec" || fail "K16d: could not restore the honest record"
+cp "$BIND/lfrg-mrec.keep" "$lfrg_mrec" || fail "K16d: could not restore the honest twin"
+rc=0
+lfrg_green="$(svc_uninstall_real --repo "$LFRG_CANON" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the identical uninstall succeeds with the artifact install wrote (out: $lfrg_green)"
+[ -f "$lfrg_cron" ] && fail "and the cron record it removes is its own"
+[ -f "$lfrg_rec" ] && fail "and its own repo-local binding goes with it"
+[ -f "$lfrg_mrec" ] && fail "and the machine-local twin too"
+[ -f "$lvict_cron" ] || fail "while the neighbour's cron record is still standing"
+green_case "the same uninstall removes this checkout's own cron record when the artifact is the one install wrote for it"
+
 unset ORCHID_SERVICE_OS
 
 # ===========================================================================

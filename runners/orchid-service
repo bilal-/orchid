@@ -193,18 +193,16 @@ options:
 EOF
 }
 
-# _svc_hash12 <string> -- first 12 hex chars of the string's sha256, used
-# to derive a repo's launchd label / cron marker deterministically. Prefers
-# sha256sum (near-universal on Linux); falls back to shasum -a 256 (macOS's
-# always-available Perl-based tool, which typically lacks sha256sum).
-_svc_hash12() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "$1" | sha256sum | cut -c1-12
-  else
-    printf '%s' "$1" | shasum -a 256 | cut -c1-12
-  fi
-}
-_svc_label() { echo "com.orchid.pump.$(_svc_hash12 "$1")"; }
+# THE LABEL DERIVATION LIVES IN lib/common.sh, and this file installs with it
+# rather than owning it. It used to be a local `_svc_hash12`/`_svc_label` pair,
+# with the readers in lib/common.sh recognising the SHAPE of what it produced --
+# and a shape is not an identity: every checkout on the machine produces a label
+# of that shape, so a record naming any of the others passed the readers' test
+# and pointed a removal at a schedule that was really there. Validating against
+# the derivation instead of against its shape means the validator has to compute
+# it, and the writer and the validator computing it separately is the one thing
+# that could make the rule and the reality drift apart. One function, called
+# from both: orchid_service_derive_label.
 
 # ---------------------------------------------------------------------------
 # WHICH SCHEDULE A REMOVAL ACTS ON
@@ -241,9 +239,19 @@ _svc_label() { echo "com.orchid.pump.$(_svc_hash12 "$1")"; }
 # `~/Library/LaunchAgents/<label>.plist` as a component, and the artifact is
 # unloaded and then `rm -f`'d exactly as recorded. Believed, `../../..` and an
 # operator's own plist are both reachable that way. So both fields are held to
-# install's own derivation first (lib/common.sh, orchid_service_label_valid /
+# install's own derivation first (lib/common.sh, orchid_service_label_derived /
 # orchid_service_artifact_valid), and nothing below opens, probes, clears or
 # deletes a path until they have passed.
+#
+# HELD TO THE DERIVATION, NOT TO ITS SHAPE, and the difference is the whole of
+# what the check is worth. A traversal-free `com.orchid.pump.<12 hex>` and an
+# absolute path ending `/.orchid/runtime/pump.cron` are what EVERY checkout on
+# this machine produces, so a record that swapped in a NEIGHBOUR'S label or a
+# neighbour's cron record passed a shape test untouched -- and the removal then
+# unloaded that neighbour's agent, or deleted the file its own `uninstall` and
+# `status` read. Both fields are therefore checked against what install would
+# have produced FOR THE CHECKOUT THE RECORD ITSELF NAMES: one label, one
+# artifact, and every other spelling refused whether or not it looks invented.
 #
 # Set by _svc_identity and read for the rest of the call. THE REMOVING SUBVERBS
 # ARE THE CALLERS, and `status` is deliberately not one. This resolution fails
@@ -274,9 +282,9 @@ SVC_ARTIFACT_PLATFORM=""
 # `.orchid/runtime/service.json` sits inside the checkout a run's engines write
 # to, and the label and artifact it carries become the paths this file opens,
 # unloads and deletes. Nothing below may act on either until they have been held
-# to what `orchid service install` could have produced -- see
-# orchid_service_label_valid in lib/common.sh, and orchid_service_identity's own
-# third answer.
+# to what `orchid service install` could have produced FOR THE CHECKOUT THAT
+# RECORD NAMES -- see _orchid_service_record_usable in lib/common.sh, and
+# orchid_service_identity's own third answer.
 _svc_identity() {
   local repo="$1" id_rc=0
   orchid_service_identity "$repo" || id_rc=$?
@@ -307,7 +315,7 @@ _svc_identity() {
   SVC_LABEL="$ORCHID_SERVICE_ID_LABEL"
   SVC_ARTIFACT="$ORCHID_SERVICE_ID_ARTIFACT"
   SVC_ARTIFACT_PLATFORM="$ORCHID_SERVICE_ID_PLATFORM"
-  [ -n "$SVC_LABEL" ] || SVC_LABEL="$(_svc_label "$repo")"
+  [ -n "$SVC_LABEL" ] || SVC_LABEL="$(orchid_service_derive_label "$repo")"
 }
 
 # _svc_artifact <platform> <derived> -- the artifact a removal acts on: the one
@@ -512,7 +520,10 @@ _svc_cron_minutes() {
   echo "$m"
 }
 
-_svc_cron_record_path() { echo "$1/.orchid/runtime/pump.cron"; }
+# The cron record's location is orchid_service_cron_record_path (lib/common.sh),
+# for the same reason the label derivation is: the artifact validation holds a
+# RECORDED cron path to exactly what this branch writes, so the two have to be
+# one statement rather than two that happen to agree.
 
 # _svc_cron_escape <string> -- escapes the target FORMAT's own metacharacter
 # for a crontab command field: an unescaped `%` is cron's line-continuation/
@@ -871,7 +882,7 @@ _svc_unload_darwin() {
 
 _svc_install_darwin() {
   local repo="$1" interval_s="$2" dry="$3"
-  local label; label="$(_svc_label "$repo")"
+  local label; label="$(orchid_service_derive_label "$repo")"
   local agents_dir="$HOME/Library/LaunchAgents"
   local plist_path="$agents_dir/$label.plist"
   local parent; parent="$(cd "$repo/.." && pwd -P)"
@@ -1015,7 +1026,7 @@ _svc_uninstall_darwin() {
 
 _svc_status_darwin() {
   local repo="$1" dry="$2"
-  local label; label="$(_svc_label "$repo")"
+  local label; label="$(orchid_service_derive_label "$repo")"
   local plist_path="$HOME/Library/LaunchAgents/$label.plist"
   echo "orchid service status: $repo"
   echo "  platform: darwin"
@@ -1094,14 +1105,14 @@ _svc_emit_cron_seam() {
 
 _svc_install_linux() {
   local repo="$1" interval_s="$2" dry="$3"
-  local label; label="$(_svc_label "$repo")"
+  local label; label="$(orchid_service_derive_label "$repo")"
   local parent; parent="$(cd "$repo/.." && pwd -P)"
   local rt log pump_exe path_val record line marker
   rt="$(orchid_runtime "$repo")"
   log="$rt/pump.log"
   pump_exe="$ORCHID_ROOT/runners/orchid-pump"
   path_val="$(_svc_install_path)"
-  record="$(_svc_cron_record_path "$repo")"
+  record="$(orchid_service_cron_record_path "$repo")"
   line="$(_svc_render_cron_line "$label" "$repo" "$parent" "$interval_s" "$pump_exe" "$path_val")"
   marker="# orchid-service:$label"
 
@@ -1153,7 +1164,7 @@ _svc_uninstall_linux() {
   # it was while reporting the schedule removed.
   _svc_identity "$repo"
   local label="$SVC_LABEL"
-  local record; record="$(_svc_artifact linux "$(_svc_cron_record_path "$repo")")"
+  local record; record="$(_svc_artifact linux "$(orchid_service_cron_record_path "$repo")")"
   # The cron record lives INSIDE the checkout, so a schedule that outlived its
   # repository has none left to reason from -- and that is precisely the case
   # an operator most needs uninstall for. Either half of the binding is enough
@@ -1182,8 +1193,8 @@ _svc_uninstall_linux() {
 
 _svc_status_linux() {
   local repo="$1" dry="$2"
-  local label; label="$(_svc_label "$repo")"
-  local record; record="$(_svc_cron_record_path "$repo")"
+  local label; label="$(orchid_service_derive_label "$repo")"
+  local record; record="$(orchid_service_cron_record_path "$repo")"
   echo "orchid service status: $repo"
   echo "  platform: linux"
   echo "  label:    $label"

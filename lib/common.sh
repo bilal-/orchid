@@ -1239,7 +1239,41 @@ _orchid_restore_kernel_file() {
 # some other machine's launchd has a job pointed at it.
 orchid_service_repo_record() { echo "$1/.orchid/runtime/service.json"; }
 
-# THE REPO-LOCAL RECORD IS UNTRUSTED INPUT, and the two predicates below are
+# THE ONE DERIVATION, and it lives here rather than in the runner that installs
+# with it. `orchid service install` names a schedule by hashing the canonical
+# repo path; every reader that has to decide whether a RECORDED name is one
+# install could have produced has to compute the same thing, and a second
+# spelling of it beside them is a rule that agrees with the writer until the day
+# it does not. So the runner derives through these (runners/orchid-service) and
+# so does the validation below: one function, asked two questions.
+#
+# sha256sum is preferred (near-universal on Linux); shasum -a 256 is the
+# fallback (macOS's always-available Perl-based tool, which typically lacks
+# sha256sum). Both are asked for the same digest of the same bytes, so which
+# one answers cannot change the label.
+orchid_service_hash12() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -c1-12
+  else
+    printf '%s' "$1" | shasum -a 256 | cut -c1-12
+  fi
+}
+
+# orchid_service_derive_label <repo> -- the label a schedule installed against
+# <repo> is named by. <repo> is the CANONICAL path (the runner resolves it with
+# `pwd -P` before anything derives from it), because that is what install hashed.
+orchid_service_derive_label() {
+  echo "com.orchid.pump.$(orchid_service_hash12 "$1")"
+}
+
+# orchid_service_cron_record_path <repo> -- where the linux (cron) branch keeps
+# the local record of the crontab line it installed. Here for the same reason
+# the label derivation is: install writes exactly this path and the artifact
+# validation below holds a record's claim to exactly this path, and those two
+# must be one statement rather than two that match today.
+orchid_service_cron_record_path() { echo "$1/.orchid/runtime/pump.cron"; }
+
+# THE REPO-LOCAL RECORD IS UNTRUSTED INPUT, and the predicates below are
 # what makes reading it safe. It lives inside the checkout a run is driven in --
 # under `runtime/`, which is gitignored and writable by every engine the run
 # spawns -- and every removing verb builds PATHS out of what it says: the
@@ -1257,12 +1291,11 @@ orchid_service_repo_record() { echo "$1/.orchid/runtime/service.json"; }
 #     that is a delete of something orchid never wrote.
 #
 # So neither is believed because it is written down. Both are checked against
-# what `orchid service install` COULD HAVE PRODUCED -- the label against the
-# derivation (runners/orchid-service's _svc_label: a fixed prefix and 12 hex
-# characters of a sha256, which contains no `/` and no `..` and so cannot leave
-# the store it is joined into), the artifact against the one location that
-# platform's install writes -- and anything else is refused before a single path
-# built from it is opened, probed, cleared or deleted.
+# what `orchid service install` COULD HAVE PRODUCED FOR THE CHECKOUT THE RECORD
+# ITSELF NAMES -- the label against orchid_service_derive_label of that path,
+# the artifact against the one path that platform's install writes for that
+# schedule -- and anything else is refused before a single path built from it is
+# opened, probed, cleared or deleted.
 #
 # STRICTER THAN "CONTAINS NO TRAVERSAL", deliberately. A containment test admits
 # every other name a hand-edit could invent and leaves the next reader deciding
@@ -1271,6 +1304,21 @@ orchid_service_repo_record() { echo "$1/.orchid/runtime/service.json"; }
 # write is unusable rather than merely suspicious, which is why the refusal that
 # reports it names the record's own path: deleting that file by hand is the
 # recovery, and it is the same recovery the twins-disagree refusal already names.
+#
+# AND "MATCHING THE DERIVATION" MEANS COMPUTING IT, NOT RECOGNISING ITS SHAPE.
+# An earlier revision held the label to `com.orchid.pump.` plus twelve hex
+# characters, which is the CONTAINMENT rule -- it is what proves the label
+# cannot leave the store it is joined into, and that is all it proves. There are
+# 2^48 names of that shape and install can produce exactly one of them for a
+# given checkout, so a hand-edited record naming any other still resolved, still
+# had a machine-local record path and a plist path and a refusal path built from
+# it, and still reached `launchctl unload` and `rm -f` -- against whatever
+# schedule that other name happens to belong to, which on a machine driving more
+# than one run is another checkout's live agent. The shape test is kept, and
+# kept where a label becomes a path with no repo in hand to derive from
+# (orchid_service_machine_record, orchid_service_refusal_path, the store walk);
+# the IDENTITY question is orchid_service_label_derived below, and every
+# resolution asks that one.
 orchid_service_label_valid() {
   local label="${1-}" hex
   case "$label" in
@@ -1284,27 +1332,73 @@ orchid_service_label_valid() {
   return 0
 }
 
-# orchid_service_artifact_valid <label> <platform> <artifact> -- 0 iff <artifact>
-# is a path `orchid service install` could have written for that schedule on that
-# platform. An EMPTY artifact is valid: it is the "no claim" answer (an install
-# predating the field, or a machine-only resolution with no record to read), and
-# the caller derives the path for itself exactly as it always has.
+# orchid_service_label_derived <label> <repo> -- 0 iff <label> is THE label
+# `orchid service install` derives for <repo>, and not merely a name shaped like
+# one. This is the identity question; orchid_service_label_valid above is the
+# containment one, and they are both asked because they fail differently: a
+# label that fails the shape test can escape the store, while a label that
+# passes it and fails this one names a REAL OTHER SCHEDULE -- the one whose
+# canonical path happens to hash to it.
+#
+# BOTH ARGUMENTS COME OUT OF THE SAME RECORD, which is worth being explicit
+# about: a forger who controls the file controls both fields and can always make
+# them agree by recording the victim checkout's path alongside the victim's
+# label. That is not what this predicate is for and it is not left unanswered --
+# it is a record naming a checkout that is not the caller, which is
+# orchid_service_binding_owned's question, asked by every removing caller
+# immediately after this one. What this rules out is the other half: a record
+# that names THIS checkout while pointing the removal at some other schedule.
+#
+# An empty <repo> is not derivable from and so is not a match. That is a record
+# with no `repo` field at all -- something neither install nor any orchid
+# version wrote -- and the refusal names the file, which is the recovery.
+orchid_service_label_derived() {
+  local label="${1-}" repo="${2-}"
+  orchid_service_label_valid "$label" || return 1
+  [ -n "$repo" ] || return 1
+  [ "$label" = "$(orchid_service_derive_label "$repo")" ]
+}
+
+# orchid_service_artifact_valid <label> <platform> <artifact> <repo> -- 0 iff
+# <artifact> is THE path `orchid service install` writes for that schedule on
+# that platform, for the checkout <repo> the record names. An EMPTY artifact is
+# valid: it is the "no claim" answer (an install predating the field, or a
+# machine-only resolution with no record to read), and the caller derives the
+# path for itself exactly as it always has.
 #
 # THE TWO PLATFORMS ARE CHECKED DIFFERENTLY BECAUSE THEIR ARTIFACTS LIVE IN
 # DIFFERENT PLACES (see runners/orchid-service's _svc_artifact). The launchd
-# plist is machine-local and named by the label, so there is exactly ONE path it
-# can be and equality is the test. The cron record travels INSIDE the checkout,
-# so its directory is whatever repo the schedule was installed against -- which a
-# move changes -- and what can be pinned is the repo-local location itself.
+# plist is machine-local and named by the label; the cron record travels INSIDE
+# the checkout and so is named by the repo. Either way there is exactly ONE path
+# install could have written and equality is the test.
+#
+# THE LINUX ARM USED TO BE A SUFFIX TEST -- any absolute path ending
+# `/.orchid/runtime/pump.cron` -- on the reasoning that the record's directory
+# moves with the checkout and so cannot be pinned. It can: it is pinned to the
+# repo THE RECORD ITSELF NAMES, which is the pre-move path and is exactly what
+# install wrote. The suffix test admitted every other checkout's cron record on
+# the machine, and uninstall's linux arm removes that path -- so a record
+# naming a sibling run's `pump.cron` had this delete the file that sibling's
+# `uninstall` and `status` reason from, leaving its crontab line installed with
+# nothing local left describing it.
+#
+# AND THE MOVE IS STILL SERVED, because the equality is against the RECORDED
+# path rather than the caller's. After `git worktree move` the recorded artifact
+# is a file that no longer exists, which validates here and then loses to the
+# caller's own derivation in _svc_artifact -- whose preference is guarded on
+# `-f` precisely so a repo-local artifact that travelled with the checkout is
+# found under its new directory. Nothing about that changes; what changes is
+# that the recorded path is now held to one location instead of a family.
 orchid_service_artifact_valid() {
-  local label="${1-}" plat="${2-}" artifact="${3-}"
+  local label="${1-}" plat="${2-}" artifact="${3-}" repo="${4-}"
   [ -n "$artifact" ] || return 0
   case "$artifact" in
     /*) ;;
     *) return 1 ;;
   esac
-  # No traversal component, at either end or in the middle. Redundant under the
-  # darwin equality test below and load-bearing under the linux suffix one.
+  # No traversal component, at either end or in the middle. Redundant under both
+  # equality tests below, and kept as the statement that a recorded artifact is
+  # never a path that has to be normalised before it means anything.
   case "$artifact" in
     */../*|*/..) return 1 ;;
   esac
@@ -1315,10 +1409,10 @@ orchid_service_artifact_valid() {
       [ "$artifact" = "$HOME/Library/LaunchAgents/$label.plist" ]
       ;;
     linux)
-      case "$artifact" in
-        */.orchid/runtime/pump.cron) return 0 ;;
-        *) return 1 ;;
-      esac
+      # The record's own repo, through install's own path builder. Empty is not
+      # a checkout to derive against, and so is not a match.
+      [ -n "$repo" ] || return 1
+      [ "$artifact" = "$(orchid_service_cron_record_path "$repo")" ]
       ;;
     # No platform, or one this kernel does not install for: there is no location
     # to hold the artifact to, so a non-empty claim cannot be honoured.
@@ -1968,6 +2062,53 @@ ORCHID_SERVICE_ID_REPO=""
 # on its own, and the recovery (repair or delete that file) needs the path.
 ORCHID_SERVICE_ID_REJECTED=""
 
+# THE FIELDS THAT ARE A SCHEDULE'S IDENTITY, spelled once because two different
+# questions are asked of exactly this set and their answers only compose while
+# the sets are the same one. _orchid_service_record_usable below reads all four
+# to decide whether ONE record is something install could have written;
+# orchid_service_identity's twins walk compares all four to decide whether TWO
+# records name one schedule. That the second list is the first is what lets the
+# walk carry the rule from a validated repo-local half to its twin -- add a
+# field to the rule and not to the walk, and a twin could differ in something
+# the rule cares about while still being called agreeing.
+#
+# NOT `installed_at` and NOT `interval_s`: neither is part of which schedule this
+# is, both legitimately differ between the halves (a re-install whose second
+# rename failed, an install re-run with a new interval), and comparing either
+# would turn a recoverable residue into a checkout nothing can clear.
+ORCHID_SERVICE_ID_FIELDS="label platform repo artifact"
+
+# _orchid_service_record_usable <record-path> <label> <platform> <artifact>
+# <repo> -- 0 iff those fields, read out of that record, are ones `orchid
+# service install` could have written together; 1 having set
+# ORCHID_SERVICE_ID_REJECTED to the sentence that says which one was not.
+#
+# ONE FUNCTION BECAUSE THERE ARE THREE PLACES A RECORD IS RESOLVED FROM -- the
+# repo-local half, its machine-local twin, and the machine-local store alone
+# when the checkout's own record is gone -- and each of them goes on to build
+# paths that are opened, probed, unloaded and deleted. Three copies of the rule
+# is three chances for one of them to be the lenient one, and the lenient one is
+# the whole vulnerability: it takes a single reachable resolution that skips the
+# check to make every check upstream of it decorative.
+#
+# THE FIELDS ARE PASSED IN RATHER THAN RE-READ. The caller has to act on exactly
+# the values that were checked, and a function that opened the record a second
+# time would be checking one read while its caller acted on another -- which is
+# a race against anything still writing into that checkout, and the file is
+# writable by every engine the run spawns.
+_orchid_service_record_usable() {
+  local rec="$1" label="$2" plat="$3" art="$4" repo="$5"
+  if ! orchid_service_label_derived "$label" "$repo"; then
+    ORCHID_SERVICE_ID_REJECTED="the label recorded in $rec ('$label') is not one 'orchid service install' derives for the checkout that same record names ('$repo') — a label IS com.orchid.pump.<the first 12 hex of that path's sha256> and nothing else, and every plist, binding and refusal path a removal touches is built from it"
+    return 1
+  fi
+  if ! orchid_service_artifact_valid "$label" "$plat" "$art" "$repo"; then
+    ORCHID_SERVICE_ID_REJECTED="the artifact recorded in $rec ('$art') is not a path 'orchid service install' writes for a $plat schedule under label $label bound to '$repo', and a removal would unload and delete exactly that path"
+    return 1
+  fi
+  return 0
+}
+
 # orchid_service_identity <repo> -- WHICH SCHEDULE IS BOUND TO THIS CHECKOUT.
 # Sets the globals above and returns 0; returns 1, setting nothing, when the two
 # binding records disagree about the schedule they name; returns 2, setting
@@ -1999,6 +2140,17 @@ ORCHID_SERVICE_ID_REJECTED=""
 # records it then left behind with no verb able to name them. That is this
 # task's own finding reached through a rename instead of through a deletion.
 #
+# AND THE VALIDATION IS NOT THE PATH HASH EITHER, for the same reason. What a
+# record's label is checked against is the derivation of THE PATH THAT RECORD
+# ITSELF NAMES, never of <repo>: a moved checkout's record is honest about the
+# schedule and honest about where it was installed, and holding it to the hash
+# of where the checkout has ARRIVED would refuse every legitimate move -- which
+# is the very leftover the paragraph above exists to prevent, reintroduced by
+# the check meant to make removals safe. Binding the label to the recorded path
+# rules out the other thing, which is the record pointing this removal at a
+# schedule belonging to some other checkout on the machine; whether the caller
+# is entitled to the checkout that record names is the next question down.
+#
 # THE TWINS ARE RESOLVED AS TWINS. The repo-local record names the label; the
 # machine-local half is then looked up BY THAT LABEL, never by path -- looking
 # it up by path is the same mistake one indirection further along, since the
@@ -2009,12 +2161,9 @@ ORCHID_SERVICE_ID_REJECTED=""
 # otherwise have this unload an agent belonging to a different checkout, or
 # clear the last name the one here has.
 #
-# The four compared fields are the IDENTITY of the schedule and deliberately
-# not the whole record. `installed_at` differs between the halves after a
-# re-install whose second rename failed -- a state the write path commits to
-# leaving behind (see its own note) and which `uninstall` must still be able to
-# clear -- and `interval_s` moves whenever an install is re-run with a new
-# interval. Comparing either would turn a recoverable residue into a wedge.
+# The compared fields are $ORCHID_SERVICE_ID_FIELDS -- the IDENTITY of the
+# schedule and deliberately not the whole record, and deliberately the same four
+# the usability rule reads. See that constant's own note for both halves of why.
 #
 # AN EMPTY LABEL IS AN ANSWER, NOT A FAILURE: no record names a schedule here at
 # all, which is what an install predating the binding record leaves, and the
@@ -2029,7 +2178,7 @@ ORCHID_SERVICE_ID_REJECTED=""
 # the second would send an operator hunting for a disagreement between two halves
 # that agree perfectly.
 orchid_service_identity() {
-  local repo="$1" rrec mrec="" rlabel="" mlabel="" k a b rart="" rplat=""
+  local repo="$1" rrec mrec="" rlabel="" mlabel="" k a b rart="" rplat="" rrepo=""
   ORCHID_SERVICE_ID_LABEL=""; ORCHID_SERVICE_ID_ARTIFACT=""
   ORCHID_SERVICE_ID_PLATFORM=""; ORCHID_SERVICE_ID_SOURCE=""
   ORCHID_SERVICE_ID_REPO=""; ORCHID_SERVICE_ID_REJECTED=""
@@ -2038,24 +2187,40 @@ orchid_service_identity() {
     rlabel="$(orchid_service_binding_field "$rrec" label)" || rlabel=""
   fi
   if [ -n "$rlabel" ]; then
-    # BEFORE THE TWIN IS LOOKED UP, because the lookup is `$HOME/.orchid/
-    # services/$rlabel.json` and a label is a path component. Everything after
-    # this line -- the twin's path, the plist, the refusal note, the removals --
-    # is built from a label this has already held to install's own derivation.
-    if ! orchid_service_label_valid "$rlabel"; then
-      ORCHID_SERVICE_ID_REJECTED="the label recorded in $rrec ('$rlabel') is not one 'orchid service install' derives (com.orchid.pump.<12 hex>), and every plist, binding and refusal path a removal touches is built from it"
-      return 2
-    fi
+    # ALL FOUR FIELDS ARE READ BEFORE ANY OF THEM IS BELIEVED, and the check
+    # below sits BEFORE THE TWIN IS LOOKED UP, because that lookup is
+    # `$HOME/.orchid/services/$rlabel.json` and a label is a path component.
+    # Everything after this line -- the twin's path, the plist, the refusal
+    # note, the removals -- is built from values already held to install's own
+    # derivation. Reading `repo` here is not acting on it: it is a string
+    # compared against, never joined into a path, until it has been.
+    rrepo="$(orchid_service_binding_field "$rrec" repo)" || rrepo=""
     rart="$(orchid_service_binding_field "$rrec" artifact)" || rart=""
     rplat="$(orchid_service_binding_field "$rrec" platform)" || rplat=""
-    # ...and the artifact BEFORE it is handed to `launchctl unload` and `rm -f`.
-    if ! orchid_service_artifact_valid "$rlabel" "$rplat" "$rart"; then
-      ORCHID_SERVICE_ID_REJECTED="the artifact recorded in $rrec ('$rart') is not a path 'orchid service install' writes for a $rplat schedule under label $rlabel, and a removal would unload and delete exactly that path"
-      return 2
-    fi
+    _orchid_service_record_usable "$rrec" "$rlabel" "$rplat" "$rart" "$rrepo" \
+      || return 2
     mrec="$(orchid_service_machine_record "$rlabel")" || mrec=""
     if [ -n "$mrec" ] && [ -f "$mrec" ]; then
-      for k in label platform repo artifact; do
+      # AND THE TWIN IS HELD TO THE SAME RULE, by this walk rather than by a
+      # second call, because the walk compares EVERY FIELD THE RULE READS.
+      # $ORCHID_SERVICE_ID_FIELDS is that list, spelled once and used by both,
+      # so a twin that reaches the resolution below has the same label, the same
+      # platform, the same repo and the same artifact as a record already held
+      # to install's derivation -- and one that does not is refused here.
+      #
+      # A SEPARATE CHECK PLACED AHEAD OF THIS WALK WOULD BE THE WRONG ANSWER,
+      # not a redundant one: a twin whose fields fail the rule fails them by
+      # differing from the repo-local half that passed it, and that is the
+      # RECORDS-DISAGREE finding (1: reconcile the two against each other), not
+      # the record-unusable one (2: repair or delete this file). Reported as the
+      # second, an operator with two perfectly parseable halves is sent hunting
+      # for a malformed one. Placed AFTER the walk it would be unreachable.
+      #
+      # Nothing the twin says is ever acted on, which is the other half of why
+      # this is enough: the resolution below is set from the repo-local values,
+      # and the only twin-derived path in this function is $mrec itself, built
+      # from the label the rule has already passed.
+      for k in $ORCHID_SERVICE_ID_FIELDS; do
         a="$(orchid_service_binding_field "$rrec" "$k")" || a=""
         b="$(orchid_service_binding_field "$mrec" "$k")" || b=""
         [ "$a" = "$b" ] || return 1
@@ -2075,8 +2240,10 @@ orchid_service_identity() {
     # the caller acts on must be exactly what was checked.
     ORCHID_SERVICE_ID_ARTIFACT="$rart"
     ORCHID_SERVICE_ID_PLATFORM="$rplat"
-    ORCHID_SERVICE_ID_REPO="$(orchid_service_binding_field "$rrec" repo)" \
-      || ORCHID_SERVICE_ID_REPO=""
+    # The `repo` the label and artifact were validated AGAINST, for the same
+    # reason: the ownership question the caller asks next must be about the
+    # same recorded checkout this resolution was made on.
+    ORCHID_SERVICE_ID_REPO="$rrepo"
     return 0
   fi
   # No repo-local half. Either the checkout is already gone -- the case a
@@ -2094,15 +2261,26 @@ orchid_service_identity() {
     if mrec="$(orchid_service_machine_record "$mlabel")"; then
       rart="$(orchid_service_binding_field "$mrec" artifact)" || rart=""
       rplat="$(orchid_service_binding_field "$mrec" platform)" || rplat=""
-      # The machine-local store is not the checkout's to write, but the artifact
-      # it names is still handed to `launchctl unload` and `rm -f` -- and the
-      # rule for what a removal may touch cannot be one thing here and another
-      # one indirection away. Checked with the same predicate, refused the same
-      # way. (The label came from orchid_service_binding_label_for, which walks
-      # only records whose label validates.)
-      if ! orchid_service_artifact_valid "$mlabel" "$rplat" "$rart"; then
+      # THE SAME RULE, ON THE SAME FOUR FIELDS. The machine-local store is not
+      # the checkout's to write, but the label it names is joined into the
+      # refusal and record paths and the artifact it names is still handed to
+      # `launchctl unload` and `rm -f` -- and the rule for what a removal may
+      # touch cannot be one thing here and another one indirection away.
+      #
+      # DERIVED AGAINST <repo>, WHICH IS THE RECORDED PATH ON THIS ARM: the
+      # lookup above matched a record's `repo` field EXACTLY against it, so
+      # "the path the record names" and "the path asked about" are one string
+      # here, unlike on the repo-local arm where a move separates them.
+      #
+      # And that is also what keeps the indirection honest. `mrec` is resolved
+      # from the `.label` FIELD of whatever record matched, which is not obliged
+      # to be the filename it was found under -- so the file opened here can be
+      # a DIFFERENT record, naming a different checkout's schedule. Held to
+      # <repo>'s own derivation, such a label is refused rather than followed,
+      # and no removal reached through this arm can act on a label that is not
+      # the one <repo> would have been installed under.
+      if ! _orchid_service_record_usable "$mrec" "$mlabel" "$rplat" "$rart" "$repo"; then
         ORCHID_SERVICE_ID_LABEL=""; ORCHID_SERVICE_ID_REPO=""
-        ORCHID_SERVICE_ID_REJECTED="the artifact recorded in $mrec ('$rart') is not a path 'orchid service install' writes for a $rplat schedule under label $mlabel, and a removal would unload and delete exactly that path"
         return 2
       fi
       ORCHID_SERVICE_ID_ARTIFACT="$rart"

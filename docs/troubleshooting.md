@@ -236,20 +236,29 @@ run is driven in — under `runtime/`, which every engine the run spawns can wri
 joined into `~/.orchid/services/<label>.json` and
 `~/Library/LaunchAgents/<label>.plist` as a path *component*, and the artifact is
 handed to `launchctl unload` and then deleted exactly as written. So both are
-checked against what `orchid service install` could have produced — a label is
-`com.orchid.pump.` plus twelve hex characters, an artifact is that label's plist
-(macOS) or a `.orchid/runtime/pump.cron` inside a checkout (elsewhere) — and
-anything else is refused before any path built from it is opened, probed or
-removed:
+checked against what `orchid service install` could have produced **for the
+checkout that same record names** — the label must be `com.orchid.pump.` plus
+the first twelve hex characters of that path's sha256, and the artifact must be
+that label's plist (macOS) or that path's own `.orchid/runtime/pump.cron`
+(elsewhere) — and anything else is refused before any path built from it is
+opened, probed or removed:
 
 ```
 orchid: refusing to remove anything for /path/to/repo: its binding record does
   not name a schedule orchid could have installed
 orchid: the label recorded in <repo>/.orchid/runtime/service.json ('../../x') is
-  not one 'orchid service install' derives (com.orchid.pump.<12 hex>) ...
+  not one 'orchid service install' derives for the checkout that same record
+  names ('/path/to/repo') ...
 orchid: ... repair or delete that record, then re-run: orchid service teardown
   --repo /path/to/repo
 ```
+
+Note that the right *shape* is not enough. Every checkout on this machine has a
+`com.orchid.pump.<12 hex>` label and a `.orchid/runtime/pump.cron`, so a record
+that swapped in a **neighbour's** label or a neighbour's cron record would pass
+a shape test and then have the removal unload that neighbour's agent, or delete
+the file its own `uninstall` and `status` read. One checkout, one label, one
+artifact; everything else is refused whether or not it looks invented.
 
 Unlike a disagreement between the two halves, there is nothing to reconcile
 here: a value orchid does not derive has no honest counterpart to be checked
