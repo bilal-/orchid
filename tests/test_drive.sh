@@ -9982,19 +9982,29 @@ fi
 #
 # "MUST NOT REACH `merging`" IS THIS PLUS PART C, and it is worth saying which
 # half is where. `drive_arbitrating` (runners/orchid-drive) takes exactly one
-# arm per decision word: `approve` runs `task arbitrate --result approve`,
-# `conflict` raises a `review-conflict` boundary and takes NO transition --
-# which Part C above already proves end to end against real stub engines. So
-# what remains to be shown, and is shown here, is that a standing objection
-# yields `conflict` rather than `approve` on the one input that would otherwise
-# have merged.
+# arm per decision word: `approve` runs `task arbitrate --result approve`, and
+# every other word raises a boundary and takes NO transition -- which Part C
+# above already proves end to end against real stub engines. So what remains to
+# be shown, and is shown here, is that a standing objection yields something
+# other than `approve` on the one input that would otherwise have merged.
+#
+# AND THAT IT IS NOT `conflict` EITHER, which is the second half of this Part
+# and the one it would be easiest to leave out. Refusing the DETERMINISTIC
+# approval is not the same as requiring an OPERATOR: `review-conflict` on an
+# `arbitrating` task is arbitrable, so the pump wakes the brokered orchestrator,
+# `drive_boundary_wakes_orchestrator` suppresses the human page for exactly
+# those, and the woken model may run `orchid task arbitrate --result approve`
+# itself. Reading the same diff and the same unanimous, finding-free review set
+# that shipped F33, it reaches F33's outcome one actor later, with the arbiter
+# who objected twice never told. So the arm has its own decision word and its
+# own kind, and the routing is asserted here rather than assumed.
 #
 # THE FIXTURES ARE THE SHAPE THAT SHIPPED IT. A complete, unanimous,
 # scope-complete, finding-free review set is the input that produced F33's
 # merge, so each case asserts the deterministic approval FIRST -- as a
 # premise -- and then the same task refusing it with the objection recorded.
-# Without that premise a `conflict` here would prove nothing: it is what every
-# malformed fixture returns too.
+# Without that premise an `objection` here would prove nothing: a malformed
+# fixture is refused too, just not for this reason.
 #
 # RED: a task carrying an uncleared operator objection, whose reviews are
 #      otherwise a textbook deterministic approval, must NOT be approved --
@@ -10017,9 +10027,9 @@ green_case 'a unanimous, scope-complete, finding-free review set on a task carry
 
 fm_set "$OBJ_TASK" unresolved_objection "a1: $OBJ_TEXT" \
   || fail "fixture: P50's objection must be recordable (the whole Part is vacuous otherwise)"
-assert_eq conflict "$(decision_of P50)" \
+assert_eq objection "$(decision_of P50)" \
   "T032: an uncleared operator objection refuses deterministic approval on the SAME review set that approved one line ago"
-red_case 'a task carrying an uncleared operator objection: conflict, never a deterministic approval'
+red_case 'a task carrying an uncleared operator objection: never a deterministic approval'
 
 # THE BOUNDARY CARRIES THE OBJECTION, not merely its existence -- the same
 # complaint F32 made about a bare `verdict=request-changes`, in the arm that
@@ -10030,6 +10040,38 @@ assert_match "reuse the response shape from bar" "$p50_detail" \
   "the detail quotes the arbiter's own words, not just the fact that an objection exists"
 assert_match "task arbitrate P50 --result approve" "$p50_detail" \
   "...and names the one verb that clears it, on this task, since that is the whole remedy"
+
+# --- AND THE STOP IS THE OPERATOR'S, NOT A WOKEN MODEL'S -------------------
+# The decision word is not `conflict`, and this is the reason. `review-conflict`
+# on an `arbitrating` task is ARBITRABLE on both shipped surfaces -- the pump
+# wakes the orchestrator, the human page is suppressed for exactly those, and
+# `orchid task arbitrate` is a write the brokered table admits. So routing an
+# objection there would refuse the DETERMINISTIC approval and then hand the very
+# same approval to a model reading the very same diff. F33's operator rejected
+# that diff twice; a third reader of it is not who decides whether their
+# objection was met.
+#
+# Three facts, because any two of them hold for a kind that is still wrong:
+# the word the policy emits, the kind the driver maps it to, and that kind
+# being operator-only. The mapping is read from the driver's source (spawning a
+# real pass for it is Part C's job, and this Part's fixtures are policy-level),
+# comment-stripped per this suite's rule so a kind NAMED in prose cannot
+# satisfy a pin for an arm that no longer raises it.
+drv_objection_arm="$(grep -v '^[[:space:]]*#' "$DRIVE" | sed -n '/^[[:space:]]*objection)/,/;;/p')"
+[ -n "$drv_objection_arm" ] \
+  || fail "T032: runners/orchid-drive has no 'objection)' arm — the policy emits a decision word the driver does not map, which falls to the unrecognized-decision catch-all"
+assert_match "set_boundary operator-decision" "$drv_objection_arm" \
+  "T032: the driver raises a standing objection as operator-decision — review-conflict would hand the clearing verb to a woken model"
+grep -q "set_boundary review-conflict" <<<"$drv_objection_arm" \
+  && fail "T032: the objection arm must not raise review-conflict — that kind is arbitrable from arbitrating, so the pump would wake a model and page nobody"
+for _surface in brokered soft; do
+  assert_eq 0 "$(drive_boundary_priority operator-decision arbitrating "$_surface")" \
+    "T032: the kind that arm raises is operator-only on a $_surface surface, so no woken orchestrator can clear the arbiter's objection"
+  if drive_boundary_wakes_orchestrator operator-decision arbitrating "$_surface"; then
+    fail "T032: an objection boundary must take the notify path to the human who raised it, not wake a model ($_surface surface)"
+  fi
+done
+red_case 'a standing objection routed to a kind a woken orchestrator could settle: refused — the stop is operator-only on every surface'
 
 fm_set "$OBJ_TASK" unresolved_objection "" \
   || fail "fixture: P50's objection must be clearable"
@@ -10053,7 +10095,7 @@ assert_eq approve "$(decision_of P51)" \
   "Part AF premise: a second round, on its own candidate, with its own unanimous review, approves"
 fm_set "$POLICY/.orchid/tasks/P51.md" unresolved_objection "a1: $OBJ_TEXT" \
   || fail "fixture: P51's objection must be recordable"
-assert_eq conflict "$(decision_of P51)" \
+assert_eq objection "$(decision_of P51)" \
   "T032: an objection raised at a1 still refuses approval at a2 on a candidate it never saw — that passage of time is what F33 died of"
 red_case 'an operator objection from an earlier round, after a rework round moved both attempt and candidate: still refused'
 

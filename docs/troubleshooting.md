@@ -1179,12 +1179,12 @@ moving, `while orchid drive; do ...` stops at the first decision. A pump that
 stops at the first arbitrable disagreement is attended operation wearing an
 unattended label.
 
-## `review-conflict`, and every review on the task says `approve`
+## `operator-decision`, and every review on the task says `approve`
 
-**Symptom:** the boundary is `review-conflict`, `orchid jobs ls` shows a
-complete, unanimous, scope-complete review set with no findings, and nothing in
-the envelopes disagrees with anything. The reason text quotes a sentence you
-wrote yourself, some rounds ago.
+**Symptom:** the boundary is `operator-decision` on a task in `arbitrating`,
+`orchid jobs ls` shows a complete, unanimous, scope-complete review set with no
+findings, and nothing in the envelopes disagrees with anything. The reason text
+quotes a sentence you wrote yourself, some rounds ago.
 
 That is arm 0 of the arbitration truth table, and the sentence is your own
 `orchid task arbitrate --result request-changes --reason "..."`. A rejection is
@@ -1211,7 +1211,18 @@ orchid task arbitrate <id> --result request-changes --reason "still unguarded on
 An approval clears the field and journals the clear; anything else leaves it
 standing. There is no other door — `unblock`, `retry` and `reverify` do not
 clear it, and `orchid task set` refuses the key by name, because none of them
-is an answer to "was this defect fixed". If the objection is genuinely obsolete
+is an answer to "was this defect fixed".
+
+**It is filed as `operator-decision` rather than `review-conflict` so that it
+reaches you.** A `review-conflict` on an `arbitrating` task is arbitrable: the
+pump wakes the orchestrator instead of paging a human, and `orchid task
+arbitrate` is a write the brokered surface admits — so the model would clear
+your objection from the same diff that produced it, and you would find out the
+way F33's operator did, by reading the merged source. `operator-decision` names
+no settling verb, so it is operator-only on every surface. The run stops here
+until you decide, which is the point.
+
+If the objection is genuinely obsolete
 (the task was re-scoped, the code it named is gone), that is still an
 arbitration: approve it and say so in the reason, so the record shows a decision
 rather than a field that quietly disappeared.

@@ -1191,11 +1191,17 @@ expired on either would expire on precisely the event it exists to survive — s
 `unblock`, `retry` and `reverify` all leave it standing, none of them being an
 answer to "was this defect fixed". Two readers act on it. The deterministic
 driver refuses to make an approval while one stands: `drive_review_decision`
-short-circuits to `conflict` ahead of all three arms of the arbitration truth
-table, so the task stops at a `review-conflict` boundary that only `orchid task
-arbitrate` settles — the driver's one call to `task arbitrate --result approve`
-sits behind that return, which is what makes it structurally unable to clear
-its own path. And every shipped `review` adapter appends the objection to the
+short-circuits to its own `objection` decision word ahead of all three arms of
+the arbitration truth table, and the driver raises that as an
+`operator-decision` boundary — the driver's one call to `task arbitrate
+--result approve` sits behind that return, which is what makes it structurally
+unable to clear its own path. The kind is deliberate and is half the guarantee:
+`review-conflict` is arbitrable from `arbitrating`, so it would suppress the
+human page and let a woken model run the clearing verb from the same diff that
+produced the objection; `operator-decision` names no settling verb, so the stop
+is operator-only on every surface and reaches the human who raised it — the
+same policy, and the same reasoning, as `operator-handoff` and
+`task-prerequisite`. And every shipped `review` adapter appends the objection to the
 reviewer's prompt (the pack copies `task.md` whole, so no new pack item is
 needed), narrowing the next round's question to "was the arbiter's objection
 addressed" rather than leaving the reviewer to re-form an opinion from the diff

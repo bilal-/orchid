@@ -2824,6 +2824,23 @@ drive_arbitrating() {
     conflict)
       set_boundary review-conflict "$id" "$detail"
       ;;
+    objection)
+      # T032, dogfood F33. A DIFFERENT KIND FROM `conflict`, and that is the
+      # whole of what this arm adds. `review-conflict` on an `arbitrating` task
+      # is arbitrable: the pump wakes the brokered orchestrator, the notify path
+      # is suppressed for exactly those, and the woken model may run `orchid
+      # task arbitrate --result approve` -- clearing an objection its author
+      # raised twice, from the same diff and the same unanimous, finding-free
+      # review set that shipped F33, with the operator never told.
+      #
+      # `operator-decision` names no settling verb, so it is operator-only on
+      # every surface and takes the notify path to a human. Same policy as
+      # `operator-handoff` and `task-prerequisite`, same reason: the verb exists,
+      # and what it records is something no woken model is in a position to
+      # assert. The detail still names `orchid task arbitrate`, because that IS
+      # the remedy -- run by the operator whose objection it is.
+      set_boundary operator-decision "$id" "$detail"
+      ;;
     *)
       set_boundary operator-decision "$id" "the review policy returned an unrecognized decision '$verdict'"
       ;;

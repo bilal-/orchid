@@ -300,13 +300,13 @@ The kernel-owned boundary kinds:
 | `planning` | `run_status` is `planning` — drafting and critiquing a roadmap is judgment work (PLANNING below) |
 | `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry`/`orchid task reverify` resolves it. The reason text names the CAUSE recorded when the task was blocked (read back out of the journal, which is where `task advance ... blocked --reason` and `task infra-fail`'s cap arm both put it), because those three remedies differ by exactly that — and says so plainly when the journal records none. This is also the kind raised by the pass that DOES the blocking — attempts exhausted, wallclock budget exceeded — and in the same words, so the record it writes is the record every later pass over that task recomputes rather than a different one that pages again. The one block filed under a different kind is a repo-wide `merge_gate` red at the rework cap (`operator-decision` below); it is filed that way by BOTH passes, from the same journaled cause, so that record too is recomputed rather than replaced |
 | `review-evidence` | fewer valid, `ok`, current-`candidate_sha` reviews are on hand than the task's `risk_tier` requires — or the tier's count is met while a routed reviewer slot still has no review of its own |
-| `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` — or, ahead of all of those and before any envelope is read, an `unresolved_objection` on the task: an arbiter's own `request-changes` that no arbitration has cleared (the arbitration truth table's arm 0) |
+| `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
 | `worktree-conflict` | a dispatch worktree cannot be proven to belong to this task, this branch and this repository — or its state cannot be read at all, which is refused in the same direction rather than taken for a clean tree |
 | `operator-handoff` | work no actor in the loop declares the capability for: a step whose requirements the resolved actor's manifest does not cover, so it was never dispatched (INV-16, `orchid jobs prepare` exit 19) — or this candidate's execution-requiring mechanical steps are not acknowledged for it, because `handoff_before_verify` is on, or because its implementer is installed under neither name it is looked up by — the directory a binding names, or the qualified `id=` a manifest claims. See "The operator hand-off" below |
 | `task-prerequisite` | the task declares an `operator_prerequisite` — a step outside the sandbox its verification depends on — that nobody has acknowledged for this candidate; raised by either stage that runs the suite (see THE TICK's `testing` and `merging` steps) |
 | `run-complete` | every task is `done`; the acceptance checks and `orchid run accept --evidence` behind COMPLETION below are judgment work no verb decides |
-| `operator-decision` | everything else policy deliberately refuses to decide: a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree. A merge left in `merging` is this kind. So is the ONE block that is a judgment about the REPOSITORY rather than about a candidate — a repo-wide `merge_gate` still red at the rework cap — and it must be filed this way by the blocking pass AND by every later walk of that blocked task, from the one journaled cause, or the record changes under the task and pages a second time. Every OTHER stop that ends in a block is `blocked-task` above. Being the catch-all does not make a page less answerable: raised on a task in `blocked`, this kind declares that state's whole recovery list, exactly as `blocked-task` does |
+| `operator-decision` | everything else policy deliberately refuses to decide: a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree. A merge left in `merging` is this kind. So is the ONE block that is a judgment about the REPOSITORY rather than about a candidate — a repo-wide `merge_gate` still red at the rework cap — and it must be filed this way by the blocking pass AND by every later walk of that blocked task, from the one journaled cause, or the record changes under the task and pages a second time. Every OTHER stop that ends in a block is `blocked-task` above. Being the catch-all does not make a page less answerable: raised on a task in `blocked`, this kind declares that state's whole recovery list, exactly as `blocked-task` does. This is also the kind an uncleared `unresolved_objection` raises — an arbiter's own `request-changes` that no arbitration has cleared, ahead of every review arm and before any envelope is read (the arbitration truth table's arm 0). Filed here rather than as `review-conflict` on purpose: that kind is arbitrable from `arbitrating`, so it would hand the clearing verb to a woken model, and whether an arbiter's objection was met is that arbiter's call |
 
 **Waking a model for one asks the SAME question.** The precedence above
 decides which of several boundaries goes into the record;
@@ -383,7 +383,7 @@ incomplete review set is never also reported as a conflict, and vice versa:
 0. **A standing objection, ahead of all three** (T032, dogfood F33) — the task
    carries an `unresolved_objection`, meaning an arbiter recorded
    `request-changes` on an earlier round and no arbitration has recorded that
-   it was answered. → boundary `review-conflict`, **no transition**, before a
+   it was answered. → boundary `operator-decision`, **no transition**, before a
    single envelope is read. Every arm below is a reading of the ROUND's
    evidence; this is a reading of the TASK, and it is the one fact no quantity
    of fresh reviews can settle — which is why it is not folded into arm 3's
@@ -395,24 +395,36 @@ incomplete review set is never also reported as a conflict, and vice versa:
    rejection, both returned `approve`; and arm 2 merged it as "unanimous
    scope-complete approval from 2 review(s), no finding at or above medium".
    `orchid task arbitrate <id> --result approve --reason "..."` is the only
-   thing that clears the field, so the remedy is the verb this boundary already
-   routes to — and the driver, whose single call to that verb is arm 2's, is
-   structurally unable to clear its own path. The next round's reviewers are
-   told too: every shipped `review` adapter appends the objection to its
-   prompt, so the question put to them is "was the arbiter's objection
+   thing that clears the field, and the driver, whose single call to that verb
+   is arm 2's, is structurally unable to clear its own path. The next round's
+   reviewers are told too: every shipped `review` adapter appends the objection
+   to its prompt, so the question put to them is "was the arbiter's objection
    addressed", not "form an opinion". A reviewer flipping `request-changes` to
    `approve` with the defect untouched is what a reviewer that never saw its
    own prior objection does.
 
-   **Who may settle it is the ordinary boundary rule, deliberately.** This is
-   `review-conflict` on an `arbitrating` task, so a woken orchestrator can
-   settle it wherever its surface admits `task arbitrate` — the same as every
-   other arbitration. What changes is that it cannot be settled *by accident*:
-   the decision is a recorded judgment with a `--reason`, and whoever makes it
-   reads the objection first, because `run boundary show` is where the
-   arbiter's own sentence is quoted back. `orchid answer approve` does not
-   clear the field either — `answer` records an answer, it does not run a
-   verb.
+   **`operator-decision`, and not `review-conflict`, is the whole of who may
+   settle it.** Refusing the deterministic approval is not the same as
+   requiring an operator. `review-conflict` on an `arbitrating` task is
+   *arbitrable*: the pump wakes the orchestrator, the `orchid notify` page is
+   suppressed for exactly the boundaries a woken model can settle, and `orchid
+   task arbitrate` is a write the brokered table admits. Routed there, an
+   objection would stop the deterministic rule and then hand the identical
+   approval to a model reading the identical diff and the identical unanimous,
+   finding-free review set — reaching F33's outcome one actor later, with the
+   arbiter who objected twice never told. `operator-decision` names no settling
+   verb, so it is operator-only on every surface and takes the notify path to a
+   human. This is the same policy `operator-handoff` and `task-prerequisite`
+   are held to, for the same reason: each *has* a real verb, and what that verb
+   records is something no woken model is in a position to assert. Here it
+   records that **the arbiter's own objection was met** — and the arbiter is
+   the actor who saw, twice, what two reviewers reading that diff did not.
+   `orchid answer` does not clear the field either: it records an answer, it
+   does not run a verb. Nor does this page carry the `approve` /
+   `request-changes` / `defer` menu a `review-conflict` on the same status
+   declares — `operator-decision` declares no choice set, so the reply is free
+   text and the record names the verb to run. Losing the one-tap `approve` is
+   the point: an objection this specific is not answered from a phone.
 
 1. **Evidence** — the evidence set is EXACTLY the one the kernel's own
    `reviewing`→`arbitrating` gate counts, and this arm mirrors that gate

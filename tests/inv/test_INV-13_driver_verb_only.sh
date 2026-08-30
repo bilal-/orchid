@@ -233,14 +233,19 @@ case "$drv_code" in
   *) fail "INV-13: the driver must route arbitration through the structured policy function" ;;
 esac
 
-# Each of the three arms names its decision LITERALLY. A `printf '%s\t...'`
-# fed from a variable would let a computed word -- one an envelope's own text
-# could reach -- stand where `approve` stands today. Matched against the
-# comment-stripped capture, per this file's own rule: a decision word quoted
-# in a doc-comment must not be able to satisfy the pin for a code path that
-# no longer prints it.
+# Each arm names its decision LITERALLY. A `printf '%s\t...'` fed from a
+# variable would let a computed word -- one an envelope's own text could reach
+# -- stand where `approve` stands today. Matched against the comment-stripped
+# capture, per this file's own rule: a decision word quoted in a doc-comment
+# must not be able to satisfy the pin for a code path that no longer prints it.
+#
+# `objection` (T032) is in this loop for a reason the other three do not carry
+# on their own: it is the arm whose word decides WHICH BOUNDARY KIND the driver
+# raises, and the two kinds differ by whether a woken model may settle the stop.
+# A computed word there does not merely mislabel a decision, it re-routes an
+# operator-only one to an orchestrator.
 pol_code="$(code_of "$POLICY")"
-for arm in approve evidence conflict; do
+for arm in approve evidence conflict objection; do
   grep -qE "printf '$arm"'\\t' <<<"$pol_code" \
     || fail "INV-13: the arbitration policy's '$arm' decision is no longer a literal in its own printf format — a computed decision word can be reached by prose"
 done
