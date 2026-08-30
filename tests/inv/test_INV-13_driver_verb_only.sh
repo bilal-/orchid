@@ -120,7 +120,18 @@ code_of() { grep -vE '^[[:space:]]*#' "$1"; }
 # for, and each one below says which it uses.
 operations_of() {
   code_of "$1" | awk -v sq="'" '
+    function has_escaped_quote(line,   n, i, c, slashes) {
+      n = length(line); slashes = 0
+      for (i = 1; i <= n; i++) {
+        c = substr(line, i, 1)
+        if ((c == sq || c == "\"") && slashes % 2 == 1) return 1
+        if (c == "\\") slashes++
+        else slashes = 0
+      }
+      return 0
+    }
     function elide(line,   n, i, c, st, out, buf) {
+      if (has_escaped_quote(line)) return line
       n = length(line); out = ""; st = 0; buf = ""
       for (i = 1; i <= n; i++) {
         c = substr(line, i, 1)
@@ -229,6 +240,17 @@ literal_probe_green_out="$(policy_impurity "$literal_probe_green")"
 [ -z "$literal_probe_green_out" ] \
   || fail "INV-13 self-check: the purity scan flagged a DIAGNOSTIC that merely quotes the words of an operation ($literal_probe_green_out) -- a gate that cannot tell an operation from a string describing one charges attempts against correct code and pushes authors to reword error messages to satisfy a linter (r-002/T019)"
 green_case "the same purity scan ACCEPTED diagnostics naming git worktree add, bash -c and sh -c, so the operation terms read what the file DOES rather than what it says"
+
+# RED: escaped quote bytes are not string delimiters. If operations_of toggles
+#      on them anyway, the closing quote of one valid string can pair with the
+#      opening quote of the next and elide live code between the two. Drive the
+#      exact production policy scan with that shape around a real mutation.
+escaped_quote_probe="$WORK/inv13-escaped-quote-probe.sh"
+printf '%s\n' 'printf %s "\""; git worktree add "$path" "$branch"; printf %s "\""' \
+  > "$escaped_quote_probe"
+assert_match 'worktree' "$(policy_impurity "$escaped_quote_probe")" \
+  "INV-13 self-check: the production purity scan must FLAG a real git worktree add between strings containing escaped quotes -- ambiguous quoting must fail closed instead of pairing outer quotes across live code"
+red_case "INV-13's production purity scan rejected a worktree mutation bracketed by escaped-quote strings, so quote elision cannot hide live code by cross-pairing their outer delimiters"
 
 # RED: string-literal elision must not make a policy library a place where
 #      forbidden work can hide inside an interpreter's code argument. These
