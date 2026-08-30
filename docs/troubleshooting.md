@@ -196,6 +196,16 @@ WARN: pump service com.orchid.pump.<hash> is still installed for /path/to/repo,
 That line is the difference between a schedule that was installed and never
 fired and one that is failing on its interval right now.
 
+It describes the schedule's **last** wake, so it is retired as soon as something
+disproves it: a wake that finds the target healthy and completes, a real (not
+`--dry-run`) `orchid service install` that replaces the schedule, and
+`orchid service uninstall`, which removes it. A wake that refuses or fails again
+leaves the current note alone, so what doctor prints is always the most recent
+thing that went wrong. Repair the checkout — restore the directory, put back its
+`.git`, `git worktree repair` the registration — and the next scheduled wake
+clears the note by itself; you never have to delete it by hand, and doctor never
+prints a refusal beside a service it is reporting as healthy.
+
 **A checkout that MOVED keeps its schedule.** `install` derives the label by
 hashing the checkout's canonical path, but `uninstall` and `teardown` never
 re-derive it — they read it out of the binding records `install` wrote. The
@@ -208,9 +218,8 @@ firing every interval with no verb able to name it.
 The two records have to agree about which schedule that is. A repo-local record
 and its machine-local twin naming different labels, platforms, repositories or
 artifacts are refused with nothing removed and no scheduler call made — that
-shape is a record edited by hand, or a checkout **copied** rather than moved,
-and acting on either half alone would unload another checkout's agent or clear
-the last name this one has:
+shape is a record edited by hand, and acting on either half alone would unload
+another checkout's agent or clear the last name this one has:
 
 ```
 orchid: refusing to remove anything for /path/to/repo: its two binding records
@@ -220,6 +229,36 @@ orchid: <repo>/.orchid/runtime/service.json and its machine-local copy must agre
 orchid: ... reconcile or delete the wrong record, then re-run: orchid service
   teardown --repo /path/to/repo
 ```
+
+**A checkout that was COPIED does not inherit the schedule.** Agreement between
+the two records says which schedule they are about; it says nothing about who is
+entitled to end it. A `cp -R` of a bound checkout — a backup, a snapshot
+restored beside the original — copies `.orchid/runtime/service.json` with
+everything else, so the duplicate's records agree with the machine-local half
+exactly as the original's do. Run there, a removal would unload the agent the
+*original* is still being driven by, delete both records, and leave that
+checkout bound to a schedule nothing on the machine can name. So `uninstall` and
+`teardown` also require `--repo` to be the checkout **git** has registered,
+which is what tells a copy from a move: `git worktree move` rewrites the
+registration, `cp -R` cannot. A copy is refused before any `launchctl`/`crontab`
+call, before either record is touched, and before any worktree is removed:
+
+```
+orchid: refusing to remove anything for /path/to/copy: this is not the checkout
+  that binding was installed against (/path/to/original)
+orchid: the records here match, and matching records are not ownership — a
+  checkout COPIED from the bound one carries an identical
+  /path/to/copy/.orchid/runtime/service.json, while git's worktree registration
+  still names /path/to/original rather than this path ...
+```
+
+Run the command against the checkout it names. The refusal applies only while
+that checkout is **still there**: once the original is gone — torn down, or
+plainly renamed, which is the case git cannot speak for because it registers
+only linked worktrees — there is no other checkout left for a removal to harm,
+so the record naming it becomes the caller's to clear. That is deliberate: a
+copy left holding a record for a path that no longer exists would otherwise be
+guarded against removal by a file no verb could take.
 
 **`--dry-run` previews an uninstall without performing it.** It prints the
 `launchctl`/`crontab` command it would run and names the plist (or `pump.cron`

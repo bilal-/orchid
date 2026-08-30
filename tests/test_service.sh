@@ -44,6 +44,19 @@ svc_uninstall_real() {
   ORCHID_SERVICE_DEBUG_SCHEDULER_LOG="$SCHED_LOG" "$SERVICE" uninstall "$@"
 }
 
+# INSTALL, FOR REAL -- everything except the one system call, through the same
+# seam. Nearly every section installs with `--dry-run`, which is enough for them:
+# the plist, the cron record and both binding halves are placed for real either
+# way, and only the launchctl/crontab call is printed. K15 is the one section
+# that cannot use it, because the fact it turns on is exactly the one --dry-run
+# does not establish -- whether a schedule was actually replaced -- and a preview
+# that destroyed the evidence of the schedule it left running would be the
+# uninstall-under---dry-run hazard wearing install's clothes.
+svc_install_real() {
+  : > "$SCHED_LOG"
+  ORCHID_SERVICE_DEBUG_SCHEDULER_LOG="$SCHED_LOG" "$SERVICE" install "$@"
+}
+
 # The same real uninstall, with the stubbed scheduler call MADE TO FAIL.
 # A stub that can only succeed cannot reach the arm that matters most -- what
 # uninstall does when `launchctl unload` returns nonzero -- and that arm is the
@@ -622,7 +635,9 @@ rm -rf "$WORK2"
 #
 # The gap was never a missing verb (`uninstall` has always existed). It was
 # that nothing tied the schedule's lifetime to anything, and nothing said it
-# had to be undone. Six parts, in the order an operator meets them:
+# had to be undone. The parts below are in the order an operator meets them, and
+# each was added by a finding rather than planned as a set -- so the list grows
+# and is deliberately not headed by a count that would go stale the day it does:
 #
 #   K1  install RECORDS what it bound itself to, on both sides of the
 #       boundary, and says the ordering that record exists to keep.
@@ -670,6 +685,19 @@ rm -rf "$WORK2"
 #       re-hash the CURRENT repo path, which stops naming the installed
 #       schedule the moment a checkout is moved. Identity comes from the
 #       binding twins install wrote, and twins that disagree are refused.
+#   K14 RED/GREEN: ...and WHO is allowed to act on it. Twins that agree name the
+#       schedule; they say nothing about the caller, because a checkout copied
+#       with `cp -R` carries the repo-local half inside it byte for byte. A copy
+#       must refuse before any scheduler call, binding removal or worktree
+#       removal, while the checkout git actually has registered -- including one
+#       that was MOVED -- still tears down normally. And the refusal must not
+#       wedge: once the checkout a record names is GONE, the record is clearable
+#       again, or a directory is guarded by a file no verb can take.
+#   K15 RED/GREEN: a recorded refusal is evidence about the LAST wake, not a
+#       property of the label. It must survive a refused wake and a preview, and
+#       be retired by a real (re)install and by a wake that found the target
+#       healthy and succeeded -- or `orchid doctor` prints a schedule as failing
+#       directly beneath its own line calling that schedule healthy.
 # ===========================================================================
 source "$REPO_ROOT/lib/common.sh"
 
@@ -1886,6 +1914,15 @@ assert_eq "$mv_label" "$ORCHID_SERVICE_ID_LABEL" \
   "and resolve to the label INSTALL created, never to a hash of the path the checkout now sits at"
 assert_eq twins "$ORCHID_SERVICE_ID_SOURCE" \
   "from BOTH halves -- the machine-local copy is found by LABEL, since finding it by path is the same mistake one indirection further along"
+# And the move is OWNED, which is the half K14 turns on: `git worktree move`
+# re-registers the checkout at its new path, so the ownership proof the copied-
+# checkout refusal rests on must pass here or a legitimate move is refused.
+assert_eq "$MV_NEW" "$(orchid_checkout_registered_path "$MV_NEW")" \
+  "and git's own registration now names the moved path, which is what distinguishes a move from a copy"
+rc=0
+orchid_service_binding_owned "$MV_NEW" "$ORCHID_SERVICE_ID_REPO" || rc=$?
+assert_eq 0 "$rc" \
+  "so a MOVED checkout owns the binding whose record still names where it used to be"
 
 # RED: twins that DISAGREE are refused rather than guessed at. A record edited
 # by hand, or a checkout COPIED rather than moved, would otherwise have this
@@ -1951,6 +1988,283 @@ mv_wt_list="$(git -C "$MV_MAIN" worktree list 2>&1)"
 grep -qF 'mv-wt-moved' <<<"$mv_wt_list" \
   && fail "and git must no longer have the moved worktree registered"
 green_case "a teardown of a MOVED worktree ends the schedule install recorded, clears both binding records, and removes the checkout at its new path"
+
+# -- K14: matching records are not ownership -------------------------------
+# K13 made every removing arm resolve its schedule from the binding TWINS, and
+# proved twins that disagree are refused. Agreement answers "which schedule is
+# this"; it cannot answer "may THIS caller end it", and the two are not the same
+# question. `cp -R` of a bound checkout copies `.orchid/runtime/service.json`
+# with everything else, so the duplicate's repo-local half is byte-identical to
+# the machine-local one: the twins agree, the identity resolves to the ORIGINAL
+# checkout's label, and a removal run inside the copy unloads the agent the
+# original is still driven by, deletes both records, and leaves that checkout
+# bound to a schedule nothing on the machine can name. The leftover this whole
+# task is about, minted by tearing down a backup.
+#
+# The distinction is not in the records at all -- it is in git's own worktree
+# registration, which `git worktree move` rewrites (K13's green arm) and `cp -R`
+# does not. Both are exercised against ONE fixture here so the refusal is
+# provably about ownership and not about the tree being broken.
+CP_MAIN="$BIND/cp-main"
+mkdir -p "$CP_MAIN"
+(
+  cd "$CP_MAIN" || exit 1
+  git init -q .
+  # Same shape as K12/K13: runtime/ ignored and .orchid/ committed, so the
+  # worktree git sees is CLEAN and the green arm below exercises a plain
+  # `git worktree remove` rather than a --force that would mask a refusal.
+  printf '.orchid/runtime/\n' > .gitignore
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: complete\nrun_id: r-cp\n---\n# Roadmap\n' > .orchid/roadmap.md
+  git add .gitignore .orchid
+  git commit -q -m root
+  git worktree add -q -b cp-integration ../cp-wt
+) || fail "K14 fixture: could not build a main checkout with a linked integration worktree"
+[ -d "$BIND/cp-wt" ] || fail "K14 fixture: the linked worktree was not created"
+CP_WT="$(cd "$BIND/cp-wt" && pwd -P)"
+trust_repo "$CP_WT"
+
+cp_inst="$("$SERVICE" install --repo "$CP_WT" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the copied-checkout fixture installs a schedule against the REAL worktree first (out: $cp_inst)"
+cp_label="$(echo "$cp_inst" | grep -oE "$label_re" | head -n1)"
+cp_plist="$HOME/Library/LaunchAgents/$cp_label.plist"
+cp_rec="$CP_WT/.orchid/runtime/service.json"
+cp_mrec="$HOME/.orchid/services/$cp_label.json"
+[ -f "$cp_plist" ] || fail "K14 fixture: the install must have placed the plist"
+[ -f "$cp_rec" ] || fail "K14 fixture: the install must have written the repo-local binding"
+[ -f "$cp_mrec" ] || fail "K14 fixture: the install must have written the machine-local binding"
+
+# THE COPY, made the way anyone makes one -- a plain recursive copy of the
+# checkout, which is what a backup, a `cp -R` before a risky rebase, or a
+# restored snapshot leaves standing beside the original.
+cp -R "$CP_WT" "$BIND/cp-wt-copy" || fail "K14 fixture: could not copy the bound checkout"
+CP_COPY="$(cd "$BIND/cp-wt-copy" && pwd -P)"
+cp_copy_rec="$CP_COPY/.orchid/runtime/service.json"
+[ -f "$cp_copy_rec" ] || fail "K14 fixture: the copy must carry the repo-local binding, or there is nothing here to refuse"
+
+# THE WITNESS THAT MAKES THE REFUSAL BELOW NON-VACUOUS: the copy's record is not
+# merely similar, it is the same bytes -- so every test the twins apply passes
+# for it, and the identity resolves to the ORIGINAL schedule. Whatever refuses
+# the copy cannot be the twins check.
+assert_eq "$(cat "$cp_rec")" "$(cat "$cp_copy_rec")" \
+  "the copy carries a byte-identical binding record -- which is exactly why matching records cannot be the proof of ownership"
+rc=0
+orchid_service_identity "$CP_COPY" || rc=$?
+assert_eq 0 "$rc" \
+  "and the twins RESOLVE for the copy: they were written from one staged file and copying touched neither"
+assert_eq "$cp_label" "$ORCHID_SERVICE_ID_LABEL" \
+  "resolving to the label the ORIGINAL checkout's schedule was installed under"
+assert_eq "$CP_WT" "$ORCHID_SERVICE_ID_REPO" \
+  "and naming the checkout it was installed against, which is not this one"
+
+# ...and the fact that DOES tell them apart, read directly. A linked worktree's
+# `.git` file names an administrative directory, and that directory's own
+# `gitdir` file names the worktree's `.git` file in return. `git worktree move`
+# rewrites that back-pointer; `cp -R` cannot, because it never touches the
+# original's administrative directory at all -- so asked from INSIDE the copy,
+# git's registration still answers with the original.
+assert_eq "$CP_WT" "$(orchid_checkout_registered_path "$CP_WT")" \
+  "git's own registration names the checkout it was made for"
+assert_eq "$CP_WT" "$(orchid_checkout_registered_path "$CP_COPY")" \
+  "and still names it when asked from inside the copy -- the copy shares the original's administrative directory and its back-pointer was never rewritten"
+rc=0
+orchid_service_binding_owned "$CP_COPY" "$ORCHID_SERVICE_ID_REPO" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "the ownership predicate itself must reject the copy -- git's registration still names the original, and nothing else on disk tells the two apart"
+rc=0
+orchid_service_binding_owned "$CP_WT" "$ORCHID_SERVICE_ID_REPO" || rc=$?
+assert_eq 0 "$rc" \
+  "and accept the checkout git actually has registered, or the predicate refuses everything and proves nothing"
+
+# RED, through the door that removes most: `teardown` would unload the agent,
+# delete both records AND take a worktree. Staged with launchd ANSWERING "no such
+# job" -- the answer that CLEARS -- so nothing but ownership can be what stops it.
+rc=0
+cp_red_td="$(svc_teardown_notfound 'launchctl (unload|list)' --repo "$CP_COPY" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "a teardown run inside a COPY of the bound checkout must refuse (out: $cp_red_td)"
+assert_match 'not the checkout that binding was installed against' "$cp_red_td" \
+  "and say what stopped it -- matching records are not ownership"
+assert_match 'matching records are not ownership' "$cp_red_td" \
+  "and say it in the terms an operator can check, rather than as a bare identity error"
+case "$cp_red_td" in
+  *"$CP_WT"*) ;;
+  *) fail "and the refusal must name the checkout that DOES own the schedule, since that is where the operator has to run it" ;;
+esac
+[ -f "$cp_plist" ] || fail "and the ORIGINAL schedule's plist must survive: the copy has no business unloading it"
+[ -f "$cp_mrec" ] || fail "and the machine-local binding, the only name that outlives the original checkout"
+[ -f "$cp_rec" ] || fail "and the original's own repo-local binding, which is what keeps its removal guard refusing"
+[ -d "$CP_WT" ] || fail "and the checkout that owns the schedule is untouched"
+[ -d "$CP_COPY" ] || fail "and so is the copy -- a refusal removes nothing at all"
+[ -s "$SCHED_LOG" ] \
+  && fail "and no scheduler call may have been made: an unowned binding is refused before launchd is asked anything about it"
+
+# ...and through the other door, which is the one an operator reaches for when
+# the copy is not a worktree they mean to delete.
+rc=0
+cp_red_un="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$CP_COPY" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "and an uninstall run inside the copy must refuse for the same reason (out: $cp_red_un)"
+assert_match 'not the checkout that binding was installed against' "$cp_red_un" \
+  "with the same refusal, since it is the same resolution"
+assert_match 'service uninstall --repo' "$cp_red_un" \
+  "naming the uninstall this time, because that is the command that was actually run"
+[ -f "$cp_plist" ] || fail "and again nothing is removed"
+[ -f "$cp_mrec" ] || fail "and again the machine-local binding stands"
+[ -s "$SCHED_LOG" ] \
+  && fail "and again launchd is asked nothing"
+red_case "a removal run inside a COPY of the bound checkout refuses before any scheduler call, and preserves the original schedule and both records"
+
+# GREEN twin: the SAME command, the SAME schedule, the SAME stubbed launchd
+# answer -- run in the checkout git has registered. If the refusal above were
+# about the fixture rather than about ownership, this would refuse too.
+rc=0
+cp_green="$(svc_teardown_notfound 'launchctl (unload|list)' --repo "$CP_WT" 2>&1)" || rc=$?
+assert_eq 0 "$rc" \
+  "the identical teardown succeeds in the checkout the binding was installed against (out: $cp_green)"
+assert_match "$cp_label" "$cp_green" "and it is that schedule it reports having ended"
+assert_match 'removed the integration worktree' "$cp_green" "and the removal half then runs"
+[ -f "$cp_plist" ] && fail "the plist must be gone -- otherwise the red arm proves only that this verb never removes anything"
+[ -f "$cp_mrec" ] && fail "and the machine-local binding must go with it"
+[ -d "$CP_WT" ] && fail "and the worktree that owned the schedule must be removed"
+green_case "the same teardown ends the schedule and removes the checkout when it is run in the worktree git has registered"
+
+# ...and the refusal must not WEDGE what it refused. The teardown above took the
+# original checkout, so the copy is now standing alone holding a repo-local
+# record for a path that no longer exists -- and that record is what makes the
+# removal guard refuse this directory. A rule that only ever asked "is this the
+# registered checkout" would refuse here too, forever, since there is no
+# registration left to name anybody: a checkout guarded against removal by a
+# file no verb can take. So the second, weaker way a record may honestly name
+# another path is that the path is GONE, and in exactly that case there is no
+# other checkout for the removal to harm. (It is also the plain-rename case: git
+# can only speak for a linked worktree.)
+[ -f "$cp_copy_rec" ] || fail "K14: the copy must still hold the record the original's teardown could not reach"
+rc=0
+orchid_service_removal_guard "$CP_COPY" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "K14: and that record must still be guarding the copy, or there is no wedge to disprove"
+rc=0
+orchid_service_binding_owned "$CP_COPY" "$CP_WT" || rc=$?
+assert_eq 0 "$rc" \
+  "the copy owns the leftover record once the checkout it names is gone -- nothing is left for a removal to harm, and refusing would strand it"
+rc=0
+cp_orphan="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$CP_COPY" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "so the uninstall the guard names really can clear it (out: $cp_orphan)"
+[ -f "$cp_copy_rec" ] && fail "and the stale record must be gone, or the guard below has nothing to release"
+rc=0
+orchid_service_removal_guard "$CP_COPY" >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "and the copy is removable again -- the ownership rule cost a step, not the verb"
+green_case "a copy left holding a record for a checkout that no longer exists can still clear it, so the ownership refusal never wedges the removal guard"
+
+# -- K15: a refusal is evidence about the LAST wake ------------------------
+# The two arms of K2/K2c record, machine-locally, that this schedule woke and
+# refused -- because the plist and cron line send both streams to /dev/null and
+# `orchid doctor` is the only place that note can be read. Nothing but
+# `uninstall` used to retire it, so it outlived what it described: a checkout
+# restored or a repository repaired, and doctor went on printing `the schedule
+# last woke and refused: ...` indented directly under its own `ok:` line for a
+# service that was demonstrably healthy. Two contradictory sentences about one
+# binding is worse than neither -- it is how an operator learns to discount the
+# surface that carries the real finding.
+STALE="$BIND/stale-refusal"
+mkdir -p "$STALE"
+(
+  cd "$STALE" || exit 1
+  git init -q .
+  git commit -q --allow-empty -m root
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: planning\nrun_id: r-stale\n---\n# Roadmap\n' > .orchid/roadmap.md
+)
+# CANONICAL, because that is the string install hashes its label from and bakes
+# into the artifact as ORCHID_REPO -- a scheduled pump arrives with exactly it,
+# which is what lets it find its own binding to record against.
+STALE_CANON="$(cd "$STALE" && pwd -P)"
+trust_repo "$STALE"
+st_inst="$("$SERVICE" install --repo "$STALE" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the stale-refusal fixture installs a schedule first (out: $st_inst)"
+st_label="$(echo "$st_inst" | grep -oE "$label_re" | head -n1)"
+st_refusal="$HOME/.orchid/services/$st_label.refusal"
+[ -f "$st_refusal" ] && fail "K15 fixture: a fresh install must start with no recorded refusal"
+
+# st_doctor_lines <label> -- doctor's report for ONE binding: the line naming it
+# plus the line after, which is where the refusal note is indented. Scoped
+# deliberately: doctor walks every binding on the machine and earlier sections
+# leave their own, so a match against the whole report could be another
+# schedule's refusal entirely.
+st_doctor_lines() {
+  ORCHID_REPO="$WORK" "$ORCHID_BIN" doctor 2>&1 | grep -A1 -F "$1" || true
+}
+
+# BREAK THE REPOSITORY, the K2c way: the directory survives, its `.git` points at
+# a gitdir that is not there. Saved rather than destroyed, because this section
+# needs to put it back.
+mv "$STALE/.git" "$BIND/stale-gitdir" || fail "K15 fixture: could not set the repository aside"
+printf 'gitdir: %s\n' "$STALE/no-such-common-dir" > "$STALE/.git"
+rc=0
+st_pump_red="$(ORCHID_REPO="$STALE_CANON" "$PUMP" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "K15 fixture: the pump must refuse a checkout whose repository is gone (out: $st_pump_red)"
+[ -f "$st_refusal" ] || fail "K15 fixture: that refused wake must have recorded its reason"
+st_doctor_red="$(st_doctor_lines "$st_label")"
+assert_match 'the schedule last woke and refused' "$st_doctor_red" \
+  "a refused wake is reported: doctor is the only surface that hears it, and the note must survive the wake that wrote it"
+red_case "a wake that refused leaves its reason where doctor reads it"
+
+# GREEN: the repository is back, and the very next wake is an ordinary quiet
+# no-op. That pass DISPROVES the note -- the directory is there and so is the
+# repository behind it -- so the note must go, or doctor prints a schedule as
+# failing directly beneath its own line calling it healthy.
+rm -f "$STALE/.git"
+mv "$BIND/stale-gitdir" "$STALE/.git" || fail "K15 fixture: could not restore the repository"
+rc=0
+st_pump_green="$(ORCHID_REPO="$STALE_CANON" "$PUMP" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the repaired checkout's next wake is an ordinary quiet no-op (out: $st_pump_green)"
+[ -f "$st_refusal" ] \
+  && fail "THE FINDING: a healthy successful wake must retire the refusal it has just disproved"
+st_doctor_green="$(st_doctor_lines "$st_label")"
+case "$st_doctor_green" in
+  *"ok: pump service installed for $STALE_CANON"*) ;;
+  *) fail "doctor must now report this binding as ordinary state (got: $st_doctor_green)" ;;
+esac
+grep -qF 'last woke and refused' <<<"$st_doctor_green" \
+  && fail "and must print no refusal beside it -- an obsolete note under an 'ok:' line is two contradictory sentences about one binding"
+green_case "a wake that found the target healthy and succeeded retires the refusal, so doctor never prints one beside a healthy service"
+
+# The other retirement, and the flag it must NOT happen under. Stage the refusal
+# again, then repair the checkout -- so the note is stale but the schedule the
+# note is about is still exactly the schedule that is loaded.
+mv "$STALE/.git" "$BIND/stale-gitdir" || fail "K15 fixture: could not set the repository aside again"
+printf 'gitdir: %s\n' "$STALE/no-such-common-dir" > "$STALE/.git"
+rc=0
+ORCHID_REPO="$STALE_CANON" "$PUMP" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "K15 fixture: the second refused wake must fail as the first did"
+[ -f "$st_refusal" ] || fail "K15 fixture: and must have recorded its reason again"
+rm -f "$STALE/.git"
+mv "$BIND/stale-gitdir" "$STALE/.git" || fail "K15 fixture: could not restore the repository again"
+
+# RED: a --dry-run install makes no scheduler call, so the schedule that refused
+# is still the schedule that is loaded, and the note is still about it. A
+# preview that destroyed it would be the uninstall-under---dry-run hazard wearing
+# install's clothes: evidence about a LIVE schedule taken by the one flag an
+# operator runs expecting no consequences.
+st_dry="$("$SERVICE" install --repo "$STALE" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "a --dry-run re-install exits 0 (out: $st_dry)"
+[ -f "$st_refusal" ] \
+  || fail "a --dry-run install must leave the recorded refusal exactly where it found it -- it replaced no schedule"
+red_case "a --dry-run install leaves a recorded refusal standing, because it left the schedule that refused running"
+
+# GREEN: the real re-install unloads whatever was there and loads a fresh agent,
+# so the wake that note describes belongs to neither.
+rc=0
+st_real="$(svc_install_real --repo "$STALE" --interval-s 240 2>&1)" || rc=$?
+assert_eq 0 "$rc" "a real re-install exits 0 (out: $st_real)"
+grep -qE 'launchctl load' "$SCHED_LOG" \
+  || fail "K15 fixture: the real install must actually have reached the scheduler (log: $(cat "$SCHED_LOG"))"
+[ -f "$st_refusal" ] \
+  && fail "a real (re)install must retire the refusal recorded against the schedule it just replaced"
+st_doctor_reinst="$(st_doctor_lines "$st_label")"
+grep -qF 'last woke and refused' <<<"$st_doctor_reinst" \
+  && fail "and doctor must print none beside the service it has just been told is installed"
+green_case "a real install retires the refusal recorded against the schedule it replaces"
 
 unset ORCHID_SERVICE_OS
 

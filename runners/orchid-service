@@ -105,9 +105,11 @@ a crontab line.
                comes from the binding records install wrote, not from
                hashing --repo's path, so a checkout MOVED since it was
                installed (`git worktree move`) still ends the schedule it
-               really has. the two records must agree about it: one edited
-               by hand, or a checkout copied rather than moved, is refused
-               with nothing removed. idempotent: refuses
+               really has. the two records must agree about it, and --repo
+               must be the checkout they name: a record edited by hand is
+               refused, and so is a COPY of the bound checkout, which
+               carries an identical record but is not the worktree git has
+               registered. either way nothing is removed. idempotent: refuses
                cleanly (a plain message, no launchctl/crontab touched) when
                nothing is installed for --repo -- safe to call blind.
                removes nothing, and refuses, when the scheduler could not
@@ -218,6 +220,17 @@ _svc_label() { echo "com.orchid.pump.$(_svc_hash12 "$1")"; }
 # the label, its machine-local twin is looked up BY THAT LABEL rather than by
 # path, and the two must agree. Disagreement is refused, not guessed at.
 #
+# AND THEN THE OTHER HALF OF THE SAME QUESTION: whether the caller is the
+# checkout those records name. Agreement proves what schedule they are about; it
+# proves nothing about who is asking, because a checkout copied with `cp -R`
+# carries the repo-local half inside it unchanged. That is the mirror image of
+# the rename above -- one path with two schedules' worth of claims on it instead
+# of one schedule with two paths -- and it fails the other way: the resolution
+# succeeds, names the ORIGINAL checkout's label, and the removal ends a schedule
+# that is still driving somebody else's tree. orchid_service_binding_owned
+# settles it on git's own worktree registration, which `git worktree move`
+# rewrites and `cp -R` does not.
+#
 # Set by _svc_identity and read for the rest of the call. THE REMOVING SUBVERBS
 # ARE THE CALLERS, and `status` is deliberately not one. This resolution fails
 # CLOSED -- records that disagree end the process rather than being guessed at
@@ -234,12 +247,32 @@ SVC_ARTIFACT_PLATFORM=""
 # or refuse. Falls back to the path hash only when NO record names a schedule
 # here at all (an install predating the binding record); that is a different
 # answer from "the records disagree", which exits.
+#
+# TWO REFUSALS, ANSWERING TWO QUESTIONS, AND THEY ARE NOT INTERCHANGEABLE. The
+# first is about the RECORDS -- do they name one schedule; the second is about
+# the CALLER -- is this the checkout they were written for. A copied checkout
+# passes the first and is caught only by the second, so neither refusal may be
+# worded as if it covered the other's case.
 _svc_identity() {
   local repo="$1"
   if ! orchid_service_identity "$repo"; then
     echo "orchid: refusing to remove anything for $repo: its two binding records do not name the same schedule" >&2
-    echo "orchid: $(orchid_service_repo_record "$repo") and its machine-local copy must agree on label, platform, repository and artifact — one has been edited, or this checkout was COPIED from the one the schedule was installed against rather than moved" >&2
+    echo "orchid: $(orchid_service_repo_record "$repo") and its machine-local copy must agree on label, platform, repository and artifact — one of them has been edited" >&2
     orchid_die "acting on either half alone would unload another checkout's agent or clear the last name this one has; reconcile or delete the wrong record, then re-run: $(_svc_rerun_command "$repo")"
+  fi
+  # AND THE RECORDS AGREEING IS NOT THIS CHECKOUT OWNING THEM. `cp -R` of a
+  # bound checkout copies `.orchid/runtime/service.json` with everything else, so
+  # the duplicate's repo-local half is byte-identical to the machine-local one
+  # and the resolution above succeeds for it exactly as it does for the original.
+  # Acted on, a removal inside the copy unloads the agent the ORIGINAL checkout
+  # is still being driven by, deletes both records, and leaves that checkout
+  # bound to a schedule nothing can name -- this task's leftover, minted by
+  # tearing down a backup. The move it must not be confused with is the one K13
+  # exists for, and git tells them apart: see orchid_service_binding_owned.
+  if ! orchid_service_binding_owned "$repo" "$ORCHID_SERVICE_ID_REPO"; then
+    echo "orchid: refusing to remove anything for $repo: this is not the checkout that binding was installed against ($ORCHID_SERVICE_ID_REPO)" >&2
+    echo "orchid: the records here match, and matching records are not ownership — a checkout COPIED from the bound one carries an identical $(orchid_service_repo_record "$repo"), and $ORCHID_SERVICE_ID_REPO is still standing with git's worktree registration still naming it rather than this path (a checkout MOVED — with 'git worktree move', or a plain rename that leaves nothing behind — is accepted here)" >&2
+    orchid_die "ending the schedule from here would unload the agent $ORCHID_SERVICE_ID_REPO is still driven by and clear the only records naming it; run it against that checkout instead: $(_svc_rerun_command "$ORCHID_SERVICE_ID_REPO")"
   fi
   SVC_LABEL="$ORCHID_SERVICE_ID_LABEL"
   SVC_ARTIFACT="$ORCHID_SERVICE_ID_ARTIFACT"
@@ -862,6 +895,23 @@ _svc_install_darwin() {
     _svc_scheduler_exec launchctl load "$plist_path"
   fi
 
+  # THE PREVIOUS SCHEDULE'S REFUSAL IS NOW ABOUT A SCHEDULE THAT IS NOT RUNNING.
+  # A pump that woke against a deleted or de-gitted checkout records why, machine-
+  # locally, because its own stderr went to the scheduler's /dev/null -- and
+  # `orchid doctor` reads it back. Nothing used to retire that note but removal,
+  # so an operator who restored the checkout and re-installed kept meeting `the
+  # schedule last woke and refused: ... does not exist` indented under doctor's
+  # own `ok:` line for the service that had just been loaded. The line above
+  # unloaded whatever was there and loaded a fresh agent, so the wake that note
+  # describes belongs to neither.
+  #
+  # ONLY ON A REAL INSTALL. `--dry-run` prints the launchctl call instead of
+  # making it, so the schedule that refused is still exactly the schedule that is
+  # loaded -- and this file's rule for a preview is that it destroys nothing (see
+  # the header, and _svc_print_dry_uninstall). Evidence about a live schedule is
+  # the last thing a no-consequences flag may take.
+  [ "$dry" -eq 1 ] || orchid_service_refusal_clear "$label"
+
   echo "orchid: service installed for $repo"
   echo "  label:      $label"
   echo "  plist:      $plist_path"
@@ -1050,6 +1100,12 @@ _svc_install_linux() {
     _svc_scheduler_eval "$pipeline"
   fi
 
+  # Same retirement, same rule about `--dry-run`, as the darwin branch above --
+  # see its own note. The crontab rewrite has just replaced this label's line, so
+  # a refusal recorded against the schedule it replaced describes nothing that
+  # is still scheduled.
+  [ "$dry" -eq 1 ] || orchid_service_refusal_clear "$label"
+
   echo "orchid: service installed for $repo"
   echo "  label:      $label"
   echo "  crontab:    $line"
@@ -1185,6 +1241,20 @@ _svc_teardown() {
   # _svc_rerun_command: named the uninstall instead, the recovery path ends the
   # schedule and hands back the worktree, which is the two-step ordering again.
   _SVC_RERUN_SUB=teardown
+
+  # WHICH SCHEDULE THIS IS, AND WHETHER THIS CHECKOUT OWNS IT, BEFORE ANYTHING
+  # ELSE IS ASKED -- ahead even of the removal-half refusals below. A checkout
+  # that is a COPY of the bound one (see _svc_identity) has no teardown to
+  # perform at all: it is not the tree the schedule drives and not the tree git
+  # has registered, so every question after this one would be answered about the
+  # wrong checkout, and the refusal it earns must be the one that names the real
+  # one. Resolution is pure -- it reads two records and, only when they name
+  # another path, git's own registration -- so asking it here costs a refusal
+  # nothing and leaves both records exactly where `uninstall` can still find
+  # them. `_svc_uninstall_*` resolves again for itself below; it is the same
+  # reads over the same files, and an arm that trusted a caller to have resolved
+  # for it is an arm that stops being safe to call directly.
+  _svc_identity "$repo"
 
   # EVERY REFUSAL THAT BELONGS TO THE REMOVAL HALF IS ASKED FIRST, with the
   # schedule still installed. A teardown that uninstalled and only then

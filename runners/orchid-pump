@@ -231,6 +231,43 @@ if ! orchid_checkout_git_alive "$repo"; then
   exit 1
 fi
 
+# 2c. AND THE OTHER DIRECTION OF THE SAME RECORD. The two arms above write a
+# machine-local note saying this schedule woke and refused, because their stderr
+# goes to the scheduler's /dev/null and `orchid doctor` is the only place an
+# operator can read it. Nothing but `uninstall` used to retire that note, so it
+# outlived the condition: a checkout restored, a `.git` repaired, a worktree
+# re-registered, and doctor went on printing `the schedule last woke and refused:
+# ... does not exist` indented under its own `ok:` line for a service that was
+# demonstrably healthy. Two contradictory sentences about one binding is worse
+# than neither -- it is how an operator learns to discount the surface that
+# carries the real finding.
+#
+# REACHING THIS LINE IS THE DISPROOF, AND IT IS ONLY HALF OF THE CONDITION. Both
+# recorded refusals are about a target that cannot be driven, and both are false
+# of a pass that got here: the directory is there (step 0) and the repository
+# behind it is (step 2b). But a wake that goes on to REFUSE or FAIL -- an
+# unattended acknowledgement that is missing or revoked, a service log that
+# cannot be opened safely, a deterministic drive that errored -- has not proved
+# the schedule healthy, and the operator is entitled to the most recent thing
+# that went wrong. So the flag is set here and the clearance is taken at EXIT,
+# by a handler that runs only for a zero status.
+#
+# NEVER `|| true` AROUND A CLEARANCE THAT MATTERS: orchid_service_refusal_clear
+# is best-effort and always 0 by contract, and this handler adds nothing that
+# can fail, because an EXIT trap that dies under `set -e` takes the pass's real
+# exit code with it.
+pump_target_healthy=1
+_pump_clear_refusal_on_success() {
+  local rc="$1" label
+  [ "$rc" -eq 0 ] || return 0
+  [ "${pump_target_healthy:-0}" -eq 1 ] || return 0
+  # No binding names this repo -- a hand-run pump against a stale ORCHID_REPO --
+  # and there is nothing recorded to clear, exactly as the write side decides.
+  label="$(orchid_service_binding_label_for "$repo")" || return 0
+  orchid_service_refusal_clear "$label"
+}
+trap '_pump_clear_refusal_on_success "$?"' EXIT
+
 # 3. run_status complete -- never spend quota / spawn anything for a run
 # that has nothing left to do. roadmap.md is guaranteed present here (step
 # 2 above already exited on its absence).
@@ -890,4 +927,15 @@ fi
 # the pump's job ends here. `exec`, not a plain call: no pump-side work
 # remains afterward, so the tick simply replaces this process and its exit
 # code becomes the pump's own, verbatim.
+#
+# WHICH IS WHY THE CLEARANCE IS TAKEN HERE RATHER THAN LEFT TO THE TRAP: `exec`
+# replaces this process image, so no EXIT trap of ours ever runs past this line.
+# The pump's own pass is over and it succeeded -- the target is alive, the
+# unattended gate passed, the drive reported a boundary an orchestrator can
+# settle, and an engine is resolvable for it -- so a note claiming this schedule
+# last woke against a checkout that was gone is as disproven here as at any
+# other exit. What the TICK then makes of the boundary is a different question
+# and not one this record answers. Zero is passed literally: the handler's own
+# guard is about the pump's outcome, and there is no status yet to consult.
+_pump_clear_refusal_on_success 0
 exec "$ORCHID_ROOT/runners/orchid-tick"

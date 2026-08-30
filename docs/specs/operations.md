@@ -359,7 +359,17 @@ this section false without touching a byte of it.
    repository is gone under a surviving directory, one whose run has already
    reached a terminal state, and one whose run is parked in `accepting`. A
    schedule that has actually woken and refused says so there too, from a note
-   the pump leaves beside that same record. `uninstall` removes the scheduler
+   the pump leaves beside that same record — a note about that schedule's LAST
+   wake, retired by a wake that finds the target healthy and succeeds, by a real
+   `orchid service install` replacing the schedule, and by `uninstall` removing
+   it, so doctor never reports a schedule as failing beside its own line calling
+   that schedule healthy. Which schedule those verbs act on comes from the
+   binding records rather than from re-hashing `--repo`, so a checkout MOVED
+   with `git worktree move` still ends the schedule it really has; and `--repo`
+   must be the checkout git has REGISTERED, so a `cp -R` duplicate — whose
+   copied record agrees with the machine-local half exactly — is refused before
+   any scheduler call, record removal or worktree removal rather than ending the
+   original's schedule. `uninstall` removes the scheduler
    artifact and clears the binding only once the scheduler has let the job go:
    a macOS unload that fails while `launchctl list` still reports the label
    removes nothing and refuses, since the artifact and the record are the only

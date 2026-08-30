@@ -3423,6 +3423,15 @@ Once `orchid status --explain` shows every task `done`:
    reports the label the binding record is left alone, since with the plist gone
    it is the last thing that names that agent, and the verb names `launchctl
    remove <label>` as the hand step instead.
+   WHICH schedule it acts on, and WHOSE it is, both come from those binding
+   records rather than from re-hashing `--repo`: a checkout MOVED with `git
+   worktree move` still ends the schedule it really has, records that disagree
+   are refused, and `--repo` must be the checkout git has registered — so a
+   `cp -R` duplicate, whose copied record agrees with the machine-local half
+   exactly, is refused before any scheduler call, record removal or worktree
+   removal rather than ending the original's schedule. That refusal lifts once
+   the checkout the record names is itself gone, so a leftover record is never
+   unclearable.
 
 **TEARDOWN ORDERING.** When the run is over and you are removing the
 integration worktree, the order is not interchangeable — and it is one
