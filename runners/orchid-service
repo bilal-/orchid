@@ -406,14 +406,35 @@ _svc_artifact() {
 # answer there: the schedule this path gets is its own, nothing of the
 # original's is touched, and the borrowed record is replaced by an honest one.
 #
-# AND ONLY WHEN A SCHEDULE RESOLVES AT ALL. orchid_service_identity's two
-# nonzero answers are findings about the RECORD -- twins that disagree, or a
-# record naming something install could not have written -- and neither names a
-# schedule to weigh this install against. They are also states install REPAIRS:
-# orchid_service_binding_write rewrites both halves from one staged file, which
-# is exactly the recovery an operator with disagreeing twins is left with. The
-# removing verbs are where those two findings must refuse, because that is where
-# a path gets built out of them; nothing on this side builds one.
+# AND A BINDING THAT DOES NOT RESOLVE REFUSES TOO, which is the opposite of what
+# this guard first did with it. orchid_service_identity's two nonzero answers are
+# findings about the RECORD -- twins that disagree, or a record naming something
+# install could not have written -- and neither of them NAMES a schedule. Read as
+# permission to continue, "no schedule was named" became "no schedule exists":
+# a moved checkout whose halves had come apart got the whole stacking hazard
+# above straight back, since the guard fell through, install derived the
+# new-path label, and the old plist and machine-local record -- either of which
+# may still be a loaded agent -- stayed exactly where they were with the
+# repo-local half overwritten from under them. An unreadable binding is not an
+# absent one, and it is the one state where what this checkout already has
+# cannot be established at all.
+#
+# THE REPAIR ARGUMENT WAS THE WRONG WAY ROUND. orchid_service_binding_write does
+# rewrite both halves from one staged file, so an install DOES leave the two
+# records agreeing again -- agreeing about the new schedule, while the schedule
+# the old halves were describing is still loaded under a name nothing on disk
+# mentions any more. That is not a repair; it is this task's leftover written by
+# the verb that was supposed to be reconciling it. The recovery is the operator's
+# and it is named in the refusal: repair or delete the record that is wrong --
+# both paths are printed -- and re-run the install, which then either lands or
+# meets the moved-checkout refusal above with a binding it can finally read.
+#
+# BOTH FINDINGS REFUSE, AND THEY REFUSE SEPARATELY, for the reason
+# orchid_service_identity's own header gives: 1 is about the two halves TOGETHER
+# and is fixed by reconciling them against each other, 2 is about one record's
+# own contents and has nothing to reconcile with. Collapsed into one sentence
+# here, an operator whose halves agree perfectly would be sent hunting for a
+# disagreement.
 #
 # ASKED FOR --dry-run TOO. A preview of an install is not a preview of its
 # artifacts: install renders and places the plist, writes the cron record and
@@ -421,17 +442,31 @@ _svc_artifact() {
 # call is printed. So --dry-run stacks everything this guard is about except the
 # one system call, and a guard it skipped would be a guard the flag walks past.
 _svc_install_one_schedule() {
-  local repo="$1" interval_s="$2" derived bound id_rc=0
+  local repo="$1" interval_s="$2" derived bound id_rc=0 rerun
   derived="$(orchid_service_derive_label "$repo")"
+  # The command this refusal sends the operator back to, composed once: all
+  # three arms below name a re-run of THIS install, with the interval it was
+  # asked for, and three spellings of one command is where one of them drops the
+  # flag an operator would then have to remember.
+  rerun="$(_svc_quote_cmd orchid service install --repo "$repo" --interval-s "$interval_s")"
   orchid_service_identity "$repo" || id_rc=$?
-  [ "$id_rc" -eq 0 ] || return 0
+  if [ "$id_rc" -eq 2 ]; then
+    echo "orchid: refusing to install a schedule for $repo: the binding record it carries does not name a schedule orchid could have installed" >&2
+    echo "orchid: $ORCHID_SERVICE_ID_REJECTED" >&2
+    orchid_die "a record that cannot be read is not an absence of one — the schedule it was written for may still be loaded under a name this install would not derive, and installing over it would leave that one firing with nothing naming it; repair or delete that record, then re-run: $rerun"
+  fi
+  if [ "$id_rc" -ne 0 ]; then
+    echo "orchid: refusing to install a schedule for $repo: its two binding records do not name the same schedule" >&2
+    echo "orchid: $(orchid_service_repo_record "$repo") and its machine-local copy must agree on label, platform, repository and artifact — one of them has been edited" >&2
+    orchid_die "while they disagree there is no answer to which schedule this checkout already has, and installing would write a third name over both halves — leaving a schedule that may still be loaded with nothing on disk naming it; reconcile or delete the wrong record, then re-run: $rerun"
+  fi
   bound="$ORCHID_SERVICE_ID_LABEL"
   [ -n "$bound" ] || return 0
   [ "$bound" != "$derived" ] || return 0
   orchid_service_binding_owned "$repo" "$ORCHID_SERVICE_ID_REPO" || return 0
   echo "orchid: refusing to install a schedule for $repo: this checkout already carries one, under a different name" >&2
   echo "orchid: it is bound to $bound, installed against $ORCHID_SERVICE_ID_REPO -- a path this checkout has since left, so installing from here would derive $derived and leave $bound scheduled with nothing in this checkout still naming it" >&2
-  orchid_die "end the schedule this checkout has before it is given another, as ONE operation -- the install runs only if the uninstall succeeded: $(orchid_service_uninstall_command "$repo") && $(_svc_quote_cmd orchid service install --repo "$repo" --interval-s "$interval_s")"
+  orchid_die "end the schedule this checkout has before it is given another, as ONE operation -- the install runs only if the uninstall succeeded: $(orchid_service_uninstall_command "$repo") && $rerun"
 }
 
 # _svc_platform -- "darwin" (launchd) or "linux" (cron fallback, the

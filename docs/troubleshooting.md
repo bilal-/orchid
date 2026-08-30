@@ -299,6 +299,28 @@ committed) and re-run from the checkout the schedule was installed against — t
 machine-local half is untouched, and a removal run there resolves the label from
 it. `orchid doctor` prints that label and the path it is bound to.
 
+**Both of those findings stop an `install` too, not only a removal.** A binding
+that cannot be read is not an absent one — the plist and the machine-local record
+it was describing are still sitting there, possibly still loaded — so an install
+that treated "no schedule was named" as "no schedule exists" would derive the
+current path's label and hand the checkout a second schedule beside the one it
+could not name. That is the stacking above, reached through the very state that
+hides it. So `install` refuses on the same two findings, before it renders
+anything or writes either binding half, and names a re-run of itself:
+
+```
+orchid: refusing to install a schedule for /path/to/repo: its two binding records
+  do not name the same schedule
+orchid: ... reconcile or delete the wrong record, then re-run: orchid service
+  install --repo /path/to/repo --interval-s 240
+```
+
+Installing over it would not have repaired anything: both halves would be
+rewritten to agree about the *new* schedule while the one they used to describe
+kept firing under a name nothing on disk mentioned any more. Repair or delete the
+record the refusal names, then re-run — the install either lands, or meets the
+moved-checkout refusal above with a binding it can finally read.
+
 **Another checkout holding that record does not inherit the schedule.**
 Agreement between the two records says which schedule they are about; it says
 nothing about who is entitled to end it. A `cp -R` of a bound checkout — a

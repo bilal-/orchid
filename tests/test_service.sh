@@ -3183,6 +3183,173 @@ assert_eq "$ri_solo_label" "$(jq -r '.label' "$RI_SOLO_CANON/.orchid/runtime/ser
   "and so is that checkout's own binding -- a copy installing for itself takes nothing from the original"
 green_case "a COPY of a bound checkout still installs its own schedule: the stacking refusal is scoped to a binding this checkout could actually end, since the uninstall it names refuses in a copy"
 
+# -- K18: install fails closed when the binding it carries does not RESOLVE ---
+# K17 refuses a moved checkout whose carried binding names one schedule while
+# this path would derive another. It asked orchid_service_identity for that
+# name -- and where the identity came back NONZERO it read the answer as
+# permission to continue, because "no schedule was named" was taken for "no
+# schedule exists". The two are not the same fact. A binding whose halves
+# disagree (rc 1), or one record saying something install could not have written
+# (rc 2), is a binding that cannot be READ; the plist and the machine-local
+# record it was describing are still sitting there, possibly still loaded, and
+# the very state that hides them is the state that waved the install through.
+# A moved checkout only has to lose one field out of one half -- an install that
+# died between its two renames, a hand edit -- to get the whole of K17's hazard
+# back through the door K17 left open.
+#
+# Both nonzeros are staged, separately, because they are fixed differently and
+# the refusals must not be interchangeable: rc 1 is reconciled between the two
+# halves, rc 2 is repaired or deleted in the one file that is wrong.
+TW_MAIN="$BIND/tw-main"
+mkdir -p "$TW_MAIN"
+(
+  cd "$TW_MAIN" || exit 1
+  git init -q .
+  printf '.orchid/runtime/\n' > .gitignore
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: complete\nrun_id: r-tw\n---\n# Roadmap\n' > .orchid/roadmap.md
+  git add .gitignore .orchid
+  git commit -q -m root
+  git worktree add -q -b tw-integration ../tw-wt
+) || fail "K18 fixture: could not build a main checkout with a linked integration worktree"
+TW_WT="$(cd "$BIND/tw-wt" && pwd -P)"
+trust_repo "$TW_WT"
+
+tw_inst="$(svc_install_real --repo "$TW_WT" --interval-s 240 2>&1)"; rc=$?
+assert_eq 0 "$rc" "K18 fixture: the schedule installs at the ORIGINAL path first (out: $tw_inst)"
+tw_label="$(echo "$tw_inst" | grep -oE "$label_re" | head -n1)"
+tw_plist="$HOME/Library/LaunchAgents/$tw_label.plist"
+tw_mrec="$HOME/.orchid/services/$tw_label.json"
+[ -f "$tw_plist" ] || fail "K18 fixture: the install must have placed the plist"
+[ -f "$tw_mrec" ] || fail "K18 fixture: and the machine-local binding"
+
+git -C "$TW_MAIN" worktree move "$TW_WT" "$BIND/tw-wt-moved" \
+  || fail "K18 fixture: 'git worktree move' failed, so nothing below is about a moved worktree"
+TW_NEW="$(cd "$BIND/tw-wt-moved" && pwd -P)"
+tw_rec="$TW_NEW/.orchid/runtime/service.json"
+[ -f "$tw_rec" ] || fail "K18 fixture: the repo-local binding must have travelled inside the checkout"
+trust_repo "$TW_NEW"
+
+# The pristine halves, kept so each arm below can break exactly one field and
+# put it back -- the arms are about two different findings, not a cascade.
+cp "$tw_rec" "$BIND/tw-rec.orig" || fail "K18 fixture: could not keep the repo-local half"
+cp "$tw_mrec" "$BIND/tw-mrec.orig" || fail "K18 fixture: could not keep the machine-local half"
+
+# THE WITNESS: the moved path derives a SECOND label and nothing of it exists.
+# Without this, "no second plist appeared" would also be true of an install that
+# merely replaced the first.
+tw_new_label="$(orchid_service_derive_label "$TW_NEW")"
+[ "$tw_new_label" != "$tw_label" ] \
+  || fail "K18 fixture: the moved path must derive a different label, or there is no second schedule available to stack"
+tw_new_plist="$HOME/Library/LaunchAgents/$tw_new_label.plist"
+tw_new_mrec="$HOME/.orchid/services/$tw_new_label.json"
+[ -e "$tw_new_plist" ] && fail "K18 fixture: nothing may stand under the new label yet"
+[ -e "$tw_new_mrec" ] && fail "K18 fixture: nor a machine-local record for it"
+
+tw_schedules() {
+  local n=0
+  [ -f "$tw_plist" ] && n=$((n + 1))
+  [ -f "$tw_new_plist" ] && n=$((n + 1))
+  echo "$n"
+}
+assert_eq 1 "$(tw_schedules)" "K18 fixture: exactly one schedule stands before any of these installs"
+
+# RED 1 -- THE TWO HALVES DISAGREE. The machine-local copy is given a different
+# artifact, which is what a re-install interrupted between its two renames
+# leaves; the repo-local half is untouched and still perfectly readable, so what
+# fails is the twins walk and nothing else.
+jq --arg a "$HOME/Library/LaunchAgents/com.orchid.pump.ffffffffffff.plist" \
+  '.artifact = $a' "$BIND/tw-mrec.orig" > "$tw_mrec" \
+  || fail "K18 fixture: could not make the machine-local half disagree"
+rc=0
+tw_red1="$(svc_install_real --repo "$TW_NEW" --interval-s 240 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "THE FINDING: an install must refuse while the binding this checkout carries does not resolve — the schedule those halves describe may still be loaded (out: $tw_red1)"
+assert_match 'do not name the same schedule' "$tw_red1" \
+  "and say which finding stopped it: the two halves disagree, which is reconciled between them"
+assert_match 'one of them has been edited' "$tw_red1" \
+  "naming the fields they must agree on"
+assert_match "$tw_rec" "$tw_red1" \
+  "and the repo-local record by path, since the recovery is to repair one of the two files"
+assert_match 'nothing on disk naming it' "$tw_red1" \
+  "and why installing anyway is not a repair: whatever those halves describe keeps firing under a name this install would have written over"
+assert_match "service install --repo .* --interval-s 240" "$tw_red1" \
+  "with the re-run spelled exactly, carrying the interval this install was asked for"
+assert_eq 1 "$(tw_schedules)" \
+  "THE FINDING, as a count: the schedule stays SINGULAR — fallen through, this install stacked a second agent on a checkout whose first one it could not even name"
+[ -f "$tw_plist" ] || fail "and the original plist is untouched"
+[ -e "$tw_new_plist" ] && fail "and no second plist was rendered"
+[ -e "$tw_new_mrec" ] && fail "and no second machine-local record was written"
+assert_eq "$tw_label" "$(jq -r '.label' "$tw_rec")" \
+  "and the repo-local half still names the ORIGINAL schedule rather than the one this path would derive"
+assert_eq "$HOME/Library/LaunchAgents/com.orchid.pump.ffffffffffff.plist" "$(jq -r '.artifact' "$tw_mrec")" \
+  "and the disagreeing machine-local half is left exactly as it was — the refusal repairs nothing, which is what leaves the operator something to reconcile"
+[ -s "$SCHED_LOG" ] \
+  && fail "and launchd was never called: the refusal is ahead of every write and ahead of the scheduler"
+red_case 'an install refuses, writing nothing and calling no scheduler, while the two halves of the binding this checkout carries disagree about the schedule it already has'
+
+# RED 2 -- ONE RECORD SAYS SOMETHING INSTALL COULD NOT HAVE WRITTEN. The halves
+# are reconciled and the repo-local one is then given a label of the right SHAPE
+# that is not the one its own recorded checkout derives -- a forgery, or a
+# hand-edit. Nothing can be reconciled against that, and it is refused as its own
+# finding rather than as a disagreement.
+cp "$BIND/tw-mrec.orig" "$tw_mrec" || fail "K18 fixture: could not restore the machine-local half"
+jq '.label = "com.orchid.pump.0123456789ab"' "$BIND/tw-rec.orig" > "$tw_rec" \
+  || fail "K18 fixture: could not forge the repo-local label"
+rc=0
+tw_red2="$(svc_install_real --repo "$TW_NEW" --interval-s 240 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "THE FINDING, second half: a record install could not have written is not an absent record, and an install over it strands whatever the real one named (out: $tw_red2)"
+assert_match 'does not name a schedule orchid could have installed' "$tw_red2" \
+  "and this is the OTHER finding, worded for one record rather than for two that disagree"
+assert_match "is not one 'orchid service install' derives" "$tw_red2" \
+  "carrying the sentence that says which field was rejected"
+assert_match 'repair or delete that record' "$tw_red2" \
+  "and the recovery, which is in the one file rather than between two"
+assert_match "service install --repo .* --interval-s 240" "$tw_red2" \
+  "then the same re-run"
+assert_eq 1 "$(tw_schedules)" "and again the schedule stays singular"
+[ -f "$tw_plist" ] || fail "with the original plist untouched"
+[ -f "$tw_mrec" ] || fail "and its machine-local binding still naming it"
+[ -e "$tw_new_plist" ] && fail "and nothing rendered under the label this path derives"
+[ -e "$tw_new_mrec" ] && fail "nor recorded under it"
+assert_eq com.orchid.pump.0123456789ab "$(jq -r '.label' "$tw_rec")" \
+  "and the rejected record left as it was for the operator to repair or delete"
+[ -s "$SCHED_LOG" ] && fail "and launchd was never called here either"
+red_case 'an install refuses, writing nothing and calling no scheduler, when the binding record this checkout carries names a label orchid could not have derived for the checkout that record itself names'
+
+# GREEN -- the recovery, run as the refusals name it. Repairing the wrong file
+# makes the binding readable again, and the install then meets K17's refusal
+# instead: the finding has changed from "this cannot be read" to "this names a
+# schedule you already have", which is the whole point of refusing rather than
+# installing over it. The uninstall-then-install chain that refusal names then
+# ends the ORIGINAL schedule and leaves exactly one.
+cp "$BIND/tw-rec.orig" "$tw_rec" || fail "K18: could not repair the repo-local half"
+rc=0
+tw_repaired="$(svc_install_real --repo "$TW_NEW" --interval-s 240 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "K18: a repaired binding still names a schedule this moved checkout has (out: $tw_repaired)"
+assert_match 'already carries one, under a different name' "$tw_repaired" \
+  "so the finding is now K17's stacking refusal, reached only because the record can finally be read"
+assert_match "$tw_label" "$tw_repaired" "naming the schedule the repaired record resolves to"
+assert_match 'ONE operation' "$tw_repaired" "with the chain recovery, which the unreadable-binding refusals could not name"
+
+rc=0
+tw_un="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$TW_NEW" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "and that chain's first half ends the original schedule (out: $tw_un)"
+[ -f "$tw_plist" ] && fail "so the original plist is gone"
+[ -f "$tw_mrec" ] && fail "and its machine-local binding"
+rc=0
+tw_green="$(svc_install_real --repo "$TW_NEW" --interval-s 240 2>&1)" || rc=$?
+assert_eq 0 "$rc" "and the install that was refused three times over now lands (out: $tw_green)"
+assert_match "$tw_new_label" "$tw_green" "under the label this checkout's current path derives"
+grep -qE 'launchctl load' "$SCHED_LOG" \
+  || fail "and it really reached the scheduler, or the refusals above proved only that this verb never installs anything"
+[ -f "$tw_new_plist" ] || fail "with the plist placed"
+[ -f "$tw_new_mrec" ] || fail "and a machine-local binding naming it"
+assert_eq "$tw_new_label" "$(jq -r '.label' "$tw_rec")" "and the repo-local half naming the new schedule"
+assert_eq 1 "$(tw_schedules)" "and the machine left with exactly ONE schedule for this checkout"
+green_case 'repairing the record the refusal named makes the binding resolve again, and the documented recovery then leaves the moved checkout with exactly one schedule'
+
 unset ORCHID_SERVICE_OS
 
 # ===========================================================================
