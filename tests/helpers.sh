@@ -101,6 +101,30 @@ not_tested() {
 # satisfied by a comment, by prose about the rule, or by a call sitting in a
 # branch nothing reaches.
 #
+# THE TRAP IS NOT THE WHOLE ENFORCEMENT, BECAUSE A TRAP IS A SLOT AND NOT A
+# FACT (T016). It is installed by this file and replaced by any `trap ... EXIT`
+# the gate writes afterwards -- `trap '_scratch_cleanup' EXIT`, which is how a
+# gate that wants its own cleanup writes it, is enough. The requirement then
+# comes off the very file that carries it: nothing counts the cases, no summary
+# is printed, the file exits 0, and in a log it is indistinguishable from a gate
+# that complied. Reaching this file is evidence that the enforcement was
+# OFFERED. It is not evidence that it ran.
+#
+# So the recorders leave a RECEIPT, and the receipt is written by the recorder
+# itself at the moment it runs. When a parent process names a file in
+# ORCHID_PROOF_RECEIPT -- tests/run.sh does, per test -- `red_case` and
+# `green_case` append a line naming the kind and the file they ran in, and
+# `_red_case_required` appends its own `enrolled` line at source time so the
+# parent knows the rule applies without keeping a second copy of the enrolment
+# list. tests/run.sh then asks the one question a gate file cannot answer for
+# itself: did a red_case and a green_case call actually execute in the file I
+# just launched. A gate can disarm its own trap; it cannot disarm its parent,
+# and it cannot write the line without having called the recorder.
+#
+# tests/inv/test_INV-15_no_optional_gate.sh section 2 is where both edges are
+# pinned, at both depths, by running the SHIPPED runner over gate files that
+# differ in nothing but whether the recorder was called.
+#
 # `ORCHID_REQUIRE_RED_CASE` extends the same requirement to a file anywhere
 # else; tests/test_red_case_rule.sh passes it to the fixtures it uses to prove
 # this enforcement actually fires.
@@ -114,10 +138,12 @@ RED_CASES=0
 GREEN_CASES=0
 red_case() {
   RED_CASES=$((RED_CASES + 1))
+  _proof_receipt red
   echo "  RED-CASE: $1"
 }
 green_case() {
   GREEN_CASES=$((GREEN_CASES + 1))
+  _proof_receipt green
   echo "  GREEN-CASE: $1"
 }
 
@@ -157,6 +183,31 @@ else
   PROOF_SELF="$_PROOF_SELF_RAW"
 fi
 
+# _proof_receipt <kind> -- append one `<kind> <file>` line to the receipt the
+# PARENT named, or do nothing at all when no parent named one. Called from the
+# recorders above (so the line is written by a case that RAN, never by a line
+# that was merely reached) and once at source time for the enrolment itself.
+#
+# The file is named by the parent and the line names PROOF_SELF, which is the
+# resolved physical path this file was sourced from -- the same construction
+# tests/run.sh derives for the file it launched, so the two compare equal
+# whatever spelling the runner used. Keying on it is what keeps a fixture's
+# child, which inherits ORCHID_PROOF_RECEIPT and writes its own lines into the
+# same file, from ever crediting or convicting the test that spawned it: the
+# deliberately non-recording fixtures in tests/test_red_case_rule.sh are
+# enrolled files that record nothing on purpose, and they must go on doing so.
+#
+# A write that fails is left silent HERE and fails closed THERE: with no line
+# in the receipt the parent reports the case as never having run, which is the
+# safe direction for a check about missing evidence. `return 0` unconditionally,
+# because a recorder that changed its caller's exit status would be a second
+# thing for every gate file in the tree to get right.
+_proof_receipt() {
+  [ -n "${ORCHID_PROOF_RECEIPT:-}" ] || return 0
+  printf '%s %s\n' "$1" "$PROOF_SELF" >> "$ORCHID_PROOF_RECEIPT" 2>/dev/null
+  return 0
+}
+
 # Gate files enrolled BY NAME rather than by living under tests/inv/: whole-
 # file proofs that gate something on their own account.
 #
@@ -194,6 +245,19 @@ _red_case_required() {
   if _proof_enrolled "$0"; then return 0; fi
   return 1
 }
+
+# The DECLARATION half of the receipt, written once at source time: it tells
+# the parent that the rule applies to the file it launched. Declared BY THE
+# FILE rather than re-derived by the runner, so PROOF_ENROLLED_FILES stays a
+# single list in a single place -- a second copy in tests/run.sh would be one
+# more thing to remember to extend, which is the shape this whole rule exists
+# to remove. It can only ADD a requirement, exactly like the marker above:
+# there is no value of it, and no failure to write it, that turns one off, and
+# the runner requires a receipt from everything it launches out of tests/inv/
+# whether or not this line was ever reached.
+if _red_case_required; then
+  _proof_receipt enrolled
+fi
 # Printed from the EXIT trap, ahead of its `exit $((FAILS>0))`, so counting a
 # FAILS here really does fail the file.
 _proof_case_summary() {

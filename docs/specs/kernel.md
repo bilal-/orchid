@@ -2125,6 +2125,18 @@ off it is enrolled when `tests/run.sh` passes an absolute path and SILENTLY
 skipped when the same file is run as `tests/inv/test_x.sh` from the repo root
 or as a bare `test_x.sh` from inside the directory — a check that switches
 itself off depending on how it was invoked, and says nothing when it does.
+
+That trap is offered by the file the gate loads, and a trap is a slot the gate
+can overwrite: one `trap ... EXIT` of its own after the source — how a gate that
+wants its own cleanup is written — takes the requirement off the file carrying
+it, which then records nothing, prints no summary and exits 0. So the recorders
+also leave a RECEIPT: when a parent names a file in `ORCHID_PROOF_RECEIPT`,
+`red_case` and `green_case` append a line naming the file they ran in AS THEY
+RUN, and `tests/run.sh` requires that line for every file it launches out of
+`tests/inv/` and for every file that declared itself enrolled. A gate can
+disarm its own trap; it cannot disarm its parent, and it cannot write the line
+without having called the recorder.
+
 `tests/test_red_case_rule.sh` additionally lints every enrolled gate for a
 `# RED:` annotation, a `# GREEN:` annotation, a `red_case` call and a
 `green_case` call — and exercises every half against fixtures and against a

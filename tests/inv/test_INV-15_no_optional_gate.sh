@@ -53,7 +53,15 @@ source "$(dirname "$0")/../helpers.sh"
 #     each to be observed reaching its source line, because "the file contains
 #     a source line" is text and a line's presence is not its execution: a
 #     source guarded by a variable nothing sets, or written below an `exit`,
-#     satisfies a grep and is never reached.
+#     satisfies a grep and is never reached. And because reaching that line
+#     only OFFERS the enforcement -- what it installs is an EXIT trap, and a
+#     trap is a slot the gate can overwrite with one line of ordinary cleanup
+#     -- the same section runs the SHIPPED tests/run.sh over two gate files
+#     that print the same bytes and differ in nothing but whether the recorders
+#     were CALLED, and requires the runner to refuse the one that only printed
+#     what a recorder prints. The evidence an enrolled proof was enforced is
+#     the line the recorder itself writes as it runs, checked by the parent
+#     process a gate file cannot reach into.
 #   * section 6 runs the pump out of a root that really is stale and requires
 #     the refusal to land BEFORE the pump's first write, with the write itself
 #     as the witness -- a gate an entry point reaches only after it has
@@ -179,7 +187,14 @@ source "$(dirname "$0")/../helpers.sh"
 #      An inv-shaped gate file that never loads tests/helpers.sh, so
 #      its `red_case`/`green_case` calls satisfy a text linter and are
 #      enforced by nothing at run time -- and two more whose source line a
-#      text scan accepts and a shell never executes. A trust-boundary entry
+#      text scan accepts and a shell never executes. Two further gate files --
+#      one enrolled by LOCATION under tests/inv/, one enrolled BY NAME one
+#      directory up -- that reach their enrolment and then replace the EXIT
+#      trap enforcing it with a cleanup of their own, recording nothing and
+#      printing, by hand, the two lines a compliant gate prints: run on their
+#      own they exit 0 and every other half of section 2 accepts them, and the
+#      SHIPPED tests/run.sh must refuse both, naming each missing recorder
+#      call. A trust-boundary entry
 #      point that arms the stale-root gate and reaches no site that fires it;
 #      a harness OUTSIDE the three executable roots that loads the library and
 #      fires nothing, which is what scripts/beta-qualify.sh and every bundled
@@ -265,7 +280,13 @@ source "$(dirname "$0")/../helpers.sh"
 #      tests/inv/ gates AND the whole-file proofs helpers.sh enrols by name,
 #      every one of them RUN at the depth it ships at and observed to reach
 #      helpers.sh, beside two fixtures -- one at each depth -- whose only
-#      difference from the refused ones is that the source line is reachable; every shipped file that
+#      difference from the refused ones is that the source line is reachable;
+#      the byte-identical twins of the two trap-replacing gates above, at both
+#      depths, differing from them in exactly one thing -- that their recorder
+#      calls really ran -- which the same shipped runner must accept, with an
+#      ordinary unenrolled suite file recording nothing accepted beside them,
+#      so the refusals are a missing recorder call being detected rather than a
+#      runner that fails every file or every replaced trap; every shipped file that
 #      loads lib/common.sh -- picked out of a WALK of the shipped tree rather
 #      than a list of directory families, with the top-level, scripts/ and
 #      plugins/ families each additionally proved non-empty -- reaching a site
@@ -1151,6 +1172,240 @@ enrol_top_ok_out="$(enrolment_unproven "$ENROL/tests/test_INV-93_top_level_prope
 [ -z "$enrol_top_ok_out" ] \
   || fail "INV-15: a top-level-shaped proof that sources helpers.sh on its straight-line path was reported anyway ($enrol_top_ok_out) — so the refusal above is the probe's placement arithmetic failing at this depth rather than unreachability being detected, and the shipped by-name files are being failed for the same reason"
 green_case "the same probe accepted a top-level-shaped proof whose source line differs from the refused one only in being reachable, so the by-name half of the enrolled set is being probed by something that can tell the two apart at that depth"
+
+# ---------------------------------------------------------------------------
+# AND REACHING AN ENROLMENT IS STILL NOT BEING ENFORCED BY IT, WHICH IS THIS
+# SECTION'S OWN SUBJECT ONE LEVEL DOWN.
+#
+# Everything above proves a gate file REACHES tests/helpers.sh. What reaching
+# it installs is an EXIT trap -- and a trap is not a property of a file, it is
+# a slot the file can overwrite. `trap '_scratch_cleanup' EXIT` on any line
+# after the source, which is how a gate that wants a cleanup of its own is
+# written and is nobody's idea of an attack, replaces helpers.sh's trap and
+# takes the RED/GREEN requirement off the very file that carries it: nothing
+# counts the cases, no summary is printed, the file exits 0. Neither half above
+# would notice -- the source line IS reached and all four textual marks ARE
+# there -- so "the enforcement was offered" was being recorded as "the
+# enforcement ran". A reached source line is not a case, and a trap that was
+# installed is not a trap that fired.
+#
+# So the evidence that an enrolled proof was enforced is the RECORDER'S OWN,
+# and it is written at the moment the recorder runs: red_case and green_case
+# append a line naming the file they ran in to the receipt tests/run.sh names
+# in ORCHID_PROOF_RECEIPT, and the runner -- the one process in the arrangement
+# a gate file cannot reach into -- requires that line for the file it just
+# launched. A gate can disarm its own trap; it cannot disarm its parent, and it
+# cannot write the line without having called the recorder.
+#
+# THE TWO FIXTURES BELOW PRINT THE SAME BYTES, which is the point and is
+# asserted rather than described. One calls the recorders; the other only
+# `echo`s the two lines they would have printed. Run on their own, with no
+# parent watching, their output is IDENTICAL and both exit 0 -- so no reader of
+# a log, and no scan of the tree, can tell them apart. The shipped runner then
+# refuses one and accepts the other, which it can only be doing on the receipt.
+# The same pair is then written one directory up, where enrolment is not a
+# location the runner can read off its own glob but a name in helpers.sh's
+# list, declared by the file itself.
+#
+# Both edges are pinned (L034) by RUNNING THE SHIPPED RUNNER, byte-identical to
+# the one this repository ships, rather than by restating its rule here: a rule
+# re-implemented in the file that checks it is a check of its own copy.
+RECEIPT_RED_LABEL='a case this file appears to record'
+RECEIPT_GREEN_LABEL='a twin this file appears to record'
+RECEIPT_FIXTURE_REL='tests/inv/test_INV-90_receipt.sh'
+
+# receipt_tree <dir> -- a probe tree carrying the SHIPPED runner and the
+# SHIPPED helpers, compared after the copy rather than assumed: a modified copy
+# would prove something about a file this repository does not ship, which is
+# the same rule section 10 holds its own ledger to.
+receipt_tree() {
+  local dir="$1" copied
+  mkdir -p "$dir/tests/inv"
+  for copied in run.sh helpers.sh; do
+    cp "$REPO_ROOT/tests/$copied" "$dir/tests/$copied"
+    cmp -s "$REPO_ROOT/tests/$copied" "$dir/tests/$copied" \
+      || fail "INV-15: the probe copy of tests/$copied differs from the shipped file, so whatever is observed below is a fact about the copy rather than about what this repository runs"
+  done
+}
+
+# write_receipt_fixture <path> <records|forges> <helpers-relative-spelling> --
+# a gate that reaches its enrolment and then installs a cleanup trap of its own
+# over helpers.sh's. The two modes differ in ONE thing: whether the recorders
+# are called or their output is merely printed. The third argument is how the
+# file at THIS depth spells its own load, so the same pair can be written under
+# tests/inv/ and one directory up, where the by-name half of the enrolled set
+# lives.
+write_receipt_fixture() {
+  local path="$1" mode="$2" rel="$3"
+  # Judged BEFORE the redirection below opens: a diagnostic printed inside that
+  # block is written into the fixture instead of to the log, which is a check
+  # reporting into a file nobody reads.
+  case "$mode" in
+    records|forges) ;;
+    *)
+      fail "INV-15: write_receipt_fixture was asked for an unknown mode '$mode', so the pair below is not the pair this section describes"
+      return 1 ;;
+  esac
+  mkdir -p "${path%/*}"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '# RED: a gate that reaches its enrolment and replaces the trap that enforces it\n'
+    printf '# GREEN: the same file, differing only in that its recorders really run\n'
+    printf 'source "$(dirname "$0")/%s"\n' "$rel"
+    printf '%s\n' "trap '_scratch_cleanup' EXIT"
+    case "$mode" in
+      records)
+        printf '%s\n' "red_case \"$RECEIPT_RED_LABEL\""
+        printf '%s\n' "green_case \"$RECEIPT_GREEN_LABEL\""
+        ;;
+      forges)
+        printf '%s\n' '# nothing below calls red_case "a case" or green_case "a twin" -- the two'
+        printf '%s\n' '# echoes are the whole trace either one would have left in a log.'
+        printf '%s\n' "echo \"  RED-CASE: $RECEIPT_RED_LABEL\""
+        printf '%s\n' "echo \"  GREEN-CASE: $RECEIPT_GREEN_LABEL\""
+        ;;
+    esac
+    printf '%s\n' 'echo "  fixture body ran"'
+  } > "$path"
+}
+
+RECEIPT_RED_TREE="$WORK/receipt-refused"
+RECEIPT_GREEN_TREE="$WORK/receipt-accepted"
+receipt_tree "$RECEIPT_RED_TREE"
+receipt_tree "$RECEIPT_GREEN_TREE"
+write_receipt_fixture "$RECEIPT_RED_TREE/$RECEIPT_FIXTURE_REL" forges ../helpers.sh
+write_receipt_fixture "$RECEIPT_GREEN_TREE/$RECEIPT_FIXTURE_REL" records ../helpers.sh
+
+# The GREEN tree also carries an ordinary suite file that is enrolled in
+# nothing and records nothing, because the edge that must NOT fire is as
+# load-bearing as the one that must: a runner that demanded a receipt from
+# every file it launched would refuse most of this suite and would satisfy the
+# RED case below for a reason that has nothing to do with enrolment.
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'source "$(dirname "$0")/helpers.sh"\n'
+  printf '%s\n' 'echo "  an ordinary suite file, enrolled in nothing, recording nothing"'
+} > "$RECEIPT_GREEN_TREE/tests/test_receipt_control.sh"
+
+# Neither half of the scan above can separate the two, which is precisely why
+# this one exists. Asked directly, so that if either half ever grew the ability
+# to catch the refused fixture, this pair would stop demonstrating the gap the
+# receipt is here to close instead of going on claiming it.
+for receipt_pair in "refused:$RECEIPT_RED_TREE" "accepted:$RECEIPT_GREEN_TREE"; do
+  receipt_which="${receipt_pair%%:*}"
+  receipt_tree_dir="${receipt_pair#*:}"
+  receipt_text_out="$(helpers_missing "$receipt_tree_dir/$RECEIPT_FIXTURE_REL")"
+  [ -z "$receipt_text_out" ] \
+    || fail "INV-15: the text scan reported the $receipt_which receipt fixture ($receipt_text_out) — both of these load tests/helpers.sh on their straight-line path, and a pair the earlier halves can already tell apart proves nothing about the one below"
+  receipt_reach_out="$(enrolment_unproven "$receipt_tree_dir/$RECEIPT_FIXTURE_REL" "$RECEIPT_FIXTURE_REL")"
+  [ -z "$receipt_reach_out" ] \
+    || fail "INV-15: the run-time reachability probe reported the $receipt_which receipt fixture ($receipt_reach_out) — it reaches its enrolment, and a fixture that did not would be demonstrating the PREVIOUS gap rather than this one"
+done
+
+# ...and on their own they are the same file as far as any reader is
+# concerned: same exit status, same bytes on the output.
+receipt_lone_red_rc=0
+receipt_lone_red_out="$(env -u ORCHID_REQUIRE_RED_CASE -u ORCHID_PROOF_RECEIPT "$BASH" "$RECEIPT_RED_TREE/$RECEIPT_FIXTURE_REL" 2>&1)" || receipt_lone_red_rc=$?
+receipt_lone_green_rc=0
+receipt_lone_green_out="$(env -u ORCHID_REQUIRE_RED_CASE -u ORCHID_PROOF_RECEIPT "$BASH" "$RECEIPT_GREEN_TREE/$RECEIPT_FIXTURE_REL" 2>&1)" || receipt_lone_green_rc=$?
+assert_eq 0 "$receipt_lone_red_rc" \
+  "INV-15: the fixture that records nothing must RUN CLEANLY on its own — passing while proving nothing is the hazard here, not a broken fixture (got rc=$receipt_lone_red_rc: $receipt_lone_red_out)"
+assert_eq 0 "$receipt_lone_green_rc" \
+  "INV-15: its recording twin must run cleanly too (got rc=$receipt_lone_green_rc: $receipt_lone_green_out)"
+assert_eq "$receipt_lone_green_out" "$receipt_lone_red_out" \
+  "INV-15: the two fixtures no longer print the same bytes, so the runner below could be telling them apart by their OUTPUT rather than by a recorder call — which is the forgeable half this receipt exists to replace"
+grep -q 'recorded no RED case' <<<"$receipt_lone_red_out" \
+  && fail "INV-15: helpers.sh's own EXIT trap fired on the non-recording fixture, so that fixture is not demonstrating a replaced trap and the runner check below is being asked to catch something already caught"
+
+# receipt_runner_verdict <tree> -- run the SHIPPED runner over <tree> and leave
+# its status and output where the assertions can read them. One function, so
+# every verdict below is produced by the identical invocation and no pair can
+# quietly be judged through a different environment than its twin.
+RECEIPT_RUN_RC=0
+RECEIPT_RUN_OUT=""
+receipt_runner_verdict() {
+  RECEIPT_RUN_RC=0
+  RECEIPT_RUN_OUT="$(env -u ORCHID_REQUIRE_RED_CASE -u ORCHID_PROOF_RECEIPT -u ORCHID_HERMETIC_PROOF "$BASH" "$1/tests/run.sh" 2>&1)" || RECEIPT_RUN_RC=$?
+}
+
+# THE RED EDGE: the shipped runner, over the tree whose only gate records
+# nothing, must FAIL — naming both halves.
+receipt_runner_verdict "$RECEIPT_RED_TREE"
+receipt_red_out="$RECEIPT_RUN_OUT"
+[ "$RECEIPT_RUN_RC" -ne 0 ] \
+  || fail "INV-15: the shipped tests/run.sh PASSED a gate file that reached its enrolment, replaced the EXIT trap that enforces it, and never called a recorder — enrolment is proven by a source line again, and a gate can take the RED-case rule off itself with one line of ordinary cleanup ($receipt_red_out)"
+assert_match 'no red_case call was observed to run' "$receipt_red_out" \
+  "INV-15: the runner's refusal must name the missing RED recorder, so an author is told which half was never called rather than that something was missing"
+assert_match 'no green_case call was observed to run' "$receipt_red_out" \
+  "INV-15: ...and the GREEN half too, rather than letting an author fix one and rediscover the other"
+
+# THE GREEN EDGE: the same runner, over a tree differing in one thing.
+receipt_runner_verdict "$RECEIPT_GREEN_TREE"
+receipt_green_out="$RECEIPT_RUN_OUT"
+assert_eq 0 "$RECEIPT_RUN_RC" \
+  "INV-15: the shipped tests/run.sh refused a gate file whose red_case and green_case calls really ran, or refused the ordinary unenrolled file beside it — a runner that fails everything satisfies the refusal above without detecting anything (got rc=$RECEIPT_RUN_RC: $receipt_green_out)"
+grep -q 'was observed to run' <<<"$receipt_green_out" \
+  && fail "INV-15: the runner reported a missing recorder call against a tree where both recorders ran ($receipt_green_out)"
+
+# ...AND THE SAME PAIR ON THE BY-NAME HALF OF THE ENROLLED SET, which the two
+# above cannot reach. A gate under tests/inv/ is required by the runner on its
+# LOCATION, which is a fact the runner reads off its own glob; a whole-file
+# proof one directory up is required only because helpers.sh's
+# `_red_case_required` said so, through the `enrolled` line the child itself
+# writes. That is the half with nothing to fall back on, and a runner that
+# happened to require nothing of it would leave those proofs enrolled on paper
+# and enforced nowhere -- this section's own trap, sprung one directory up.
+#
+# The fixture takes its NAME from PROOF_ENROLLED_FILES rather than from a
+# spelling written here, so it is enrolled for the reason the shipped proofs
+# are, and it goes on being enrolled if that list is ever rewritten.
+RECEIPT_NAMED_REL="${PROOF_ENROLLED_FILES[0]}"
+# ...and the depth it ships at is CHECKED rather than assumed: a copy placed
+# where its own `$(dirname "$0")/helpers.sh` does not resolve would be refused
+# by the runner for the probe's arithmetic, and the refusal below would be
+# evidence of nothing. Exactly `tests/<name>` is the shape this pair can place.
+receipt_named_placeable=0
+case "$RECEIPT_NAMED_REL" in
+  tests/*/*) ;;
+  tests/*)   receipt_named_placeable=1 ;;
+esac
+[ "$receipt_named_placeable" -eq 1 ] \
+  || fail "INV-15: tests/helpers.sh enrols '$RECEIPT_NAMED_REL' by name at a depth this probe cannot place a copy at, so the by-name pair below would be judged at the wrong depth — place it, or teach this pair that depth, but do not leave the by-name half unexercised"
+RECEIPT_NAMED_RED_TREE="$WORK/receipt-named-refused"
+RECEIPT_NAMED_GREEN_TREE="$WORK/receipt-named-accepted"
+receipt_tree "$RECEIPT_NAMED_RED_TREE"
+receipt_tree "$RECEIPT_NAMED_GREEN_TREE"
+write_receipt_fixture "$RECEIPT_NAMED_RED_TREE/$RECEIPT_NAMED_REL" forges helpers.sh
+write_receipt_fixture "$RECEIPT_NAMED_GREEN_TREE/$RECEIPT_NAMED_REL" records helpers.sh
+
+# On its own it is the same passing file the located one is, and that is
+# checked rather than assumed for a reason this pair would otherwise get wrong:
+# a fixture whose trap replacement had failed would exit 1 from helpers.sh's
+# own trap, the runner would fail it for THAT, and the refusal below would be
+# credited to a receipt check that never ran.
+receipt_named_lone_rc=0
+receipt_named_lone_out="$(env -u ORCHID_REQUIRE_RED_CASE -u ORCHID_PROOF_RECEIPT "$BASH" "$RECEIPT_NAMED_RED_TREE/$RECEIPT_NAMED_REL" 2>&1)" || receipt_named_lone_rc=$?
+assert_eq 0 "$receipt_named_lone_rc" \
+  "INV-15: the by-name fixture must RUN CLEANLY on its own — a file that already fails by itself would make the runner's refusal below evidence of nothing (got rc=$receipt_named_lone_rc: $receipt_named_lone_out)"
+grep -q 'recorded no RED case' <<<"$receipt_named_lone_out" \
+  && fail "INV-15: helpers.sh's own EXIT trap fired on the by-name fixture, so it is not demonstrating a replaced trap and the refusal below would be that trap rather than the receipt"
+
+receipt_runner_verdict "$RECEIPT_NAMED_RED_TREE"
+receipt_named_red_out="$RECEIPT_RUN_OUT"
+[ "$RECEIPT_RUN_RC" -ne 0 ] \
+  || fail "INV-15: the shipped tests/run.sh PASSED a file enrolled BY NAME that reached helpers.sh, replaced the trap enforcing it and called no recorder — the whole-file proofs are required by nothing but that enrolment, so this is the half being enforced nowhere ($receipt_named_red_out)"
+assert_match 'no red_case call was observed to run' "$receipt_named_red_out" \
+  "INV-15: the by-name refusal must name the missing recorder the same way the located one does, since an author reads the same sentence at either depth"
+
+receipt_runner_verdict "$RECEIPT_NAMED_GREEN_TREE"
+receipt_named_green_out="$RECEIPT_RUN_OUT"
+assert_eq 0 "$RECEIPT_RUN_RC" \
+  "INV-15: the shipped tests/run.sh refused a by-name enrolled file whose recorders really ran (got rc=$RECEIPT_RUN_RC: $receipt_named_green_out)"
+grep -q 'was observed to run' <<<"$receipt_named_green_out" \
+  && fail "INV-15: the runner reported a missing recorder call against a by-name enrolled file that recorded both ($receipt_named_green_out)"
+
+red_case "the shipped tests/run.sh refused two gate files that reached tests/helpers.sh, replaced its EXIT trap with an ordinary cleanup of their own, and printed the two case lines without ever calling a recorder — one enrolled by LOCATION under tests/inv/ and one enrolled BY NAME one directory up, each of which passes on its own, prints the bytes a compliant gate prints, and is accepted by every other half of this section, so what caught them is the receipt the recorder itself writes"
+green_case "the same runner, over trees differing in exactly one thing — that the two recorder calls really ran — accepted both files at both depths, and accepted an ordinary unenrolled suite file that records nothing beside them, so the refusals above are a missing recorder call being detected rather than a runner that refuses every file or every replaced trap"
 
 # ---------------------------------------------------------------------------
 # AND THE LABEL A GATE RECORDS MUST BE THE LABEL SOMEBODY WROTE.
@@ -4460,6 +4715,8 @@ not_tested "early-exit-matchers-outside-the-kernel-and-the-invariant-gates" \
   "the rest of tests/. Section 5's glob is the repository top level, the shipped kernel, the bundled plugins and tests/inv/test_*.sh, and the last of those was added because an invariant gate deciding its verdict by a race is the same defect the section scans the kernel for. The other test files carry the shape too, in the hundreds, and they are not covered here: converting them is a mechanical sweep of a different size, and the argument for taking the gates first is that a wrong answer there is a wrong answer about the kernel, whereas a wrong answer in a feature test is a flaky test somebody re-runs. The tell is unchanged wherever it appears, and the direction that costs is the negative assertion: a producer piped into an early-exiting grep, then '&& fail', is skipped exactly when the pattern is present. Spelled in words rather than in code, here and in the failure message above, because these two lines are not comments: this file is inside the glob it runs, so a literal instance of the shape on a line of its own prose is a violation of this invariant reported against this file — which is the right answer, and the reason the wording works around it"
 not_tested "early-exit-matchers-other-than-grep-q" \
   "producers killed by an early-exiting consumer that is not grep -q. A head -n1, a sed -n 1q, and a bare read in a pipeline all stop reading before their input ends and all SIGPIPE upstream the same way; section 5 derives exactly one consumer because that is the one the shipped tree used, and the sites that pipe into head today discard the status with an explicit fallback rather than branching on it. The tell is the same wherever it appears: a pipeline under set -o pipefail whose right-hand side can stop reading first, so its exit status may be the producer's death rather than the matcher's verdict"
+not_tested "recorder-evidence-for-the-shipped-gates-inside-this-file" \
+  "whether each SHIPPED enrolled file's own red_case and green_case calls run, observed HERE. Section 2 runs every one of them against a stub helpers.sh and requires the load to be REACHED, which costs one bash startup apiece and says the enforcement is installed; the recorder evidence itself is collected where those files actually run — tests/run.sh, per file, out of the receipt the recorder writes as it runs — and what is proved here is that the runner DEMANDS it, at both enrolment depths, against gate files that differ from their twins in nothing else. Re-running the shipped gates inside this file until each reached its first recorded case would mean partially executing every gate in the tree, this one included, and would say nothing the suite run around it does not already say. Two consequences are the boundary rather than a hole in it. A gate file run with no parent naming a receipt — a lone invocation, or scripts/ci-local.sh's per-file rehearsal of the invariant gates — is held by the EXIT trap alone, which is the trap it may have replaced; and a file that never reaches helpers.sh declares no enrolment at all, which is why the reachability probe above is the half that must stay and why the runner ALSO requires a receipt from everything it launches out of tests/inv/, whatever the child declared"
 not_tested "recorded-label-integrity-outside-the-invariant-gates" \
   "labels recorded anywhere but tests/inv/test_*.sh, and executing punctuation that is not a backtick. Section 2's label scan reads the gate files, because a gate whose own record says something its author did not write is this file's subject at the smallest scale; the rest of tests/ records labels through the same helpers and is not covered. That includes the whole-file proofs PROOF_ENROLLED_FILES names, and the asymmetry with the ENROLMENT half of the same section — which does now probe them — is deliberate rather than an oversight: enrolment is what decides whether a file's cases are watched by any trap at all, so an unenrolled proof records nothing anywhere, while a mangled label in one still leaves a case that ran and failed honestly. The narrower loss is left to the same review the rest of tests/ gets. Two shapes inside the scanned files are outside it as well. A recorder call written inside a heredoc body is read as ordinary code, since the scanner tracks quoting and not here-documents — no shipped gate has one, and a fixture that grows one would be reported rather than missed, which is the safe direction. And '\$( )' is deliberately accepted: labels interpolate the counts that make them non-vacuous, and unlike a backtick in a sentence that spelling is visible as code to whoever types it. What is derived here is the punctuation that has actually shipped three times, not every way a shell can be made to run a word"
 not_tested "gate-vacuity-beyond-the-constructed-dimensions" \

@@ -42,6 +42,20 @@
 #     reaches satisfies the grep above and cannot satisfy this one. Sections 3,
 #     4 and 5 prove that enforcement fires, against fixtures and against a real
 #     repository gate, rather than trusting it.
+#   * IN THE PARENT (tests/run.sh's receipt), because the half above is a TRAP
+#     and a trap is a slot the gate can overwrite. One `trap ... EXIT` of its
+#     own after the source -- which is how a gate that wants its own cleanup is
+#     written -- takes the requirement off the file that carries it, and the
+#     file then records nothing, prints no summary and exits 0. So `red_case`
+#     and `green_case` also append a line naming the file they ran in to the
+#     receipt tests/run.sh names in ORCHID_PROOF_RECEIPT, and the runner
+#     requires that line for every file it launches out of tests/inv/ and for
+#     every file that declared itself enrolled. A gate can disarm its own trap;
+#     it cannot disarm its parent, and it cannot write the line without having
+#     called the recorder. That half is proved in
+#     tests/inv/test_INV-15_no_optional_gate.sh section 2, against two gate
+#     files that print the same bytes and differ only in whether the recorder
+#     was called.
 #
 # ENROLMENT IS A FACT ABOUT THE FILE, NEVER ABOUT HOW IT WAS TYPED. The runtime
 # half used to decide from `$0`, which is whatever the caller wrote on the
