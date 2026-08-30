@@ -121,12 +121,21 @@ git -C "$repo" add .orchid .gitignore && git -C "$repo" commit -q -m "orchid: in
 # that is simply absent there. A customized `integration_branch` would
 # silently fall back to the hook's own hardcoded default, bypassing that leg
 # of the guard entirely. Fixed by resolving ONCE, here, at install time
-# instead -- same `sed` substitution idiom `templates/task.md`'s
-# __ID__/__TITLE__/... placeholders already use -- and baking the resolved
-# name into the installed hook file, so the hook itself never has to locate
-# or read `orchid.config` again. Re-running `orchid init` after changing
+# instead -- substituting `__INTEGRATION_BRANCH__` into templates/pre-push.sh
+# -- and baking the resolved name into the installed hook file, so the hook
+# itself never has to locate or read `orchid.config` again. Re-running
+# `orchid init` after changing
 # `integration_branch` refreshes the baked-in name (subject to the
 # never-overwrite rule below, same as any other re-run).
+#
+# This used to describe itself as copying `templates/task.md`'s
+# __ID__/__TITLE__ idiom. It no longer is one: T034 moved that renderer off
+# `sed` entirely, after a title containing `&` came out as the literal text
+# `__TITLE__` and a literal `\n` came out two different ways on GNU and BSD
+# sed. What is below is this site's own escaping, and it stays `sed` only
+# because a branch name is a far narrower input than an operator's prose --
+# lib/frontmatter.sh's fm_render_task_template is the literal-substitution
+# alternative if that ever stops being true.
 push_guard_cfg="$(config_get "$repo" push_guard true)"
 case "$push_guard_cfg" in
   false|0|no) : ;;

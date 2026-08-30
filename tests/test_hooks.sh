@@ -566,4 +566,65 @@ assert_eq "shrink the diff and retry" \
 assert_eq 1 "$("$ORCHID_BIN" task show TW1 | grep '^attempts: ' | cut -d' ' -f2)" \
   "the (non-waived) rework advance consumed an attempt, same as any other rework entry"
 
+# ===========================================================================
+# THE SAME DOCUMENTED STEP, WITH THE VALUE A HANDLER ACTUALLY WRITES
+# (T034, dogfood F34). The walk above attaches a one-line guidance, which is
+# the easy case. `.artifact.guidance` is whatever the hook plugin chose to say,
+# and a handler asked to explain a verify failure writes PARAGRAPHS -- it is
+# the one value on this whole path that is neither typed by an operator nor
+# bounded by a schema.
+#
+# Frontmatter is one `key: value` per line, so `task set` refuses a
+# newline-bearing value outright (before T034 it destroyed the task file
+# instead, mid-run, with no operator present). That refusal is correct and it
+# is also why the DOCUMENTED sequence cannot be the bare `task set` call: this
+# is the hand-executed path, PROTOCOL.md's own "a human typing commands", and
+# it has no driver to fold anything for it. Refused here, the round stops over
+# a formatting detail nobody chose -- so the instruction carries the fold, and
+# this case walks the instruction as written.
+#
+# `orchid drive` does the same fold at the same step; the mechanized twin is
+# tests/test_drive_hooks_archetypes.sh's H6.
+# ===========================================================================
+cp .orchid/tasks/TW1.md "$TWORK/TW1.before"
+# Built with printf rather than through a second envelope: what is under test
+# is the SHAPE of the artifact string, and the artifact-to-`task set` hop is
+# already walked above.
+prose_tw="$(printf 'the fixture clock drifts under load\n\npin it, then re-run')"
+rc=0; prose_out="$("$ORCHID_BIN" task set TW1 hook_guidance "$prose_tw" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set must refuse a multi-paragraph hook guidance (it used to destroy the task file and exit 0)"
+assert_match "newline" "$prose_out" "the refusal names the single-line constraint rather than reporting a tool error"
+cmp -s "$TWORK/TW1.before" .orchid/tasks/TW1.md \
+  || fail "the refused attach must leave the task file BYTE-IDENTICAL -- this is the step that took out .orchid/tasks/T002.md on r-002"
+red_case 'the documented on_verify_fail attach, guidance spanning paragraphs: refused, task file intact'
+
+# ...and the documented remedy, applied here exactly as PROTOCOL.md spells it.
+folded_tw="$(printf '%s' "$prose_tw" | tr '\n' ' ')"
+"$ORCHID_BIN" task set TW1 hook_guidance "$folded_tw" >/dev/null \
+  || fail "the folded guidance must be accepted -- otherwise the documented sequence has no way to complete this step at all"
+assert_eq "the fixture clock drifts under load  pin it, then re-run" \
+  "$("$ORCHID_BIN" task show TW1 | grep '^hook_guidance: ' | cut -d' ' -f2-)" \
+  "every word of the guidance stays attached to the task, on one line"
+assert_eq 1 "$(grep -c '^hook_guidance: ' .orchid/tasks/TW1.md)" \
+  "and lands as exactly one frontmatter line -- a second would be body text no reader of this field ever sees"
+green_case 'the documented on_verify_fail attach, guidance folded to one line: accepted, one frontmatter line'
+
+# The instruction itself. Without it the sequence above is undocumented
+# folklore: a front-end executing PROTOCOL.md literally sends the paragraphs
+# and is refused, at the one step whose value it did not write. Pinned as
+# sentences rather than as the token `hook_guidance`, which PROTOCOL.md carried
+# throughout while saying nothing about folding.
+#
+# Folded before matching, because both sentences are hard-wrapped mid-phrase in
+# the source and a matcher sees one line at a time. assert_match (a herestring),
+# never `printf | grep -qF`: PROTOCOL.md is large enough that `grep -q` exits
+# while the upstream write is still going, and pipefail promotes that SIGPIPE to
+# the pipeline's status -- reporting "the docs lost this sentence" about a
+# sentence that is present.
+protocol_one_line="$(tr '\n' ' ' < "$REPO_ROOT/PROTOCOL.md" | tr -s '[:space:]' ' ')"
+assert_match 'folded onto one line first' "$protocol_one_line" \
+  "PROTOCOL.md's on_verify_fail step must tell a front-end executing it by hand to fold the hook guidance onto one line -- task set refuses a newline-bearing value, so the sequence as written aborts the round"
+assert_match 'folds it at exactly this step' "$protocol_one_line" \
+  "...and must say orchid drive folds at the same step, so the mechanized and hand-executed paths read as one procedure rather than two behaviours"
+
 cd_scratch "$WORK" || exit 1; rm -rf "$TWORK"

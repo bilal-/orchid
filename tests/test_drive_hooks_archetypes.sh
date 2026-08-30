@@ -90,6 +90,33 @@ printf 'manifest_version=1\nid=test/hookmute\nversion=0.1.0\nkind=hook\napi_vers
 printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/eng/hookmute/run"
 chmod +x "$WORK/eng/hookmute/run"
 
+# `hookprose` reports success carrying MULTI-PARAGRAPH guidance -- the natural
+# thing for a handler asked to explain a verify failure to write, and (T034,
+# dogfood F34) the one value on the whole driver path that is neither typed by
+# an operator nor bounded by a schema. Frontmatter holds one line per key, so
+# `task set` refuses a newline outright; the driver must therefore FOLD this to
+# one line rather than hand it over and abort an autonomous round -- and, before
+# T034, handing it over destroyed the task file mid-run with no operator
+# present at all.
+mkdir -p "$WORK/eng/hookprose"
+printf 'manifest_version=1\nid=test/hookprose\nversion=0.1.0\nkind=hook\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/hookprose/plugin.conf"
+cat > "$WORK/eng/hookprose/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+cand="$(jq -r '.candidate_sha // ""' "$req")"
+jq -n --arg jid "$jid" --arg task "$task" --arg cand "$cand" \
+  --arg g "$(printf 'the first paragraph of prose guidance\n\nthe second paragraph of prose guidance')" \
+  '{contract:1, job_id:$jid, task:$task, operation:"hook", status:"ok",
+    engine:"test/hookprose", candidate_sha:$cand,
+    artifact:{guidance:$g}, summary:"hook ok, multi-paragraph guidance"}' > "$out"
+EOF
+chmod +x "$WORK/eng/hookprose/run"
+
 # --- a stub reviewer, for the archetype walks ------------------------------
 mkdir -p "$WORK/eng/stubreview" "$WORK/eng/stubimpl"
 printf 'manifest_version=1\nid=test/stubreview\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
@@ -314,6 +341,48 @@ drive_settle rework H4 || fail "a failing verify must reach rework once the hook
 assert_eq rework "$(status_of H4)" "verify FAIL walks the task to rework"
 assert_eq "pin the fixture clock before re-running" "$(field_of H4 hook_guidance)" \
   "the on_verify_fail hook's guidance is attached to the task before the rework advance"
+
+# ===========================================================================
+# H6 (T034, dogfood F34) -- on_verify_fail guidance that spans PARAGRAPHS.
+#
+# Same walk as H4, one difference: the handler writes prose. Frontmatter is one
+# `key: value` per line, so `orchid task set` now refuses a newline-bearing
+# value outright -- correct for an operator typing one, and the wrong answer
+# here, where the guidance is advisory (it never changes a routing decision)
+# and there is no operator present to retype it. The driver folds it to one
+# line instead, so the round completes and every word stays attached to the
+# task.
+#
+# Before T034 this path did neither: `task set` attempted the write, the
+# rewrite died inside awk's own argument parsing, and the task file was left at
+# ZERO BYTES mid-run -- which is why the assertions below are as much about the
+# task still EXISTING as about the value.
+# ===========================================================================
+use_repo h6
+printf 'hook.on_verify_fail=hookprose\n' > orchid.config
+"$ORCHID_BIN" task create H6 "verify fails, prose guidance" >/dev/null
+"$ORCHID_BIN" task set H6 base_sha "$edge_sha" >/dev/null
+"$ORCHID_BIN" task set H6 candidate_sha "$edge_sha" >/dev/null
+"$ORCHID_BIN" task set H6 verification_commands false >/dev/null
+"$ORCHID_BIN" task advance H6 implementing --reason d >/dev/null
+"$ORCHID_BIN" task advance H6 testing --reason d >/dev/null
+
+drive_settle rework H6 \
+  || fail "multi-paragraph hook guidance must not stop the round: a failing verify still has to reach rework (last rc=$DRIVE_RC, out: $DRIVE_OUT)"
+assert_eq rework "$(status_of H6)" "the round completes rather than aborting over a formatting detail nobody chose"
+# `task show` exits non-zero on a damaged task file now, so `field_of` reaching
+# a value at all is itself the evidence the file survived the write.
+assert_eq "the first paragraph of prose guidance  the second paragraph of prose guidance" \
+  "$(field_of H6 hook_guidance)" \
+  "the paragraphs are FOLDED onto one line, keeping every word attached to the task"
+assert_eq 1 "$(grep -c '^hook_guidance: ' .orchid/tasks/H6.md)" \
+  "and land as exactly one frontmatter line -- a second line would be body text no reader of this field ever sees"
+[ -s .orchid/tasks/H6.md ] || fail "THE TASK FILE IS EMPTY: attaching prose guidance destroyed it mid-run, which is the defect F34 found"
+
+# This is the MECHANIZED half of that step. The hand-executed half -- the same
+# verbs in the same order, run by a front-end reading PROTOCOL.md, with no
+# driver to fold anything -- is pinned in tests/test_hooks.sh's tick-walk,
+# together with the instruction that tells it to fold.
 
 # ===========================================================================
 # A1 -- dispatch targets are read off the DECLARED transitions. No archetype

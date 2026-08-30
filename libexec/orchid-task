@@ -13,6 +13,110 @@ tf() { echo "$tasks/$1.md"; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 journal() { ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add "$@"; }
 
+# _no_newline <what> <value> [remedy] -- dies cleanly, BEFORE anything is
+# written, if value contains an embedded newline. Same guard (and same wording
+# shape) as
+# libexec/orchid-lessons' own `_no_newline`, for the same reason one line up:
+# a task file's frontmatter is strictly one `key: value` per line, and a value
+# carrying its own newline cannot be represented there at all.
+#
+# T034 (dogfood F34, and the identical accident on r-002's `.orchid/tasks/
+# T002.md`): without this, `task set <id> <key> "<value with a newline>"` did
+# not reject the write -- it DESTROYED the file. `awk -v v=...` refused the
+# assignment, printed "newline in string" three times, and the old
+# `awk | atomic_write` pipeline renamed awk's empty output over the task,
+# leaving zero bytes and exiting 0. lib/frontmatter.sh's fm_set now refuses the
+# same input as a backstop; this is where an operator gets told, in terms of the
+# value THEY typed, which argument was the problem and what to do with it. The
+# field where it hurts most is exactly the one it happens in: a long
+# `acceptance_criteria` or `hook_guidance` pasted as prose.
+#
+# THE REMEDY IS A PARAMETER because the two callers stand in different places.
+# `task set` refuses a write to a task file that EXISTS, so naming the verb that
+# writes prose INTO that task is advice the operator can act on immediately.
+# `task create` refuses BEFORE any file is created, and there is no task for any
+# such verb to write to yet -- the actionable advice there is to re-run the
+# create. Default remedy is the `set` one, since that is the caller this guard
+# was written for; the create arm passes its own.
+#
+# EVERY REMEDY HERE IS A VERB (T034 rework). Both of these used to end "put the
+# prose in the task BODY (below the closing '---' in .orchid/tasks/<id>.md)",
+# which reads as an instruction to open that file and type into it -- the one
+# thing PROTOCOL.md's Preamble forbids without qualification ("Never hand-edit
+# anything under `.orchid/` -- no frontmatter, no journal, no roadmap -- even
+# when you can see exactly what line would need to change"). A refusal that
+# names a forbidden remedy is worse than one that names none: it is the moment
+# the operator is most willing to reach for the file, since the verb has just
+# told them it will not do the job. The two verbs named instead are the ones
+# that genuinely append prose to a task body -- `unblock` and `retry`, both
+# `--reason`-bearing (docs/specs/kernel.md's transition table: "guidance
+# recorded into the task BODY") -- and the third answer, flattening, is a verb
+# call too, since a literal `\n` is stored as those two characters and reads
+# back exactly as typed.
+#
+# AND EVERY VERB IT NAMES CAN BE RUN FROM WHERE IT IS PRINTED (T034 rework):
+# both of those two are status-gated, and the status this refusal fires in is
+# usually one that neither accepts. _body_prose_remedy just below builds the
+# `set` arm's remedy from the task's CURRENT status for that reason; this
+# function's own default is the one sentence that is true everywhere, since a
+# default cannot know which task it is about.
+_no_newline() {
+  case "$2" in
+    *$'\n'*) orchid_die "$1 must not contain a newline: task frontmatter is one 'key: value' per line, so a multi-line value cannot be stored there. Nothing was written. ${3:-Flatten it to a single line (a literal \\n is kept verbatim, not expanded). Nothing under .orchid/ is ever hand-edited.}" ;;
+  esac
+}
+
+# _body_prose_remedy <id> <status> -- the half of a single-line refusal that
+# answers "then where does my paragraph go", for THIS task as it stands right
+# now.
+#
+# NAMED VERB, VALID FROM THE STATUS IT IS PRINTED IN (T034 rework). The refusal
+# used to name `orchid task unblock <id> --reason ...` and `orchid task retry
+# <id> --reason ...` unconditionally, and both of those are gated: `unblock`
+# dies "$id is not blocked" from anywhere but `blocked`, and `retry` exits 3
+# ("illegal retry from <status>") from anywhere but `blocked` or `rework`. The
+# value this whole guard exists for is a long `acceptance_criteria` or
+# `hook_guidance`, which is written while a task is being PLANNED -- `pending`,
+# where neither verb is legal. So the operator whose write was just refused was
+# handed two commands that refuse them again, in the same breath as being told
+# not to touch the file. A remedy that cannot be run is not better than none: it
+# spends the operator's trust and returns them to the file anyway.
+#
+# The three answers are therefore the three real ones, keyed on the status:
+# the verb that is legal here, or -- when none is -- the fact that none is,
+# plus the edge that reaches one. `advance <id> blocked --reason` is that edge
+# and it is legal from EVERY status (see `legal` below: `blocked` is the one
+# universal transition), so the escape route named is one that always exists.
+#
+# Flattening is offered first in every case, because it is the answer to the
+# question actually asked -- this value, in this field -- while the body verbs
+# answer a different one: prose that is guidance for the implementer rather
+# than a field's content.
+#
+# A status that will not read at all is its own answer, and it is the one this
+# task exists for: the file is damaged, so the remedy is to recover it rather
+# than to write anything else into it.
+_body_prose_remedy() {
+  case "$2" in
+    '')
+      printf "%s" "Flatten it to a single line (a literal \\n is kept verbatim, not expanded). Note also that this task's status could not be read at all, which means its file is damaged: 'orchid task show $1' and 'orchid doctor' say which way, and a committed copy comes back with 'git checkout <sha> -- .orchid/tasks/$1.md'. Recover it before writing anything else to it, and never by hand-editing anything under .orchid/." ;;
+    blocked)
+      printf "%s" "Flatten it to a single line (a literal \\n is kept verbatim, not expanded). If it is guidance rather than a field's value, it belongs in the task BODY, and from '$2' the verb that records it there is 'orchid task unblock $1 --reason \"...\"'. Nothing under .orchid/ is ever hand-edited." ;;
+    rework)
+      printf "%s" "Flatten it to a single line (a literal \\n is kept verbatim, not expanded). If it is guidance rather than a field's value, it belongs in the task BODY, and from '$2' the verb that records it there is 'orchid task retry $1 --reason \"...\"'. Nothing under .orchid/ is ever hand-edited." ;;
+    *)
+      printf "%s" "Flatten it to a single line (a literal \\n is kept verbatim, not expanded). If it is guidance rather than a field's value, it belongs in the task BODY -- but no verb writes prose there from status '$2': 'orchid task unblock' requires 'blocked' and 'orchid task retry' requires 'blocked' or 'rework'. Take the task to one of them first with 'orchid task advance $1 blocked --reason \"...\"', which is legal from every status. Nothing under .orchid/ is ever hand-edited." ;;
+  esac
+}
+
+# The create arm's remedy, for the same reason the parameter exists: a refused
+# create has no task file, so every verb that writes into one is advice about
+# something that does not exist. It names the preconditions anyway (T034
+# rework) rather than the bare verbs, because a task fresh out of `task create`
+# is `pending`, which is precisely the status neither of them accepts -- the
+# earlier wording sent an operator straight from one refusal into another.
+_CREATE_NEWLINE_REMEDY="No task file was created, so there is nothing to repair and nothing to open: re-run 'orchid task create' with a single-line id and title. Multi-paragraph prose reaches a task's BODY only through 'orchid task unblock <id> --reason ...' (from status 'blocked') or 'orchid task retry <id> --reason ...' (from 'blocked' or 'rework') — never from the 'pending' a new task starts in, and never by hand-editing anything under .orchid/."
+
 # legal <from> <to> <archetype> -- archetype-driven (INV-05: data from the
 # manifest, never a name branch): `to=blocked` is the one universal escape
 # hatch (legal from any status, any archetype); every other edge must be
@@ -271,7 +375,7 @@ reverify_edge_gate() {
 rank() { case "$1" in low) echo 0;; medium) echo 1;; high) echo 2;; *) echo -1;; esac; }
 
 # refresh_briefs <task-file> <id> -- the task body as the NEXT implementer
-# should read it, printed for the caller to pipe into atomic_write: every
+# should read it, printed for the caller to pipe into fm_write_task: every
 # rework brief bound to a candidate other than the current one collapsed to a
 # superseded notice, and -- when a failing gate left location-bearing evidence
 # for the CURRENT candidate -- one fresh brief appended.
@@ -296,18 +400,52 @@ rank() { case "$1" in low) echo 0;; medium) echo 1;; high) echo 2;; *) echo -1;;
 # survivor), but the guard is here at the append rather than on that route
 # because every other way of reaching `rework` twice without minting a new
 # candidate produces the same body.
+#
+# FAIL-CLOSED ON ITS OWN, not on errexit (T034 rework). This function is the
+# PRODUCER of a whole replacement task document, and fm_write_task_from runs it
+# with its status under test -- which suppresses errexit inside it, exactly as
+# `set -e` is suppressed in any command whose status is being read. So a step
+# that failed here would no longer abort the function; it would fall through to
+# the `printf` below and could still return 0, and what got written over the
+# task would be a document built from an answer nothing produced. Every step is
+# therefore checked here, and the empty body is checked with them: a task
+# document is never empty, so an empty `rbody` means findings_age_briefs could
+# not read the file (it returns 0 with no output for a missing one) rather than
+# that the task had nothing in it.
 refresh_briefs() {
   local rf="$1" rid="$2" rcand rbrief rbody
-  rcand="$(fm_get "$rf" candidate_sha)"
-  rbrief="$(findings_brief "$state" "$rid" "$rcand")"
+  rcand="$(fm_get "$rf" candidate_sha)" || return 1
+  rbrief="$(findings_brief "$state" "$rid" "$rcand")" || return 1
   # The AGED body is what the presence check reads, because aging is what
   # decides which blocks are still live: one it just collapsed no longer
   # matches, and the fresh brief is appended as it should be.
-  rbody="$(findings_age_briefs "$rf" "$rcand")"
-  printf '%s\n' "$rbody"
+  rbody="$(findings_age_briefs "$rf" "$rcand")" || return 1
+  [ -n "$rbody" ] || return 1
+  printf '%s\n' "$rbody" || return 1
   if [ -n "$rbrief" ] && ! findings_brief_present "$rbody" "$rbrief"; then
-    printf '\n%s\n' "$rbrief"
+    printf '\n%s\n' "$rbrief" || return 1
   fi
+}
+
+# refresh_briefs_with_guidance <task-file> <id> <timestamp> <reason> -- the
+# rework body refresh_briefs produces, with the operator's own guidance appended
+# as the last word on top of it. `unblock`'s producer, factored out of the
+# `{ ...; ...; } | fm_write_task` compound it used to be so that it can be
+# handed to fm_write_task_from BY NAME and have its status read.
+refresh_briefs_with_guidance() {
+  refresh_briefs "$1" "$2" || return 1
+  printf '\n**Operator guidance (%s):** %s\n' "$3" "$4" || return 1
+}
+
+# append_guidance <task-file> <timestamp> <reason> -- the task exactly as it is,
+# plus the operator's guidance. `retry`'s second producer, and the one where a
+# failed producer is least visible: a `cat` that stops partway leaves a document
+# that still opens and closes with `---` and still resolves `id`, so it passes
+# every shape check while the body it silently truncated is the task's whole
+# rework history.
+append_guidance() {
+  cat "$1" || return 1
+  printf '\n**Operator guidance (%s):** %s\n' "$2" "$3" || return 1
 }
 
 case "$sub" in
@@ -321,6 +459,22 @@ case "$sub" in
     # convention (jobs prepare's plan-branch would then shadow a real task's
     # frontmatter). Refused up front, before any file is written.
     [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    # Same single-line rule as `set` below, on the two values that reach the
+    # template. These are not rendered by fm_set -- fm_render_task_template
+    # renders them, and it stores what it is given byte-for-byte -- so an
+    # embedded newline reaches the document as a `title:` line split in two,
+    # with the remainder sitting in the frontmatter as a key-less line.
+    # Frontmatter is one `key: value` per line, and this is where that rule is
+    # enforced: before the template is read and before anything is written.
+    #
+    # fm_write_task's structural check would refuse that document too (T034
+    # rework), and no file would be created either way -- but it would refuse it
+    # in the vocabulary of the DOCUMENT ("line 4 is not a 'key: value' entry"),
+    # about a file the operator has never seen, naming neither the argument that
+    # was wrong nor what to do instead. A backstop is not a diagnosis. This
+    # guard is here so the message is about the id or the title they typed.
+    _no_newline "task id" "$id" "$_CREATE_NEWLINE_REMEDY"
+    _no_newline "task title" "$title" "$_CREATE_NEWLINE_REMEDY"
     # --archetype <name> (default: feature) -- the ONLY new flag; a bare
     # `task create <id> <title>` behaves exactly as before this arm gained
     # option parsing.
@@ -346,30 +500,110 @@ case "$sub" in
     # v1-m3 Task 8: per-archetype template lookup. `templates/task-<arch>.md`
     # when present (refactor/test/migrate each pre-set their own risk_tier/
     # blocking_severity/exclusive defaults and body lens text in frontmatter
-    # -- plain sed substitution, so these create-time defaults are never
-    # routed through `task set risk_tier`'s monotonic/--reason guard, which
-    # only fires on POST-create changes to an existing task file), else the
+    # -- rendered straight out of the template, so these create-time defaults
+    # are never routed through `task set risk_tier`'s monotonic/--reason
+    # guard, which only fires on POST-create changes to an existing file), else the
     # generic `templates/task.md` fallback (unchanged content/behavior for
     # feature/review and any other archetype without its own template).
     tmpl="$ORCHID_ROOT/templates/task-$arch.md"
     [ -f "$tmpl" ] || tmpl="$ORCHID_ROOT/templates/task.md"
-    sed -e "s|__ID__|$id|g" -e "s|__TITLE__|$title|g" \
-        -e "s|__ARCHETYPE__|$arch|g" \
-        -e "s|__ENGINE__|$(resolve_role "$repo" implementer)|g" \
-        -e "s|__DATE__|$(now)|g" \
-      "$tmpl" | atomic_write "$(tf "$id")" ;;
-  show) cat "$(tf "$1")" ;;
-  list) for f in "$tasks"/*.md; do [ -e "$f" ] || continue
-        printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"; done ;;
+    # fm_render_task_template | fm_write_task, never `sed | atomic_write`
+    # (T034). Two separate accidents met at this one line, and each half closes
+    # one of them:
+    #
+    #   THE RENDER. A sed replacement string is a language, not literal text,
+    #   and `&`, `\` and `|` are all ordinary characters in a title an operator
+    #   types. `parser & lexer` used to land as `parser __TITLE__ lexer`, and a
+    #   literal `\n` landed as a real newline on GNU sed and as the letter `n`
+    #   on BSD sed -- three wrong answers, two of them silent.
+    #   fm_render_task_template substitutes out of ENVIRON in awk, in one
+    #   left-to-right scan, so what was typed is what the file gets.
+    #
+    #   THE WRITE. atomic_write renames whatever its stdin gave it, INCLUDING
+    #   NOTHING -- so a renderer that dies on the operator's own text would land
+    #   a brand-new ZERO-BYTE task file that `task create` itself then refuses
+    #   to replace ever after ("task <id> exists"). fm_write_task validates the
+    #   document before the rename, and the renderer emits all of it or none of
+    #   it, so a create that fails leaves nothing behind.
+    #
+    # fm_write_task_from, not a pipe (T034 rework): in a pipe the renderer's
+    # exit status arrives through `pipefail` only AFTER fm_write_task has
+    # already decided, so the decision is made on bytes alone. Here the render
+    # is staged, its status is read first, and only a render that finished is
+    # allowed to become a task file.
+    fm_write_task_from "$(tf "$id")" \
+      fm_render_task_template "$tmpl" "$id" "$title" "$arch" \
+        "$(resolve_role "$repo" implementer)" "$(now)" ;;
+  show)
+    # `cat` alone (T034, dogfood F34): a task file destroyed by a failed
+    # rewrite is ZERO BYTES, and `cat` on it prints nothing and exits 0 -- so
+    # the verb an operator uses to ask "what is the state of this task" answered
+    # SUCCESSFULLY, with silence, about a task that no longer existed. Both
+    # dogfood operators found the damage only by noticing a grep came back
+    # empty. An unreadable task file is a damaged one, and must be reported as
+    # damage, loudly, by the verb whose whole job is to show it.
+    show_id="${1:-}"
+    [ -n "$show_id" ] || orchid_die "usage: orchid task show <id>"
+    show_f="$(tf "$show_id")"
+    [ -f "$show_f" ] || orchid_die "no task $show_id"
+    if ! show_why="$(fm_check "$show_f" id)"; then
+      orchid_die "task $show_id is DAMAGED, not empty: $show_why ($show_f). Recover the frontmatter rather than re-creating the task: 'git log --all --oneline -- .orchid/tasks/$show_id.md' then 'git checkout <sha> -- .orchid/tasks/$show_id.md'; a review pack under .orchid/runtime/packs/ may also carry a copy of it."
+    fi
+    cat "$show_f" ;;
+  list)
+    # A DAMAGED task file gets a row that SAYS SO (T034, dogfood F34), never a
+    # row of empty fields. Three columns read straight out of frontmatter that
+    # is not there produce `<tab><tab>`, and that row is worse than useless in
+    # both of its audiences:
+    #
+    #   * an operator scanning `orchid task list` sees a blank line among the
+    #     tasks and reads it as cosmetic. Both dogfood operators found the
+    #     destroyed file only when an unrelated grep came back empty -- this
+    #     list was on screen, and it had nothing to say.
+    #   * the driver's task walk is `while read ... done < <(orchid task list)`,
+    #     and its first act is `[ -n "$_id" ] || continue`. An empty id row is
+    #     therefore SKIPPED IN SILENCE: the task is never dispatched, never
+    #     reported, and -- because the walk also counts what it saw -- a run
+    #     whose only unfinished task is the damaged one concludes that every
+    #     task is done. "A task that simply stopped existing" is precisely how
+    #     this defect presents, and this is the line that makes it present that
+    #     way.
+    #
+    # So the id is taken from the FILENAME (`.orchid/tasks/<id>.md` is the
+    # kernel's own mapping, and it is the one piece of the task that damage to
+    # the file cannot erase) and the status column carries `DAMAGED` -- upper
+    # case, which no real status is, so nothing can mistake it for one. The walk
+    # reads it as an unrecognized status and stops at an operator-decision
+    # boundary naming the task, which is the correct answer: no verb can decide
+    # what to do about a task file that cannot be read.
+    #
+    # This verb still exits 0. `task list` is a worklist producer read through a
+    # process substitution whose status nobody can see, so a non-zero exit here
+    # would be invisible to every caller while breaking the ones that check --
+    # the row is the signal. `task show` and `orchid doctor` are the two verbs
+    # that report this damage by exit code.
+    for f in "$tasks"/*.md; do [ -e "$f" ] || continue
+      if ! list_why="$(fm_check "$f" id)"; then
+        list_base="${f##*/}"
+        printf '%s\t%s\t%s\n' "${list_base%.md}" DAMAGED "DAMAGED task file ($list_why) — run 'orchid doctor' or 'orchid task show ${list_base%.md}'"
+        continue
+      fi
+      printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"
+    done ;;
   set)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; key="$2"; val="$3"; shift 3 || true
     # Reserved-id + existence guards BEFORE any read/write of the task
-    # file (v1-m3 fix): `fm_set`'s `awk ... | atomic_write "$f"` pipe has
-    # atomic_write write empty stdin to `$f` BEFORE awk's own can't-open-
-    # file failure aborts the script under `set -e` -- so a nonexistent id
+    # file (v1-m3 fix): `fm_set` was `awk ... | atomic_write "$f"`, and
+    # atomic_write wrote empty stdin to `$f` BEFORE awk's own can't-open-
+    # file failure aborted the script under `set -e` -- so a nonexistent id
     # used to crash with a raw awk error AND leave a stray empty
-    # tasks/<id>.md behind. `plan` is additionally refused by name (same
+    # tasks/<id>.md behind. fm_set no longer has that pipeline at all (T034:
+    # it renames a temp file only once awk has SUCCEEDED and produced a
+    # non-empty document, so it can no longer truncate anything), but these
+    # guards stay: "no task NOPE" is the diagnostic an operator can act on,
+    # and a library-level refusal about an unreadable file is not.
+    # `plan` is additionally refused by name (same
     # message `task create` uses) rather than falling through to the
     # generic "no task" die -- it can never have a real task file (`task
     # create` refuses it), so a plain existence check alone would still be
@@ -378,6 +612,45 @@ case "$sub" in
     # existence out-of-band and defeat the reserved-id protection.
     [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    # BEFORE any read, any derived write (risk_tier's blocking_severity), and
+    # any rewrite of the file: a newline in the VALUE is what destroyed a task
+    # file on r-002 and again in dogfood F34. See _no_newline's header.
+    #
+    # The status is read for the REMEDY, not for the refusal: the two verbs that
+    # record prose in a task body are legal only from `blocked`/`rework`, and
+    # this refusal fires most often while a task is still `pending`. See
+    # _body_prose_remedy.
+    _no_newline "the value for '$key'" "$val" \
+      "$(_body_prose_remedy "$id" "$(fm_get "$f" status)")"
+    # THE KEY MUST BE ONE THAT CAN BE READ BACK (T034 rework). `set` takes its
+    # key straight off the command line and fm_set writes `<key>: <value>` with
+    # it, so `orchid task set T1 'hook guidance' x` -- a space where an
+    # underscore was meant -- appends a line that is not a frontmatter entry at
+    # all. Nothing objected: the write succeeded, `task set` exited 0, and from
+    # that moment every reader of the task (`task show`, `orchid doctor`, the
+    # driver's task walk) reports it DAMAGED. One typo in one argument,
+    # destroying a task exactly as the newline used to, and by the same
+    # mechanism -- a value that cannot be represented in a one-entry-per-line
+    # document, written anyway.
+    #
+    # Refused here rather than only in fm_set (which refuses it too, as a
+    # backstop, by checking the document it staged) for the reason the newline
+    # guard gives: the library can say the document is unreadable, but only the
+    # verb can say WHICH ARGUMENT was wrong and what a usable one looks like.
+    #
+    # The shape is the one fm_check accepts as an entry, and deliberately no
+    # narrower: this refuses keys that cannot be stored, never keys the kernel
+    # does not recognize. An unknown-but-well-formed key is a legal thing to
+    # write (plugins and archetypes add their own fields), and a closed list
+    # here would be a second schema drifting away from the templates.
+    case "$key" in
+      '') orchid_die "the key is empty: 'orchid task set <id> <key> <value>' writes '<key>: <value>' as one frontmatter entry, and an entry needs a name. Nothing was written and $f is unchanged." ;;
+      [A-Za-z_]*) ;;
+      *) orchid_die "'$key' is not a usable frontmatter key: it must start with a letter or '_'. Frontmatter is one 'key: value' entry per line, and a line that does not start with a key name is not an entry -- writing it would leave this task unreadable to 'orchid task show', 'orchid doctor' and the driver's task walk. Nothing was written and $f is unchanged." ;;
+    esac
+    case "$key" in
+      *[!A-Za-z0-9_-]*) orchid_die "'$key' is not a usable frontmatter key: it may contain only letters, digits, '_' and '-' (a space is the usual slip -- 'hook_guidance', not 'hook guidance'). Frontmatter is one 'key: value' entry per line, and writing this one would leave the task unreadable to 'orchid task show', 'orchid doctor' and the driver's task walk. Nothing was written and $f is unchanged." ;;
+    esac
     case "$key" in
       status|attempts|infra_failures|id|created|updated|schema)
         orchid_die "'$key' is kernel-owned — use task advance/unblock/retry" ;;
@@ -860,7 +1133,15 @@ case "$sub" in
       # the other end of the same defect: each one names the candidate it
       # describes, and this pass ages out the ones that describe a candidate
       # this task has since replaced (refresh_briefs, above).
-      refresh_briefs "$f" "$id" | atomic_write "$f"
+      #
+      # fm_write_task, not atomic_write (T034): atomic_write renames whatever
+      # its stdin gave it, so a producer that emitted nothing would truncate
+      # the task here exactly as fm_set's old pipeline did -- and `pipefail`
+      # reports the producer's failure only after that rename. Which is also
+      # why this is fm_write_task_from and not a pipe (T034 rework): the same
+      # "too late to act on" applies to a producer that emitted MOST of the
+      # task and then died, whose fragment fm_write_task would accept.
+      fm_write_task_from "$f" refresh_briefs "$f" "$id"
       # An operator hand-off is acknowledged AGAINST a candidate, and a rework
       # round exists to mint a different one -- so the acknowledgement does
       # not survive entry to rework, the same INV-07 symmetry the evidence
@@ -1385,9 +1666,12 @@ case "$sub" in
     # reads as the final word on top of the evidence rather than being buried
     # under it. Candidate-bound, as on the advance arm -- and briefs describing
     # a candidate this task has replaced are aged out in the same pass.
-    { refresh_briefs "$f" "$id"
-      printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"
-    } | atomic_write "$f"
+    #
+    # The two halves are ONE NAMED PRODUCER (T034 rework) rather than a `{ ; }`
+    # compound piped into the writer: fm_write_task_from has to be able to run
+    # the producer and read its status before anything is renamed, and a
+    # compound has no name to hand it. The status is what a pipe throws away.
+    fm_write_task_from "$f" refresh_briefs_with_guidance "$f" "$id" "$(now)" "$reason"
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
     # with the advance:rework arm and orchid-merge's rebase-reset) -- and, on
     # the same grounds, any operator hand-off recorded against the candidate
@@ -1500,7 +1784,7 @@ case "$sub" in
     # locations are most worth carrying forward -- if, and only if, that log
     # is still bound to the candidate being retried -- and, in the same pass,
     # the briefs already in the body that describe a candidate it is not.
-    refresh_briefs "$f" "$id" | atomic_write "$f"
+    fm_write_task_from "$f" refresh_briefs "$f" "$id"
     # The reason is DELIVERED, not merely journaled -- the task body is the
     # implementer's own input (pack_build copies this file into the capsule
     # as task.md), and the journal is not. `unblock` has always written it
@@ -1508,7 +1792,15 @@ case "$sub" in
     # silently dropped the diagnosis on the floor and the next attempt
     # repeated the same mistake with no way to tell why. Same shape as
     # unblock's, so the two verbs deliver identically.
-    { cat "$f"; printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"; } | atomic_write "$f"
+    #
+    # A NAMED PRODUCER, as on the unblock arm and for the same reason -- and
+    # this is the site where a failed producer hides best: a `cat` that stops
+    # partway still emits both `---` delimiters and a resolvable `id`, so the
+    # fragment passes every shape check fm_write_task can apply while the body
+    # it truncated is the task's entire rework history. Only the producer's own
+    # status distinguishes that from a complete document, and only reading it
+    # before the rename makes the distinction worth anything.
+    fm_write_task_from "$f" append_guidance "$f" "$(now)" "$reason"
     # Budget, journal-first (INV-08), and never a decrement of `attempts` --
     # see schedule_attempt_budget's header for why winding the counter back
     # would re-point this attempt at a previous attempt's envelopes. The

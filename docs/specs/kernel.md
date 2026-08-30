@@ -264,7 +264,10 @@ resolving to a discovered plugin whose capabilities satisfy the role
 descriptor (labeled `unverified` until the v1 capability suite passes it),
 engine binaries/auth (cheap no-op probes derived from resolved adapters —
 not a separate `engines=` list), explicit verification commands (or
-`--greenfield`), integration branch creatable, platform supported.
+`--greenfield`), integration branch creatable, platform supported, and every
+file in `.orchid/tasks/` parsing as a frontmatter document with an `id` — a
+zero-byte or frontmatter-less task file is a FAIL naming the path, since a task
+destroyed mid-flight (dogfood F34) presents nowhere else as damage.
 
 ## Task lifecycle
 
@@ -1024,6 +1027,73 @@ Neither mechanism is preferred over a suite that migrates its own store (a
 fixture, a temp file, an in-memory database the tests build). Where that is
 available it is strictly better, and `operator_prerequisite` should be left
 empty.
+**Every frontmatter value is ONE LINE (v1.1, dogfood F34).** A value carrying
+its own newline cannot be represented in a one-`key: value`-per-line document,
+so `orchid task set` and `orchid task create` refuse one BEFORE opening
+anything, naming the constraint. The rule is not new; the refusal is. Until it
+landed the write was attempted anyway, the rewrite died inside its own argument
+parsing, and the task file was left at ZERO BYTES — id, title, status, every
+field gone, exit status 0 — which is how `.orchid/tasks/T002.md` was lost on
+r-002 while an operator was setting a multi-paragraph `hook_guidance`. Single
+line is a reasonable rule; destroying the file when it is violated is not, so
+`fm_set` (`lib/frontmatter.sh`) is now rewrite-or-refuse as well: it renames a
+temp file over the task only once the rewrite has SUCCEEDED and produced a
+non-empty document, and no failure of any kind can leave a truncated task
+behind. The one writer whose value is machine-written prose — the driver
+attaching a hook's `.artifact.guidance` — folds it to a single line instead,
+that guidance being advisory input an autonomous round must not stop over.
+Because a destroyed task file is otherwise indistinguishable from a task that
+simply stopped existing, the READ end reports it too: `orchid task show` exits
+non-zero on an empty or unparseable task file (it exited 0 printing nothing),
+`orchid doctor` FAILs on one by name, and `orchid task list` renders it as a
+`DAMAGED` row keyed on the filename rather than as a row of empty fields — the
+row the driver's task walk used to skip in silence, which is what let a run
+whose task file had vanished report every task done.
+
+Unreadable means STRUCTURALLY unreadable, not only empty. The residue of a
+split value — one entry cut in half, the remainder left in the frontmatter as a
+line belonging to no key — carries both delimiters and still resolves `id`, so
+it reads as healthy to every line-oriented consumer and only the split field is
+wrong. Every line between the delimiters must therefore be an entry (`key:`,
+`key: value`, a `#` comment, or blank); anything else is named as malformed
+frontmatter, by the same predicate at the read end and the write end.
+
+The write end applies it to the KEY as well. `task set` takes its key off the
+command line, so `task set <id> 'hook guidance' "..."` — a space where an
+underscore was meant — used to append a line that is not an entry, exit 0, and
+leave the task DAMAGED to every reader from then on. A key must be a plain
+entry name (letters, digits, `_`, `-`, starting with a letter or `_`), refused
+by the verb naming the argument and by `fm_set` checking the document it staged.
+That is a bar on what can be STORED, never on which fields the kernel knows:
+an unknown but well-formed key is legal, since plugins and archetypes add their
+own. A write against a file that is ALREADY damaged is refused too, and said to
+be a different accident: rewriting it would bury the damage under a fresh value.
+
+Whole-document rewrites read their PRODUCER'S STATUS before the rename, not
+only the bytes it emitted (`fm_write_task_from`). A producer that dies partway
+through a task it is streaming has already emitted both delimiters, the
+frontmatter and part of the body, and that fragment is a well-formed document —
+so a byte check accepts it and the task silently loses its rework history, the
+same accident as the zero-byte file one layer up. In a pipe the producer's
+status arrives only after the rename has happened, which is why the rewrite
+arms name their producer instead of piping it, and why each producer checks its
+own steps rather than relying on `set -e` (errexit is suppressed in any command
+whose status is being read).
+
+Every remedy the single-line refusals print is a VERB — flatten the value, or
+record the prose in the task body with `task unblock`/`task retry --reason` —
+never an instruction to open the file, which the protocol forbids without
+qualification. And the verb it names must be one that can be RUN from the
+status the refusal fired in: both of those are gated (`unblock` to `blocked`,
+`retry` to `blocked`/`rework`) while the refusal fires most often on a `pending`
+task being planned, so the message names the one that is legal there — or says
+that none is, and names `task advance <id> blocked --reason` as the edge that
+reaches one, that transition being legal from every status. A remedy the
+operator cannot run is worse than none: it returns them to the file. The one
+exception to verbs-only is recovering a task file already destroyed, which
+`task show` and `doctor` answer with `git checkout <sha> -- <path>`: restoring
+a committed version is not a hand-edit, and no verb rebuilds a task's history
+from nothing.
 
 **Review immutability:** reviewers inspect exactly `base_sha..candidate_sha`;
 any candidate change invalidates reviews (see rebase rule). Incomplete or

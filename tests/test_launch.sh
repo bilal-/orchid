@@ -436,8 +436,11 @@ ORCHID_REPO="$pg3" HOME="$WORK/home" "$ORCHID_BIN" init >/dev/null
 # simply absent there, and a customized integration_branch silently fell
 # back to the hook's own hardcoded default -- bypassing that leg of the
 # guard. Fixed by resolving the name ONCE at install time (`orchid init`
-# substitutes `__INTEGRATION_BRANCH__` via sed, mirroring templates/task.md's
-# own placeholder idiom) and baking it into the installed hook file, which
+# substitutes `__INTEGRATION_BRANCH__` into templates/pre-push.sh with an
+# escaped `sed`; templates/task.md's own __ID__/__TITLE__ placeholders used to
+# be rendered the same way, but T034 moved that renderer off sed entirely after
+# a title containing `&` came out as the placeholder text) and baking it into
+# the installed hook file, which
 # never reads orchid.config again. Proves both halves: the baked name in the
 # installed hook file, and the guard actually firing when triggered from a
 # task WORKTREE checkout (not the main repo) that has no orchid.config at

@@ -547,7 +547,18 @@ sequence in
 2. Draft the roadmap: create each task with `orchid task create <id>
    <title>`, then fill in its spec via `orchid task set <id> <key> <value>`
    (acceptance criteria, `verification_commands`, `depends_on`, `risk_tier`
-   with `--reason`, ...). A task whose deliverable IS a check — a new gate, a
+   with `--reason`, ...). **Every frontmatter value is ONE LINE**, and this
+   is the step where that bites: `acceptance_criteria` is the longest field a
+   planner writes and prose is the natural way to write it, so `task set`
+   refuses a value carrying a newline — naming the constraint and changing
+   nothing. Flatten it (a literal `\n` is stored as those two characters and
+   read back unchanged); never work around it by editing the task file, which
+   the Preamble forbids outright. A title is one line for the same reason,
+   and `task create` refuses one that is not. The KEY is held to the same rule
+   — letters, digits, `_` and `-`, starting with a letter or `_` — because
+   `hook guidance` with a space is written as a line that is not an entry at
+   all, and a task carrying one is unreadable to every verb that touches it.
+   A task whose deliverable IS a check — a new gate, a
    probe, a lint, a verification command — states its RED case in the
    acceptance criteria, in the Preamble's terms: which failure the check
    detects, and how the suite watches it fire. A task that cannot state one
@@ -1766,7 +1777,15 @@ ones its archetype never declares.
     shape: `runners/orchid-launch <id> hook hook --hook on_verify_fail`,
     then `orchid jobs reconcile`) — an ok envelope's `.artifact.guidance`
     string gets attached to the task BEFORE the rework advance below:
-    `orchid task set <id> hook_guidance "<the guidance text>"`. Because that
+    `orchid task set <id> hook_guidance "<the guidance text>"` — **folded onto
+    one line first** (`tr '\n' ' '`), because a handler asked to explain a
+    failure writes paragraphs and every frontmatter value is a single line, so
+    `task set` refuses a newline-bearing value outright. Fold rather than
+    refuse: this guidance is advisory, it never changes a routing decision, and
+    stopping an autonomous round over a formatting detail nobody chose costs the
+    task its round for nothing. `orchid drive` folds it at exactly this step;
+    executing this file by hand means doing the same.
+    Because that
     hook resolves on a later pass, record the failed round first as
     `verify_fail_pending: a<attempt>:<candidate_sha>:<verify-log-sha256>`.
     While that exact receipt is current the later pass resumes the FAIL arm
@@ -2461,7 +2480,9 @@ one-pass driver could otherwise stop progressing in silence:
     an `optional` entry gating a transition, which is exactly what these rules
     forbid.
   `on_verify_fail`'s guidance is attached via `orchid task set <id>
-  hook_guidance` before the rework advance, exactly as above.
+  hook_guidance` before the rework advance, exactly as above — folded onto one
+  line, since that value is a handler's prose and a frontmatter value is one
+  line.
 - **A reviewer relaunch is keyed on the SLOT, never on a count.** `orchid
   jobs review-plan`'s table is the slot ledger: which slots exist and which
   engine each was routed to. A filed review is credited to a slot only when

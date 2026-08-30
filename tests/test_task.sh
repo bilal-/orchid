@@ -30,7 +30,11 @@ before_count="$(ls .orchid/tasks/*.md 2>/dev/null | wc -l | tr -d ' ')"
 rc=0; set_nope_out="$("$ORCHID_BIN" task set NOPE somekey someval 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task set on a nonexistent id must be refused"
 assert_match "no task NOPE" "$set_nope_out" "task set on a nonexistent id names it (clean die, not a raw awk error)"
-echo "$set_nope_out" | grep -qi "awk" && fail "task set on a nonexistent id must never leak a raw awk error"
+# Herestring, never `echo | grep -q` -- see the T034 block near the end of this
+# file for why the pipe makes a NEGATIVE assertion fail open. These two guard
+# the awk leak from the very pipeline T034 replaced, so they have to be able to
+# fire.
+grep -qi "awk" <<<"$set_nope_out" && fail "task set on a nonexistent id must never leak a raw awk error"
 
 rc=0; set_plan_out="$("$ORCHID_BIN" task set plan somekey someval 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task set plan must be refused (reserved id)"
@@ -39,7 +43,7 @@ assert_match "reserved" "$set_plan_out" "task set plan names it reserved"
 rc=0; unblock_nope_out="$("$ORCHID_BIN" task unblock NOPE2 --reason x 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task unblock on a nonexistent id must be refused"
 assert_match "no task NOPE2" "$unblock_nope_out" "task unblock on a nonexistent id names it (clean die, not a raw awk error)"
-echo "$unblock_nope_out" | grep -qi "awk" && fail "task unblock on a nonexistent id must never leak a raw awk error"
+grep -qi "awk" <<<"$unblock_nope_out" && fail "task unblock on a nonexistent id must never leak a raw awk error"
 
 rc=0; unblock_plan_out="$("$ORCHID_BIN" task unblock plan --reason x 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task unblock plan must be refused (reserved id)"
@@ -1351,3 +1355,322 @@ rm -f .orchid/reviews/T010-verify.log
 "$ORCHID_BIN" verify T010 >/dev/null \
   || fail "with no declaration there is no gate, whatever prerequisite_ack happens to hold"
 [ -f .orchid/reviews/T010-verify.log ] || fail "...and verify writes evidence again"
+# T034 (dogfood F34, and the identical accident on r-002's own
+# .orchid/tasks/T002.md): A NEWLINE IN A VALUE MUST BE REFUSED, NOT WRITTEN,
+# AND ABOVE ALL NOT ALLOWED TO DESTROY THE TASK FILE.
+#
+# What used to happen: `task set <id> <key> "<value with a newline>"` printed
+# "awk: newline in string" three times, EXITED 0, and left the task file at
+# ZERO BYTES -- id, title, status, archetype, branch, every field gone. Not a
+# rejected write: a destroyed file. It then failed quietly in both directions,
+# because every later `task set` against the empty file reported success too
+# and `task show` exited 0 printing nothing, so the only signal either dogfood
+# operator got was a grep coming back empty.
+#
+# The single-line rule itself is reasonable -- frontmatter is one `key: value`
+# per line. Destroying the file when it is violated is not. So the assertions
+# below are about BOTH halves: the refusal, and the file being byte-identical
+# afterwards.
+# ============================================================================
+make_scratch T034_KEEP
+# A FRESH id, and a CHECKED create. `task create` refuses an id that already
+# has a file ("task <id> exists"), and this file runs under `set -uo pipefail`
+# with no `-e`: an unchecked create against a taken id neither aborts nor
+# reports, it just leaves the block silently reading whatever the earlier case
+# left behind. T010 is exactly that trap -- the operator_prerequisite fixture
+# above walks it to `testing` -- so the green twin at the end of this block
+# would assert `status: pending` against a task that is not pending, and the
+# byte-identical check would be measuring a file this block never created.
+"$ORCHID_BIN" task create T013 "newline refusal" \
+  || fail "fixture: task create T013 must succeed (a taken id would make every assertion below read another case's task)"
+nl_file=".orchid/tasks/T013.md"
+cp "$nl_file" "$T034_KEEP/T013.before"
+
+# The value an operator actually types: multi-paragraph prose pasted into a
+# long field. `acceptance_criteria` and `hook_guidance` are where this happens,
+# and where losing the content hurts most.
+nl_value="$(printf 'first paragraph of the criteria\n\nsecond paragraph of the criteria')"
+rc=0; nl_out="$("$ORCHID_BIN" task set T013 acceptance_criteria "$nl_value" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set with a newline-bearing value must exit NON-ZERO (it used to exit 0 and leave the task file at zero bytes)"
+red_case 'task set with a value containing a newline: refused, non-zero exit'
+assert_match "newline" "$nl_out" "the refusal names the constraint it is enforcing (a newline in a single-line field), rather than reporting a tool error"
+# Herestring, never `echo "$nl_out" | grep -qi`: this file runs under `set -o
+# pipefail` (tests/helpers.sh line 2) and `grep -q` exits at its FIRST match,
+# SIGPIPEing the upstream `echo` mid-write -- pipefail then promotes that 141
+# to the pipeline's status, so `&& fail` is skipped for a pattern grep DID
+# find. On a NEGATIVE assertion that is the fail-open direction: the leak this
+# line exists to catch would go unreported precisely when it is present.
+grep -qi "awk" <<<"$nl_out" && fail "the refusal must not leak a raw awk error -- that message was the symptom of the file already being gone"
+# THE REMEDY IS A VERB (T034 rework). A refusal is the moment an operator is
+# most willing to open the task file themselves -- a verb has just declined to
+# store what they typed -- so this is the last message that may send them
+# there. PROTOCOL.md's Preamble forbids hand-editing anything under `.orchid/`
+# without qualification ("no frontmatter, no journal, no roadmap -- even when
+# you can see exactly what line would need to change"), and an earlier wording
+# of this refusal ended "put the prose in the task BODY (below the closing
+# '---' in .orchid/tasks/<id>.md)", which reads as an instruction to do it.
+grep -qE 'below the closing' <<<"$nl_out" \
+  && fail "the refusal must not point the operator INTO the task file: hand-editing anything under .orchid/ is forbidden outright, so a remedy that describes the file is one nobody is allowed to take"
+# ...AND EVERY VERB IT NAMES CAN BE RUN FROM WHERE IT IS PRINTED (T034 rework).
+# T013 is `pending`, which is where this refusal actually fires -- a long
+# `acceptance_criteria` is written while a task is being planned. The wording
+# that named `orchid task unblock <id> --reason` and `orchid task retry <id>
+# --reason` unconditionally handed the operator two commands that refuse them
+# right back: `unblock` dies "$id is not blocked" and `retry` exits 3 ("illegal
+# retry from pending"). A remedy that cannot be run is worse than none -- it
+# spends the operator's trust and returns them to the file anyway, which is the
+# one place they must not go.
+assert_eq pending "$("$ORCHID_BIN" task show T013 | grep '^status: ' | cut -d' ' -f2)" \
+  "fixture witness: T013 is pending, the status neither body-writing verb accepts -- which is what makes the remedy assertions below discriminating"
+assert_match "no verb writes prose there from status 'pending'" "$nl_out" \
+  "the refusal says so instead of naming a verb that would refuse the operator a second time"
+assert_match "orchid task advance T013 blocked --reason" "$nl_out" \
+  "...and names the edge that reaches a status where one of them IS legal, which is the universal transition every status has"
+assert_match "Flatten it to a single line" "$nl_out" \
+  "...and leads with the answer to the question actually asked: this value, in this field"
+[ -s "$nl_file" ] || fail "THE FILE IS EMPTY: a refused write destroyed the task, which is the whole defect"
+cmp -s "$T034_KEEP/T013.before" "$nl_file" \
+  || fail "a refused newline write must leave the task file BYTE-IDENTICAL"
+assert_eq T013 "$("$ORCHID_BIN" task show T013 | grep '^id: ' | cut -d' ' -f2)" \
+  "and the task is still fully readable after the refusal"
+
+# The GREEN twin, on the same key and the same check: a single-line value is
+# accepted and stored verbatim, so the refusal above is evidence of detection
+# rather than of a guard that rejects every value.
+"$ORCHID_BIN" task set T013 acceptance_criteria "one line of criteria is fine" \
+  || fail "a single-line value must still be accepted"
+assert_eq "one line of criteria is fine" \
+  "$("$ORCHID_BIN" task show T013 | grep '^acceptance_criteria: ' | cut -d' ' -f2-)" \
+  "an accepted single-line value is stored verbatim"
+green_case 'task set with a single-line value: accepted and stored verbatim'
+
+# THE KEY IS THE OTHER OPERAND, AND IT DESTROYS A TASK THE SAME WAY (T034
+# rework). `set` takes its key straight off the command line and the write is
+# `<key>: <value>`, so a key that is not a key -- a space where an underscore
+# was meant, which is the slip this field's name invites -- appends a line that
+# is not a frontmatter entry at all. Nothing objected: the write succeeded,
+# `task set` exited 0, and from that moment every reader of the task (`task
+# show`, `orchid doctor`, `task list`, the driver's walk) called it DAMAGED.
+# One typo in one argument, by the same mechanism as the newline -- something
+# that cannot be represented in a one-entry-per-line document, written anyway.
+cp "$nl_file" "$T034_KEEP/T013.keyshape"
+rc=0; badkey_out="$("$ORCHID_BIN" task set T013 'hook guidance' "shrink the diff" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set with a key that cannot be a frontmatter entry must exit NON-ZERO (it used to write it, exit 0, and leave the task unreadable)"
+red_case 'task set with a malformed key: refused, non-zero exit, task byte-identical'
+assert_match "hook guidance" "$badkey_out" \
+  "the refusal quotes the argument that was wrong, which is the one thing a library-level refusal about an unreadable document cannot say"
+assert_match "hook_guidance" "$badkey_out" \
+  "...and shows the key that was meant, since a space for an underscore is the whole mistake"
+cmp -s "$T034_KEEP/T013.keyshape" "$nl_file" \
+  || fail "a refused malformed key must leave the task file BYTE-IDENTICAL, exactly as the newline refusal does"
+"$ORCHID_BIN" task show T013 >/dev/null \
+  || fail "...and the task must still be readable afterwards -- the refusal is what keeps it that way"
+# The GREEN twin, one character apart: the key the operator meant is written.
+"$ORCHID_BIN" task set T013 hook_guidance "shrink the diff" \
+  || fail "the well-formed key one character away must still be accepted"
+assert_eq "shrink the diff" \
+  "$("$ORCHID_BIN" task show T013 | grep '^hook_guidance: ' | cut -d' ' -f2-)" \
+  "an accepted key stores its value"
+green_case 'task set with a well-formed key: accepted and stored'
+
+# THE REMEDY, FROM A STATUS WHERE THE VERB IT NAMES IS LEGAL. The refusal
+# T013 got above says no verb writes prose from `pending`; on a `blocked` task
+# the same refusal must name `unblock`, because there it can actually be run.
+# Both halves matter: a remedy that is always the same sentence is not advice,
+# and a remedy that names an unrunnable verb is worse than silence.
+"$ORCHID_BIN" task create T017 "the remedy follows the status" \
+  || fail "fixture: task create T017 must succeed (a taken id would make the assertions below read another case's task)"
+"$ORCHID_BIN" task advance T017 blocked --reason "fixture blocker for the remedy case" >/dev/null \
+  || fail "fixture: T017 must reach blocked, the status whose body-writing verb is unblock"
+rc=0; blocked_nl_out="$("$ORCHID_BIN" task set T017 acceptance_criteria "$nl_value" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "the newline refusal must fire from blocked too"
+assert_match "orchid task unblock T017 --reason" "$blocked_nl_out" \
+  "from blocked, the refusal names the verb that records prose in the task BODY and is legal right there"
+grep -qE "no verb writes prose there" <<<"$blocked_nl_out" \
+  && fail "...and must not claim none is available, which is only true away from blocked/rework"
+green_case 'the single-line refusal names a body-writing verb that is legal from the task status it fired in'
+
+# `task create` renders its template through fm_render_task_template, not
+# `fm_set` -- a different writer, and one that (since T034's rework) stores what
+# it is handed byte-for-byte, so an unguarded newline reaches the document as a
+# `title:` line split in two with the remainder sitting in the frontmatter as a
+# key-less line. fm_write_task's structural check refuses THAT document, so no
+# file is written either way; what the door guard adds is the diagnosis. The
+# assertions below are about the message as much as the refusal: which argument
+# was wrong, and what to do instead -- neither of which a backstop refusing an
+# unnamed line of a file the operator never saw can say.
+rc=0; create_nl_out="$("$ORCHID_BIN" task create T012 "$(printf 'title\nwith a newline')" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task create with a newline in the title must be refused"
+assert_match "newline" "$create_nl_out" "the create refusal names the constraint too"
+[ ! -e ".orchid/tasks/T012.md" ] \
+  || fail "a refused create must not leave a task file behind at all, least of all an empty one"
+# The remedy has to fit the caller. `task set` can send an operator to the task
+# BODY of a file that exists; a refused CREATE has no file at all, so pointing
+# at one is advice they cannot act on.
+grep -qE 'No task file was created' <<<"$create_nl_out" \
+  || fail "the create refusal must say no task file was created, rather than reusing 'task set's remedy, which sends the operator to a path that does not exist"
+grep -qE 'below the closing' <<<"$create_nl_out" \
+  && fail "and the create refusal must not describe the inside of a task file either -- hand-editing .orchid/ is forbidden, and here the file does not even exist"
+red_case 'task create with a newline in the title: refused, non-zero exit, no file written'
+
+# ---------------------------------------------------------------------------
+# THE RENDER END (T034 rework -- the attempt-1 gap). `task create` used to
+# render its template with `sed -e "s|__TITLE__|$title|g"`, and a sed
+# REPLACEMENT string is a small language rather than literal text. Two of its
+# metacharacters are ordinary characters in a title an operator types, and both
+# failed SILENTLY -- sed exits 0, the task file is well-formed frontmatter,
+# `task show` prints it happily, and only the title is wrong:
+#
+#   `&`  stands for the WHOLE MATCH, so `parser & lexer` was written out as
+#        `parser __TITLE__ lexer` -- the placeholder reinstated into the value
+#        that was supposed to replace it.
+#   `\n` (the two characters, which is what an operator types when flattening
+#        prose onto one line) is IMPLEMENTATION-DEFINED: GNU sed turns it into a
+#        REAL newline, splitting `title:` across two lines and landing the
+#        remainder as a key-less frontmatter line; BSD sed turns it into the
+#        single letter `n`.
+#
+# THE ASSERTIONS PIN THE ROUND TRIP -- the bytes back out equal the bytes in --
+# rather than either platform's particular wrong answer. That is deliberate:
+# pinning "GNU sed splits the line" would pass vacuously on BSD sed and pinning
+# "BSD sed eats the backslash" would pass vacuously on GNU, so a case written
+# either way is green on half the machines that run it while the defect is fully
+# present. Written as a round trip it is red on both, and stays red for whatever
+# escape a future sed invents.
+# ---------------------------------------------------------------------------
+amp_title='parser & lexer & 100% & rising'
+"$ORCHID_BIN" task create T014 "$amp_title" \
+  || fail "fixture: task create T014 must succeed (a metacharacter title is a legal title)"
+assert_eq "$amp_title" "$("$ORCHID_BIN" task show T014 | grep '^title: ' | cut -d' ' -f2-)" \
+  "a title containing '&' is stored byte-for-byte, never expanded into the placeholder text it replaced"
+
+# The implementation-defined half, asserted as three facts rather than one,
+# because the two sed families break it in different places: the value round
+# trips (both), the file gained no line (GNU's real newline), and exactly one
+# title line remains (GNU's key-less remainder).
+esc_title='flatten it: a\nb, and a\ttab, and a lone \ on its own'
+lines_plain="$(grep -c '' ".orchid/tasks/T014.md")"
+"$ORCHID_BIN" task create T015 "$esc_title" \
+  || fail "fixture: task create T015 must succeed (a backslash is a legal character in a title)"
+assert_eq "$esc_title" "$("$ORCHID_BIN" task show T015 | grep '^title: ' | cut -d' ' -f2-)" \
+  "a literal backslash-n in a title is stored as the two characters it is (GNU sed made it a real newline; BSD sed made it the letter n)"
+assert_eq "$lines_plain" "$(grep -c '' ".orchid/tasks/T015.md")" \
+  "and the rendered task has exactly as many lines as one rendered from the same template without escapes -- an expanded escape would have split the title line in two"
+assert_eq 1 "$(grep -c '^title: ' ".orchid/tasks/T015.md")" \
+  "exactly one title line, so no remainder was left behind as a key-less frontmatter line"
+
+# A substituted value must be INERT once placed. The old renderer was one sed
+# pass PER PLACEHOLDER, and each later pass rescanned text the earlier ones had
+# already written -- so a title naming a placeholder that sorts after __TITLE__
+# was itself substituted. `__DATE__` is the discriminating one: its pass ran
+# last.
+ph_title='why __DATE__ and __ID__ are spelled that way'
+"$ORCHID_BIN" task create T016 "$ph_title" \
+  || fail "fixture: task create T016 must succeed"
+assert_eq "$ph_title" "$("$ORCHID_BIN" task show T016 | grep '^title: ' | cut -d' ' -f2-)" \
+  "a title that names a placeholder is stored literally -- text already substituted is never rescanned"
+assert_eq T016 "$("$ORCHID_BIN" task show T016 | grep '^id: ' | cut -d' ' -f2)" \
+  "...while the template's OWN __ID__ placeholder was still substituted, so the single scan is a scan and not a skipped pass"
+assert_match '^created: [0-9]{4}-[0-9]{2}-[0-9]{2}T' "$("$ORCHID_BIN" task show T016)" \
+  "...and so was its __DATE__, which is the placeholder the title above impersonates"
+
+# THE OTHER READER. `task show` has read every one of these already -- each
+# assertion above went through it. The second reader is `orchid doctor`, whose
+# task-file check (the read end of this same T034 work, exercised against
+# DAMAGED files in tests/test_init_doctor.sh) parses the frontmatter of every
+# task on disk. A title carrying '&', a backslash escape or a placeholder name
+# has to read as an intact task there too, not as damage.
+# Asserted by LINE, never by doctor's exit code: that code is its global verdict
+# over a hand-built fixture repo, so coupling this case to it would go red for
+# reasons that have nothing to do with task files.
+create_doctor_out="$("$ORCHID_BIN" doctor 2>&1 || true)"
+grep -q '^FAIL: task file' <<<"$create_doctor_out" \
+  && fail "doctor must not report a task created with a metacharacter title as damaged (out: $create_doctor_out)"
+assert_match '^ok: task files: [0-9]+ present, each with parseable frontmatter and an id' \
+  "$create_doctor_out" \
+  "doctor parses the frontmatter of every task in this fixture, metacharacter titles included"
+green_case 'task create with & / backslash / placeholder-name titles: stored byte-for-byte, read back by both task show and doctor'
+
+# ---------------------------------------------------------------------------
+# ...AND THE READ END. A task file that has already been destroyed (by an
+# older orchid, an interrupted write, a bad restore) must be reported as
+# DAMAGED by the verb whose entire job is to show it. `cat` on a zero-byte file
+# prints nothing and exits 0, which is indistinguishable from a healthy verb
+# answering about a task with nothing in it.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T011 "the shape a destroyed task file leaves behind" \
+  || fail "fixture: task create T011 must succeed (see the checked create above for why an unchecked one is silent here)"
+cp ".orchid/tasks/T011.md" "$T034_KEEP/T011.before"
+: > ".orchid/tasks/T011.md"
+[ ! -s ".orchid/tasks/T011.md" ] || fail "fixture: T011.md must be zero bytes for this case to mean anything"
+
+rc=0; show_empty_out="$("$ORCHID_BIN" task show T011 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task show on an EMPTY task file must exit non-zero (it used to exit 0 and print nothing)"
+red_case 'task show against a zero-byte task file: refused, non-zero exit'
+assert_match "EMPTY" "$show_empty_out" "task show says the file is empty instead of printing nothing"
+assert_match "DAMAGED" "$show_empty_out" "and names it as damage, not as a task that merely has no content"
+
+# The other half of the quiet failure: a write against the already-destroyed
+# file used to report success, so nothing ever signalled that the task had
+# stopped existing.
+rc=0; set_empty_out="$("$ORCHID_BIN" task set T011 title "is anything still here" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set against an already-empty task file must not report success"
+assert_match "empty" "$set_empty_out" "the write refusal says the document it would have produced is empty"
+
+# Non-empty but frontmatter-less: the same class, reached from a partial
+# restore rather than a truncation.
+printf 'the frontmatter is gone but the body survived\n' > ".orchid/tasks/T011.md"
+rc=0; show_nofm_out="$("$ORCHID_BIN" task show T011 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task show on a frontmatter-less task file must exit non-zero"
+assert_match "no frontmatter" "$show_nofm_out" "task show names the missing frontmatter delimiter"
+
+# ---------------------------------------------------------------------------
+# THE LIST END (T034 rework), while T011 is still damaged. `task list` prints
+# three fields read straight out of frontmatter, so a damaged file used to
+# render as `<tab><tab>` -- a blank line among the tasks. That row is the
+# reason this defect presents as "a task that simply stopped existing":
+#
+#   * an operator scanning the list sees nothing worth reading, which is what
+#     both dogfood operators did before an unrelated grep came back empty;
+#   * the driver's task walk reads this very list and drops any row with an
+#     empty id, so the task is skipped in SILENCE -- and the walk's own count
+#     of what it saw is how a run decides every task is done.
+#
+# The id comes from the FILENAME, which is the kernel's own id-to-path mapping
+# and the one part of a task damage cannot erase.
+# ---------------------------------------------------------------------------
+list_tab="$(printf '\t')"
+rc=0; list_damaged_out="$("$ORCHID_BIN" task list 2>&1)" || rc=$?
+assert_eq 0 "$rc" \
+  "task list must still exit 0 with a damaged task file present -- it is read through a process substitution whose status nobody sees, so the ROW is the signal"
+assert_match "^T011${list_tab}DAMAGED${list_tab}" "$list_damaged_out" \
+  "the damaged task gets a row naming it and saying DAMAGED, never a row of empty fields"
+assert_match "^T011${list_tab}DAMAGED${list_tab}.*no frontmatter" "$list_damaged_out" \
+  "...carrying the same reason task show gave, so the list answers the question rather than only raising it"
+grep -qE "^${list_tab}${list_tab}" <<<"$list_damaged_out" \
+  && fail "no row of empty fields may remain -- that is the row the driver walk skips in silence"
+red_case 'task list with a damaged task file: a DAMAGED row, never a row of empty fields'
+# The GREEN twin on the same output: every intact task in this fixture is still
+# listed normally, so the row above is evidence of detection and not of a list
+# that has started shouting about everything.
+assert_match "^T013${list_tab}pending${list_tab}newline refusal$" "$list_damaged_out" \
+  "an intact task is still listed as id/status/title in the same output"
+green_case 'task list with intact task files: id/status/title rows, unchanged'
+
+# GREEN twin for the read end, in this same file: an intact task file is still
+# printed in full, exit 0.
+show_ok_out="$("$ORCHID_BIN" task show T013)" || fail "task show on a healthy task must still exit 0"
+assert_match "^id: T013$" "$show_ok_out" "task show on a healthy task still prints its frontmatter"
+assert_match "^status: pending$" "$show_ok_out" "task show on a healthy task prints the whole document, not just a probe"
+assert_match "^title: newline refusal$" "$show_ok_out" \
+  '...and prints a field the fm_check probe never reads, so show still cats the whole document rather than echoing its probe'
+green_case 'task show against an intact task file: printed in full, exit 0'
+
+# T011 is restored before this file ends. A deliberately damaged task file left
+# lying in the fixture is a trap for whatever case gets appended after this one:
+# `task list` renders it as a row of empty fields and every scheduler read in
+# this repo would see a task with no status at all -- which is exactly the
+# failure this block is about, arriving as an unrelated test's mystery.
+cp "$T034_KEEP/T011.before" ".orchid/tasks/T011.md"
+"$ORCHID_BIN" task show T011 >/dev/null \
+  || fail "the fixture teardown must leave T011 readable again"
