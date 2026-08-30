@@ -108,7 +108,12 @@
 # still in the clone anybody makes of that branch afterwards, and still on its
 # way into whatever the branch is merged into -- which is the entire leak.
 # Both questions are therefore asked: the TIP TREE (the shape above), and
-# whether any commit this push makes NEWLY REACHABLE touched `.orchid` at all.
+# whether any commit this push makes NEWLY REACHABLE CARRIES `.orchid` in its
+# own tree. Carries, not touches: a deletion commit touches the path and
+# publishes nothing, so a ref whose remote copy already holds run state can be
+# cleaned up with exactly the commit the refusal asks for -- while the
+# add-then-delete history above still fails, on the commit that ADDED the
+# files, whose tree carries every one of them.
 #
 # "Newly reachable" is measured against WHAT THE REMOTE ALREADY HOLDS ON THE
 # DESTINATION REF, and against nothing else. That bound is the whole safety of
@@ -149,27 +154,52 @@ carries_run_state() {
 }
 
 # history_carries_run_state <tip> [<baseline>...] -- true when any commit
-# reachable from <tip> and NOT from any <baseline> ever touched `.orchid`.
-# A commit that ADDED those paths and a later commit that DELETED them both
-# touch the path, so the add-then-delete branch answers true, which is the
-# whole point of asking.
+# reachable from <tip> and NOT from any <baseline> CARRIES `.orchid` IN ITS
+# TREE. The path-limited walk is only how the candidates are found cheaply;
+# the tree is what decides, and the difference between those two questions is
+# an entire class of false refusal.
+#
+# TOUCHING THE PATH IS NOT PUBLISHING IT. `git rm -r .orchid && git commit`
+# touches `.orchid` and carries none of it: its tree is smaller than its
+# parent's. Ask only "did any new commit touch the path" and the CLEANUP push
+# -- a ref whose remote copy already holds run state, pushed a single deletion
+# commit to get rid of it -- is refused for doing the very thing the refusal
+# asks for, with no way through but the override. Asking the tree keeps both
+# answers: the deletion commit's tree is clean and passes, while an
+# ADD-THEN-DELETE history still fails on the commit that added them, whose
+# tree carries every file the push would publish.
+#
+# The two readings meet exactly at the boundary, which is why this is a
+# correction and not a loosening: if a newly reachable commit's tree is clean
+# and its parent's is not, that parent is either newly reachable too -- and is
+# then the commit this returns true on -- or it is part of the baseline, which
+# means the remote already holds those objects on this very destination and
+# this push introduces nothing. A brand-new branch has no baseline at all, so
+# every ancestor is newly reachable and the commit that added the files is
+# always among them.
 #
 # `--full-history` is load-bearing: the default walk simplifies merges away, so
 # a feature branch that took run state in through one side of a merge and whose
 # tip matches its first parent can have the very commit that carries it pruned
-# out of the answer. `--max-count=1` because one is proof and the walk stops.
+# out of the answer. The walk is not capped at one commit any more -- the first
+# candidate may be a deletion -- but it stops at the first candidate whose tree
+# carries state, and rev-list hands them over newest-first, so a cleanup suffix
+# costs one `ls-tree` per deletion commit.
 #
 # `--not` is emitted only when there is something to exclude -- a bare `--not`
 # with an empty list is a nonsense command line, and this must never be the
 # reason a push dies.
 history_carries_run_state() {
-  local tip="$1"
+  local tip="$1" c
   shift
-  if [ "$#" -gt 0 ]; then
-    [ -n "$(git rev-list --full-history --max-count=1 "$tip" --not "$@" -- .orchid 2>/dev/null)" ]
-  else
-    [ -n "$(git rev-list --full-history --max-count=1 "$tip" -- .orchid 2>/dev/null)" ]
-  fi
+  local -a range
+  range=("$tip")
+  [ "$#" -gt 0 ] && range+=(--not "$@")
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    carries_run_state "$c" && return 0
+  done < <(git rev-list --full-history "${range[@]}" -- .orchid 2>/dev/null)
+  return 1
 }
 
 blocked=0

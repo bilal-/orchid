@@ -2303,6 +2303,14 @@ If your repository tracks run state on purpose, `ORCHID_ALLOW_PUSH=1` once is
 still the answer — after that push the remote holds those commits and every
 later push of that ref goes through untouched.
 
+**Stopping there, on a ref that already carries it, is not refused.** What the
+hook asks of each newly reachable commit is whether that commit's own *tree*
+carries `.orchid/`, not whether it touched the path — so on a branch the remote
+already tracks run state on, a single `git rm -r .orchid && git commit` pushes
+normally: nothing in it is new to that destination. What stays refused is
+adding those files back and deleting them again before pushing, because a
+commit being sent carries them whatever the commit after it does.
+
 **Your repository is already past `planning` and you want the current guard.**
 `orchid start` refuses a run that has left planning — it is a setup command,
 not a resume — so the upgrade above cannot reach a repository mid-run, which

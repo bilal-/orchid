@@ -1499,6 +1499,80 @@ again37b="$(git -C "$r37_g" push origin scratch/archive 2>&1)" || rc=$?
 [ "$rc" -eq 0 ] || fail "the destination the override was spent on must stay exempt without it (got: $again37b)"
 green_case 'the ref an override was spent on stays exempt on its own later pushes'
 
+# ---------------------------------------------------------------------------
+# T037 -- THE CLEANUP PUSH IS THE ONE THE REFUSAL ASKS FOR.
+#
+# The history half asks about every commit a push makes newly reachable, and
+# the cheap way to ask it -- `rev-list -- .orchid` -- answers "did any of them
+# TOUCH the path". A deletion touches the path and publishes nothing. So on a
+# ref whose remote copy already carries run state (a repository that pushed it
+# once with the override, orchid's own among them), the single commit that
+# removes `.orchid/` going forward is refused for doing exactly what the
+# message asks, with no way through but the override that says "publish it".
+#
+# What must decide is each newly reachable commit's TREE: the deletion's is
+# clean, so this push introduces nothing the destination does not already hold.
+# Its twin below is the half that keeps this from being a blanket exemption.
+#
+# RED (before this fix): the cleanup push is refused, told that its history
+# publishes run state, and pointed at filter-repo to rebuild a branch whose
+# every `.orchid` object is already sitting on the remote it is pushing to.
+# ---------------------------------------------------------------------------
+git -C "$r37_g" branch deliberate/tracked orchid/integration
+rc=0
+ORCHID_ALLOW_PUSH=1 git -C "$r37_g" push origin deliberate/tracked >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "fixture: the deliberate publication of a run-state branch must succeed under the override"
+git -C "$r37_g" fetch -q origin || fail "fixture: the fetch materializing the tracking ref must succeed"
+[ -n "$(git -C "$r37_g" ls-tree refs/remotes/origin/deliberate/tracked -- .orchid)" ] \
+  || fail "fixture: the DESTINATION's remote copy must already carry .orchid/, or this is not the cleanup shape at all"
+
+clean37_wt="$W/r37-gerrit-cleanup"
+git -C "$r37_g" worktree add -q "$clean37_wt" deliberate/tracked
+git -C "$clean37_wt" rm -rq .orchid
+git -C "$clean37_wt" commit -q -m "operator: stop carrying run state on this branch from here on"
+git -C "$r37_g" worktree remove --force "$clean37_wt"
+# Non-vacuity, both directions. The newly reachable set must TOUCH `.orchid`
+# (else the old touch-based walk would have passed it anyway and this case
+# proves nothing), and no commit in it may CARRY it (else the fix would be
+# waving through a real leak rather than a cleanup).
+[ -n "$(git -C "$r37_g" rev-list --full-history refs/remotes/origin/deliberate/tracked..deliberate/tracked -- .orchid)" ] \
+  || fail "fixture: the cleanup commit must touch .orchid/, or the refused-before shape is not reproduced"
+while IFS= read -r c37; do
+  [ -n "$c37" ] || continue
+  [ -z "$(git -C "$r37_g" ls-tree "$c37" -- .orchid)" ] \
+    || fail "fixture: no commit this push adds may carry .orchid/ in its tree, or it is a leak and must stay refused"
+done <<<"$(git -C "$r37_g" rev-list refs/remotes/origin/deliberate/tracked..deliberate/tracked)"
+rc=0
+cleanup37="$(git -C "$r37_g" push origin deliberate/tracked 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a deletion-only push at a destination whose remote copy already carries run state must go through (got: $cleanup37)"
+git -C "$r37_g" fetch -q origin || fail "fixture: the confirming fetch must succeed"
+[ -z "$(git -C "$r37_g" ls-tree refs/remotes/origin/deliberate/tracked -- .orchid)" ] \
+  || fail "and the cleanup must actually have landed, not merely not-errored"
+red_case 'a cleanup-only push where the remote copy already carries run state is no longer refused'
+
+# The GREEN twin, on the SAME ref: the allowance is about what a push
+# introduces, never about the ref having been forgiven once. Add `.orchid/`
+# back and delete it again, and the add-then-delete history is refused exactly
+# as it is on a virgin branch -- because one of the commits being sent carries
+# those files in its tree, whatever the commit after it does.
+recontam37_wt="$W/r37-gerrit-recontam"
+git -C "$r37_g" worktree add -q "$recontam37_wt" deliberate/tracked
+mkdir -p "$recontam37_wt/.orchid"
+printf 'journal: a new run, on a branch that was cleaned\n' > "$recontam37_wt/.orchid/journal.md"
+git -C "$recontam37_wt" add .orchid/journal.md
+git -C "$recontam37_wt" commit -q -m "run state back on the branch"
+git -C "$recontam37_wt" rm -rq .orchid
+git -C "$recontam37_wt" commit -q -m "and deleted again before pushing"
+git -C "$r37_g" worktree remove --force "$recontam37_wt"
+[ -z "$(git -C "$r37_g" ls-tree deliberate/tracked -- .orchid)" ] \
+  || fail "fixture: the tip must be clean, or this is the tip case and says nothing about the history walk"
+rc=0
+recontam37="$(git -C "$r37_g" push origin deliberate/tracked 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "an add-then-delete history must stay refused even on a ref whose earlier cleanup was allowed (got: $recontam37)"
+assert_match "in the HISTORY this push publishes" "$recontam37" \
+  "and it is the history half speaking, since this tip is clean too"
+green_case 'a cleanup allowance is not a ref-wide exemption: re-added run state is refused again'
+
 # ===========================================================================
 # 5 -- worktrees: create at an explicit path, reuse only an EXACT integration
 # checkout, never adopt or overwrite anything else.

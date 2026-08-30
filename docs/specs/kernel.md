@@ -2116,13 +2116,26 @@ because the kernel never performs the merge that leaks it and never may:
   history half is not redundancy: a push sends commits, not a tree, so `git rm
   -r .orchid && git commit` leaves a clean tip over a history that still
   publishes every file, which is the shape a tip-only test waves through.
-  "Newly reachable" is measured against the remote's own copy of the ref (the
-  sha git hands the hook) plus that remote's tracking refs, so commits the
-  remote already holds are never counted and the deliberate-remote exemption
-  below keeps working unchanged. Push is the chokepoint rather than merge,
-  because a squash, a cherry-pick or a rebase carries the files across
-  without a merge commit, and a hosted merge request is merged where no local
-  hook runs at all. A branch whose remote copy already tracks run state is
+  "Newly reachable" is measured against **the destination ref and nothing
+  else** — for an ordinary branch, the remote's own copy of the ref being
+  pushed (the sha git hands the hook); for a Gerrit upload, where that sha is
+  all zeros by construction, the remote-tracking ref of the target branch when
+  it is present locally, and otherwise no baseline at all, which walks the
+  whole history and fails closed. No other remote-tracking ref stands in:
+  `ORCHID_ALLOW_PUSH=1` is a deliberate publication of ONE ref, and a baseline
+  spanning the remote at large would let one override push park the
+  contaminated commits on a scratch ref and every later push of that identical
+  history walk onto `main` unrefused. What the walk asks of each newly
+  reachable commit is whether its **tree carries** `.orchid`, not whether the
+  commit touched the path: a deletion commit touches it and publishes nothing,
+  so a ref whose remote copy already holds run state can be cleaned up by
+  exactly the commit the refusal asks for, while an add-then-delete history
+  still fails on the commit that added the files. The two readings differ only
+  where the parent of a clean-tree commit is itself in the baseline — where
+  the remote already holds those objects on this destination. Push is the
+  chokepoint rather than merge, because a squash, a cherry-pick or a rebase
+  carries the files across without a merge commit, and a hosted merge request
+  is merged where no local hook runs at all. A branch whose remote copy already tracks run state is
   exempt, so a deliberately self-hosted repository is asked once and never
   again — one `ORCHID_ALLOW_PUSH=1` push puts those commits on the remote, and
   every later push of that ref is then exempt by the same baseline. Gerrit's
