@@ -319,6 +319,49 @@ resolve_engine_dir_any() {
   printf '%s\n' "$hit"
 }
 
+# resolve_engine_name_any <name-or-qualified-id> -- the INSTALL-DIRECTORY NAME
+# of the plugin named either way. Same question resolve_engine_dir_any answers,
+# in the vocabulary a role chain is written in.
+#
+# WHY IT IS A FUNCTION AND NOT A PARAMETER EXPANSION. Every gate that compares a
+# recorded actor against a chain has to cross this boundary: `role.implementer`
+# names engines the way config does (`agy`), while `implementer_engine_id`
+# records the id the implement envelope reported, minus the `orchid/` prefix
+# libexec/orchid-task strips (`acme/foo`). The cheap crossing -- take the
+# basename, `${id##*/}` -- is right only because `orchid plugins install` HAPPENS
+# to place a plugin in a directory named after its id's basename. It is not a
+# rule: a hand-placed, vendored or renamed directory keeps whatever id its
+# manifest claims, and then the basename names a chain entry that does not exist
+# (so a caller excluding it excludes nothing) or, worse, one that belongs to a
+# different publisher (so the caller excludes a stranger). lib/review.sh's
+# _review_engine_name_for_qid already refuses the bare strip for exactly this
+# reason; this is the same refusal, available to callers that have no routing
+# table to walk.
+#
+# THE ANSWER COMES OUT OF THE REGISTRY, never out of the string. The lookup is
+# resolve_engine_dir_any's -- so precedence, the duplicate-NAME refusal (INV-10)
+# and the repo-local trust gate are applied by the functions that own them --
+# and the name returned is the basename OF THE DIRECTORY THAT RESOLVED, which is
+# by construction the name resolve_engine_dir (and therefore every chain walk)
+# looks a plugin up by.
+#
+# Three outcomes, same as resolve_engine_dir_any, and a caller must read the
+# STATUS: 0 with one line (resolved), 1 with nothing (nothing installed answers
+# to that name or claims that id), 2 with nothing (AMBIGUOUS -- two installed
+# plugins claim it, and picking one is precedence-by-shadow). A caller that
+# cannot identify the actor must say so rather than guess: see the rework
+# failover in runners/orchid-drive, which withholds its reroute CLAIM instead of
+# falling back to the basename it just declined to trust.
+#
+# Callers must additionally source lib/manifest.sh (manifest_get).
+resolve_engine_name_any() {
+  local name="$1" dir rc=0
+  dir="$(resolve_engine_dir_any "$name")" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  dir="${dir%/}"
+  printf '%s\n' "${dir##*/}"
+}
+
 # resolve_role_checked <repo> <role> -- resolves the role's engine (same
 # lookup as resolve_role) then gates it on capability eligibility (lib/
 # roles.sh's role_eligible against the engine's manifest capabilities).
@@ -342,7 +385,8 @@ resolve_role_checked() {  # repo role -> engine name, or exit 1 with a reason
   echo "$engine"
 }
 
-# resolve_role_available <repo> <role> [step] -- walks resolve_role_chain and
+# resolve_role_available <repo> <role> [step] [exclude-engine] -- walks
+# resolve_role_chain and
 # prints the first entry that is (a) discovered (resolve_engine_dir), (b)
 # role-eligible (role_eligibility_reason), (c) -- when a <step> is given --
 # not refused that step by the kernel's own capability table, (d)
@@ -354,6 +398,17 @@ resolve_role_checked() {  # repo role -> engine name, or exit 1 with a reason
 # skips any chain entry that equals `resolve_role <repo> orchestrator`'s
 # engine -- the engine that drafted a plan never critiques its own draft --
 # regardless of that entry's chain position.
+#
+# <exclude-engine> IS THAT SAME SKIP, MADE A PARAMETER (T025): one engine the
+# caller wants passed over regardless of its chain position. It is independent
+# of <step> on purpose -- the driver's rework failover has to skip the engine
+# that did not converge WITHOUT letting an incapable one take the work, so the
+# capability gate below still applies to every remaining entry. Two consecutive
+# attempts whose failure output was byte-identical are evidence that this engine
+# is not converging on this task, and the next attempt goes to the next capable
+# entry in the same chain. It is a PREFERENCE, never a requirement: a chain with
+# no other eligible entry answers exit 14, and the caller is expected to
+# dispatch unexcluded rather than stall the task over a routing nicety.
 #
 # WHY SELECTION IS OPERATION-AWARE AT ALL (T018/INV-16). Without <step> this
 # walk answers "who may hold this ROLE", and the caller then discovers -- one
@@ -389,7 +444,7 @@ resolve_role_checked() {  # repo role -> engine name, or exit 1 with a reason
 # plus lib/capability.sh when (and only when) they pass a <step>.
 resolve_role_available() {
   local repo="$1" role="$2" step="${3:-}"
-  local chain engine dir reason skip_engine="" idx=0 disq=""
+  local exclude="${4:-}" chain engine dir reason skip_engine="" idx=0 disq=""
   local why crc
 
   if [ -n "$step" ] && ! declare -F capability_routing_refusal >/dev/null 2>&1; then
@@ -410,6 +465,11 @@ resolve_role_available() {
 
     if [ -n "$skip_engine" ] && [ "$engine" = "$skip_engine" ]; then
       disq="$disq$engine: same engine as orchestrator (plan_critic cannot critique its own plan); "
+      continue
+    fi
+
+    if [ -n "$exclude" ] && [ "$engine" = "$exclude" ]; then
+      disq="$disq$engine: excluded by the caller; "
       continue
     fi
 

@@ -78,6 +78,22 @@ pack_build "$WORK" T001 implement "$WORK/pimpl_noless" || fail "implementer pack
 [ ! -f "$WORK/pimpl_noless/lessons.md" ] || fail "no lessons.md on disk -> pack has none either"
 assert_match '"lessons.md"' "$(jq -c '.omitted' "$WORK/pimpl_noless/pack.json")" "lessons.md listed omitted when absent"
 
+# ...and an omission is never ERASED by a later one. context.md's absent-arm
+# assigned `omitted` outright instead of appending to it, so a pack missing
+# BOTH reported only context.md -- lessons.md vanished from the manifest
+# entirely, and any later truncatable added ahead of it would too. An input the
+# engine never received, recorded nowhere, is the one thing pack.json exists to
+# make impossible. (T025's rework.md is not in this list by design: it is never
+# a budget omission -- it is shipped, refused outright, or withheld as an
+# items[] entry carrying the reason it did not travel.)
+rm -f .orchid/context.md
+pack_build "$WORK" T001 implement "$WORK/pimpl_neither" || fail "implementer pack build (no lessons.md, no context.md)"
+omitted_both="$(jq -c '.omitted' "$WORK/pimpl_neither/pack.json")"
+assert_match '"context.md"' "$omitted_both" "context.md listed omitted when absent"
+assert_match '"lessons.md"' "$omitted_both" \
+  "lessons.md's omission survives context.md's -- a later omission appends, it never overwrites the list (omitted: $omitted_both)"
+echo "repo context here" > .orchid/context.md
+
 # trim priority: a budget with room for EITHER lessons.md OR context.md, but
 # not both, must keep lessons.md and drop context.md entirely (lessons is
 # budgeted first).
@@ -215,3 +231,226 @@ pack_build "$WORK" T001 review "$WORK/pwt_cfg" "workspace_read=1" || fail "workt
 [ -f "$WORK/pwt_cfg/diff.stat" ] || fail "custom pack_diff_inline_max_bytes triggers diff.stat"
 [ ! -f "$WORK/pwt_cfg/diff.patch" ] || fail "custom pack_diff_inline_max_bytes omits diff.patch"
 rm -f orchid.config
+
+# ---------------------------------------------------------------------------
+# T025: rework.md -- the previous attempt's failure, fed back into the attempt
+# that has to fix it. `implement` only, budgeted ahead of lessons.md and
+# context.md, and built from the round-scoped logs `orchid task advance <id>
+# rework` captures before it invalidates the verify evidence (lib/rework.sh).
+#
+# A pack that never carried this is the OTHER half of dogfood finding F27: the
+# capture alone makes the failure survivable, but an attempt still handed the
+# same brief as the last one still produces the same answer.
+# ---------------------------------------------------------------------------
+mk_rework_log() {  # mk_rework_log <file> <date> <body> [candidate-it-claims]
+  # The `candidate:` header is not decoration: every captured round claims the
+  # candidate it was produced against, and the brief is only allowed to speak
+  # for a round whose claim matches the task's CURRENT candidate. Defaults to
+  # this fixture's candidate; the staleness cases below pass another.
+  local claim="${4:-$cand}"
+  { printf 'date: %s\n' "$2"
+    printf 'sha: %s\n' "$cand"
+    printf 'candidate: %s\n' "$claim"
+    printf 'cwd: %s\n' "$WORK"
+    printf 'command: run-the-suite\n'
+    printf -- '---\n'
+    printf '%s\n' "$3"
+    printf 'exit: 1\n'
+  } > "$1"
+}
+mkdir -p .orchid/reviews
+
+# No captured round at all (a first attempt): no rework.md, and no error.
+pack_build "$WORK" T001 implement "$WORK/prw_none" || fail "implement pack build (no captured rework)"
+[ ! -f "$WORK/prw_none/rework.md" ] || fail "a first attempt has no previous failure to feed back"
+
+# One captured round: the brief carries the output verbatim.
+mk_rework_log .orchid/reviews/T001-r1-rework.log 2026-08-01T00:00:00Z "FAIL OrderTest: assertSame order differs"
+printf -- '---\nid: T001\nstatus: rework\nbase_sha: %s\ncandidate_sha: %s\nrework_rounds: 1\nrework_signature: aaaa1111\nrework_signature_repeats: 1\n---\nSpec body.\n' \
+  "$base" "$cand" > .orchid/tasks/T001.md
+
+pack_build "$WORK" T001 implement "$WORK/prw_one" || fail "implement pack build (one captured rework)"
+[ -f "$WORK/prw_one/rework.md" ] || fail "a rework attempt's implement pack carries rework.md"
+grep -q "assertSame order differs" "$WORK/prw_one/rework.md" || fail "rework.md carries the failing output VERBATIM"
+grep -q "aaaa1111" "$WORK/prw_one/rework.md" || fail "rework.md names the failure signature"
+grep -q "first time this particular failure" "$WORK/prw_one/rework.md" || fail "a single round is reported as a first sighting"
+assert_eq "false" "$(jq -r '.items[] | select(.name=="rework.md") | .truncated' "$WORK/prw_one/pack.json")" \
+  "rework.md is not truncated under a generous budget"
+assert_eq "true" "$(jq -r '.total_bytes == ([.items[].bytes] | add)' "$WORK/prw_one/pack.json")" \
+  "total_bytes still sums every item with rework.md present"
+
+# A REVIEW pack never carries it: a reviewer judges base_sha..candidate_sha as
+# it stands, and the previous attempt's failure would prejudge a candidate
+# that no longer carries it.
+pack_build "$WORK" T001 review "$WORK/prw_rev" || fail "review pack build (captured rework present)"
+[ ! -f "$WORK/prw_rev/rework.md" ] || fail "a review pack must never carry rework.md"
+
+# Two rounds, DIFFERENT failures: the brief shows what changed between them.
+mk_rework_log .orchid/reviews/T001-r2-rework.log 2026-08-02T00:00:00Z "FAIL OrderTest: expected 3 got 4"
+printf -- '---\nid: T001\nstatus: rework\nbase_sha: %s\ncandidate_sha: %s\nrework_rounds: 2\nrework_signature: bbbb2222\nrework_signature_repeats: 1\n---\nSpec body.\n' \
+  "$base" "$cand" > .orchid/tasks/T001.md
+pack_build "$WORK" T001 implement "$WORK/prw_two" || fail "implement pack build (two captured rounds)"
+grep -q "expected 3 got 4" "$WORK/prw_two/rework.md" || fail "the brief leads with the NEWEST round's output"
+grep -q "What changed since the round before it" "$WORK/prw_two/rework.md" \
+  || fail "two rounds with different failures get a diff of the two"
+
+# Two rounds, IDENTICAL failure: the brief must say so rather than showing an
+# empty diff that reads like progress.
+printf -- '---\nid: T001\nstatus: rework\nbase_sha: %s\ncandidate_sha: %s\nrework_rounds: 2\nrework_signature: aaaa1111\nrework_signature_repeats: 2\n---\nSpec body.\n' \
+  "$base" "$cand" > .orchid/tasks/T001.md
+pack_build "$WORK" T001 implement "$WORK/prw_same" || fail "implement pack build (repeated signature)"
+grep -q "repeated 2 times in a row" "$WORK/prw_same/rework.md" \
+  || fail "a repeated signature is stated as such — 'you already tried this and got exactly this'"
+grep -q "no diff to show" "$WORK/prw_same/rework.md" || fail "an identical round shows no diff"
+
+# Truncation keeps the TAIL: a suite's output ends with the failing
+# assertions, so a head-first trim would keep the part that passed.
+rm -f .orchid/reviews/T001-r2-rework.log
+big_fail="$(printf 'PASSED filler %s\n' $(seq 1 400))"
+mk_rework_log .orchid/reviews/T001-r1-rework.log 2026-08-03T00:00:00Z "$big_fail
+FAIL OrderTest::theLineThatMatters"
+printf -- '---\nid: T001\nstatus: rework\nbase_sha: %s\ncandidate_sha: %s\nrework_rounds: 1\nrework_signature: bbbb2222\nrework_signature_repeats: 1\n---\nSpec body.\n' \
+  "$base" "$cand" > .orchid/tasks/T001.md
+# +1200, not a hair over the preamble: the brief may only ship at all if the
+# budget can carry the preamble WHOLE plus a meaningful tail of the failing run
+# (lib/pack.sh's floor). A budget between those two is the refusal case below,
+# which is a different assertion; this one is about which END of a long log the
+# trim keeps.
+tight_rw=$(( $(wc -c < .orchid/tasks/T001.md) + 1200 ))
+printf 'pack_budget_bytes=%s\n' "$tight_rw" > orchid.config
+pack_build "$WORK" T001 implement "$WORK/prw_trim" || fail "implement pack build (tight budget)"
+assert_eq "true" "$(jq -r '.items[] | select(.name=="rework.md") | .truncated' "$WORK/prw_trim/pack.json")" \
+  "rework.md reports itself truncated under a tight budget"
+grep -q "theLineThatMatters" "$WORK/prw_trim/rework.md" \
+  || fail "the trim keeps the TAIL — the failing assertions, not the filler that passed"
+grep -q "PASSED filler 1$" "$WORK/prw_trim/rework.md" \
+  && fail "the trim really dropped the head of a long log"
+# ...and the trim is TAIL-KEPT over the captured LOG, never over the brief
+# that frames it. The preamble -- the round number, the signature, and whether
+# it has repeated unchanged -- is at the TOP, so a whole-file tail trim drops
+# exactly the sentence this whole feature exists to deliver and hands the
+# engine an unlabelled fragment of somebody's test output. That is not a
+# degraded brief, it is the pre-T025 brief with extra noise: finding F27 again,
+# reached by the budget instead of by the dangling pointer.
+grep -q "^# Previous attempt (rework round 1)" "$WORK/prw_trim/rework.md" \
+  || fail "the trim must keep the brief's PREAMBLE whole — it is the frame that makes the log underneath it mean anything"
+grep -q "first time this particular failure" "$WORK/prw_trim/rework.md" \
+  || fail "the convergence fact survives the trim: it is the one thing a re-reading implementer cannot derive for itself"
+grep -q "^## The failing run, verbatim" "$WORK/prw_trim/rework.md" \
+  || fail "the heading that labels the trimmed log survives with it"
+
+# A budget with room for the preamble and not one byte more REFUSES THE PACK.
+#
+# It used to ship without rework.md and record the omission, and that is the
+# quiet version of the very loop this feature ends: the attempt was dispatched
+# precisely because a captured failure needs acting on, so an implementer sent
+# without it -- or with a token fragment of it -- re-derives the same change
+# and produces the same failure, while every counter reads healthy. Refusing is
+# `input_overflow` (exit 12), the class the launcher already declines to spawn
+# on, and it puts a fixable budget in front of an operator instead of another
+# identical round in front of an engine.
+tight_head=$(( $(wc -c < .orchid/tasks/T001.md) + 24 ))
+printf 'pack_budget_bytes=%s\n' "$tight_head" > orchid.config
+rc=0
+rw_err="$(pack_build "$WORK" T001 implement "$WORK/prw_nohead" 2>&1)" || rc=$?
+assert_eq "12" "$rc" \
+  "a budget too small to carry the failure this rework was dispatched over fails the pack (input_overflow), it does not dispatch without it"
+assert_match "input_overflow" "$rw_err" "the refusal names the class the launcher and INV-12 already know"
+assert_match "rework.md" "$rw_err" \
+  "and names the input it could not carry — an operator has to be able to tell this apart from a big diff"
+[ ! -d "$WORK/prw_nohead" ] \
+  || fail "a refused pack leaves no half-built pack directory behind for a launcher to hand to an engine"
+# The other half of "does not dispatch" is already pinned where it belongs:
+# tests/test_drive.sh's overflow Part drives a launcher whose pack_build exits
+# 12 and asserts no engine ever started (the launcher dies before its spawn
+# line, the driver charges the ladder and surfaces the diagnostic). Refusing
+# HERE is what puts this case into that class; duplicating the end-to-end walk
+# would test the launcher twice and this decision not at all.
+rm -f orchid.config
+
+# THE COMPARISON IS DROPPED BEFORE THE FAILING RUN IS CUT. rework.md is
+# tail-kept, and the brief is "the failing run, then a diff against the round
+# before it" -- so trimming the two together as one body keeps the DIFF and
+# eats the RUN, handing the engine a description of a change to output it
+# cannot see, under a heading promising that output verbatim. The failing run
+# is the baseline the comparison is only meaningful against, so the run is kept
+# whole first and the comparison goes, whole, when it does not fit.
+# Deliberately different line by line, so the unified diff of the two is
+# several times the size of the room left for it -- the assertion below is
+# about which of the two is dropped, not about a knife-edge byte count.
+rw_a="$(printf 'setup step %s ok\n' {1..40})"
+rw_b="$(printf 'prepare stage %s completed\n' {1..40})"
+mk_rework_log .orchid/reviews/T001-r1-rework.log 2026-08-04T00:00:00Z "$rw_a
+FAIL OrderTest: the ROUND ONE failure"
+mk_rework_log .orchid/reviews/T001-r2-rework.log 2026-08-05T00:00:00Z "$rw_b
+FAIL OrderTest: the ROUND TWO failure"
+printf -- '---\nid: T001\nstatus: rework\nbase_sha: %s\ncandidate_sha: %s\nrework_rounds: 2\nrework_signature: cccc3333\nrework_signature_repeats: 1\n---\nSpec body.\n' \
+  "$base" "$cand" > .orchid/tasks/T001.md
+# Room for the preamble and the whole newest log, and nothing like enough for
+# a unified diff of two 40-line logs.
+rw_room=$(( $(wc -c < .orchid/tasks/T001.md) + 600 + $(wc -c < .orchid/reviews/T001-r2-rework.log) ))
+printf 'pack_budget_bytes=%s\n' "$rw_room" > orchid.config
+pack_build "$WORK" T001 implement "$WORK/prw_nodiff" || fail "implement pack build (no room for the comparison)"
+grep -q "the ROUND TWO failure" "$WORK/prw_nodiff/rework.md" \
+  || fail "the FAILING RUN survives — it is what the attempt was dispatched to fix, and the comparison is worthless without it"
+grep -q "^exit: 1$" "$WORK/prw_nodiff/rework.md" \
+  || fail "and it survives WHOLE, exit line included, rather than as the tail the comparison left over"
+grep -q "^# Previous attempt (rework round 2)" "$WORK/prw_nodiff/rework.md" \
+  || fail "the preamble is still whole"
+grep -q "What changed since the round before it" "$WORK/prw_nodiff/rework.md" \
+  && fail "the comparison must be dropped ENTIRELY, not shipped in place of the run it compares"
+assert_eq "true" "$(jq -r '.items[] | select(.name=="rework.md") | .truncated' "$WORK/prw_nodiff/pack.json")" \
+  "a dropped comparison is a truncated input and says so — the engine did not receive all of it"
+rm -f orchid.config .orchid/reviews/T001-r2-rework.log .orchid/reviews/T001-r1-rework.log
+
+# EVIDENCE IS BOUND TO THE CANDIDATE THAT PRODUCED IT. The candidate moves
+# under a captured round in ordinary operation -- the reworking implementer
+# commits, `orchid merge`'s rebase arm mints a new sha, an operator re-derives
+# the branch -- and the brief's sentences are claims about the code the
+# recipient is holding: "you already tried this and got exactly this" against a
+# superseded candidate is not a weaker brief, it is a confident false one.
+mk_rework_log .orchid/reviews/T001-r1-rework.log 2026-08-06T00:00:00Z \
+  "FAIL OrderTest: a failure of some OTHER candidate" "$base"
+printf -- '---\nid: T001\nstatus: rework\nbase_sha: %s\ncandidate_sha: %s\nrework_rounds: 1\nrework_signature: dddd4444\nrework_signature_repeats: 1\n---\nSpec body.\n' \
+  "$base" "$cand" > .orchid/tasks/T001.md
+pack_build "$WORK" T001 implement "$WORK/prw_stale" \
+  || fail "a superseded captured round must not fail the pack build — this is an ordinary state, not an error"
+[ ! -f "$WORK/prw_stale/rework.md" ] \
+  || fail "a round captured against a DIFFERENT candidate must not be fed forward as this candidate's previous failure"
+assert_eq "superseded-candidate" \
+  "$(jq -r '.items[] | select(.name=="rework.md") | .omitted' "$WORK/prw_stale/pack.json")" \
+  "and the withholding is recorded WITH ITS REASON — evidence that exists and did not travel is exactly what pack.json must not hide"
+assert_eq "true" "$(jq -r '.total_bytes == ([.items[].bytes] | add)' "$WORK/prw_stale/pack.json")" \
+  "a reason-only item entry carries no bytes and leaves the total_bytes sum intact"
+
+# A log written by an older kernel makes no claim at all, and an absence of a
+# claim is not a claim: it is withheld too, under its own reason.
+{ printf 'date: 2026-08-07T00:00:00Z\n'
+  printf 'sha: %s\n' "$cand"
+  printf 'cwd: %s\n' "$WORK"
+  printf 'command: run-the-suite\n'
+  printf -- '---\n'
+  printf 'FAIL OrderTest: a failure nothing binds\n'
+  printf 'exit: 1\n'; } > .orchid/reviews/T001-r1-rework.log
+pack_build "$WORK" T001 implement "$WORK/prw_unbound" || fail "implement pack build (unbindable round)"
+[ ! -f "$WORK/prw_unbound/rework.md" ] \
+  || fail "a captured round with no candidate header binds to nothing and must not be fed forward"
+assert_eq "unbindable" \
+  "$(jq -r '.items[] | select(.name=="rework.md") | .omitted' "$WORK/prw_unbound/pack.json")" \
+  "an unbindable round is recorded as such, distinctly from a superseded one — they need different operator answers"
+rm -f .orchid/reviews/T001-r1-rework.log
+
+# A captured round that is EMPTY -- a torn write, a copy interrupted midway --
+# is not evidence. The brief's own framing is what makes that dangerous: "the
+# verbatim output of the run that FAILED is reproduced below" over zero bytes
+# asserts the failing run printed nothing, a claim ABOUT the failure rather
+# than an absence of one. It must degrade to no brief at all (the pre-T025
+# reading), and the pack must still build: rework.md is an optional input, and
+# pack_build runs inside orchid-launch under `set -e`, where a non-zero here
+# would take the whole dispatch down.
+: > .orchid/reviews/T001-r1-rework.log
+pack_build "$WORK" T001 implement "$WORK/prw_empty" \
+  || fail "an unusable captured round must not fail the pack build -- rework.md is optional"
+[ ! -f "$WORK/prw_empty/rework.md" ] \
+  || fail "an EMPTY captured round must not produce a heading-only brief that claims the failing run printed nothing"
+rm -f .orchid/reviews/T001-r1-rework.log

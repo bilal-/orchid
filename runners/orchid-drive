@@ -56,6 +56,7 @@ source "$ORCHID_ROOT/lib/handoff.sh"
 # header. Read through the file that owns reading those headers rather than
 # re-parsed here.
 source "$ORCHID_ROOT/lib/findings.sh"
+source "$ORCHID_ROOT/lib/rework.sh"
 
 # T035: name the automation that owns this pass, so every job launched from it
 # records who started it (`orchid jobs ls`'s LAUNCHER column). `:-` because
@@ -1194,10 +1195,68 @@ drive_hook_gate() {
 drive_dispatch() {
   local id="$1" arch="$2" from="$3"
   local tf target outcome blockers plan action path branch integ integ_head base_stamp arc lrc role_line role op wtmiss prep prep_why
+  local rework_engine reps last_engine last_name lnrc rjrc
   tf="$state/tasks/$id.md"
   target="$(drive_dispatch_target "$arch" "$from")"
   if [ -z "$target" ]; then
     set_boundary operator-decision "$id" "archetype '$arch' declares no dispatch transition out of $from"
+    return 0
+  fi
+
+  # T025: THE NON-CONVERGENCE STOP, ASKED WHERE THE ROUND IS ABOUT TO BE SPENT.
+  #
+  # The two rules PROTOCOL.md states about `rework_signature_repeats` are both
+  # read at dispatch -- reroute at >= 2, stop at >= `rework_nonconvergence_max`
+  # -- but only the first one used to be. The stop lived exclusively at the two
+  # places a failure LANDS (drive_testing's FAIL arm and the merging arm), so a
+  # task that arrived in `rework` past the threshold by any other route was
+  # walked straight past it: the arm below excluded an engine, spawned, spent an
+  # attempt, and the loop only stopped once THAT round had failed identically
+  # too. Spending a round to re-discover a stop the state already justifies is
+  # the exact behaviour F27 recorded, one level up.
+  #
+  # THE ROUTES ARE ORDINARY, not exotic. A stop whose `task advance` was REFUSED
+  # (the archetype gate, the epoch fence, the verb lock) leaves the task in
+  # `rework` with the streak standing -- this file's own AB3 case. `orchid merge`
+  # run by hand advances `merging -> rework` with nobody to ask the question. A
+  # `rework_nonconvergence_max` lowered in config re-judges every task already
+  # parked in the loop. And a pass that dies between the advance and the stop
+  # leaves exactly the same state as the refusal. None of them is a fresh
+  # failure, and none of them is a reason to buy the loop another round.
+  #
+  # Asked through the SHARED stop, so this is one more caller of one composer
+  # rather than a second judgment: same threshold, same attribution, same single
+  # page, and the same de-dup on every later pass over the blocked task. Nothing
+  # is dispatched either way -- a refused block returns 1 with its own truthful
+  # boundary already recorded, and returning here is what makes that refusal cost
+  # a pass instead of an engine round.
+  #
+  # THE OPERATOR'S OWN TWO DOORS REACH IT TOO, and that is the point rather than
+  # a side effect. `task retry` and `task unblock` deliberately do NOT clear the
+  # streak (tests/test_rework.sh Part F pins it: an identical signature over the
+  # operator's route is the same non-convergence evidence as one over the
+  # driver's), so a task handed back at or past the threshold is withheld here
+  # instead of spending the round the verb appeared to grant. What releases the
+  # loop is a verification that ANSWERS DIFFERENTLY -- `orchid task reverify`
+  # re-runs it for no attempt, and a changed signature restarts the count at one,
+  # after which this arm is silent and the next round is dispatched carrying the
+  # operator's reason. Both verbs say so on the way out rather than leaving it to
+  # be discovered by watching a pass do nothing (libexec/orchid-task's
+  # warn_rework_nonconverged), and a repository that really does want more rounds
+  # of the same question raises `rework_nonconvergence_max`.
+  #
+  # ASKED BEFORE THE SCHEDULE GATE BELOW, NOT AFTER IT. A task that is merely
+  # waiting -- for a dependency, or for a concurrency slot -- is still a task
+  # whose loop has stopped converging, and the judgment does not improve by
+  # being deferred until a slot frees. Ordered the other way the stop would be
+  # invisible for as long as the run is busy, which is exactly when a task
+  # quietly re-asking an answered question costs the most; and a reader would
+  # have to know the scheduler's state to know whether the guard had been
+  # consulted at all.
+  if [ "$from" = rework ] && drive_rework_nonconverged "$id"; then
+    if drive_rework_nonconvergence_stop "$id" "dispatch withheld"; then
+      drive_note "$id: no round was dispatched into a loop already judged not to be converging"
+    fi
     return 0
   fi
 
@@ -1403,8 +1462,178 @@ drive_dispatch() {
       # the job running: adopt it rather than spawning a second one.
       drive_note "$id: adopting the $op job an earlier pass already spawned"
     else
+      # T025: rework failover. Two consecutive rework rounds whose failure
+      # output was byte-identical (kernel-recorded as
+      # `rework_signature_repeats`, see libexec/orchid-task) say something the
+      # exit code alone never does: this engine, on this task, is not
+      # converging -- it is producing the same answer to the same question.
+      # The task's own budget is not the place to spend that discovery, so the
+      # NEXT attempt is routed to the next eligible entry in the same role's
+      # chain, excluding the engine that filed the last candidate.
+      #
+      # Strictly a preference. No alternate entry (a one-engine chain, an
+      # untested fallback, a ledger window shut on the rest) simply dispatches
+      # as usual and says so -- degrading to "same engine, but now it can SEE
+      # its previous failure" is still strictly better than the loop this
+      # replaces, and stalling a dispatchable task over a routing nicety would
+      # not be.
+      #
+      # Computed HERE, inside the arm that actually spawns, and never in the
+      # adopt arm above: the journal entry below asserts "this attempt runs on
+      # <engine>", and a re-entrant pass (one that died between the spawn and
+      # the advance) adopts a job already running on the OLD engine. Deciding
+      # the reroute before that fork would journal a reroute that never
+      # happened, once per recovering pass, and the reroute record is exactly
+      # what an operator reads to find out which engine produced which
+      # candidate.
+      rework_engine=""
+      if [ "$from" = rework ]; then
+        reps="$(fm_get "$tf" rework_signature_repeats)"
+        case "$reps" in ''|*[!0-9]*) reps=0 ;; esac
+        # The kernel records this field from the implement envelope's
+        # self-reported `.engine`, which adapters emit in qualified form
+        # ("orchid/claude"), and the kernel's own strip only removes the
+        # first-party "orchid/" prefix -- so a third-party actor arrives here
+        # as "acme/foo", which is NOT how a role chain names it. It has to be
+        # translated before the exclusion below can bite.
+        last_engine="$(fm_get "$tf" implementer_engine_id)"
+        # ...but a repeated signature only indicts an ENGINE when the failure
+        # was an engine's to answer. A red repo-wide `merge_gate` is not: it is
+        # a check the repository applies to everything, which this task was
+        # never asked about, and libexec/orchid-task calls it "the one merge
+        # failure that repeats identically until somebody outside this task
+        # acts". It clears the identical-signature test by construction, on the
+        # first repeat, for reasons no implementer chose and no alternate
+        # engine can change -- so rerouting on it spends a second engine's
+        # round on a wall it cannot move and leaves a durable line blaming the
+        # engine that ran for an answer that was never its to give. The
+        # non-convergence STOP below still applies (the loop is genuinely
+        # stuck, whoever is at fault, and the boundary it raises says which);
+        # only this attribution is withheld.
+        if [ "$reps" -ge 2 ] && ! rework_streak_attributable "$state" "$id"; then
+          drive_note "$id: rework signature unchanged $reps times, but the repeated failure is the repository's own merge_gate — no engine can converge on that, so the role is not rerouted"
+          reps=0
+        fi
+        # ...and it only indicts an engine ORCHID CAN NAME. A chain is walked by
+        # INSTALL-DIRECTORY name; this field holds a MANIFEST ID. The two
+        # coincide for every plugin `orchid plugins install` placed -- which is
+        # why the bare `${id##*/}` strip this used to do read correctly in every
+        # fixture and every shipped layout -- but they are not the same fact,
+        # and a vendored, hand-placed or renamed directory separates them. Then
+        # the strip names a chain entry that does not exist,
+        # `resolve_role_available` excludes nothing, and the walk hands back THE
+        # ENGINE THAT JUST FAILED -- while the journal below records, durably
+        # and in the operator's own words, that this attempt was routed to a
+        # different one. That record is the only place anyone can learn which
+        # engine produced which candidate, so a false entry in it is worse than
+        # a reroute that never happened.
+        #
+        # The actor is therefore RESOLVED through the registry that installed it
+        # (resolve_engine_name_any: the directory a binding uses, or the
+        # qualified id an installed manifest claims), never guessed at -- the
+        # same refusal lib/review.sh's _review_engine_name_for_qid and
+        # lib/capability.sh's routing gate already make about the same field.
+        #
+        # AND WHEN IT CANNOT BE NAMED, THE REROUTE IS DROPPED RATHER THAN AIMED.
+        # Nothing installed answering to it (uninstalled since) and two plugins
+        # claiming one id (INV-10 refuses to pick between them) both leave this
+        # pass unable to say which chain entry did not converge. Falling back to
+        # the basename, or to whichever engine the role resolves to right now,
+        # would put a name orchid cannot stand behind into a durable indictment.
+        #
+        # Dropping it costs less than it looks like it should, which is why this
+        # is the cheap side of the trade rather than a sacrifice: what is
+        # withheld is the PREFERENCE and its record, never the round. The
+        # dispatch below still happens, and if the unnameable actor is
+        # unresolvable because it is no longer installed, `resolve_role_available`
+        # skips it on its own ("not found on search path") and the next entry
+        # takes the work anyway -- the same destination, minus a journal line
+        # this pass could not have written truthfully. The engine that does run
+        # still SEES the previous failure, which is the substantive half of this
+        # feature, and the non-convergence stop still ends the loop.
+        if [ "$reps" -ge 2 ] && [ -n "$last_engine" ]; then
+          lnrc=0
+          last_name="$(resolve_engine_name_any "$last_engine" 2>/dev/null)" || lnrc=$?
+          if [ "$lnrc" -eq 0 ] && [ -n "$last_name" ]; then
+            last_engine="$last_name"
+          else
+            drive_note "$id: rework signature unchanged $reps times, but the actor that filed the last candidate ('$last_engine') resolves to no single installed plugin, so the chain entry to exclude cannot be named — dispatching on the same chain, and claiming no reroute"
+            reps=0
+          fi
+        fi
+        # AND NO RECORDED ACTOR IS THE SAME ANSWER, for the same reason. An
+        # adapter is not REQUIRED to report `.engine` (reconcile only
+        # cross-checks it when present) and libexec/orchid-task writes this
+        # field only when it finds one, so a round whose envelope was absent,
+        # refused as a no-op delivery, or degraded (T040) records nothing about
+        # who ran it. On a chain that never reports, the field is EMPTY, which
+        # this arm can see and does. On a MIXED chain the same round used to
+        # leave the PREVIOUS round's value standing, which no state visible
+        # here distinguishes from a current one; that was the kernel record's
+        # to fix and it is fixed there rather than guessed at here -- `task
+        # advance implementing -> testing` now CLEARS the field when the
+        # round's own envelope names no engine, so a stale name never reaches
+        # this walk and "empty" means exactly one thing at this line.
+        #
+        # This arm used to guess: fall back to whichever engine the role
+        # resolves to right now, "absent a ledger change, exactly the one that
+        # ran last time". That claim is false in precisely the situation the
+        # guess is consulted in, and this feature is what makes it false. The
+        # walk below deliberately routes AWAY from the chain primary, so from
+        # the second reroute onward the engine that ran last is the ALTERNATE
+        # while the guess still names the primary. The exclusion then excludes
+        # an engine that did not run, the walk hands back the one that did, and
+        # the journal records -- durably, in the operator's own words -- "an
+        # identical failure signature under '<primary>' -- this attempt runs on
+        # '<alternate>'" when the last round was the alternate's and this one is
+        # the alternate's too. Two false halves and no reroute at all, in the
+        # single record that answers which engine produced which candidate.
+        #
+        # NOR IS THERE A NARROWER GUESS THAT HOLDS. "Only guess on the FIRST
+        # crossing (`reps` exactly 2), where the previous round cannot have been
+        # rerouted" is true of the streak and false of the dispatch: a reroute
+        # withheld for any of the reasons above leaves the round on the default
+        # anyway, a ledger window or a capsuite record can move that default
+        # between passes, and `orchid jobs prepare --engine` puts a round on an
+        # engine no chain walk would have picked. Every one of those breaks the
+        # correspondence between "what the role resolves to" and "what ran", and
+        # a guess that is right most of the time is exactly how a durable record
+        # comes to be trusted while being wrong.
+        #
+        # So an unrecorded actor is treated exactly as an unnameable one above:
+        # the PREFERENCE and its record are withheld, never the round. The
+        # dispatch still happens on the same chain, the engine that runs still
+        # SEES the previous failure, and the non-convergence stop still ends the
+        # loop. PROTOCOL.md says the exclusion reads the kernel-written
+        # `implementer_engine_id` and nothing else; with no such record there is
+        # no engine to name, and inventing one is not a weaker version of naming
+        # it.
+        if [ "$reps" -ge 2 ] && [ -z "$last_engine" ]; then
+          drive_note "$id: rework signature unchanged $reps times, but no implementer_engine_id is recorded for the round that filed the last candidate, so the chain entry to exclude cannot be named — dispatching on the same chain, and claiming no reroute"
+          reps=0
+        fi
+        if [ "$reps" -ge 2 ] && [ -n "$last_engine" ]; then
+          if rework_engine="$(resolve_role_available "$repo" "$role" "$op" "$last_engine" 2>/dev/null)"; then
+            # Journal only after drive_launch proves this reroute spawned --
+            # and only if it really is a DIFFERENT engine. Unreachable while
+            # that walk's exclusion is an exact match on the chain entry, which
+            # is precisely why the check is here: the sentence below is a claim
+            # about two names being different, and the one bug this arm has
+            # already shipped was that claim going unchecked while the exclusion
+            # silently matched nothing. Cheap enough to assert rather than
+            # assume, and inert for as long as the assumption holds.
+            if [ "$rework_engine" = "$last_engine" ]; then
+              rework_engine=""
+              drive_note "$id: rework signature unchanged $reps times under '$last_engine', and the chain walk returned that same engine — no reroute is claimed for a dispatch that is not one"
+            fi
+          else
+            rework_engine=""
+            drive_note "$id: rework signature unchanged $reps times under '$last_engine', but role '$role' has no other eligible engine — dispatching on the same chain"
+          fi
+        fi
+      fi
       lrc=0
-      drive_launch "$id" "$role" "$op" || lrc=$?
+      drive_launch "$id" "$role" "$op" "$rework_engine" || lrc=$?
       if [ "$lrc" -eq 14 ] || [ "$lrc" -eq 18 ]; then
         # The documented WAITs (see drive_launch). No boundary: nothing is
         # wrong, and both clear without anyone doing anything -- the ledger
@@ -1428,6 +1657,22 @@ drive_dispatch() {
         set_boundary operator-decision "$id" \
           "dispatch launch for role '$role' failed (exit $lrc); $id stays in $from and nothing was spawned"
         return 0
+      fi
+      if [ -n "$rework_engine" ]; then
+        # The record says THIS ATTEMPT RUNS on the alternate, so spawning is
+        # its precondition. A refused/failed launch must leave no durable line
+        # claiming a reroute occurred. Record it before the state advance so
+        # a crash after this point still explains the outstanding job the
+        # next pass adopts.
+        rjrc=0
+        "$ORCHID_BIN" journal add --task "$id" \
+          "rework routed to a different engine: $reps consecutive attempts produced an identical failure signature under '$last_engine' — this attempt runs on '$rework_engine'" >/dev/null || rjrc=$?
+        if [ "$rjrc" -ne 0 ]; then
+          set_boundary operator-decision "$id" \
+            "rework reroute spawned on '$rework_engine', but its journal record failed (exit $rjrc); the task stays in $from and the next pass will adopt the outstanding job"
+          return 0
+        fi
+        drive_note "$id: rework signature unchanged $reps times under '$last_engine' — routed this attempt to '$rework_engine'"
       fi
     fi
   fi
@@ -1742,6 +1987,120 @@ drive_verify_fail_pending_consume() {
     return 1
   fi
   drive_note "$id: consumed deferred verify-failure receipt $mark"
+  return 0
+}
+
+# drive_rework_nonconverged <task> -- 0 when this task's consecutive identical
+# failure streak has reached `rework_nonconvergence_max`. Split out of the stop
+# below because two callers need the QUESTION on its own: the stop answers it
+# before acting, and the dispatch guard has to distinguish "below the threshold"
+# from "at it but the block was refused", which the stop's single `return 1`
+# deliberately merges (see its header). Reading the threshold in one place is
+# also what keeps the two arms from disagreeing about what non-converged means.
+drive_rework_nonconverged() {
+  local id="$1" tf reps nc_max
+  tf="$state/tasks/$id.md"
+  reps="$(fm_get "$tf" rework_signature_repeats)"
+  case "$reps" in ''|*[!0-9]*) reps=0 ;; esac
+  nc_max="$(config_get "$repo" rework_nonconvergence_max 3)"
+  case "$nc_max" in ''|*[!0-9]*) nc_max=3 ;; esac
+  [ "$nc_max" -gt 0 ] && [ "$reps" -ge "$nc_max" ]
+}
+
+# drive_rework_nonconvergence_stop <task> <failure-context> -- stop a
+# byte-identical loop at the configured threshold. Called from every arm that
+# can see the state that justifies it: the two where a failure LANDS in rework
+# and captures its evidence (testing, merging -- keeping the judgment here is
+# what stops the merge-validation family evading it just because its failure was
+# discovered one phase later), and the DISPATCH, which is where a round would
+# actually be spent on a task that reached this state by some other route.
+# `<failure-context>` is what distinguishes them in the pass log.
+#
+# ONE STOP, ONE PAGE, THROUGH THE ROUTE EVERY OTHER BLOCK TAKES. This arm used
+# to do what the four arms drive_notify's header names did: raise its own
+# `orchid notify` AND record a boundary in its own third wording. That is three
+# questions for one decision -- the direct page (compared against nothing, so it
+# de-duplicates against nothing), the boundary the foot of this file pages for on
+# this pass, and the DIFFERENT boundary the blocked walk recomposes on the next
+# pass through drive_block_boundary. The operator answers one qid and the others
+# stand in BLOCKERS.md until `answer_expiry_s` turns them into refusals.
+#
+# So the stop blocks the task and then records the boundary its own block
+# produced, exactly as drive_testing's exhausted-budget arm and the merging arm
+# do. drive_block_boundary derives BOTH the kind and the reason from the journal
+# entry `task advance` just wrote, so this pass and every later walk of the same
+# blocked task compose byte-identical records -- which is what the de-dup at the
+# foot of this file needs to raise one blocker for a condition that persists, and
+# what gives the page a declared answer set (`unblock | retry | reverify |
+# defer`) instead of a bare `<choice>` placeholder. lib/drive.sh's
+# drive_blocked_kind files a non-convergence cause under `operator-decision`,
+# which is the kind docs/specs/kernel.md's rework-feedback rule names.
+#
+# THE REASON IS THEREFORE THE DURABLE ONE, and it is composed to fit
+# lib/drive.sh's `_DRIVE_QUOTE_MAX` so the page carries it whole. The long prose
+# this arm used to put on a one-shot notify now lives where prose belongs: in
+# `drive_note`, read by whoever is watching the pass. What has to survive onto
+# the page an operator meets over and over is shorter and fixed -- that the loop
+# is not converging, how many rounds said so, WHOSE wall it is, and the file to
+# read -- because a reason clipped mid-word is a page that names half a path.
+#
+# Returns 0 only when the task really is blocked. Returns 1 both when the streak
+# is below the threshold AND when the block was REFUSED: in the second case a
+# boundary is already recorded, and the caller's ordinary reporting is still the
+# truth, because the task really is still in `rework`. Claiming `rework ->
+# blocked` on a refused advance -- or recording a boundary that asserts the stop
+# succeeded -- would leave an operator looking for a blocked task that is not
+# there. What that refusal does NOT mean any more is that the loop resumes: the
+# dispatch guard asks `drive_rework_nonconverged` before it launches anything,
+# so a stop that could not be taken costs a pass rather than an engine round.
+# Call only as an `if` condition under set -e.
+drive_rework_nonconvergence_stop() {
+  local id="$1" context="$2" tf reps rwlog rel whose remedy culprit reason barc
+  tf="$state/tasks/$id.md"
+  [ "$(fm_get "$tf" status)" = rework ] || return 1
+  drive_rework_nonconverged "$id" || return 1
+  reps="$(fm_get "$tf" rework_signature_repeats)"
+  case "$reps" in ''|*[!0-9]*) reps=0 ;; esac
+
+  rwlog="$(rework_latest_log "$state" "$id" 0 2>/dev/null || true)"
+  # Named the way every other evidence pointer in this file is named --
+  # repo-relative, not as the absolute path `rework_latest_log` returns. The
+  # page is one line on a phone; a machine-local prefix spends thirty of its
+  # characters saying nothing the operator did not already know.
+  rel=".orchid/reviews/"
+  [ -z "$rwlog" ] || rel=".orchid/reviews/${rwlog##*/}"
+  # WHOSE WALL IT IS. The stop itself is correct either way -- a loop this stuck
+  # needs a person, whatever put it there -- so only the attribution moves. A red
+  # repo-wide `merge_gate` repeats identically by construction and is frequently
+  # not this task's doing at all: without this clause the one boundary an
+  # operator re-reads on every pass tells them to look at a loop and an engine,
+  # when what is red is the repository. Read from the captured evidence's own
+  # header, never inferred (the same rule findings_log_gate_failed applies for
+  # the merging arm above), and the dispatch side withholds the engine reroute on
+  # the same answer. With NO captured log there is nothing to read it from, so
+  # the sentence claims neither party rather than guessing one.
+  whose=""; remedy=""; culprit=""
+  if [ -n "$rwlog" ]; then
+    if findings_log_gate_failed "$rwlog"; then
+      whose="repo merge_gate "
+      remedy="fix the repository; "
+      culprit=" — and what repeats is the repository's own merge_gate, which this candidate was never asked about: no further implementer round can turn it green, so fix the repository (or this candidate, if the gate names it) rather than re-dispatching"
+    else
+      whose="candidate-suite "
+    fi
+  fi
+  reason="rework not converging: $reps identical ${whose}rounds; ${remedy}see $rel"
+
+  barc=0
+  "$ORCHID_BIN" task advance "$id" blocked --reason "$reason" >/dev/null || barc=$?
+  if [ "$barc" -ne 0 ]; then
+    drive_note "$id: $context, signature unchanged $reps times — rework -> blocked REFUSED (exit $barc); the task is still in rework$culprit"
+    set_boundary operator-decision "$id" \
+      "rework is not converging ($reps consecutive attempts produced a byte-identical failure signature; see $rel) but rework -> blocked was REFUSED (exit $barc) — the task is still in rework, and while the streak stands the next pass withholds its dispatch rather than spending a round; stop it by hand with: orchid task advance $id blocked --reason \"...\"$culprit"
+    return 1
+  fi
+  drive_note "$id: $context, signature unchanged $reps times — rework -> blocked (not converging)$culprit"
+  drive_block_boundary "$id"
   return 0
 }
 
@@ -2207,6 +2566,27 @@ drive_testing() {
       "candidate verify failure could not be charged: testing -> rework refused (exit $arc), charge-and-block $barc (status $after_status, attempts $after_attempts; journal exit $jrc)"
     return 0
   fi
+  # T025: an unchanged failure signature is evidence the loop is not
+  # converging, not a fresh failure. The advance above just captured this
+  # round's evidence and updated the streak; read it back and stop the loop
+  # once the same output has come back `rework_nonconvergence_max` times in a
+  # row. Without this the run spends its whole attempt budget re-asking a
+  # question it has already been answered three times identically, which is
+  # exactly what dogfood finding F27 recorded.
+  #
+  # Deliberately NOT waived (the T019 attempt-classification coordination):
+  # an identical signature CONSUMES its attempt. docs/specs/kernel.md's
+  # attempt-fairness rule reserves `--waive-attempt` for a failure signature
+  # DISJOINT from the prior attempt's -- "distinct forward progress" -- and
+  # says the cap "targets repeated identical failures". Waiving the
+  # identical case would invert that: the one shape the budget exists to stop
+  # would be the one shape that never spends it, and a task could loop
+  # forever on a wall it is not moving. The convergence stop below is what
+  # ends the loop EARLY; the attempt budget stays the outer backstop.
+  if drive_rework_nonconvergence_stop "$id" "verify FAIL"; then
+    return 0
+  fi
+
   drive_note "$id: verify FAIL (candidate, attempt charged), testing -> rework"
   return 0
 }
@@ -2983,7 +3363,9 @@ if [ -n "$merging_ids" ]; then
       done)
         drive_note "$merge_id: merged" ;;
       rework)
-        if [ "$merge_gate_red" -eq 1 ]; then
+        if drive_rework_nonconvergence_stop "$merge_id" "merge validation failed"; then
+          :
+        elif [ "$merge_gate_red" -eq 1 ]; then
           drive_note "$merge_id: repo-wide merge_gate FAILED (gate_failed, attempt charged) — back to rework for the next pass; the candidate's own suite is not what went red"
         else
           drive_note "$merge_id: merge validation failed — back to rework for the next pass"

@@ -650,6 +650,145 @@ buying a fresh implementation pass to reach the same tree.
   next attempt at a previous attempt's envelopes, so a stale non-ok
   implement envelope would read as this attempt's fresh failure. The counter
   is monotonic; the cap is what moves.
+- **The failure signature is mechanized, not eyeballed (v1.1).** "Disjoint
+  from the prior attempt's" above used to be a judgment a human made by
+  re-reading two logs — and could not make at all, because entry to `rework`
+  DELETES `reviews/<id>-verify.log` (arming INV-11's gate) while the same
+  call journals a reason pointing at it. The pointer dangled the instant it
+  was written, so the next attempt arrived with nothing to act on and the run
+  produced byte-identical failures attempt after attempt (dogfood finding
+  F27; lesson L023). `orchid task advance <id> rework` now COPIES the failing
+  evidence first — `reviews/<id>-verify.log`, or `reviews/<id>-merge.log` on
+  the `merging → rework` validation path — into `reviews/<id>-r<round>-rework.log`,
+  a round-scoped path no evidence gate anywhere accepts (INV-11 reads a
+  literal filename; every envelope glob keys on `-a<attempt>-*.json`), and
+  records that round's `rework_signature`: a digest of the evidence with its
+  whole header block dropped except the `command:` line, and the output body
+  and exit code kept. Dropping the header wholesale rather than enumerating
+  the keys known to move is deliberate — `orchid verify` also writes the
+  prestate block, whose `pre_integration_head` changes every time any OTHER
+  task merges, so an enumerated list would give two byte-identical failures
+  two different signatures and leave the streak permanently at 1. An
+  unrecognised header key is volatile until proven otherwise.
+  `rework_signature_repeats` counts CONSECUTIVE
+  identical signatures. A rework with no failing evidence to capture (a
+  rebase conflict, an operator advance) mints no file and leaves the streak
+  alone — an absence of evidence about convergence, never a reset of it.
+  Evidence must also BIND to the candidate being reworked: both logs carry a
+  `candidate:` header, and one naming a different candidate is neither
+  captured nor counted (the refusal is journalled). `orchid merge`'s rebase
+  arm is why — it mints a new `candidate_sha` while the previous candidate's
+  `<id>-merge.log` is still on disk and deliberately exempt from the
+  invalidating delete, so an unbound capture would file a superseded
+  candidate's output as this round's failure and then block the task for not
+  converging on it. **Every door into `rework` captures, not just the
+  driver's.** `orchid task unblock` and `orchid task retry` also end in
+  `rework` and delete the same evidence on their way through, so both run the
+  same capture first. `retry` is the one that mattered most: the `attempts
+  exhausted` stop advances to `blocked`, an edge that captures nothing and
+  deletes nothing, so the failing log of the run that spent the last attempt
+  is still on disk when the operator grants another round — and the operator's
+  own recovery verb was what destroyed it, F27's loop reproduced by the
+  recovery from F27. The source status picks which of the two evidence logs is
+  read FIRST, never which is admitted: every door deletes both, so a door that
+  found nothing failing in its preferred log asks the other one before it
+  gives up. A red repo-wide `merge_gate` is the case that needs it. It charges
+  the round, and once it has been red for every round the budget allows
+  `orchid merge` takes `merging → blocked` — an edge that captures nothing and
+  deletes nothing — leaving a PASSING `<id>-verify.log` from before the merge
+  beside the failing `<id>-merge.log` that is the whole reason the task
+  stopped. `unblock`/`retry` arrive from `blocked`, so on the preference alone
+  they would read the pass, capture nothing, and then delete the gate's own
+  output. The candidate binding is what keeps the second question safe rather
+  than merely wider: a merge log left standing by a superseded candidate is
+  refused there exactly as it is in the preferred slot.
+- **A passing verification retires the captured rounds, not just the streak
+  (v1.1).** `testing → reviewing` restarts `rework_signature_repeats` at zero;
+  it also renames every `reviews/<id>-r<n>-rework.log` to
+  `reviews/<id>-r<n>-rework.retired.log`, a name outside the glob every reader
+  of that record uses. The candidate binding cannot close this one: on a
+  `task reverify` with no implementer cycle the candidate never MOVES, so the
+  captured round names the tree still under work and binds every time, while
+  the PASS has just proved that tree green. Without the retirement the next
+  entry to `rework` — a request-changes round, a rebase conflict, neither of
+  which captures anything of its own — feeds the next attempt a failure of a
+  candidate that has since verified, under a brief whose own sentences claim
+  the recipient's code produces it. `rework_rounds` is NOT rewound (a retired
+  round is a round that happened), so the next capture is round n+1 and can
+  never collide with a retired name; and the retirement is a rename rather
+  than a delete, because the capture is the only surviving copy of that
+  failure and an operator asking what the task was red on before it went green
+  has nowhere else to look. The retirement is journalled.
+  Bound is not the same as FRESH, and the second guard only matters when the
+  candidate does NOT move — which is exactly when the binding cannot help. A
+  source that is byte-for-byte the log already filed as the newest round is
+  one run read twice, not a second failure: it mints no round and moves no
+  counter (the refusal is journalled, naming both files). The comparison is
+  over RAW BYTES precisely because the signature drops the volatile header —
+  a re-run and a re-read digest the same, and the header is the only place
+  they differ. Without it, `orchid merge` dying before its own opening
+  `rm -f` of a previous attempt's log (a run lock it did not get) leaves that
+  log for the next `merging → rework`, where its digest matches the filed
+  round by construction and reroutes the role and blocks the task on a single
+  verification counted twice.
+  A repeated signature is also not always an ENGINE's to answer. A red
+  repo-wide `merge_gate` is a check the repository applies to everything,
+  which the candidate was never asked about and which repeats identically
+  until somebody outside the task acts, so it satisfies the identical-signature
+  test by construction. Such a round is still captured and still fed forward —
+  it is what went red — but it does NOT reroute the role, because no alternate
+  engine can turn the repository green. The non-convergence stop still applies
+  (the loop is stuck whoever is at fault) and its boundary names the gate and
+  the remedy that clears it. The classification is read from the log's own
+  `gate_status:`/`gate_exit:` header, never inferred from the trailing
+  `exit:` line, which is equally non-zero when the candidate's own suite is
+  what went red.
+  Three consequences, all deterministic:
+  - the next attempt's input pack carries `rework.md` — the previous round's
+    output VERBATIM, plus whether it repeated unchanged (docs/specs/plugins.md);
+  - a second identical signature routes the next dispatch to a different
+    engine in the role's failover chain (a preference: a chain with no other
+    eligible entry dispatches as usual and says so, and a streak whose newest
+    round is a red repo-wide `merge_gate` is not attributed to an engine at
+    all). The engine that did not converge is identified by RESOLVING the
+    task's recorded `implementer_engine_id` through the plugin registry, never
+    by stripping its publisher prefix: a chain is written in install-directory
+    names and that field holds a manifest id, and the two coincide only because
+    `orchid plugins install` places a plugin in a directory named after its
+    id's basename. An actor that resolves to no single installed plugin
+    (uninstalled since, or claimed by two plugins at once) leaves this pass
+    unable to name the entry to exclude, so the preference is dropped and no
+    reroute is journalled — the dispatch still happens, on the same chain.
+    So does a round that recorded NO actor: an adapter need not report
+    `.engine`, and an absent, refused or degraded implement envelope is
+    skipped, so the field can be empty. The pass does not then fall back to
+    whichever engine the role resolves to now — this reroute is what makes
+    that guess wrong, since after the first one the engine that ran last is
+    the alternate while the guess still names the primary, and the exclusion
+    would indict an engine that did not run and hand the round back to the
+    one that did under a journal line claiming otherwise. What is withheld
+    is the preference and its record, never the round. For "empty" to mean
+    that, an unreported engine must CLEAR the field rather than leave the
+    previous round's answer standing — see `implementer_engine_id` below;
+  - `rework_nonconvergence_max` (config, default 3) consecutive identical
+    signatures stop the loop — `blocked`, plus an `operator-decision`
+    boundary. An unchanged signature is evidence the loop is not converging,
+    not a fresh failure. The stop is asked wherever a round would be SPENT,
+    not only where a failure lands: a task sitting in `rework` at or past the
+    threshold has its next dispatch withheld, whatever route left it there
+    (a refused stop, a hand-driven merge, a lowered key, or the operator's
+    `task retry` / `task unblock`, which take a blocked task back to `rework`
+    and deliberately leave the streak standing). What clears it is a
+    verification that answers DIFFERENTLY — a new signature restarts the
+    count at one — or a passing one, which retires the streak outright.
+  An identical signature still CONSUMES its attempt. The waiver above is for
+  a signature that is disjoint — distinct forward progress — and the attempt
+  cap exists precisely to target repeated identical failures; waiving them
+  would make the one shape the budget exists to stop the one shape that never
+  spends it. Written as "the attempt cap" rather than a number on purpose:
+  the non-convergence stop is a SECOND, tighter backstop with its own key
+  (`rework_nonconvergence_max`), and stating the attempt budget's size here
+  would put a duplicate of it in a paragraph that has no business owning it.
 - **A delivery that delivered nothing is an infra failure, not an attempt.**
   An `ok` implement envelope is the engine's own account of itself; the
   worktree is the only thing that can contradict it. When the envelope
@@ -827,7 +966,8 @@ buying a fresh implementation pass to reach the same tree.
   a candidate that never moved.
 
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
-worktree, run_id, depends_on, attempts, attempt_budget, infra_failures, session_id,
+worktree, run_id, depends_on, attempts, attempt_budget, infra_failures,
+rework_rounds, rework_signature, rework_signature_repeats, session_id,
 implementer_engine_id, base_sha, candidate_sha, refused_envelopes, risk_tier,
 blocking_severity, stop_condition, hook_guidance, handoff_ack, engine, effort,
 acceptance_criteria, verification_commands, operator_prerequisite,
@@ -901,6 +1041,26 @@ space-separated basenames of implement envelopes refused as no-op deliveries,
 appended by the orchestrator through `orchid task set` (INV-13) at the moment
 it refuses one; a basename carries its own attempt (`<id>-a<n>-implementer
 [.k].json`), so a mark can never mask a later attempt's envelope.
+The three `rework_*` fields (v1.1) are kernel-owned exactly like
+`attempts`/`infra_failures` — `orchid task set` refuses them by name, because
+the driver's failover and non-convergence stop are judgments read straight
+off them, and a hand-written counter could claim a fresh failure signature no
+attempt ever produced.
+`implementer_engine_id` describes THE ROUND THAT FILED THE CURRENT CANDIDATE
+and nothing older. `task advance implementing → testing` is its only writer:
+it records the engine that round's accepted implement envelope reported, and
+CLEARS the field when that envelope reports none (v1.1). Reporting `.engine`
+is optional — `jobs reconcile` cross-checks it only when present — so on a
+mixed chain the write-only rule left the previous round's engine standing as
+the record of a candidate it did not build, which reviewer independence would
+then exclude from reviewing and the rework failover would name in a durable
+reroute entry. There is nothing to restamp it with (the envelope is the only
+account of who ran the round, and it is the envelope that said nothing), so
+the field goes empty — the same state both readers already handle honestly,
+falling back to the role's first-of-chain baseline and to a withheld reroute.
+A task hand-walked with NO envelope at all keeps whatever it recorded; the
+clear is about an envelope that is present and silent, not about an absent
+one. The drop is journalled.
 `hook_guidance` (v1-m3):
 written by the orchestrator from a bound `hook.on_verify_fail` handler's
 `.artifact.guidance` string, via `orchid task set <id> hook_guidance
@@ -1447,7 +1607,7 @@ recipients get what their judgment needs, nothing more:
 
 | Role | Receives |
 |---|---|
-| implementer | context.md + lessons.md + task body (incl. its OWN rework history and named dead-ends) |
+| implementer | context.md + lessons.md + task body (incl. its OWN rework history and named dead-ends) + rework.md on a rework attempt (the previous round's failure output, verbatim) |
 | reviewer | context.md + lessons.md + diff/manifest + acceptance criteria + stop condition (never other tasks' state) |
 | arbiter | both review envelopes + this task's journal history + diff on demand |
 | plan_critic | requirements + draft roadmap + concatenated tasks.md (every current `tasks/*.md`, tail-first truncatable) + lessons.md |

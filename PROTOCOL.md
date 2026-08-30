@@ -2113,6 +2113,95 @@ ones its archetype never declares.
     carried, so the record of what each round was told survives; the
     instruction does not. Exactly one live brief reaches the pack: the one for
     the candidate now under work.
+    **That advance also captures what failed, before it destroys it.** The
+    same call deletes `reviews/<id>-verify.log` — deliberately, to arm
+    INV-11's gate — so the reason it journals points at a file that no longer
+    exists by the time anyone reads it, and the next attempt used to arrive
+    with nothing to act on (dogfood finding F27, lesson L023). It now copies
+    that log first, into `reviews/<id>-r<round>-rework.log`, and records the
+    round's `rework_signature` plus how many CONSECUTIVE rounds have produced
+    that identical signature (`rework_signature_repeats`) — see
+    docs/specs/kernel.md's attempt-fairness rule. The operator's own doors
+    into `rework` do the same: `orchid task unblock` and `orchid task retry`
+    delete that log too, and `retry` is the verb reached for after `attempts
+    exhausted`, which stops the task at `blocked` with the failing log still
+    on disk — so both capture before they delete, and a round an operator
+    grants starts with the same evidence a round the driver sends does. Every
+    door deletes `reviews/<id>-merge.log` as well, so every door reads it too
+    when the verify log has no failure to report: a red repo-wide `merge_gate`
+    ends at `merging → blocked` with a PASSING verify log beside the failing
+    merge log, and that is the failure the operator is unblocking.
+    Nothing here needs a separate call; what the walk must do with the result
+    is:
+
+    - the next dispatch's implementer pack carries `rework.md` (the previous
+      round's output, verbatim), so the brief can say "you already tried this
+      and got exactly this". Both ends of that are bound to the candidate the
+      evidence names: a log describing a superseded candidate is neither
+      captured nor fed forward, because "you already tried this" said about
+      code the recipient is not holding is a confident false claim rather
+      than a weaker true one. Nor is a log that is byte-for-byte the round
+      already captured: on an unchanged candidate the binding cannot tell a
+      surviving log from a fresh one, and counting one run twice would reach
+      every judgment below on a single verification. Nor a round the candidate
+      has since PASSED: `testing -> reviewing` RETIRES the captured rounds
+      (renaming them `-rework.retired.log`, outside every reader's glob, so the
+      bytes survive for a human), because a `task reverify` with no implementer
+      cycle leaves the candidate exactly where it was — the round binds, and
+      only the pass knows better;
+    - at `rework_signature_repeats` ≥ 2, dispatch that rework to a DIFFERENT
+      engine in `role.implementer`'s chain — `runners/orchid-launch <id>
+      implementer implement --engine <next-eligible>`, excluding the task's
+      recorded `implementer_engine_id`, and journal the reroute. A chain with
+      no other eligible entry dispatches normally; this is a preference, not
+      a gate. Nor is it applied when the newest captured round records a red
+      repo-wide `merge_gate`: that repeats identically until somebody outside
+      the task acts, so it is not this engine's to converge on and no
+      alternate can change it. Nor when that field names an actor no single
+      installed plugin answers to, NOR WHEN IT IS EMPTY — the exclusion reads
+      that record and nothing else, and the role's currently-resolved engine
+      is not a substitute for it: this reroute is what makes that substitute
+      wrong, since after the first one the engine that ran last is the
+      alternate while the role still resolves to the primary. With nothing to
+      name, the preference and its journal line are withheld and the dispatch
+      still happens.
+    - at `rework_signature_repeats` ≥ `rework_nonconvergence_max` (config,
+      default 3), stop: `orchid task advance <id> blocked --reason "rework
+      not converging: ..."`, and then record the blocked task's own boundary
+      — do NOT raise a notify of its own beside it. This is a stop the block
+      itself pages for, through the same route an exhausted attempt budget
+      takes: one blocker per DISTINCT stop is a budget in both directions, and
+      a page raised outside the boundary record is compared against nothing,
+      so it mints a second qid for the same decision on this pass and the walk
+      mints a third on the next one when it recomposes the stop in its own
+      wording. Keep the `--reason` short enough to reach the page whole (it is
+      quoted onto one line) and put the round's captured log in it: that
+      reason IS what every later pass reads back. An unchanged signature is
+      evidence the loop is not converging, not a fresh failure, and spending
+      the rest of the attempt budget re-asking an identically-answered
+      question is the exact behavior F27 recorded. It still consumed its
+      attempt on the way here — the waiver is for a signature that actually
+      CHANGED. If the advance REFUSES, the task is still in `rework`: report
+      the refusal and stop at a boundary that says so, never one that asserts
+      a block that did not happen.
+    - **and the same question is asked again at the DISPATCH, before anything
+      is launched.** Both rules above read `rework_signature_repeats`, but a
+      failure only LANDS here — in the testing arm, and in the merging one. A
+      task can be sitting in `rework` at or past the threshold without either
+      of them having run: the advance just above was refused, `orchid merge`
+      was driven by hand, the pass died between the two, the key was lowered in
+      config, or an operator answered the page with `orchid task unblock` /
+      `orchid task retry` (which take a blocked task back to `rework` and
+      deliberately leave the streak standing — an identical signature over the
+      operator's route is the same evidence as one over the driver's). So the
+      dispatch arm asks it too, through the same stop, and withholds the round:
+      no worktree, no launch, no attempt. Spending a round to rediscover a stop
+      the recorded state already justifies is F27 one level up. What releases
+      the loop is a verification that ANSWERS DIFFERENTLY — a new signature
+      restarts the count at one and the next dispatch proceeds normally,
+      carrying the operator's reason in the body — which is why both doors say
+      on the way out that the next pass will withhold, and name `orchid task
+      reverify` (no attempt spent) as the edge that re-runs the verifier.
 
     When the rework was caused by something `context.md` failed to state —
     not an actual defect in the candidate — this is a lesson-birth moment
@@ -2693,6 +2782,20 @@ one-pass driver could otherwise stop progressing in silence:
   `orchid run refresh-lease` is a named verb and takes no verb lock, so this
   neither writes state outside a verb nor can deadlock against the step it
   covers.
+- **A rework that changed nothing is not a fresh failure.** The driver takes
+  all three consequences of the `testing` FAIL arm above without a model:
+  the pack builder adds `rework.md` whenever a captured round exists, a
+  second identical `rework_signature` re-routes the dispatch through
+  `resolve_role_available`'s exclusion of the last attempt's engine, and
+  `rework_nonconvergence_max` identical rounds end the loop at `blocked`
+  with an `operator-decision` boundary. The last of those is asked at the
+  DISPATCH as well as where the failure lands, so a task that reached
+  `rework` past the threshold by any other route — a refused stop, a
+  hand-driven merge, a lowered key, an operator's `retry`/`unblock` — has its
+  round withheld rather than spent rediscovering the stop. Every one of those
+  reads a structured field the kernel wrote (`rework_signature_repeats`,
+  `implementer_engine_id`), never prose from a log — a driver comparing two
+  logs by eye would be exactly the free-form judgment this file forbids it.
 - **One counter for the escalation ladder.** The prose ladder in step 2
   spends its first occurrence on a free relaunch that touches no counter; a
   driver has no per-attempt memory outside `.orchid/`, and a private
@@ -3046,7 +3149,10 @@ Once `orchid status --explain` shows every task `done`:
   jobs review-plan`, backed by `lib/review.sh`'s
   `review_implementer_engine`) read this field directly, falling back to
   `resolve_role <repo> implementer` (first-of-chain) only for a task that
-  hasn't reached `testing` yet.
+  hasn't reached `testing` yet — or for one whose latest round reported no
+  engine at all, which that same advance now CLEARS the field on (v1.1)
+  rather than leaving the previous round's engine standing as the record of a
+  candidate it did not build.
 - **`orchid task unblock`** — `docs/specs/kernel.md:525` used to document it
   as `orchid task unblock <id> [--guidance "..."]`, drifted from its own
   state table two hundred-odd lines earlier (`docs/specs/kernel.md:239`),

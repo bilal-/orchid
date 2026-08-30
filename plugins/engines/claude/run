@@ -193,6 +193,13 @@ if [ "$operation" = implement ]; then
   prompt=""
   [ -f "$input_pack/context.md" ] && prompt="$(cat "$input_pack/context.md")"$'\n\n'
   prompt="$prompt$(cat "$input_pack/task.md")"$'\n\n'
+  # T025: on a rework attempt the pack carries rework.md -- the verbatim
+  # output of the run that failed last time, plus whether that failure has
+  # repeated unchanged. Placed AFTER the spec and immediately before the
+  # rules, so it reads as the most recent fact about this task rather than as
+  # background. Absent on a first attempt, which is why this is conditional
+  # and not a required pack item.
+  [ -f "$input_pack/rework.md" ] && prompt="$prompt$(cat "$input_pack/rework.md")"$'\n\n'
   prompt="${prompt}Rules: work only in this directory; edit files to satisfy the task; never touch any .orchid/ path."
 
   # v0b2 F2, judgment call: apply the same stdin fix as codex's adapter to

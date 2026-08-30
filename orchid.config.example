@@ -220,6 +220,13 @@ pack_budget_bytes=65536
 # reading that as permission. `none` disables the route.
 # Default: tests/QUARANTINE.md
 # flaky.quarantine=tests/QUARANTINE.md
+# How many CONSECUTIVE rework rounds may come back with a byte-identical
+# failure signature before the driver stops the loop and blocks the task for a
+# human. An unchanged signature means the previous round's changes did not move
+# the failure at all -- more attempts at that point re-ask a question already
+# answered identically (dogfood finding F27). 0 disables the stop, leaving the
+# ordinary attempt budget as the only backstop.
+# rework_nonconvergence_max=3
 # model=
 # effort=medium
 # rate_limit_backoff_s=3600

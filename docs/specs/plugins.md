@@ -102,6 +102,56 @@ honestly in `pack.json` (`{"name":"diff.patch","omitted":"worktree-read"}`).
 An inline-only engine gets no such relief — a diff that large still hits
 `input_overflow` exactly as above, since it has no other way to see it.
 
+**Rework packs (v1.1):** an `implement` pack for a task with captured rework
+evidence also carries `rework.md` — the previous round's failure output
+VERBATIM (never a summary: a summarized "verify failed" is exactly what the
+loop already had), led by whether that same failure has now repeated
+unchanged, and followed by a diff against the round before it when it has
+not. It is truncatable and is budgeted FIRST among the truncatables, ahead
+of `lessons.md`/`context.md` — on a rework attempt it is the most specific
+input in the pack — and it trims TAIL-KEPT, the opposite of the others,
+because a suite's output ends with the failing assertions. Tail-kept applies
+to the captured LOG alone, and its three parts are budgeted separately:
+
+- the PREAMBLE (round number, signature, and whether it repeated unchanged)
+  is kept WHOLE, because a tail trim over the whole file would drop precisely
+  that preamble and leave an unlabelled fragment of test output — the pre-v1.1
+  brief with extra noise;
+- the FAILING RUN is the only part ever cut, and it is cut tail-kept;
+- the COMPARISON against the previous round is dropped ENTIRELY, and first.
+  Trimming run and comparison together as one body keeps the diff and eats
+  the run, leaving a description of a change to output the engine cannot see.
+
+**A required `rework.md` is never quietly omitted.** When a captured round
+binds to the task's current candidate, that failure is the specific input the
+attempt was dispatched to act on, so a budget that cannot carry the preamble
+plus a meaningful tail of the failing run fails the pack with `input_overflow`
+(exit 12) instead of shipping one without it. The alternative is a dispatch
+that re-derives the same change and produces the same failure while every
+counter reads healthy.
+
+**Evidence is bound to the candidate that produced it.** Each captured round
+carries the `candidate:` header of the log it copied, and `rework.md` is built
+only from a round whose header matches the task's CURRENT `candidate_sha` —
+the same rule the rework brief in the task body applies to the locations it
+quotes. The candidate moves under captured evidence in ordinary operation (the
+reworking implementer commits, `orchid merge`'s rebase arm mints a new sha, an
+operator re-derives the branch), and "you already tried this and got exactly
+this" said about a superseded candidate is a confident false claim rather than
+a weaker true one. A round that is not fed forward is withheld and recorded
+with its reason, as an `items[]` entry of its own rather than in the plain
+budget-omission list — `{"name":"rework.md","omitted":"<reason>"}`, one of
+exactly four: `superseded-candidate` (the round names a candidate the task has
+moved off), `unbindable` (it claims no candidate at all — an older kernel
+wrote it), `no-candidate` (the TASK has none to bind to, so there is nothing
+for two vacuous sentinels to agree about), and `unreadable` (the brief could
+not be built from a round that is there, which is a different fact from a
+budget that could not carry one and is never routed into the overflow refusal
+above). A first attempt, with no captured round at all, is not an omission and
+records nothing. `implement` only: a reviewer judges `base_sha..candidate_sha`
+as it stands, and the previous attempt's failure would prejudge a candidate
+that no longer carries it.
+
 One adapter serves many roles by branching on `operation` — no pseudo-engine
 identities. Adapters never guess paths, never choose output locations, exit
 nonzero on detectable failure.

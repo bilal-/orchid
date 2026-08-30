@@ -35,11 +35,16 @@ POLICY="$REPO_ROOT/lib/drive.sh"
 # (had the existence guard below not been there) into a loop that scans nothing
 # and passes vacuously.
 #
-# T018 adds a third (lib/capability.sh, the step-routing table the hand-off
+# T018 adds a fourth (lib/capability.sh, the step-routing table the hand-off
 # gate's capability arm reads). Enrolling it is not optional bookkeeping: it is
 # consulted on the path to a boundary the driver records, so a mutation hidden
 # there would escape check 1 for exactly the reason the note above gives.
-POLICIES=("$POLICY" "$REPO_ROOT/lib/handoff.sh" "$REPO_ROOT/lib/findings.sh" "$REPO_ROOT/lib/capability.sh")
+#
+# T025 adds a fifth: lib/rework.sh decides whether captured failure evidence is
+# current and whether its signature has crossed the non-convergence threshold.
+# Those verdicts can reroute an engine and raise a boundary, so the same
+# read-only audit applies to that library too.
+POLICIES=("$POLICY" "$REPO_ROOT/lib/handoff.sh" "$REPO_ROOT/lib/findings.sh" "$REPO_ROOT/lib/capability.sh" "$REPO_ROOT/lib/rework.sh")
 [ -f "$DRIVER" ] || fail "INV-13: runners/orchid-drive is missing"
 for p in "${POLICIES[@]}"; do
   [ -f "$p" ] || fail "INV-13: $p is missing"

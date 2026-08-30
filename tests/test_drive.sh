@@ -3934,7 +3934,9 @@ CAPD="$WORK/attemptcap"
 mkdir -p "$CAPD"
 cd "$CAPD" || exit 1
 git init -q .
-printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nrework_max=1\n' > orchid.config
+# Keep T025's independent identical-signature stop out of this T026 fixture:
+# Part S is proving the attempt-budget boundary, so only that cap should fire.
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nrework_max=1\nrework_nonconvergence_max=99\n' > orchid.config
 git add -A
 git commit -q -m "fixture: config"
 ORCHID_REPO="$CAPD" "$ORCHID_BIN" init >/dev/null || fail "orchid init (attempt-budget fixture)"
@@ -8219,7 +8221,6 @@ grep -q "unexpected status" <<<"$GDRIVE_OUT" \
   && fail "the merging arm must recognise the blocked outcome its own verb produces"
 assert_eq "$GBASE" "$(git -C "$GATEREPO" rev-parse orchid/integration)" \
   "and after both rounds the integration ref has still never moved"
-
 # T023: THIS is the half of the `blocked` arm that names a validation log, and
 # it may do so only because the log is THERE -- the gate ran, wrote it, and
 # recorded what went red in it. Part ZP below drives the other route to the
@@ -8261,6 +8262,57 @@ assert_match "orchid task reverify G010" "$(cat "$GATEREPO/.orchid/runtime/answe
 assert_eq "unblock,retry,reverify,defer" \
   "$(cat "$GATEREPO/.orchid/runtime/answers/$GQ_QID.choices" 2>/dev/null || true)" \
   "and it declares the kernel's whole recovery list out of blocked — the catch-all kind is where the page was FILED, not a reason for it to name no answers while its own text names three verbs"
+
+# --- (Z3/T025) merging -> rework takes the SAME convergence stop -----------
+# Z1 captured the first gate failure. Z2 went directly merging -> blocked at
+# the attempt cap, so it correctly captured no second rework round. Give the
+# task budget again and replay the identical merge failure: the edge now lands
+# in rework, captures repeat 2, and the shared convergence guard must stop it
+# before another implementer is dispatched. Before T025's follow-up this guard
+# existed only in drive_testing, so an identical merge-validation loop evaded
+# it forever.
+gorchid run boundary clear --reason "fixture: exercise merging non-convergence" >/dev/null
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nrework_max=10\nrework_nonconvergence_max=2\nmerge_gate=echo "lib/example.sh:12: SC2086: Double quote"; exit 3\n' > "$GATEREPO/orchid.config"
+fm_set "$GATEREPO/.orchid/tasks/G010.md" status merging
+GDRIVE_RC=0
+GDRIVE_OUT="$(ORCHID_REPO="$GATEREPO" ORCHID_EPOCH="$GEPOCH" "$DRIVE" 2>&1)" || GDRIVE_RC=$?
+assert_eq blocked "$(gfield status)" \
+  "a repeated merging -> rework signature stops at the same non-convergence boundary as testing (out: $GDRIVE_OUT)"
+assert_eq 2 "$(gfield rework_signature_repeats)" \
+  "the repeated merge evidence reached the shared consecutive-signature counter"
+assert_eq 3 "$(gfield attempts)" \
+  "the red repo-wide gate still charges its round before the early convergence stop"
+assert_eq 16 "$GDRIVE_RC" "the merge-side non-convergence stop exits at its judgment boundary"
+assert_match "not converging" "$(gboundary)" \
+  "the recorded merge-side boundary names non-convergence, not an ordinary rework"
+
+# --- (Z4/T025) ...but WHOSE wall it is, on the one surface an operator rereads
+# The stop is right whoever is at fault -- a loop this stuck needs a person. The
+# ATTRIBUTION is not: what repeats here is the repository's own `merge_gate`, a
+# check applied to everything that this candidate was never asked about and that
+# libexec/orchid-task calls the one merge failure repeating identically until
+# somebody OUTSIDE the task acts. It therefore satisfies the identical-signature
+# test by construction. A boundary that says only "the loop is re-asking a
+# question it has already been answered" sends the operator to an engine and a
+# diff for a red repository, and the dispatch side would spend a second engine's
+# round on a wall no engine can move.
+GZ_BOUNDARY_REASON="$(gboundary | jq -r '.reason // ""')"
+assert_match "merge_gate" "$GZ_BOUNDARY_REASON" \
+  "the non-convergence boundary names the REPOSITORY's gate as what repeats, not just the loop (reason: $GZ_BOUNDARY_REASON)"
+assert_match "fix the repository" "$GZ_BOUNDARY_REASON" \
+  "...and carries the remedy that actually clears it, since no further implementer round can turn a repo-wide gate green"
+
+# The same answer, read from the evidence the pass really captured. This is what
+# the dispatch-side reroute consults before it excludes an engine, so proving it
+# here proves both consumers agree on a file a real driver pass filed -- and the
+# boundary clause above is the witness that the driver itself reached it.
+GZ_RWLOG="$(rework_latest_log "$GATEREPO/.orchid" G010 0 2>/dev/null || true)"
+[ -f "$GZ_RWLOG" ] \
+  || fail "non-vacuity: the merging rework round must have captured its evidence for the attribution to be read from (got '$GZ_RWLOG')"
+assert_match "^gate_status: ran$" "$(cat "$GZ_RWLOG")" \
+  "non-vacuity: the captured round really is the gate's own log, header intact through the copy"
+rework_streak_attributable "$GATEREPO/.orchid" G010 \
+  && fail "a streak whose newest round is a red repo-wide merge_gate must not be attributed to the engine that ran — no alternate engine can converge on the repository"
 
 # ===========================================================================
 # Part ZP (T023) -- THE OTHER ROUTE TO `merging -> blocked`, WHICH MUST NOT BE
@@ -8889,3 +8941,1020 @@ for _vrc in 16 20; do
     || fail "T031: the verify exit-$_vrc arm must RETURN — a refusal that falls through is charged to the candidate as a failed round (arm: $_arm)"
 done
 red_case "both of drive_testing's verify-refusal arms return instead of falling into the rework accounting"
+
+# Part AA (T025) -- THE REWORK-FEEDBACK CASE. A task whose verification fails
+# the same way every time.
+#
+# Lettered AA, not S or Z: this Part is APPENDED to a file whose letters are
+# claimed by other tasks landing in parallel. `S` through `Y7` are already
+# taken (S is T026's configurable rework budget), and T007 now owns Z. A clash
+# is worse than cosmetic here -- two Parts under one label make every prose
+# cross-reference ambiguous, and the next task to append picks its label by
+# reading this list.
+#
+# Dogfood finding F27: a task failed verify three times with the SAME two
+# assertions failing the SAME way, and the implementer kept changing
+# production code to satisfy them. Three attempts produced a BYTE-IDENTICAL
+# failure signature -- strong evidence the loop feeds back the same
+# information and gets the same answer.
+#
+# The proven root cause (lesson L023) is not that the brief forgets to
+# mention the failure. `orchid task advance <id> rework` DELETES
+# reviews/<id>-verify.log while the same call journals the reason "verify
+# failed: see .orchid/reviews/<id>-verify.log" -- the pointer dangles the
+# instant it is written, so rework arrives with nothing to act on. The
+# deletion is deliberate (it arms INV-11's gate), so the fix is to capture
+# the output first, not to stop deleting it.
+#
+# RED before this task at each of the three groups below: the second
+# attempt's input pack has no rework.md at all; nothing counts a repeated
+# signature, so nothing reroutes; and the run spends its whole attempt budget
+# re-asking an identically-answered question.
+# ===========================================================================
+RW="$WORK/rework"
+RWCTL="$WORK/rwctl"
+mkdir -p "$RW" "$RWCTL" "$WORK/eng/stubrw" "$WORK/eng/stubalt"
+cd "$RW" || exit 1
+git init -q .
+printf 'role.implementer=stubrw,stubalt\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+
+# mk_rw_engine <name> -- an implementer that commits SOMETHING (so a real
+# candidate exists to verify) and records what it was actually handed. The
+# recording is the point: the pack the next attempt receives is the artifact
+# under test, and reading it from the ENGINE's side is the only honest way to
+# assert it arrived.
+mk_rw_engine() {
+  local name="$1"
+  local dir="$WORK/eng/$name"
+  printf 'manifest_version=1\nid=test/%s\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+    "$name" > "$dir/plugin.conf"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'set -eu'
+    printf 'CTL=%s\n' "$(printf '%q' "$RWCTL")"
+    printf 'ENGINE=%s\n' "$name"
+  } > "$dir/run"
+  cat >> "$dir/run" <<'EOF'
+req="$1"
+worktree="$(jq -r .worktree "$req")"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+attempt="$(jq -r .attempt "$req")"
+pack="$(jq -r .input_pack "$req")"
+if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
+  jq -n '{contract:1, job_id:"x", task:"x", operation:"implement", status:"ok", summary:"dryrun"}' > "$out"
+  exit 0
+fi
+# Which engine ran which attempt -- the failover assertion reads this.
+echo "$ENGINE" >> "$CTL/starts"
+# And the brief this attempt was actually handed, kept per-attempt so the
+# feedback assertion compares like with like.
+if [ -f "$pack/rework.md" ]; then cp "$pack/rework.md" "$CTL/rework-a$attempt.md"; fi
+cp "$pack/pack.json" "$CTL/pack-a$attempt.json"
+cd "$worktree" || exit 1
+echo "attempt $attempt by $ENGINE" > "attempt-$attempt.txt"
+git add "attempt-$attempt.txt"
+git -c user.email=stub@example.invalid -c user.name="stub" commit -q -m "stub: $task attempt $attempt"
+sha="$(git rev-parse HEAD)"
+jq -n --arg jid "$jid" --arg task "$task" --arg sha "$sha" --arg eng "test/$ENGINE" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
+    engine:$eng, summary:"stub implemented", commits:[$sha]}' > "$out.part"
+mv "$out.part" "$out"
+EOF
+  chmod +x "$dir/run"
+}
+mk_rw_engine stubrw
+mk_rw_engine stubalt
+
+# The fallback may only ACTIVATE once it has passed the capability suite for
+# this exact (engine, role) pair -- the same gate every other failover goes
+# through, recorded under the fixture HOME the driver itself inherits. Without
+# it the reroute below would correctly find nothing eligible and the third
+# attempt would (correctly, but uninterestingly) run on the primary again.
+capsuite_run stubalt implementer >/dev/null \
+  || fail "sanity: capsuite_run should pass for stubalt/implementer"
+
+ORCHID_REPO="$RW" "$ORCHID_BIN" init >/dev/null || fail "orchid init (rework-feedback fixture)"
+git checkout -q orchid/integration
+REPOCH="$(ORCHID_REPO="$RW" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+rworchid() { ORCHID_REPO="$RW" ORCHID_EPOCH="$REPOCH" "$ORCHID_BIN" "$@"; }
+rworchid requirements import "$WORK/requirements.md" >/dev/null
+rworchid task create R010 "fails the same way every time" >/dev/null
+# The failure that never changes. Its OUTPUT is byte-identical run to run;
+# only the verify log's volatile header (timestamp, sha, candidate) moves,
+# and that is exactly what the signature is defined to ignore.
+rworchid task set R010 verification_commands 'echo "FAIL OrderTest::testRoundTrip assertSame array order differs"; exit 1' >/dev/null
+rworchid plan apply --reason "initial plan" >/dev/null
+
+RWDRIVE_RC=0; RWDRIVE_OUT=""
+run_rwdrive() {
+  RWDRIVE_RC=0
+  RWDRIVE_OUT="$(ORCHID_REPO="$RW" ORCHID_EPOCH="$REPOCH" "$DRIVE" 2>&1)" || RWDRIVE_RC=$?
+}
+rwfield() { ORCHID_REPO="$RW" "$ORCHID_BIN" task show R010 | grep "^$1: " | cut -d' ' -f2-; }
+
+ri=0
+while [ "$ri" -lt 45 ]; do
+  run_rwdrive
+  [ "$(rwfield status)" = blocked ] && break
+  ri=$((ri + 1))
+  sleep 0.3
+done
+
+# --- 1. THE RED CASE: the next attempt's brief contains the failing output --
+[ -f "$RWCTL/rework-a2.md" ] \
+  || fail "the SECOND attempt's input pack must carry rework.md -- the previous attempt's failure, fed back (ri=$ri, out: $RWDRIVE_OUT)"
+grep -q "OrderTest::testRoundTrip assertSame" "$RWCTL/rework-a2.md" \
+  || fail "rework.md must contain the VERBATIM failing output, not a pointer to a log the same advance deleted"
+grep -q "^exit: 1$" "$RWCTL/rework-a2.md" \
+  || fail "rework.md carries the whole evidence log, exit code included"
+[ ! -f "$RWCTL/rework-a1.md" ] \
+  || fail "the FIRST attempt has no previous failure and must get no rework.md"
+assert_match '"rework.md"' "$(jq -c '[.items[].name]' "$RWCTL/pack-a2.json")" \
+  "rework.md is a declared item in the pack manifest the engine was handed"
+
+# --- 2. an unchanged signature is a REPEAT, and reroutes the next attempt ---
+[ -f "$RWCTL/rework-a3.md" ] || fail "the third attempt must also be handed a brief"
+grep -q "repeated 2 times in a row" "$RWCTL/rework-a3.md" \
+  || fail "the third attempt's brief must SAY the failure repeated unchanged ('you already tried this and got exactly this')"
+assert_eq "stubrw" "$(sed -n 1p "$RWCTL/starts")" "sanity: the first attempt ran on the chain's primary"
+assert_eq "stubrw" "$(sed -n 2p "$RWCTL/starts")" "sanity: one identical failure is not yet enough to reroute"
+assert_eq "stubalt" "$(sed -n 3p "$RWCTL/starts")" \
+  "a SECOND identical failure signature routes the next rework to a different engine in the role's chain (starts: $(tr '\n' ' ' < "$RWCTL/starts"))"
+# The reroute entry asserts "this attempt runs on <engine>", so it is written
+# by the pass that actually SPAWNS. A re-entrant pass (one that died between
+# the spawn and the advance) adopts the job already running on the OLD engine
+# and must journal nothing: an operator reads these entries to find out which
+# engine produced which candidate, and one spurious line per recovering pass
+# would make that unreadable.
+assert_eq 1 "$(grep -c "rework routed to a different engine" "$RW/.orchid/journal.md" 2>/dev/null || true)" \
+  "the reroute is journalled exactly once -- by the pass that spawned it, never by one that adopted an existing job"
+
+# --- 3. an unchanged signature is not-converging, not a fresh failure ------
+assert_eq blocked "$(rwfield status)" \
+  "three byte-identical failures stop the loop instead of spending the rest of the budget on it (ri=$ri, rc=$RWDRIVE_RC, out: $RWDRIVE_OUT)"
+assert_eq 3 "$(rwfield rework_signature_repeats)" "the streak counted every consecutive identical round"
+assert_eq 3 "$(rwfield rework_rounds)" "every round's evidence was captured, one file each"
+rwboundary="$(ORCHID_REPO="$RW" "$ORCHID_BIN" run boundary show 2>&1 || true)"
+assert_match "not converging" "$rwboundary" \
+  "the pass stops at a judgment boundary that says WHY, not a generic attempts-exhausted"
+rwblockers="$(cat "$RW/.orchid/BLOCKERS.md" 2>/dev/null || true)"
+assert_match "not converging" "$rwblockers" "and the operator is told on the surface they actually watch"
+
+# The evidence itself survived, one file per round -- and none of it can be
+# mistaken for verify evidence: the invalidating delete still happened.
+for r in 1 2 3; do
+  [ -f "$RW/.orchid/reviews/R010-r$r-rework.log" ] \
+    || fail "round $r's failing output must survive as its own captured log"
+done
+[ ! -f "$RW/.orchid/reviews/R010-verify.log" ] \
+  || fail "the invalidating delete still happens -- INV-11 stays armed (the capture is a copy, not a reprieve)"
+assert_eq 3 "$(rwfield attempts)" \
+  "an identical signature still CONSUMES its attempt (kernel.md: the attempt cap targets repeated identical failures)"
+
+# A reroute record is a claim about a SPAWNED attempt, not an intention. Put a
+# fresh unlaunched manifest in the next slot so T027's prepare guard returns
+# exit 18 before any process starts. The task stays in rework and the durable
+# reroute count must not move; the next gc/retry may choose differently.
+rworchid run boundary clear --reason "fixture: test refused reroute launch" >/dev/null
+rworchid task retry R010 --reason "fixture: one more dispatch" --attempts 1 >/dev/null
+# ISOLATED FROM THE CONVERGENCE STOP, WHICH THIS CASE IS NOT ABOUT. The three
+# identical rounds above left the streak AT `rework_nonconvergence_max`, and
+# `retry` deliberately does not clear it (tests/test_rework.sh Part F pins that:
+# an identical signature over the operator's route is the same non-convergence
+# evidence as one over the driver's). The dispatch guard therefore withholds the
+# round and re-blocks the task — which is Part AE's subject, asserted there
+# end to end. What is under test HERE is the reroute RECORD over a launch that
+# refuses, so the streak is parked at 2: still a repeat, so the reroute arm runs
+# exactly as it did before, and no longer the stop's business.
+fm_set "$RW/.orchid/tasks/R010.md" rework_signature_repeats 2
+RW_LAST_ENGINE="$(rwfield implementer_engine_id)"
+case "$RW_LAST_ENGINE" in
+  stubrw) RW_NEXT_ENGINE=stubalt ;;
+  *) RW_NEXT_ENGINE=stubrw ;;
+esac
+RW_REROUTES_BEFORE="$(grep -c "rework routed to a different engine" "$RW/.orchid/journal.md" 2>/dev/null || true)"
+rworchid jobs prepare R010 implementer implement --engine "$RW_NEXT_ENGINE" >/dev/null
+run_rwdrive
+assert_eq rework "$(rwfield status)" \
+  "an exit-18 reroute launch leaves the task dispatchable because nothing was spawned"
+assert_eq "$RW_REROUTES_BEFORE" \
+  "$(grep -c "rework routed to a different engine" "$RW/.orchid/journal.md" 2>/dev/null || true)" \
+  "a refused launch writes no journal line claiming that the rerouted attempt ran"
+assert_match "nothing was spawned" "$RWDRIVE_OUT" \
+  "the refused reroute reports the launch fact it actually established"
+
+# ===========================================================================
+# Part AB (T025) -- THE NON-CONVERGENCE STOP IS ONE STOP, SO IT IS ONE PAGE --
+# and a stop that could not be taken says so instead of claiming it was.
+#
+# Lettered AB, APPENDED: `AA` above is this task's own earlier Part and `Z`,
+# `ZP`, `S`..`Y7` are claimed by T007/T023/T026. Renaming any of them to make
+# room would re-point every prose cross-reference in this file.
+#
+# TWO DEFECTS, both in `drive_rework_nonconvergence_stop`, both RED before this
+# round:
+#
+#   1. THREE QUESTIONS FOR ONE DECISION. The arm raised its own `orchid notify`
+#      AND recorded an `operator-decision` boundary in its own second wording --
+#      so the pass that stopped the loop minted two qids (the foot of the driver
+#      pages for the boundary it records), and the NEXT pass minted a third,
+#      when the blocked walk recomposed the same stop through
+#      drive_blocked_reason in a third wording that the field-by-field de-dup
+#      could only read as a new record. Only the direct notify declared an
+#      answer set; the other two invited free text for a stop with four known
+#      answers, and `answer_expiry_s` turned every unanswered one into a
+#      refusal. This is the identical defect PROTOCOL.md's one-blocker-per-stop
+#      budget already caught in four other arms (tests/test_notify_hermes_
+#      channel.sh sections 12c/12d) -- this arm was the fifth, in both
+#      spellings at once.
+#
+#   2. AN UNCHECKED ADVANCE. `task advance <id> blocked` ran with its exit
+#      status discarded, and the two lines after it stated as fact that the
+#      task had been blocked: a pass log saying `rework -> blocked (not
+#      converging)` and a boundary telling an operator to go and look at a
+#      blocked task. Every neighbouring arm in this file captures `|| rc=$?`
+#      and branches. When the verb refuses -- and it can, at the archetype
+#      gate, the epoch fence or the verb lock -- the task is still in `rework`,
+#      the next pass still dispatches it, and the operator is sent looking for
+#      a stop that never happened.
+#
+# The suite is the SAME every round and the candidate never moves, so the
+# signature repeats by construction; `rework_nonconvergence_max=1` makes the
+# very first captured round trip the stop, which keeps this Part to one verify
+# per pass with no engine ever started (the task is parked in `testing` before
+# each pass, and `orchid verify` runs in the pass's own foreground).
+# ===========================================================================
+NCD="$WORK/nonconverge"
+mkdir -p "$NCD"
+cd "$NCD" || exit 1
+git init -q .
+# rework_max well above anything this Part spends: the exhausted-budget arm is
+# checked BEFORE the rework edge, so a tight budget would block the task there
+# and the convergence stop under test would never be reached at all.
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nrework_nonconvergence_max=1\nrework_max=9\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$NCD" "$ORCHID_BIN" init >/dev/null || fail "orchid init (non-convergence fixture)"
+git checkout -q orchid/integration
+NEPOCH="$(ORCHID_REPO="$NCD" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+ncorchid() { ORCHID_REPO="$NCD" ORCHID_EPOCH="$NEPOCH" "$ORCHID_BIN" "$@"; }
+ncorchid requirements import "$WORK/requirements.md" >/dev/null
+ncorchid task create N010 "fails the same way every round" >/dev/null
+ncorchid task set N010 verification_commands \
+  'echo "tests/test_widget.sh: FAIL: widget mismatch"; exit 1' >/dev/null
+ncorchid plan apply --reason "initial plan" >/dev/null
+
+NTASK="$NCD/.orchid/tasks/N010.md"
+NCAND="$(git -C "$NCD" rev-parse HEAD)"
+fm_set "$NTASK" base_sha "$NCAND"
+fm_set "$NTASK" candidate_sha "$NCAND"
+nfield() { fm_get "$NTASK" "$1"; }
+ncboundary() { ORCHID_REPO="$NCD" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+ncquestions() { find "$NCD/.orchid/runtime/answers" -name '*.question' 2>/dev/null | wc -l | tr -d ' '; }
+NDRIVE_RC=0; NDRIVE_OUT=""
+run_ndrive() {
+  fm_set "$NTASK" status testing
+  NDRIVE_RC=0
+  NDRIVE_OUT="$(ORCHID_REPO="$NCD" ORCHID_EPOCH="$NEPOCH" "$DRIVE" 2>&1)" || NDRIVE_RC=$?
+}
+
+# --- AB1: the stop fires, and it is ONE stop -------------------------------
+run_ndrive
+assert_eq blocked "$(nfield status)" \
+  "one identical signature at rework_nonconvergence_max=1 stops the loop (rc=$NDRIVE_RC, out: $NDRIVE_OUT)"
+assert_eq 1 "$(nfield rework_signature_repeats)" \
+  "fixture witness: the streak really is at the configured threshold, so the stop below is the convergence one and not the attempt cap"
+assert_eq 16 "$NDRIVE_RC" "the pass stops at its judgment boundary"
+assert_match "rework -> blocked \(not converging\)" "$NDRIVE_OUT" \
+  "the pass reports the edge it really took (out: $NDRIVE_OUT)"
+[ -f "$NCD/.orchid/reviews/N010-r1-rework.log" ] \
+  || fail "non-vacuity: the round the stop is about must have captured its evidence"
+
+# ONE PAGE. Before this round the pass raised two questions for this one
+# decision -- the arm's own `orchid notify` and the boundary the foot of the
+# driver pages for -- and answering either said nothing about the other.
+assert_eq 1 "$(ncquestions)" \
+  "the pass that stopped the loop raised exactly ONE page for it (out: $NDRIVE_OUT)"
+
+# ...and it is the blocked task's OWN page, composed by the shared library
+# composer rather than by this arm, which is what makes the record on the next
+# pass byte-identical instead of merely similar. docs/specs/kernel.md's
+# rework-feedback rule names `operator-decision` for this stop; lib/drive.sh's
+# drive_blocked_kind derives that from the journaled cause, so the arm cannot
+# agree with the walk on the kind and disagree with it on the text.
+assert_eq operator-decision "$(ncboundary | jq -r '.kind // ""')" \
+  "a loop that will not converge is a judgment call, recorded under the kind the spec names"
+NCBOUNDARY_REASON="$(ncboundary | jq -r '.reason // ""')"
+assert_match "not converging" "$NCBOUNDARY_REASON" \
+  "the recorded reason says WHY, not a generic attempts-exhausted (reason: $NCBOUNDARY_REASON)"
+assert_match "candidate-suite" "$NCBOUNDARY_REASON" \
+  "...and whose wall it is: nothing here is a red repo-wide gate, so the repeating failure is the candidate's own suite"
+# The evidence pointer is the LAST thing in the block's journaled cause, so
+# asserting it also proves the reason reached the page WHOLE -- a cause longer
+# than lib/drive.sh's _DRIVE_QUOTE_MAX is clipped with a trailing `...`, and a
+# page that names half a path is a page that names no path.
+assert_match "\.orchid/reviews/N010-r1-rework\.log" "$NCBOUNDARY_REASON" \
+  "...and names the captured round to read, unclipped (reason: $NCBOUNDARY_REASON)"
+assert_match "orchid task retry N010" "$NCBOUNDARY_REASON" \
+  "...beside the recovery verbs, which only the shared composer puts there"
+NCBLOCKERS="$(cat "$NCD/.orchid/BLOCKERS.md" 2>/dev/null || true)"
+assert_match "not converging" "$NCBLOCKERS" \
+  "and the operator is told on the surface they actually watch (page: $NCBLOCKERS)"
+assert_match "^choices: unblock \| retry \| reverify \| defer\$" "$NCBLOCKERS" \
+  "...with the declared answer set, which the arm's own hand-written boundary never carried"
+
+# --- AB2: the next pass over the same blocked task adds no second question --
+NDRIVE_RC=0
+NDRIVE_OUT="$(ORCHID_REPO="$NCD" ORCHID_EPOCH="$NEPOCH" "$DRIVE" 2>&1)" || NDRIVE_RC=$?
+assert_eq blocked "$(nfield status)" \
+  "fixture: N010 is still blocked on the following pass, so the record below is the same stop (rc=$NDRIVE_RC)"
+assert_eq operator-decision "$(ncboundary | jq -r '.kind // ""')" \
+  "the walk recomputes the same KIND from the same journaled cause"
+assert_eq "$NCBOUNDARY_REASON" "$(ncboundary | jq -r '.reason // ""')" \
+  "...and the same REASON, byte for byte — a record that changed would be a second qid for one decision"
+assert_eq 1 "$(ncquestions)" \
+  "so no second question is minted: one blocker per distinct stop (out: $NDRIVE_OUT)"
+
+# --- AB3: RED -- the advance REFUSES, and the pass must not claim otherwise -
+# The refusal is produced at the archetype gate (libexec/orchid-task's
+# `archetype_validate`, exit 13), which is the one precondition of `task
+# advance` that ONLY the task verbs read: the boundary record and the page the
+# foot of this pass writes are unaffected by it, so what this case measures is
+# the arm's own handling and nothing else.
+#
+# Armed on the task file's own `status: rework` -- the LAST write the rework
+# transition makes, and after every epoch-fenced subprocess that transition
+# runs (its journal entry), so breaking the archetype here can never turn the
+# refusal under test into a refusal of the edge before it. The short settle is
+# the same ordering rule one step finer: `task advance` writes `updated`
+# immediately after `status`, and a fixture write that landed between the two
+# would be the one the verb clobbered. Repaired again the moment the refusal is
+# on the pass's stdout, so the rest of the walk meets a valid archetype and this
+# fixture contributes no stop of its own to the boundaries the pass reports.
+fm_set "$NTASK" archetype feature
+NC_ARCH_OUT="$WORK/nonconverge-refused.out"
+: > "$NC_ARCH_OUT"
+fm_set "$NTASK" status testing
+# nc_has <file> <exact-line> -- a fork-free "does this file contain this line".
+# The detection below is a poll, and a `grep` per poll would cost a fork each
+# time: this keeps the latency between the transition landing and the fixture
+# acting at well under a millisecond, against the tens of milliseconds
+# `bin/orchid` needs to reach `archetype_validate` (a bash start, fifteen
+# sources and the stale-root `git`).
+nc_has() {
+  local line
+  while IFS= read -r line; do
+    [ "$line" = "$2" ] || continue
+    return 0
+  done < "$1"
+  return 1
+}
+(
+  ncn=0
+  while ! nc_has "$NTASK" "status: rework"; do
+    ncn=$((ncn + 1))
+    [ "$ncn" -lt 200000 ] || exit 1
+  done
+  sleep 0.01
+  # Written, then CHECKED, then written again if it did not stick: the verb's
+  # own `updated` write follows its `status` write by microseconds, and a
+  # fixture write the verb clobbered would leave a valid archetype and a test
+  # that silently measured the success path instead.
+  ncn=0
+  while [ "$ncn" -lt 200 ]; do
+    fm_set "$NTASK" archetype nosucharchetype
+    nc_has "$NTASK" "archetype: nosucharchetype" && break
+    ncn=$((ncn + 1))
+  done
+  ncn=0
+  while ! grep -q "REFUSED" "$NC_ARCH_OUT" 2>/dev/null; do
+    ncn=$((ncn + 1))
+    [ "$ncn" -lt 4000 ] || break
+    sleep 0.005
+  done
+  fm_set "$NTASK" archetype feature
+) &
+NC_BREAKER=$!
+NDRIVE_RC=0
+ORCHID_REPO="$NCD" ORCHID_EPOCH="$NEPOCH" "$DRIVE" >"$NC_ARCH_OUT" 2>&1 || NDRIVE_RC=$?
+wait "$NC_BREAKER" 2>/dev/null || true
+NDRIVE_OUT="$(cat "$NC_ARCH_OUT")"
+# Exit 13 IS the fixture witness: it is `archetype_validate`'s own refusal code
+# and nothing else in this verb returns it, so the arm really did meet a refused
+# advance rather than a merely unusual one.
+assert_match "rework -> blocked REFUSED \(exit 13\)" "$NDRIVE_OUT" \
+  "a refused stop reports the refusal, with the verb's own exit code (out: $NDRIVE_OUT)"
+assert_eq rework "$(nfield status)" \
+  "...and the task is where the refusal left it, not where the stop wanted it"
+if grep -q "rework -> blocked (not converging)" <<<"$NDRIVE_OUT"; then
+  fail "a pass whose block was refused must never log the edge it did not take — an operator reading it goes looking for a blocked task that is not there (out: $NDRIVE_OUT)"
+fi
+NCREFUSED_REASON="$(ncboundary | jq -r '.reason // ""')"
+assert_match "REFUSED" "$NCREFUSED_REASON" \
+  "the boundary an operator re-reads states the refusal it actually met (reason: $NCREFUSED_REASON)"
+assert_match "still in rework" "$NCREFUSED_REASON" \
+  "...and where the task really is, which is not where the stop wanted it"
+# ...and what that costs, which changed when the dispatch guard landed. This
+# boundary used to end "the next pass will dispatch it again" -- true while the
+# stop lived only where a failure LANDS, and false now that the dispatch arm
+# asks the same question before it launches. A refused stop costs a pass, not a
+# round, and the one sentence an operator re-reads on every pass must not still
+# be describing the loop it no longer resumes.
+assert_match "withholds its dispatch" "$NCREFUSED_REASON" \
+  "...and that the refusal did not restart the loop: the next pass withholds the round instead (reason: $NCREFUSED_REASON)"
+if grep -qF "the next pass will dispatch it again" <<<"$NCREFUSED_REASON"; then
+  fail "the refused-stop boundary still promises a dispatch the guard now withholds (reason: $NCREFUSED_REASON)"
+fi
+if grep -qF "task is blocked:" <<<"$NCREFUSED_REASON"; then
+  fail "a refused stop must not record the BLOCKED-task boundary: that record asserts a state the verb refused to enter, and the walk that would recompute it never runs"
+fi
+
+# --- AB4: GREEN -- and the refusal is not a dead end -----------------------
+# The stop is idempotent: with the archetype repaired the very next pass takes
+# the same edge and completes it, so a refusal costs a pass rather than the
+# whole convergence guard.
+#
+# AND IT IS TAKEN FROM `rework`, WHICH IS THE HALF THIS USED TO FAKE. The task
+# is left exactly where AB3's refusal left it -- in `rework`, streak standing --
+# instead of being re-parked in `testing` by `run_ndrive`. That re-park was the
+# only reason the pass met the stop at all: the arm lived exclusively where a
+# failure LANDS, so a real pass over this state walked into `drive_dispatch`,
+# spawned an implementer and spent an attempt, and the loop stopped only once
+# THAT round had failed identically too. RED here before the dispatch guard --
+# the task reached `implementing` and a job manifest was written for it.
+fm_set "$NTASK" archetype feature
+NC_ATTEMPTS_BEFORE="$(nfield attempts)"
+ncjobs() { find "$NCD/.orchid/runtime/jobs" -name '*.json' 2>/dev/null | wc -l | tr -d ' '; }
+NC_JOBS_BEFORE="$(ncjobs)"
+assert_eq rework "$(nfield status)" \
+  "fixture: the refused stop really did leave the task dispatchable, which is the state the guard below is about"
+NDRIVE_RC=0
+NDRIVE_OUT="$(ORCHID_REPO="$NCD" ORCHID_EPOCH="$NEPOCH" "$DRIVE" 2>&1)" || NDRIVE_RC=$?
+assert_eq blocked "$(nfield status)" \
+  "with the refusing precondition repaired, the next pass takes the stop it could not take before — from rework, with no round in between (rc=$NDRIVE_RC, out: $NDRIVE_OUT)"
+assert_match "rework -> blocked \(not converging\)" "$NDRIVE_OUT" \
+  "...and reports it this time, because this time it happened (out: $NDRIVE_OUT)"
+assert_match "dispatch withheld" "$NDRIVE_OUT" \
+  "...naming the arm it was taken from: the dispatch, not a verification that failed again (out: $NDRIVE_OUT)"
+# THE ZERO-DISPATCH WITNESSES. A stop that blocks the task AFTER spawning a
+# round has not saved the round, and `status: blocked` alone cannot tell the
+# two apart on a pass this short.
+assert_eq "$NC_JOBS_BEFORE" "$(ncjobs)" \
+  "no job manifest was minted: the round was withheld, not spawned and then regretted (out: $NDRIVE_OUT)"
+assert_eq "$NC_ATTEMPTS_BEFORE" "$(nfield attempts)" \
+  "and no attempt was charged for a question the loop had already answered $(nfield rework_signature_repeats) time(s) identically"
+if grep -q "rework -> implementing" <<<"$NDRIVE_OUT"; then
+  fail "the pass dispatched a round into a loop it had already judged not to be converging (out: $NDRIVE_OUT)"
+fi
+
+# ===========================================================================
+# Part AC (T025) -- THE FAILOVER MUST NAME THE ENGINE THE CHAIN NAMES.
+#
+# Lettered AC, APPENDED: `AA` and `AB` above are this task's own earlier Parts,
+# and `S`..`Y7`, `Z`, `ZP` belong to T007/T023/T024/T026. Renaming any of them
+# to claim a letter would re-point every prose cross-reference in this file.
+#
+# RED BEFORE THIS ROUND. Two vocabularies meet in the reroute arm and nothing
+# translated between them:
+#
+#   * a role chain is written in INSTALL-DIRECTORY names -- `role.implementer=
+#     skewdir,skewalt` -- and `resolve_role_available` excludes an entry by
+#     matching that name exactly;
+#   * `implementer_engine_id` holds the MANIFEST ID the implement envelope
+#     reported, minus the first-party `orchid/` prefix libexec/orchid-task
+#     strips. A third-party actor therefore lands there as `test/renamedskew`.
+#
+# The arm bridged them with `${id##*/}` -- take the basename. That is right
+# only because `orchid plugins install` HAPPENS to place a plugin in a
+# directory named after its id's basename; nothing enforces it, `manifest_
+# validate` never compares the two (it requires only that `id` be qualified as
+# publisher/name), and a vendored, hand-placed or renamed directory separates
+# them. lib/review.sh's `_review_engine_name_for_qid` already refuses the bare
+# strip for exactly this reason, and lib/capability.sh's routing gate resolves
+# the same field through the registry rather than through the string.
+#
+# What the strip cost, on the one repository shape it is wrong about:
+#
+#   1. THE REROUTE DID NOT HAPPEN. `renamedskew` is not in the chain, so the
+#      exclusion excluded nothing and the walk handed back `skewdir` -- the
+#      engine that had just failed twice identically. The whole point of the
+#      failover is that the third attempt asks somebody else.
+#   2. AND THE JOURNAL SAID IT DID, naming two engines that were both wrong:
+#      "an identical failure signature under 'renamedskew' -- this attempt runs
+#      on 'skewdir'". That entry is the only durable record of which engine
+#      produced which candidate. A silently-skipped reroute is a missed
+#      improvement; a false line in that record is a wrong answer to the one
+#      question an operator comes here to ask.
+#
+# GREEN: the actor is resolved through the registry that installed it
+# (lib/resolver.sh's `resolve_engine_name_any`), the exclusion bites, the job
+# really is minted for the other engine, and the journal names both of them the
+# way the chain does.
+# ===========================================================================
+SKW="$WORK/skewroute"
+SKWCTL="$WORK/skwctl"
+mkdir -p "$SKW" "$SKWCTL"
+
+# mk_skew_engine <dir-name> <manifest-id> -- an implementer whose DIRECTORY
+# name and whose manifest `id` are set independently. Everything else is the
+# smallest adapter the launcher and the capability suite both accept: it
+# answers the dryrun probe, records that it started, and files an ok envelope.
+# It deliberately commits nothing -- this Part measures which engine is
+# DISPATCHED, and a candidate would only add git latency to a fixture that
+# never reaches `testing`.
+mk_skew_engine() {
+  local name="$1" id="$2" dir
+  dir="$WORK/eng/$name"
+  mkdir -p "$dir"
+  printf 'manifest_version=1\nid=%s\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+    "$id" > "$dir/plugin.conf"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'set -eu'
+    printf 'CTL=%s\n' "$(printf '%q' "$SKWCTL")"
+    printf 'ENGINE=%s\n' "$name"
+  } > "$dir/run"
+  cat >> "$dir/run" <<'EOF'
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
+  jq -n '{contract:1, job_id:"x", task:"x", operation:"implement", status:"ok", summary:"dryrun"}' > "$out"
+  exit 0
+fi
+echo "$ENGINE" >> "$CTL/starts"
+jq -n --arg jid "$jid" --arg task "$task" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok", summary:"stub"}' > "$out.part"
+mv "$out.part" "$out"
+EOF
+  chmod +x "$dir/run"
+}
+# THE SKEW IS THE FIXTURE. `skewdir` claims `test/renamedskew`; its directory
+# and its id share nothing. `skewalt` is the ordinary case, so the assertions
+# below cannot pass by treating every engine as skewed.
+mk_skew_engine skewdir test/renamedskew
+mk_skew_engine skewalt test/skewalt
+
+# --- AC0: the translation itself, against the registry -------------------
+assert_eq skewdir "$(resolve_engine_name_any test/renamedskew)" \
+  "a qualified id resolves to the DIRECTORY of the plugin whose manifest claims it, not to the id's own basename"
+assert_eq skewdir "$(resolve_engine_name_any skewdir)" \
+  "...and a name that is already a directory answers itself, so a caller needs one lookup and not two"
+assert_eq skewalt "$(resolve_engine_name_any test/skewalt)" \
+  "...including for the ordinary plugin whose directory and id basename do agree"
+SKNRC=0
+resolve_engine_name_any test/nosuchplugin >/dev/null 2>&1 || SKNRC=$?
+assert_eq 1 "$SKNRC" \
+  "an actor nothing installed answers to is reported as unresolved (exit 1), never guessed at by basename"
+# Non-vacuity: `renamedskew` really is a directory nobody has, so AC1's
+# assertions below are about a translation and not about a lucky coincidence.
+SKNRC=0
+resolve_engine_name_any renamedskew >/dev/null 2>&1 || SKNRC=$?
+assert_eq 1 "$SKNRC" \
+  "fixture witness: the id's basename names NO installed plugin, which is exactly what the old strip handed the chain walk"
+
+# --- AC1: the reroute, end to end through the driver ----------------------
+cd "$SKW" || exit 1
+git init -q .
+printf 'role.implementer=skewdir,skewalt\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+# The fallback may only ACTIVATE once it has passed the capability suite for
+# this exact (engine, role) pair -- the same gate every other failover goes
+# through. Without it the walk below would correctly find nothing eligible and
+# the dispatch would (correctly, but uninterestingly) stay on the primary.
+capsuite_run skewalt implementer >/dev/null \
+  || fail "sanity: capsuite_run should pass for skewalt/implementer"
+ORCHID_REPO="$SKW" "$ORCHID_BIN" init >/dev/null || fail "orchid init (skew-failover fixture)"
+git checkout -q orchid/integration
+SKEPOCH="$(ORCHID_REPO="$SKW" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+skorchid() { ORCHID_REPO="$SKW" ORCHID_EPOCH="$SKEPOCH" "$ORCHID_BIN" "$@"; }
+skorchid requirements import "$WORK/requirements.md" >/dev/null
+skorchid task create K010 "fails the same way every round" >/dev/null
+skorchid plan apply --reason "initial plan" >/dev/null
+
+# Parked directly in `rework` with the streak already at the reroute threshold:
+# this Part is about the ROUTING decision, and driving three real verify
+# failures to reach the same state would measure the capture path Part AA
+# already covers, at three passes' cost.
+SKTASK="$SKW/.orchid/tasks/K010.md"
+SKCAND="$(git -C "$SKW" rev-parse HEAD)"
+fm_set "$SKTASK" base_sha "$SKCAND"
+fm_set "$SKTASK" candidate_sha "$SKCAND"
+fm_set "$SKTASK" implementer_engine_id "test/renamedskew"
+fm_set "$SKTASK" rework_signature_repeats 2
+fm_set "$SKTASK" status rework
+skfield() { fm_get "$SKTASK" "$1"; }
+assert_eq "test/renamedskew" "$(skfield implementer_engine_id)" \
+  "fixture witness: the task really records the QUALIFIED id, which is the form libexec/orchid-task writes for a third-party actor"
+
+SKDRIVE_RC=0
+SKDRIVE_OUT="$(ORCHID_REPO="$SKW" ORCHID_EPOCH="$SKEPOCH" "$DRIVE" 2>&1)" || SKDRIVE_RC=$?
+assert_eq implementing "$(skfield status)" \
+  "fixture: the pass dispatched the reworking task (rc=$SKDRIVE_RC, out: $SKDRIVE_OUT)"
+
+# WHICH ENGINE WAS ACTUALLY ASKED. The job manifest records the resolved chain
+# entry, and it is written by the pass itself -- so this is the dispatch fact,
+# read without waiting on anything.
+skjob_engine() {
+  local mf
+  for mf in "$SKW/.orchid/runtime/jobs"/*.json; do
+    [ -e "$mf" ] || continue
+    [ "$(jq -r '.task // ""' "$mf")" = K010 ] || continue
+    [ "$(jq -r '.operation // ""' "$mf")" = implement ] || continue
+    jq -r '.engine // ""' "$mf"
+    return 0
+  done
+  return 1
+}
+assert_eq skewalt "$(skjob_engine)" \
+  "a second identical signature routes the next attempt to the OTHER chain entry, even when the failing engine's directory and manifest id disagree (out: $SKDRIVE_OUT)"
+
+# ...and the engine really ran, so the manifest above is not a record of a
+# dispatch that never happened. A bounded wait, not a race: the stub commits
+# nothing and returns immediately, and a machine slow enough to exceed this has
+# a broken launcher rather than a flaky test.
+ski=0
+while [ "$ski" -lt 200 ]; do
+  [ -s "$SKWCTL/starts" ] && break
+  ski=$((ski + 1))
+  sleep 0.05
+done
+assert_eq skewalt "$(sed -n 1p "$SKWCTL/starts" 2>/dev/null || true)" \
+  "the engine that actually started is the one the reroute named (starts: $(tr '\n' ' ' < "$SKWCTL/starts" 2>/dev/null || true))"
+
+# THE DURABLE RECORD, WHICH IS THE HALF THAT WAS WRONG RATHER THAN MISSING.
+SKJOURNAL="$SKW/.orchid/journal.md"
+SKJTEXT="$(cat "$SKJOURNAL" 2>/dev/null || true)"
+assert_match "rework routed to a different engine" "$SKJTEXT" \
+  "the reroute is journalled, because this time it happened"
+assert_match "identical failure signature under 'skewdir'" "$SKJTEXT" \
+  "...and it indicts the engine BY THE NAME THE CHAIN USES, not by the basename of the id it reported"
+assert_match "this attempt runs on 'skewalt'" "$SKJTEXT" \
+  "...and names the engine the attempt is really running on"
+# The negative, on the file directly: a pipe here would let `set -o pipefail`
+# turn grep's own SIGPIPE into a "no match" and pass this vacuously.
+if grep -qF "renamedskew" "$SKJOURNAL"; then
+  fail "the record must never name an actor that is not in any chain: an operator reading 'under renamedskew' has no engine to go and look at (journal: $SKJTEXT)"
+fi
+
+# --- AC2: an actor orchid cannot name gets no reroute AND no claim ---------
+# The other half of the same rule, in its own repository so that AC1's live
+# job cannot decide it: a dispatch that ADOPTS an outstanding job never reaches
+# the reroute arm at all, and a fixture that raced the stub's exit would be
+# measuring the adopt path on a slow machine and this one on a fast one.
+#
+# `test/uninstalled` is a well-formed id that no installed manifest claims --
+# an engine uninstalled since it filed, or (INV-10) one claimed by two plugins
+# at once, which is the same unanswerable question. The old strip would have
+# aimed the exclusion at `uninstalled`, excluded nothing, and journalled a
+# reroute anyway. Naming the wrong engine is not the safe direction, so the
+# preference is dropped: the dispatch proceeds on the same chain, says why on
+# the pass's own output, and claims nothing durable.
+SKW2="$WORK/skewgone"
+mkdir -p "$SKW2"
+cd "$SKW2" || exit 1
+git init -q .
+printf 'role.implementer=skewdir,skewalt\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$SKW2" "$ORCHID_BIN" init >/dev/null || fail "orchid init (unresolvable-actor fixture)"
+git checkout -q orchid/integration
+SKEPOCH2="$(ORCHID_REPO="$SKW2" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+sk2orchid() { ORCHID_REPO="$SKW2" ORCHID_EPOCH="$SKEPOCH2" "$ORCHID_BIN" "$@"; }
+sk2orchid requirements import "$WORK/requirements.md" >/dev/null
+sk2orchid task create K020 "an actor that is no longer installed" >/dev/null
+sk2orchid plan apply --reason "initial plan" >/dev/null
+SKTASK2="$SKW2/.orchid/tasks/K020.md"
+SKCAND2="$(git -C "$SKW2" rev-parse HEAD)"
+fm_set "$SKTASK2" base_sha "$SKCAND2"
+fm_set "$SKTASK2" candidate_sha "$SKCAND2"
+fm_set "$SKTASK2" implementer_engine_id "test/uninstalled"
+fm_set "$SKTASK2" rework_signature_repeats 2
+fm_set "$SKTASK2" status rework
+SKJOURNAL2="$SKW2/.orchid/journal.md"
+SKDRIVE_RC=0
+SKDRIVE_OUT="$(ORCHID_REPO="$SKW2" ORCHID_EPOCH="$SKEPOCH2" "$DRIVE" 2>&1)" || SKDRIVE_RC=$?
+assert_match "resolves to no single installed plugin" "$SKDRIVE_OUT" \
+  "the pass SAYS it could not identify the actor, rather than silently routing somewhere (out: $SKDRIVE_OUT)"
+assert_eq implementing "$(fm_get "$SKTASK2" status)" \
+  "...and the task is still dispatched, on the same chain — an unnameable actor withholds the PREFERENCE, never the round (out: $SKDRIVE_OUT)"
+if grep -qF "rework routed to a different engine" "$SKJOURNAL2"; then
+  fail "a reroute that could not be aimed must write no journal line claiming one (journal: $(cat "$SKJOURNAL2" 2>/dev/null || true))"
+fi
+if grep -qF "test/uninstalled" "$SKJOURNAL2"; then
+  fail "an unresolvable actor must not reach the durable record either (journal: $(cat "$SKJOURNAL2" 2>/dev/null || true))"
+fi
+
+# ===========================================================================
+# Part AD (T025) -- AN UNRECORDED ACTOR IS NOT A GUESSABLE ONE.
+#
+# Lettered AD, APPENDED: `AA`..`AC` above are this task's own earlier Parts and
+# `S`..`Y7`, `Z`, `ZP` belong to T007/T023/T024/T026. Renaming any of them to
+# claim a letter would re-point every prose cross-reference in this file.
+#
+# THE THIRD WAY THE REROUTE CAN NAME THE WRONG ENGINE, after AC1's renamed
+# directory and AC2's uninstalled plugin: `implementer_engine_id` is EMPTY.
+# libexec/orchid-task writes that field from the round's own implement envelope
+# -- an adapter is not required to report `.engine`, and an envelope that was
+# absent, refused as a no-op delivery, or degraded (T040) is skipped outright --
+# so a round can end with nothing recorded about who ran it. (An envelope that
+# IS there and reports no engine CLEARS the field rather than leaving the
+# previous round's answer standing, which is how a mixed chain reaches this
+# state; that write is pinned in tests/test_review_routing.sh's Part W, and it
+# is what makes "empty" mean exactly one thing at the arm below.)
+#
+# RED BEFORE THIS ROUND, and it was the arm's own comment that was wrong rather
+# than a case it had not thought of. The empty field fell back to "whichever
+# engine this role resolves to right now -- absent a ledger change, that is
+# exactly the one that ran last time", excluded that engine, and journalled the
+# result as fact: "an identical failure signature under '<primary>' -- this
+# attempt runs on '<alternate>'". Nothing on disk says the primary ran. The
+# entry is the only durable answer to which engine produced which candidate, and
+# it was being composed out of a lookup of the CURRENT routing table rather than
+# out of any record of the round it describes -- unfalsifiable by construction,
+# which is what makes it worse than silence rather than a rougher version of it.
+#
+# AND THE LOOKUP REALLY DOES DIVERGE FROM THE ROUND, which is why the claim is
+# not merely unsupported but wrong. This feature routes AWAY from the chain
+# primary, so once a reroute has happened the engine that ran last is the
+# ALTERNATE while the role still resolves to the primary: the exclusion then
+# skips an engine that did not run and hands the round back to the one that did,
+# under a line saying the opposite. Reachable on the shipped default long before
+# any exotic state: the reroute arms at `reps` >= 2 and the stop only fires at
+# `rework_nonconvergence_max` (3), so every dispatch in that window is a round
+# with a reroute already behind it. This Part parks the streak in that window
+# instead of replaying two real failures, for the same reason Part AC does --
+# and parks it BELOW the threshold deliberately, since at or above it Part AE's
+# guard withholds the dispatch and there is no reroute to be wrong about.
+#
+# GREEN: with nothing recorded there is no engine to name, so the PREFERENCE and
+# its record are withheld and the ROUND is not. The dispatch happens on the
+# chain as written, the pass says why, and nothing durable claims a reroute.
+# PROTOCOL.md is explicit that this exclusion reads the kernel-written field and
+# never prose or inference; a guess is not a weaker version of that record.
+# ===========================================================================
+SKW3="$WORK/skewnoengine"
+mkdir -p "$SKW3"
+cd "$SKW3" || exit 1
+git init -q .
+printf 'role.implementer=skewdir,skewalt\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$SKW3" "$ORCHID_BIN" init >/dev/null || fail "orchid init (unrecorded-actor fixture)"
+git checkout -q orchid/integration
+SKEPOCH3="$(ORCHID_REPO="$SKW3" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+sk3orchid() { ORCHID_REPO="$SKW3" ORCHID_EPOCH="$SKEPOCH3" "$ORCHID_BIN" "$@"; }
+sk3orchid requirements import "$WORK/requirements.md" >/dev/null
+sk3orchid task create K030 "a round that recorded no engine" >/dev/null
+sk3orchid plan apply --reason "initial plan" >/dev/null
+SKTASK3="$SKW3/.orchid/tasks/K030.md"
+SKCAND3="$(git -C "$SKW3" rev-parse HEAD)"
+fm_set "$SKTASK3" base_sha "$SKCAND3"
+fm_set "$SKTASK3" candidate_sha "$SKCAND3"
+fm_set "$SKTASK3" rework_signature_repeats 2
+fm_set "$SKTASK3" status rework
+# The fixture witness the whole Part rests on: the field really is empty. It is
+# never SET here -- an untouched task carries the template's blank, which is
+# exactly the state a round with no usable implement envelope leaves behind.
+assert_eq "" "$(fm_get "$SKTASK3" implementer_engine_id)" \
+  "fixture witness: the task records no implementer at all, which is what an absent, refused or degraded implement envelope leaves"
+# ...and the OTHER non-vacuity, which is what makes the silence below a decision
+# rather than an accident: the chain does have an eligible alternate, so a
+# reroute aimed at the primary would have found somewhere to go. What is missing
+# is the NAME of the engine to exclude, not an engine to exclude it in favour of.
+assert_eq skewalt "$(resolve_role_available "$SKW3" implementer implement skewdir)" \
+  "fixture witness: excluding the chain primary really does yield the alternate, so the withheld reroute below is about the missing record and not an inert chain"
+
+SKDRIVE_RC=0
+SKDRIVE_OUT="$(ORCHID_REPO="$SKW3" ORCHID_EPOCH="$SKEPOCH3" "$DRIVE" 2>&1)" || SKDRIVE_RC=$?
+assert_match "no implementer_engine_id is recorded" "$SKDRIVE_OUT" \
+  "the pass SAYS the actor was never recorded, rather than inventing one from the chain (rc=$SKDRIVE_RC, out: $SKDRIVE_OUT)"
+assert_eq implementing "$(fm_get "$SKTASK3" status)" \
+  "...and the round still happens: an unrecorded actor withholds the PREFERENCE, never the dispatch (out: $SKDRIVE_OUT)"
+
+# WHERE IT ACTUALLY WENT. The job manifest is written by the pass itself, so
+# this is the dispatch fact rather than a race on the stub. Before this round
+# the guess excluded `skewdir` and sent the attempt to `skewalt` -- a reroute
+# built on a record that does not exist.
+sk3job_engine() {
+  local mf
+  for mf in "$SKW3/.orchid/runtime/jobs"/*.json; do
+    [ -e "$mf" ] || continue
+    [ "$(jq -r '.task // ""' "$mf")" = K030 ] || continue
+    [ "$(jq -r '.operation // ""' "$mf")" = implement ] || continue
+    jq -r '.engine // ""' "$mf"
+    return 0
+  done
+  return 1
+}
+assert_eq skewdir "$(sk3job_engine)" \
+  "the dispatch follows the chain as written, because nothing on disk says the primary is the engine that failed twice (out: $SKDRIVE_OUT)"
+
+SKJOURNAL3="$SKW3/.orchid/journal.md"
+if grep -qF "rework routed to a different engine" "$SKJOURNAL3"; then
+  fail "a reroute with no recorded actor to aim at must write no journal line claiming one: that entry is the only durable answer to which engine produced which candidate (journal: $(cat "$SKJOURNAL3" 2>/dev/null || true))"
+fi
+
+# ===========================================================================
+# Part AE (T025) -- THE STOP IS ASKED WHERE THE ROUND IS SPENT, NOT ONLY WHERE
+# THE FAILURE LANDS. The operator's own two doors are how you meet it.
+#
+# Lettered AE, APPENDED: `AA`..`AD` above are this task's own earlier Parts and
+# `S`..`Y7`, `Z`, `ZP` belong to T007/T023/T024/T026. Renaming any of them to
+# claim a letter would re-point every prose cross-reference in this file.
+#
+# RED BEFORE THIS ROUND. PROTOCOL.md states two rules about
+# `rework_signature_repeats` and the driver read them in two different places:
+# the reroute at `>= 2` was asked in `drive_dispatch`, where the round is about
+# to be spent, and the stop at `>= rework_nonconvergence_max` only in the two
+# arms where a failure LANDS (drive_testing's FAIL arm, and the merging arm).
+# So a task sitting in `rework` at or past the threshold was walked straight
+# past the stop: the dispatch arm excluded an engine, spawned, charged an
+# attempt, and the loop stopped only once THAT round had come back identical
+# too. One whole round, to re-derive a stop the state on disk already justified.
+#
+# THE OPERATOR'S DOORS ARE THE ORDINARY WAY IN, which is why they are what this
+# Part drives. `task retry` and `task unblock` take a blocked task back to
+# `rework` and deliberately do NOT clear the streak -- tests/test_rework.sh
+# Part F pins that, because an identical signature reached over the operator's
+# route is the same evidence of a loop that is not converging as one reached
+# over the driver's. Before this round the very next pass therefore dispatched:
+# the operator typed the verb the blocked-task page names, and bought one more
+# byte-identical failure. (Part AB3's refused stop leaves the same state by a
+# different road; AB4 now covers that one from `rework` directly.)
+#
+# AND IT IS NOT A DEAD END, which is the other half and the last case here.
+# What releases the loop is a verification that ANSWERS DIFFERENTLY -- a new
+# signature restarts the count at one and the next pass dispatches normally,
+# carrying the operator's reason in the body. `orchid task reverify` is the
+# operator's spelling of that edge (no attempt spent); this Part parks the
+# status directly, as Part AB does, because reverify's own preconditions (a
+# clean task worktree at a fresh candidate) are a different subject.
+#
+# `rework_nonconvergence_max=2` keeps it to two verify rounds, and the whole
+# Part runs with no engine ever started until the final case, where a started
+# engine IS the assertion.
+# ===========================================================================
+DGD="$WORK/dispatchguard"
+mkdir -p "$DGD"
+cd "$DGD" || exit 1
+git init -q .
+# `rework_max` well above anything spent here: the exhausted-budget arm is
+# checked BEFORE the rework edge, so a tight budget would stop the task there
+# and the convergence guard under test would never be reached.
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nrework_nonconvergence_max=2\nrework_max=9\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$DGD" "$ORCHID_BIN" init >/dev/null || fail "orchid init (dispatch-guard fixture)"
+git checkout -q orchid/integration
+DGEPOCH="$(ORCHID_REPO="$DGD" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+dgorchid() { ORCHID_REPO="$DGD" ORCHID_EPOCH="$DGEPOCH" "$ORCHID_BIN" "$@"; }
+dgorchid requirements import "$WORK/requirements.md" >/dev/null
+dgorchid task create D010 "fails the same way every round" >/dev/null
+dgorchid task set D010 verification_commands \
+  'echo "tests/test_widget.sh: FAIL: widget mismatch"; exit 1' >/dev/null
+dgorchid plan apply --reason "initial plan" >/dev/null
+
+DGTASK="$DGD/.orchid/tasks/D010.md"
+DGCAND="$(git -C "$DGD" rev-parse HEAD)"
+fm_set "$DGTASK" base_sha "$DGCAND"
+fm_set "$DGTASK" candidate_sha "$DGCAND"
+dgfield() { fm_get "$DGTASK" "$1"; }
+dgboundary() { ORCHID_REPO="$DGD" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+# The dispatch fact, read off the manifests the PASS itself writes rather than
+# off a race with the stub: a job record for D010 exists only if a round was
+# really spawned for it.
+dgjobs() {
+  local mf n=0
+  for mf in "$DGD/.orchid/runtime/jobs"/*.json; do
+    [ -e "$mf" ] || continue
+    [ "$(jq -r '.task // ""' "$mf")" = D010 ] || continue
+    n=$((n + 1))
+  done
+  echo "$n"
+}
+DGDRIVE_RC=0; DGDRIVE_OUT=""
+run_dgdrive() {
+  DGDRIVE_RC=0
+  DGDRIVE_OUT="$(ORCHID_REPO="$DGD" ORCHID_EPOCH="$DGEPOCH" "$DRIVE" 2>&1)" || DGDRIVE_RC=$?
+}
+# Cleared before each measured pass so the boundary read afterwards is the one
+# that pass recorded, never a survivor of the pass before it.
+dgclear() { dgorchid run boundary clear --reason "fixture: next dispatch-guard case" >/dev/null 2>&1 || true; }
+
+# --- AE1: fixture -- reach the stop the ordinary way, over two real rounds --
+fm_set "$DGTASK" status testing
+run_dgdrive
+assert_eq rework "$(dgfield status)" \
+  "fixture: one failing round is not yet a streak, so the task is dispatchable (rc=$DGDRIVE_RC, out: $DGDRIVE_OUT)"
+assert_eq 1 "$(dgfield rework_signature_repeats)" "fixture: repeat 1, below rework_nonconvergence_max=2"
+fm_set "$DGTASK" status testing
+run_dgdrive
+assert_eq blocked "$(dgfield status)" \
+  "fixture: the second identical round trips the stop where the failure lands (rc=$DGDRIVE_RC, out: $DGDRIVE_OUT)"
+assert_eq 2 "$(dgfield rework_signature_repeats)" \
+  "fixture witness: the streak really is AT the threshold, so what follows is the convergence guard and not the attempt cap"
+DG_ATTEMPTS_AT_STOP="$(dgfield attempts)"
+DG_JOBS_AT_STOP="$(dgjobs)"
+
+# --- AE2: RED -- `task retry` hands it back, and the next pass must NOT spend
+# the round it appeared to grant -------------------------------------------
+# Bare `retry`, not `--attempts N`: the budget is not what stopped this task,
+# and an explicit grant that would change nothing is refused outright by the
+# verb (T026). This is the operator answering the page with the verb the page
+# itself names.
+DG_RETRY_ERR="$(dgorchid task retry D010 --reason "read the captured round and try again" 2>&1 1>/dev/null)"
+assert_eq rework "$(dgfield status)" "fixture: retry takes blocked -> rework"
+assert_eq 2 "$(dgfield rework_signature_repeats)" \
+  "fixture witness: and leaves the streak standing, which tests/test_rework.sh Part F pins as deliberate — an identical signature over the operator's route is the same evidence as one over the driver's"
+# THE DOOR SAYS WHAT THE DRIVER WILL DO. Discovering a withheld dispatch by
+# watching a pass do nothing is the same shape of silence `unblock` already
+# refuses to leave the operator in about a spent attempt budget.
+assert_match "rework_nonconvergence_max=2" "$DG_RETRY_ERR" \
+  "the verb warns that the streak it handed back is at the configured threshold (err: $DG_RETRY_ERR)"
+assert_match "withholds the dispatch" "$DG_RETRY_ERR" \
+  "...naming what the next pass actually does with it, not just that something is wrong"
+assert_match "orchid task reverify D010" "$DG_RETRY_ERR" \
+  "...and the verb that releases it, since only a verification that answers differently can"
+
+dgclear
+run_dgdrive
+assert_eq blocked "$(dgfield status)" \
+  "the pass after a retry stops the task again instead of dispatching into a loop already judged not to be converging (rc=$DGDRIVE_RC, out: $DGDRIVE_OUT)"
+assert_match "dispatch withheld" "$DGDRIVE_OUT" \
+  "...and says which arm took the stop: the dispatch, not a verification that failed again (out: $DGDRIVE_OUT)"
+# THE ZERO-DISPATCH WITNESSES. `status: blocked` alone cannot tell a round that
+# was never spawned from one spawned and then regretted, and the whole value of
+# this guard is the round it does not spend.
+assert_eq "$DG_JOBS_AT_STOP" "$(dgjobs)" \
+  "no job record was minted for D010: nothing was spawned (out: $DGDRIVE_OUT)"
+assert_eq "$DG_ATTEMPTS_AT_STOP" "$(dgfield attempts)" \
+  "and no attempt was charged for a question already answered identically twice"
+if grep -q "rework -> implementing" <<<"$DGDRIVE_OUT"; then
+  fail "the pass dispatched the round the guard exists to withhold (out: $DGDRIVE_OUT)"
+fi
+# One stop, one page, composed by the shared library composer -- this arm is a
+# second CALLER of drive_rework_nonconvergence_stop, not a second judgment, so
+# the record an operator meets is the one AB1 already pinned.
+assert_eq operator-decision "$(dgboundary | jq -r '.kind // ""')" \
+  "the withheld dispatch is filed under the kind docs/specs/kernel.md's rework-feedback rule names"
+DG_REASON="$(dgboundary | jq -r '.reason // ""')"
+assert_match "not converging" "$DG_REASON" \
+  "and the reason says WHY, in the shared composer's words (reason: $DG_REASON)"
+assert_match "candidate-suite" "$DG_REASON" \
+  "...including whose wall it is, read from the captured round exactly as the testing-side stop reads it"
+
+# --- AE3: RED -- and `unblock`, the other door, the same ------------------
+# `unblock` is the verb docs/troubleshooting.md points at for this stop: fold
+# the diagnosis into the task body. The body really does carry it (the reason is
+# written there by the verb, and pack_build copies that file verbatim), but the
+# round that would read it is still not dispatched while the loop is stopped --
+# so the door has to say so here too, or the guidance goes into a task nobody
+# is about to work.
+DG_UNBLOCK_ERR="$(dgorchid task unblock D010 --reason "the assertion, not the code: the column is unordered" 2>&1 1>/dev/null)"
+assert_eq rework "$(dgfield status)" "fixture: unblock takes blocked -> rework"
+assert_eq 2 "$(dgfield rework_signature_repeats)" "fixture witness: and leaves the streak standing, as retry does"
+assert_match "withholds the dispatch" "$DG_UNBLOCK_ERR" \
+  "the other door warns identically — one condition, one sentence, both verbs (err: $DG_UNBLOCK_ERR)"
+grep -qF "the column is unordered" "$DGTASK" \
+  || fail "witness: the operator's diagnosis really is delivered into the task body, so what the guard withholds is the ROUND and never the guidance"
+
+dgclear
+run_dgdrive
+assert_eq blocked "$(dgfield status)" \
+  "the pass after an unblock stops it too: the streak, not the verb, is what the guard reads (rc=$DGDRIVE_RC, out: $DGDRIVE_OUT)"
+assert_match "dispatch withheld" "$DGDRIVE_OUT" "...through the same arm (out: $DGDRIVE_OUT)"
+assert_eq "$DG_JOBS_AT_STOP" "$(dgjobs)" "still nothing spawned for D010"
+assert_eq "$DG_ATTEMPTS_AT_STOP" "$(dgfield attempts)" "still no attempt charged"
+
+# --- AE4: GREEN -- a verification that ANSWERS DIFFERENTLY releases it -----
+# The guard is on the STREAK, not on the task, and this is what keeps it from
+# being a hole an operator cannot climb out of. A changed failure is forward
+# progress by the same definition the reroute and the stop use: it restarts the
+# count at one, the arm goes silent, and the round is dispatched carrying the
+# reason AE3 put in the body. Non-vacuity for everything above, too -- the same
+# fixture, the same task, the same pass, dispatching once the streak moves.
+dgorchid task set D010 verification_commands \
+  'echo "tests/test_widget.sh: FAIL: a different assertion entirely"; exit 1' >/dev/null
+dgclear
+fm_set "$DGTASK" status testing
+run_dgdrive
+assert_eq rework "$(dgfield status)" \
+  "the changed failure lands in rework rather than at the stop (rc=$DGDRIVE_RC, out: $DGDRIVE_OUT)"
+assert_eq 1 "$(dgfield rework_signature_repeats)" \
+  "a new signature is a first sighting, not round three of a streak (out: $DGDRIVE_OUT)"
+dgclear
+run_dgdrive
+assert_eq implementing "$(dgfield status)" \
+  "and the very next pass dispatches: the guard withholds rounds from a stopped loop, never from a moving one (rc=$DGDRIVE_RC, out: $DGDRIVE_OUT)"
+[ "$(dgjobs)" -gt "$DG_JOBS_AT_STOP" ] \
+  || fail "non-vacuity: this fixture must be able to spawn a round at all, or every zero-dispatch assertion above passes for the wrong reason (jobs: $(dgjobs), out: $DGDRIVE_OUT)"
+if grep -q "dispatch withheld" <<<"$DGDRIVE_OUT"; then
+  fail "the guard fired below the threshold — it must read the streak and nothing else (out: $DGDRIVE_OUT)"
+fi

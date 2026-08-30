@@ -12,6 +12,7 @@ source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/manifest.sh"
 source "$REPO_ROOT/lib/roles.sh"; source "$REPO_ROOT/lib/resolver.sh"
 source "$REPO_ROOT/lib/envelope.sh"; source "$REPO_ROOT/lib/capsuite.sh"
 source "$REPO_ROOT/lib/ledger.sh"; source "$REPO_ROOT/lib/frontmatter.sh"
+source "$REPO_ROOT/lib/capability.sh"
 export ORCHID_ROOT="$REPO_ROOT"
 
 export HOME="$WORK/home"; mkdir -p "$HOME/.orchid"
@@ -191,5 +192,52 @@ ledger_mark "$repo" primh failed
 ledger_mark "$repo" primh failed
 out="$(resolve_role_available "$repo" implementer)" || fail "a failing primary with a capsuite-passed fallback must still resolve"
 assert_eq failh "$out" "three genuine faults still fail the role over -- distinguishing refusals does not disarm the failing-engine guardrail"
+
+rm -f "$repo/orchid.config"
+
+# ---------------------------------------------------------------------------
+# I (T025) -- the optional EXCLUSION argument. The driver's rework failover
+# asks for "the next eligible engine that is not the one that just ran": two
+# consecutive attempts whose failure output was byte-identical are evidence
+# this engine is not converging on this task, so the next attempt is routed
+# past it.
+#
+# It is a PREFERENCE, not a gate. A chain with nothing else eligible must
+# report exit 14 the same way it always does -- the caller falls back to the
+# unexcluded resolution rather than stalling a dispatchable task over a
+# routing nicety.
+#
+# Fresh engine names on purpose: section H above leaves `primh` marked
+# `failing` in the ledger, and reusing it here would disqualify the "healthy
+# primary" this section's own sanity check depends on.
+# ---------------------------------------------------------------------------
+mk_engine primi "workspace_write,shell,git"
+mk_engine faili "workspace_write,shell,git"
+printf 'role.implementer=primi,faili\n' > "$repo/orchid.config"
+capsuite_run faili implementer >/dev/null || fail "sanity: capsuite_run should pass for faili/implementer"
+
+assert_eq primi "$(resolve_role_available "$repo" implementer implement)" \
+  "sanity: with an operation and no exclusion the healthy capable primary still wins"
+out="$(resolve_role_available "$repo" implementer implement primi)" \
+  || fail "resolve_role_available should return the next capable chain entry when the primary is excluded"
+assert_eq faili "$out" "an excluded engine is skipped in favour of the next eligible chain entry"
+
+# The exclusion never overrides the gates that come after it: an excluded
+# primary plus a fallback with no capsuite record is still exit 14, not a
+# silently-activated unverified engine.
+mk_engine primi2 "workspace_write,shell,git"
+mk_engine faili2 "workspace_write,shell,git"
+printf 'role.implementer=primi2,faili2\n' > "$repo/orchid.config"
+rc=0; out="$(resolve_role_available "$repo" implementer implement primi2 2>"$WORK/err_i")" || rc=$?
+assert_eq 14 "$rc" "excluding the primary never promotes a capsuite-unverified fallback"
+[ -z "$out" ] || fail "no eligible engine must print nothing to stdout (got '$out')"
+assert_match "primi2: excluded by the caller" "$(cat "$WORK/err_i")" \
+  "the exit-14 reason names the exclusion, so an operator sees why the primary was skipped"
+
+# A single-entry chain has nowhere to go: the caller gets exit 14 and is
+# expected to dispatch on the same engine anyway.
+printf 'role.implementer=primi\n' > "$repo/orchid.config"
+rc=0; resolve_role_available "$repo" implementer implement primi >/dev/null 2>&1 || rc=$?
+assert_eq 14 "$rc" "a one-engine chain with that engine excluded has no survivor"
 
 rm -f "$repo/orchid.config"

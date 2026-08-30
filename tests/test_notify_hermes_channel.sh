@@ -2053,3 +2053,57 @@ pl_record="$(grep -n '\[ "\$prev_kind" = "\$page_kind" \]' "$drive_src" | cut -d
 record_guard="$(grep -B 1 '\[ "\$prev_kind" = "\$page_kind" \]' "$drive_src" || true)"
 assert_match '"\$on_record" -ne 2' "$record_guard" \
   "the record may only speak for a stop whose inbox holds nothing at all — a STALE answer (2) overrides it, which is what re-raises an expired page"
+
+# ===========================================================================
+# 12g (T025) -- THE FIFTH ARM, WHICH ARRIVED AFTER 12c/12d WERE WRITTEN.
+#
+# 12c counts `drive_notify` call sites and 12d counts raw `notify` verb
+# invocations, and both are deliberately blind to WHICH arm added one. That is
+# the right shape for a budget, and it is also why this section exists: the
+# non-convergence stop (runners/orchid-drive's drive_rework_nonconvergence_stop,
+# T025) landed with BOTH spellings of the defect at once -- a direct
+# `"$ORCHID_BIN" notify --task "$id" ...` AND an `operator-decision` boundary in
+# its own second wording -- so one stuck loop asked an operator twice on the
+# pass that blocked the task and a third time on the next pass, when the blocked
+# walk recomposed the same stop through drive_blocked_reason in a third wording.
+# 12d's count catches the re-addition; it does not say what the arm must do
+# INSTEAD, and "delete the notify" satisfies it while leaving the stop paged by
+# a record no later pass can reproduce.
+#
+# So the positive half is pinned here, the same way 12c and 12d pin theirs for
+# the exhausted-budget and merge-blocked arms: a task this arm blocks reaches a
+# human through the blocked-task composer, which is the only thing that makes
+# this pass's record and every later walk's record the same bytes.
+# Bracket expressions rather than backslash escapes for the braces, for the
+# reason 12d's own pattern gives: `\{` is an interval opener to some regex
+# engines and a literal brace to others, and this scan has to mean the same
+# thing wherever the suite runs.
+nc_arm="$(awk '/^drive_rework_nonconvergence_stop[(][)] [{]/{f=1} f{print} f&&/^[}]$/{exit}' "$drive_src")"
+assert_match "^drive_rework_nonconvergence_stop[(][)] [{]" "$nc_arm" \
+  "fixture witness: the non-convergence arm's body is what the assertions below read (found ${#nc_arm} bytes)"
+assert_match "drive_block_boundary" "$nc_arm" \
+  "the non-convergence stop records the blocked-task boundary its own block produced — that record IS its page, and it is the one the next pass recomputes byte for byte"
+if grep -qE '[$][{]?ORCHID_BIN[}]?"?[[:space:]]+notify([[:space:]]|$)' <<<"$nc_arm"; then
+  fail "the non-convergence stop must never page directly: a notify raised beside a boundary is compared against nothing and mints a second qid for the stop the boundary already pages for"
+fi
+if grep -qE '^[[:space:]]*drive_notify ' <<<"$nc_arm"; then
+  fail "...and not through drive_notify either — the single call site is the boundary loop at the foot of the driver, and a second one is the same duplicate in the tidier spelling"
+fi
+# THE OTHER HALF, which "delete the notify" alone would leave broken: the arm
+# has to survive its own verb refusing. A `task advance` whose exit status is
+# discarded lets the two lines after it state as fact that the task is blocked,
+# and an operator then goes looking for a stop that never happened. The capture
+# is asserted rather than the branch, because the capture is what makes any
+# branch possible at all.
+assert_match 'task advance "[$]id" blocked .* [|][|] barc=[$][?]' "$nc_arm" \
+  "the stop captures its advance's exit status, exactly as every neighbouring arm in this file does — an unchecked advance is how a refused block gets reported as a taken one"
+# ...and the success-only reporting really is behind that branch: both the pass
+# log claiming the edge and the blocked-task boundary must come AFTER the
+# refusal arm returns. tests/test_drive.sh Part AB drives both outcomes.
+nc_refuse_ln="$(grep -n 'barc" -ne 0' <<<"$nc_arm" | head -1 | cut -d: -f1 || true)"
+nc_claim_ln="$(grep -n 'rework -> blocked (not converging)' <<<"$nc_arm" | head -1 | cut -d: -f1 || true)"
+nc_record_ln="$(grep -n 'drive_block_boundary' <<<"$nc_arm" | head -1 | cut -d: -f1 || true)"
+[ -n "$nc_refuse_ln" ] && [ -n "$nc_claim_ln" ] && [ -n "$nc_record_ln" ] \
+  || fail "fixture: the refusal branch, the pass-log claim and the boundary record must all be locatable in the arm (refuse=$nc_refuse_ln claim=$nc_claim_ln record=$nc_record_ln)"
+[ "$nc_refuse_ln" -lt "$nc_claim_ln" ] && [ "$nc_refuse_ln" -lt "$nc_record_ln" ] \
+  || fail "the refusal must be handled BEFORE anything claims the block happened (refuse=$nc_refuse_ln claim=$nc_claim_ln record=$nc_record_ln)"

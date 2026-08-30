@@ -880,3 +880,78 @@ assert_match "scope_complete=false" "$detailP6" "...and the scope one"
 assert_eq 1 "$(grep -o -e '(summary: ' <<<"$detailP6" | wc -l | tr -d ' ')" \
   "but the envelope's one summary is carried exactly once across them, not repeated per entry"
 green_case "a review that both rejects and reports incomplete scope emits both entries and quotes its summary once"
+
+# ---------------------------------------------------------------------------
+# W -- an implement envelope that names NO engine CLEARS implementer_engine_id
+# instead of leaving the previous round's value standing (T025).
+#
+# Reporting `.engine` is OPTIONAL: `jobs reconcile` cross-checks it only when
+# it is there, and the capture above writes the field only when it finds one.
+# On a MIXED chain -- one adapter that reports, one that does not -- round two
+# therefore walked this arm with round ONE's answer already on the task, and
+# every reader downstream then attributed THIS candidate to the engine that
+# built the LAST one. Two of them act on it: review_implementer_engine excludes
+# the recorded engine from reviewing (so the engine that really implemented is
+# admitted to review its own work while an uninvolved one is barred), and the
+# driver's identical-signature failover reroutes AWAY from it and journals, in
+# the operator's own words, that the round which failed ran on it.
+#
+# Cleared rather than restamped: the envelope is the only account of who ran
+# the round, and this is the envelope saying nothing. Empty is a state both
+# readers already handle honestly -- the baseline chain entry, and a withheld
+# reroute -- and neither of them is false, which a stale name is.
+# ---------------------------------------------------------------------------
+# Back to repoW (M/N/O's repository), with its OWN epoch: the parts in between
+# started runs in other fixture repositories, and every fenced verb below is
+# checked against the epoch of the repository it is run in.
+export ORCHID_REPO="$repoW"
+ORCHID_EPOCH="$(cat "$repoW/.orchid/runtime/epoch")"
+export ORCHID_EPOCH
+"$ORCHID_BIN" task create TW4 demo >/dev/null
+"$ORCHID_BIN" task advance TW4 implementing >/dev/null
+"$ORCHID_BIN" task set TW4 base_sha "$head_w" >/dev/null
+"$ORCHID_BIN" task set TW4 candidate_sha "$head_w" >/dev/null
+jq -n --arg cand "$head_w" \
+  '{contract:1, job_id:"j-w4-round1-impl", task:"TW4", operation:"implement", status:"ok",
+    summary:"round 1, an adapter that reports its engine", engine:"orchid/codex", candidate_sha:$cand}' \
+  > "$repoW/.orchid/reviews/TW4-a1-implementer.json"
+"$ORCHID_BIN" task advance TW4 testing >/dev/null
+assert_eq codex "$(fm_get "$repoW/.orchid/tasks/TW4.md" implementer_engine_id)" \
+  "sanity: round 1 records the engine its envelope reported"
+
+# Round two, on an adapter that reports nothing. The attempt charge on
+# testing -> rework makes this attempt 2, so the envelope is a2's.
+"$ORCHID_BIN" task advance TW4 rework --reason "round 1 failed" >/dev/null
+"$ORCHID_BIN" task advance TW4 implementing >/dev/null
+cand2_w4="$(git -C "$repoW" commit-tree "$head_w^{tree}" -p "$head_w" -m "TW4 round 2 fix")"
+"$ORCHID_BIN" task set TW4 candidate_sha "$cand2_w4" >/dev/null
+jq -n --arg cand "$cand2_w4" \
+  '{contract:1, job_id:"j-w4-round2-impl", task:"TW4", operation:"implement", status:"ok",
+    summary:"round 2, an adapter that reports no engine", candidate_sha:$cand}' \
+  > "$repoW/.orchid/reviews/TW4-a2-implementer.json"
+"$ORCHID_BIN" task advance TW4 testing >/dev/null
+assert_eq "" "$(fm_get "$repoW/.orchid/tasks/TW4.md" implementer_engine_id)" \
+  "an envelope that names no engine CLEARS the field — leaving round 1's 'codex' would attribute this candidate to an engine that did not build it"
+assert_match "implementer_engine_id cleared" "$(cat "$repoW/.orchid/journal.md")" \
+  "and the drop is journalled: the old value is gone and the envelope never claimed anything, so the journal is the only place 'why did the reviewer pool widen' can be answered"
+assert_match "names an earlier round's actor" "$(cat "$repoW/.orchid/journal.md")" \
+  "the entry says WHY it was dropped rather than only that it was"
+
+# The clear is guarded on there being something to clear: a task that never
+# recorded an engine must not gain a journal entry (nor a frontmatter write)
+# for a round that changed nothing.
+jrn_before_w="$(grep -c "implementer_engine_id cleared" "$repoW/.orchid/journal.md")" || true
+"$ORCHID_BIN" task create TW5 demo >/dev/null
+"$ORCHID_BIN" task advance TW5 implementing >/dev/null
+"$ORCHID_BIN" task set TW5 base_sha "$head_w" >/dev/null
+"$ORCHID_BIN" task set TW5 candidate_sha "$head_w" >/dev/null
+jq -n --arg cand "$head_w" \
+  '{contract:1, job_id:"j-w5-impl", task:"TW5", operation:"implement", status:"ok",
+    summary:"no engine reported, and none on record either", candidate_sha:$cand}' \
+  > "$repoW/.orchid/reviews/TW5-a1-implementer.json"
+"$ORCHID_BIN" task advance TW5 testing >/dev/null
+assert_eq "" "$(fm_get "$repoW/.orchid/tasks/TW5.md" implementer_engine_id)" \
+  "a task that never recorded an engine still records none"
+jrn_after_w="$(grep -c "implementer_engine_id cleared" "$repoW/.orchid/journal.md")" || true
+assert_eq "$jrn_before_w" "$jrn_after_w" \
+  "and clearing an already-empty field journals nothing — a durable record of a change that did not happen is noise an operator has to rule out"

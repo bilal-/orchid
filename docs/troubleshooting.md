@@ -298,8 +298,9 @@ export ORCHID_EPOCH="$(cat .orchid/runtime/epoch)"
 
 ## Blocked tasks
 
-**Symptom:** a task sits in `blocked` (rework attempts exhausted, a genuine
-question raised via `orchid notify`, or an operator-invoked stop).
+**Symptom:** a task sits in `blocked` (rework attempts exhausted, a rework
+loop that stopped converging, a genuine question raised via `orchid notify`,
+or an operator-invoked stop).
 
 ```sh
 orchid task show <id>              # read the blocking reason + BLOCKERS.md
@@ -335,6 +336,30 @@ so the guidance text exists before `unblock` folds it in.
 the implementer's capsule carries, so a diagnosis put there is genuinely read
 by the next attempt. Each verb prints a line telling you where the reason
 went, so you never have to guess whether it was delivered.
+
+`unblock` and `retry` both end in `rework`, and every entry to `rework`
+deletes `reviews/<id>-verify.log` to keep INV-11's evidence gate armed — so
+both copy it into `reviews/<id>-r<n>-rework.log` first and count the round,
+exactly as the driver's own rework edge does. That matters most on `retry`:
+the `attempts exhausted` stop parks the task at `blocked` without touching
+the log, so the run that spent the last attempt is still fully documented
+when you grant another round, and the round you grant is dispatched with that
+output verbatim rather than with a pointer to a file the grant deleted. Two
+such rounds failing identically therefore build the same
+`rework_signature_repeats` streak a driver-run loop would — which is the
+intent: an identical failure is not less of a repeat for having been retried
+by hand.
+
+Both verbs delete `reviews/<id>-merge.log` as well, so both look there too
+when the verify log has nothing failing to say. That is the shape a red
+repo-wide `merge_gate` leaves: the candidate's own suite PASSED (which is how
+it reached `merging` at all), the gate went red, and once it has been red for
+every round the task's budget allows, `orchid merge` parks the task at
+`blocked` with both logs on disk. The verify log is a pass, so the failure you
+are unblocking exists only in the merge log — and it is captured before it
+goes, exactly like a verify failure. A merge log describing a candidate the
+task has since moved off is refused instead, and the refusal says so in the
+journal.
 
 ## A task sits in `testing` and nothing verifies it
 
@@ -832,6 +857,80 @@ candidate from the worktree and journals why
 
 Use `reverify`. The raw edge exists because the transition table is data, not
 because it is a second, laxer procedure.
+
+**"rework not converging" is a different block, and needs a different
+answer.** It means `rework_nonconvergence_max` (config, default 3)
+consecutive attempts produced a BYTE-IDENTICAL failure — the same command,
+the same output, the same exit code — so the loop is re-asking a question it
+has already been answered. Retrying it unchanged will produce one more
+identical failure. Read the captured evidence, which the kernel keeps one
+file per round precisely for this:
+
+```sh
+ls .orchid/reviews/<id>-r*-rework.log   # one per captured round, oldest first
+orchid task show <id>                   # rework_signature, rework_signature_repeats
+```
+
+Rounds a later verification PASSED are renamed `<id>-r<n>-rework.retired.log`
+and stop being fed forward — the candidate went green after they were captured,
+so "you already tried this and got exactly this" is no longer true about them.
+They are kept, not deleted: that copy is the only surviving record of what the
+task was red on before it went green, since the rework edge that captured it
+deleted the verifier's own log. List them the same way when you want the whole
+history rather than what the next attempt is being told.
+
+**First check whose wall it is.** If the boundary goes on to say the repeated
+failure is the repository's own `merge_gate`, the candidate is not what is
+red: a gate is a check the repository applies to everything, the task was
+never asked about it, and it will repeat identically until somebody clears it.
+No implementer round can, so `retry` and `unblock` both buy rounds that end
+the same way — fix the repository (or this candidate, if the gate names it),
+then `orchid task reverify <id> --reason "..."`, which costs no attempt. For
+the same reason the run does not reroute the role to another engine on that
+kind of streak: there is nothing for a second engine to converge on.
+
+**A pass that says it cannot name the engine to exclude has not misrouted
+anything.** The reroute excludes the task's recorded `implementer_engine_id`
+and nothing else, so it is withheld — and says so on the pass output — when
+that record names an actor no single installed plugin answers to, or when it is
+empty because the round's implement envelope was absent, refused as a no-op
+delivery, degraded, or present but reporting no engine (that last one clears
+the field on the way into `testing`, so a mixed chain leaves an empty record
+rather than the previous round's engine). The dispatch still happens on the
+chain as written, and
+the engine that runs still gets the previous round's output in its brief; what
+is withheld is the preference and the journal line, because the alternative is
+a durable record naming an engine nothing on disk says ran. If you want the
+reroute back, the fix is at the adapter: have it report `.engine` in its
+envelope (`orchid jobs ls` shows what each round actually ran on while its job
+record is still around).
+
+Otherwise nothing in the candidate is moving that failure, so the useful
+question is usually about the assertion rather than the code under test: what
+is actually being asserted, and what is the failing value actually? Fold the answer into
+`orchid task unblock <id> --reason "..."` (it is recorded into the task body,
+and the next attempt's brief carries the failing output alongside it) rather
+than `orchid task retry`, which buys the loop more rounds without changing
+anything about the question it is being asked.
+
+**Neither verb restarts the loop on its own, and both say so.** `unblock` and
+`retry` take the task back to `rework` but deliberately leave the streak
+standing — an identical signature reached over your route is the same evidence
+of a loop that is not converging as one reached over the driver's — so the next
+pass withholds the dispatch and stops the task again rather than spending a
+round. Nothing is lost by that: your reason is already in the task body and the
+next round that runs will carry it. What has to happen first is that
+verification ANSWERS DIFFERENTLY. Change whatever produces the failure (the
+assertion, the fixture, the repository), then:
+
+```sh
+orchid task reverify <id> --reason "..."   # re-runs the verifier, costs no attempt
+```
+
+A changed failure restarts the count at one and the following pass dispatches
+normally; a passing one ends the streak outright and the task moves on. If the
+loop really should get more rounds of the same question, the knob for that is
+`rework_nonconvergence_max` in the repository config, not a second `retry`.
 
 If the pass stops again with `awaiting-operator-prerequisite` instead, that is
 the OTHER operator-owned stop at this point — a step outside the repository,
