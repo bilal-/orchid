@@ -337,6 +337,19 @@ the implementer's capsule carries, so a diagnosis put there is genuinely read
 by the next attempt. Each verb prints a line telling you where the reason
 went, so you never have to guess whether it was delivered.
 
+`unblock` and `retry` both end in `rework`, and every entry to `rework`
+deletes `reviews/<id>-verify.log` to keep INV-11's evidence gate armed — so
+both copy it into `reviews/<id>-r<n>-rework.log` first and count the round,
+exactly as the driver's own rework edge does. That matters most on `retry`:
+the `attempts exhausted` stop parks the task at `blocked` without touching
+the log, so the run that spent the last attempt is still fully documented
+when you grant another round, and the round you grant is dispatched with that
+output verbatim rather than with a pointer to a file the grant deleted. Two
+such rounds failing identically therefore build the same
+`rework_signature_repeats` streak a driver-run loop would — which is the
+intent: an identical failure is not less of a repeat for having been retried
+by hand.
+
 ## A task sits in `testing` and nothing verifies it
 
 **Symptom:** `orchid status --explain` shows a task in `testing` as

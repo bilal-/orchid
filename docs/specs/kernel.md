@@ -681,7 +681,15 @@ buying a fresh implementation pass to reach the same tree.
   `<id>-merge.log` is still on disk and deliberately exempt from the
   invalidating delete, so an unbound capture would file a superseded
   candidate's output as this round's failure and then block the task for not
-  converging on it.
+  converging on it. **Every door into `rework` captures, not just the
+  driver's.** `orchid task unblock` and `orchid task retry` also end in
+  `rework` and delete the same evidence on their way through, so both run the
+  same capture first. `retry` is the one that mattered most: the `attempts
+  exhausted` stop advances to `blocked`, an edge that captures nothing and
+  deletes nothing, so the failing log of the run that spent the last attempt
+  is still on disk when the operator grants another round — and the operator's
+  own recovery verb was what destroyed it, F27's loop reproduced by the
+  recovery from F27.
 - **A passing verification retires the captured rounds, not just the streak
   (v1.1).** `testing → reviewing` restarts `rework_signature_repeats` at zero;
   it also renames every `reviews/<id>-r<n>-rework.log` to

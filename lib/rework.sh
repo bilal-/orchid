@@ -27,6 +27,18 @@
 #
 # It is evidence for a HUMAN and for the next attempt's input pack, and for
 # nothing else.
+#
+# THE DELETE IS AT THREE DOORS, SO THE COPY IS TOO. `advance <id> rework` is
+# the driver's route; `task unblock` and `task retry` are the operator's, and
+# both end in `rework` with the same `rm -f` at the end of them. `retry` is the
+# sharpest of the three, because the `attempts exhausted` stop parks the task
+# at `blocked` -- an edge that neither captures nor deletes -- so the log of
+# the run that spent the last attempt is intact right up until the operator
+# grants another round, and granting it was what destroyed the evidence. The
+# functions here are called by one composer in libexec/orchid-task
+# (capture_rework_evidence) that all three verbs share; the rule for what
+# counts as this round's failure must not vary by who sent the task round
+# again.
 
 # lib/findings.sh, sourced relative to THIS file's own directory -- the same
 # deliberate exception, for the same reason, that lib/pack.sh already makes to

@@ -2121,8 +2121,14 @@ ones its archetype never declares.
     that log first, into `reviews/<id>-r<round>-rework.log`, and records the
     round's `rework_signature` plus how many CONSECUTIVE rounds have produced
     that identical signature (`rework_signature_repeats`) — see
-    docs/specs/kernel.md's attempt-fairness rule. Nothing here needs a
-    separate call; what the walk must do with the result is:
+    docs/specs/kernel.md's attempt-fairness rule. The operator's own doors
+    into `rework` do the same: `orchid task unblock` and `orchid task retry`
+    delete that log too, and `retry` is the verb reached for after `attempts
+    exhausted`, which stops the task at `blocked` with the failing log still
+    on disk — so both capture before they delete, and a round an operator
+    grants starts with the same evidence a round the driver sends does.
+    Nothing here needs a separate call; what the walk must do with the result
+    is:
 
     - the next dispatch's implementer pack carries `rework.md` (the previous
       round's output, verbatim), so the brief can say "you already tried this

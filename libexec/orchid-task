@@ -449,6 +449,142 @@ append_guidance() {
   printf '\n**Operator guidance (%s):** %s\n' "$2" "$3" || return 1
 }
 
+# capture_rework_evidence <task-file> <id> <from-status> (T025) -- copy the
+# failing output that is causing THIS rework somewhere the invalidating
+# `rm -f` a few lines below every caller does not reach, and record what it
+# says about convergence.
+#
+# It runs ahead of both the attempt accounting and that `rm -f`, because the
+# `rm -f` is what destroys it: the reason journalled on this very edge points
+# at reviews/<id>-verify.log, and that pointer dangles the instant it is
+# written (lesson L023). The copy lands at reviews/<id>-r<round>-rework.log, a
+# path no evidence gate accepts (see lib/rework.sh), so INV-11 stays armed
+# exactly as before while the output survives for the next attempt's input
+# pack to carry.
+#
+# ONE FUNCTION FOR ALL THREE ENTRIES TO REWORK, exactly as refresh_briefs
+# above is, and for a sharper version of the same reason. `advance <id>
+# rework` is not the only door: `task unblock` and `task retry` both take a
+# task to `rework` and both delete the verify log on their way through --
+# and `retry` is the verb an operator reaches for after `attempts
+# exhausted`, which is the one edge that arrives at rework with a verify log
+# STILL ON DISK (the exhausted stop advances to `blocked`, which captures
+# nothing and deletes nothing). Living only on the advance arm, this capture
+# therefore missed the failure most worth carrying forward and let the
+# operator's own recovery verb destroy it -- the F27 loop reproduced by the
+# remedy for F27.
+#
+# NOT a duplicate of `refresh_briefs`, which lifts the same log in the same
+# window (T010, lesson L017). That one extracts the LOCATIONS a failing gate
+# named -- `file:line: RULE: message` -- into the task BODY, so an actor that
+# cannot open or re-run a log still learns where to look. It is a
+# distillation, and it is empty for exactly the failure this task was opened
+# over: an assertion diff carries no `file:line:` anywhere, so F27's task got
+# a brief with nothing in it. This capture keeps the bytes THEMSELVES, in a
+# file, for the pack to carry verbatim -- and it is the only one of the two
+# that can answer "is this the same failure as last time", because a
+# distillation cannot be compared for byte-identity with anything.
+#
+# `rework_rounds` counts CAPTURED rounds, not rework entries: a rework with no
+# failing evidence to capture (a rebase conflict, an operator advance) mints
+# no file, so the counter and the files on disk can never disagree. Such a
+# round also leaves `rework_signature`/`_repeats` untouched rather than
+# resetting them -- an uncapturable round is an absence of evidence about
+# convergence, and clearing the streak on it would hide a genuine repeat
+# behind an unrelated interruption.
+#
+# AND IT IS BOUND TO THE CANDIDATE IT DOCUMENTS. The evidence logs both carry
+# a `candidate:` header, and the capture refuses one that names a different
+# candidate than the task is reworking (lib/rework.sh's
+# rework_evidence_bound, the same rule lib/findings.sh applies to the
+# locations it quotes). The `merging` arm is why: `orchid merge`'s rebase path
+# mints a new candidate_sha while the previous candidate's <id>-merge.log is
+# still on disk and deliberately exempt from the delete below, so an unbound
+# capture would file a superseded candidate's output as this round's failure
+# -- and then digest it, count it toward the streak, reroute the role on it
+# and block the task for not converging. The refusal is journalled rather than
+# silent: "rework arrived with nothing to act on" is the exact complaint this
+# task exists to answer, so the one case where the kernel deliberately
+# captures nothing has to say so.
+#
+# AND BOUND IS NOT THE SAME AS FRESH. The binding above refuses a log naming a
+# candidate this task has MOVED OFF; it cannot refuse one naming the candidate
+# still under work, which is every stale log on the one path where the
+# candidate does not move. `orchid merge` dying before its own opening `rm -f`
+# (a run lock it did not get) leaves the previous round's <id>-merge.log --
+# already exempt from the delete below -- sitting in exactly the place the
+# merging arm looks, bound to exactly the right candidate. Captured a second
+# time it is a digest identical to the round already on disk BY CONSTRUCTION:
+# repeat 2 reroutes the role, repeat 3 blocks the task for not converging,
+# both derived from a single run read twice. So the source is compared with
+# the newest captured round BYTE FOR BYTE (rework_evidence_recaptured -- the
+# volatile header the signature drops is what distinguishes a re-run from a
+# re-read), and a duplicate mints no round and moves no counter. That guard is
+# what makes the operator verbs safe to wire in here: `unblock` and `retry`
+# reach rework over an unchanged candidate by definition, so the log they find
+# is sometimes one an earlier edge already filed.
+#
+# Every caller must have finished refusing before it calls this: a died verb
+# must not leave a captured round and bumped counters behind describing a
+# transition that never happened.
+capture_rework_evidence() {
+  local cf="$1" cid="$2" cfrom="$3"
+  local ccand csrc cdup cround cdest csig cprev creps csame cunbound cclaim
+  ccand="$(fm_get "$cf" candidate_sha)"
+  csrc=""; cdup=""
+  if csrc="$(rework_evidence_source "$state" "$cid" "$cfrom" "$ccand")"; then
+    cdup="$(rework_evidence_recaptured "$state" "$cid" "$csrc")" || cdup=""
+  fi
+  if [ -n "$csrc" ] && [ -n "$cdup" ]; then
+    # Journalled, like every other deliberate non-capture on this edge: an
+    # operator asking why the streak did not move needs the difference
+    # between "no evidence" and "the same evidence again" spelled out, and
+    # the entry names both files so the claim can be checked by hand.
+    journal --task "$cid" --kind intervention \
+      "rework evidence NOT captured: ${csrc##*/} is byte-identical to the already-captured ${cdup##*/}, so it is one run read a second time rather than a second failure — no round is filed and the convergence streak is untouched"
+  elif [ -n "$csrc" ]; then
+    cround="$(fm_get "$cf" rework_rounds)"
+    case "$cround" in ''|*[!0-9]*) cround=0 ;; esac
+    cround=$((cround + 1))
+    cdest="$(rework_log_path "$state" "$cid" "$cround")"
+    atomic_write "$cdest" < "$csrc"
+    csig="$(rework_signature "$cdest")"
+    cprev="$(fm_get "$cf" rework_signature)"
+    creps="$(fm_get "$cf" rework_signature_repeats)"
+    case "$creps" in ''|*[!0-9]*) creps=0 ;; esac
+    if [ -n "$cprev" ] && [ "$csig" = "$cprev" ]; then
+      creps=$((creps + 1)); csame="identical to the previous round"
+    else
+      creps=1; csame="new"
+    fi
+    # Journal-first (INV-08 discipline), same as `infra-fail`: the fact is
+    # recorded before the counters that assert it. An unchanged signature
+    # is the whole point of the record -- it is evidence the loop is not
+    # converging, not a fresh failure, and it must be greppable as such
+    # without re-reading two logs by hand.
+    journal --task "$cid" --kind intervention \
+      "rework evidence captured: reviews/$cid-r$cround-rework.log; failure signature ${csig:0:12} ($csame, repeat $creps)"
+    fm_set "$cf" rework_rounds "$cround"
+    fm_set "$cf" rework_signature "$csig"
+    fm_set "$cf" rework_signature_repeats "$creps"
+  elif cunbound="$(rework_evidence_source "$state" "$cid" "$cfrom")"; then
+    # Failing evidence IS on disk and was refused, which is a different
+    # fact from "there was nothing to capture" and the only one of the two
+    # an operator can act on. Named with the candidate it actually
+    # describes, so the entry answers the next question too. Only reachable
+    # with a candidate to bind to: an empty one skips the check entirely
+    # above, so this arm is a genuine mismatch every time.
+    cclaim="$(findings_log_candidate "$cunbound")"
+    if [ -z "$cclaim" ]; then
+      journal --task "$cid" --kind intervention \
+        "rework evidence NOT captured: ${cunbound##*/} carries no candidate header — it cannot be bound to this task's '$ccand', so it is neither fed forward nor counted toward the convergence streak"
+    else
+      journal --task "$cid" --kind intervention \
+        "rework evidence NOT captured: ${cunbound##*/} names candidate '$cclaim', not this task's '$ccand' — it documents a superseded candidate, so it is neither fed forward nor counted toward the convergence streak"
+    fi
+  fi
+}
+
 case "$sub" in
   create)
     verb_lock_guard "$repo"
@@ -678,14 +814,18 @@ case "$sub" in
       # rather than accepting one.
       prerequisite_ack)
         orchid_die "'prerequisite_ack' is kernel-owned — use task prereq-ack" ;;
-      # The rework-convergence record (T025). Written by exactly one place —
-      # the `to = rework` arm of `advance` below, from evidence it captured
-      # itself, under the same journal-first discipline `infra_failures` gets.
-      # Hand-writable counters here would let an attempt claim a fresh failure
-      # signature it never produced, which is precisely the judgment the
-      # driver's failover and non-convergence stop read off these fields.
+      # The rework-convergence record (T025). Written by exactly one function —
+      # capture_rework_evidence, from evidence it captured itself, under the
+      # same journal-first discipline `infra_failures` gets. Three verbs call
+      # it (`advance <id> rework`, `unblock`, `retry`), which is three doors
+      # into rework and not three writers: they share the composer precisely so
+      # the record cannot come to mean different things depending on who sent
+      # the task round again. Hand-writable counters here would let an attempt
+      # claim a fresh failure signature it never produced, which is precisely
+      # the judgment the driver's failover and non-convergence stop read off
+      # these fields.
       rework_rounds|rework_signature|rework_signature_repeats)
-        orchid_die "'$key' is kernel-owned — it records captured rework evidence (task advance <id> rework)" ;;
+        orchid_die "'$key' is kernel-owned — it records captured rework evidence (task advance <id> rework, task unblock, task retry)" ;;
     esac
     # depends_on ids are checked HERE, at write time (dogfood F30). The
     # scheduler can only ever report an id it cannot satisfy as
@@ -1164,116 +1304,11 @@ case "$sub" in
         orchid_die "--waive-attempt requires --reason"
       fi
       # ---- Capture the failure BEFORE anything invalidates it (T025) ------
-      # This runs ahead of both the attempt accounting and the `rm -f` below,
-      # because the `rm -f` is what destroys it: the journalled reason on this
-      # very edge points at reviews/<id>-verify.log, and that pointer dangles
-      # the instant it is written (lesson L023). The copy lands at
-      # reviews/<id>-r<round>-rework.log, a path no evidence gate accepts (see
-      # lib/rework.sh), so INV-11 stays armed exactly as before while the
-      # output survives for the next attempt's input pack to carry.
-      #
-      # NOT a duplicate of `refresh_briefs` below, which lifts the same log in
-      # the same window (T010, lesson L017). That one extracts the LOCATIONS a
-      # failing gate named -- `file:line: RULE: message` -- into the task BODY,
-      # so an actor that cannot open or re-run a log still learns where to
-      # look. It is a distillation, and it is empty for exactly the failure
-      # this task was opened over: an assertion diff carries no `file:line:`
-      # anywhere, so F27's task got a brief with nothing in it. This capture
-      # keeps the bytes THEMSELVES, in a file, for the pack to carry verbatim
-      # -- and it is the only one of the two that can answer "is this the same
-      # failure as last time", because a distillation cannot be compared for
-      # byte-identity with anything.
-      #
-      # `rework_rounds` counts CAPTURED rounds, not rework entries: a rework
-      # with no failing evidence to capture (a rebase conflict, an operator
-      # advance) mints no file, so the counter and the files on disk can never
-      # disagree. Such a round also leaves `rework_signature`/`_repeats`
-      # untouched rather than resetting them -- an uncapturable round is an
-      # absence of evidence about convergence, and clearing the streak on it
-      # would hide a genuine repeat behind an unrelated interruption.
-      #
-      # AND IT IS BOUND TO THE CANDIDATE IT DOCUMENTS. The evidence logs both
-      # carry a `candidate:` header, and the capture refuses one that names a
-      # different candidate than the task is reworking (lib/rework.sh's
-      # rework_evidence_bound, the same rule lib/findings.sh applies to the
-      # locations it quotes). The `merging` arm is why: `orchid merge`'s rebase
-      # path mints a new candidate_sha while the previous candidate's
-      # <id>-merge.log is still on disk and deliberately exempt from the delete
-      # below, so an unbound capture would file a superseded candidate's output
-      # as this round's failure -- and then digest it, count it toward the
-      # streak, reroute the role on it and block the task for not converging.
-      # The refusal is journalled rather than silent: "rework arrived with
-      # nothing to act on" is the exact complaint this task exists to answer,
-      # so the one case where the kernel deliberately captures nothing has to
-      # say so.
-      #
-      # AND BOUND IS NOT THE SAME AS FRESH. The binding above refuses a log
-      # naming a candidate this task has MOVED OFF; it cannot refuse one naming
-      # the candidate still under work, which is every stale log on the one
-      # path where the candidate does not move. `orchid merge` dying before its
-      # own opening `rm -f` (a run lock it did not get) leaves the previous
-      # round's <id>-merge.log -- already exempt from the delete below -- sitting
-      # in exactly the place the merging arm looks, bound to exactly the right
-      # candidate. Captured a second time it is a digest identical to the round
-      # already on disk BY CONSTRUCTION: repeat 2 reroutes the role, repeat 3
-      # blocks the task for not converging, both derived from a single run read
-      # twice. So the source is compared with the newest captured round BYTE FOR
-      # BYTE (rework_evidence_recaptured -- the volatile header the signature
-      # drops is what distinguishes a re-run from a re-read), and a duplicate
-      # mints no round and moves no counter.
-      rw_cand="$(fm_get "$f" candidate_sha)"
-      rw_src=""; rw_dup=""
-      if rw_src="$(rework_evidence_source "$state" "$id" "$from" "$rw_cand")"; then
-        rw_dup="$(rework_evidence_recaptured "$state" "$id" "$rw_src")" || rw_dup=""
-      fi
-      if [ -n "$rw_src" ] && [ -n "$rw_dup" ]; then
-        # Journalled, like every other deliberate non-capture on this edge: an
-        # operator asking why the streak did not move needs the difference
-        # between "no evidence" and "the same evidence again" spelled out, and
-        # the entry names both files so the claim can be checked by hand.
-        journal --task "$id" --kind intervention \
-          "rework evidence NOT captured: ${rw_src##*/} is byte-identical to the already-captured ${rw_dup##*/}, so it is one run read a second time rather than a second failure — no round is filed and the convergence streak is untouched"
-      elif [ -n "$rw_src" ]; then
-        rw_round="$(fm_get "$f" rework_rounds)"
-        case "$rw_round" in ''|*[!0-9]*) rw_round=0 ;; esac
-        rw_round=$((rw_round + 1))
-        rw_dest="$(rework_log_path "$state" "$id" "$rw_round")"
-        atomic_write "$rw_dest" < "$rw_src"
-        rw_sig="$(rework_signature "$rw_dest")"
-        rw_prev_sig="$(fm_get "$f" rework_signature)"
-        rw_reps="$(fm_get "$f" rework_signature_repeats)"
-        case "$rw_reps" in ''|*[!0-9]*) rw_reps=0 ;; esac
-        if [ -n "$rw_prev_sig" ] && [ "$rw_sig" = "$rw_prev_sig" ]; then
-          rw_reps=$((rw_reps + 1)); rw_same="identical to the previous round"
-        else
-          rw_reps=1; rw_same="new"
-        fi
-        # Journal-first (INV-08 discipline), same as `infra-fail`: the fact is
-        # recorded before the counters that assert it. An unchanged signature
-        # is the whole point of the record -- it is evidence the loop is not
-        # converging, not a fresh failure, and it must be greppable as such
-        # without re-reading two logs by hand.
-        journal --task "$id" --kind intervention \
-          "rework evidence captured: reviews/$id-r$rw_round-rework.log; failure signature ${rw_sig:0:12} ($rw_same, repeat $rw_reps)"
-        fm_set "$f" rework_rounds "$rw_round"
-        fm_set "$f" rework_signature "$rw_sig"
-        fm_set "$f" rework_signature_repeats "$rw_reps"
-      elif rw_unbound="$(rework_evidence_source "$state" "$id" "$from")"; then
-        # Failing evidence IS on disk and was refused, which is a different
-        # fact from "there was nothing to capture" and the only one of the two
-        # an operator can act on. Named with the candidate it actually
-        # describes, so the entry answers the next question too. Only reachable
-        # with a candidate to bind to: an empty one skips the check entirely
-        # above, so this arm is a genuine mismatch every time.
-        rw_claim="$(findings_log_candidate "$rw_unbound")"
-        if [ -z "$rw_claim" ]; then
-          journal --task "$id" --kind intervention \
-            "rework evidence NOT captured: ${rw_unbound##*/} carries no candidate header — it cannot be bound to this task's '$rw_cand', so it is neither fed forward nor counted toward the convergence streak"
-        else
-          journal --task "$id" --kind intervention \
-            "rework evidence NOT captured: ${rw_unbound##*/} names candidate '$rw_claim', not this task's '$rw_cand' — it documents a superseded candidate, so it is neither fed forward nor counted toward the convergence streak"
-        fi
-      fi
+      # The whole of it, including why it has to happen here rather than after
+      # the accounting below, is in capture_rework_evidence's header. This is
+      # one of its three callers; `task unblock` and `task retry` are the other
+      # two, and all three delete the evidence a few lines later.
+      capture_rework_evidence "$f" "$id" "$from"
       if [ "$from" != merging ]; then
         if [ "$waive" -eq 1 ]; then
           [ -n "$reason" ] || orchid_die "--waive-attempt requires --reason"
@@ -1842,6 +1877,15 @@ case "$sub" in
     ub_attempts="$(fm_get "$f" attempts)"; [ -n "$ub_attempts" ] || ub_attempts=0
     ub_budget="$(schedule_attempt_budget "$repo" "$id")"
     journal --task "$id" --kind intervention "unblock: $reason"
+    # T025: the failing output itself, captured before the `rm -f` below
+    # destroys it -- the same composer the advance:rework arm calls, for the
+    # same reason it calls it. A task is blocked with its verify log intact
+    # (the `blocked` edge deletes nothing), so this verb is the one that
+    # destroys the evidence for the failure the operator is unblocking, and
+    # the next attempt would arrive with a brief pointing at a file this call
+    # removed. Not merely the locations (that is refresh_briefs, just below):
+    # the bytes, which is what an assertion diff has instead of locations.
+    capture_rework_evidence "$f" "$id" blocked
     # T010: same rework brief the advance:rework arm appends, and for the same
     # reason -- this is also an entry to rework, and the logs holding the
     # failing gate's exact locations are deleted two lines below. The brief
@@ -1961,6 +2005,20 @@ case "$sub" in
       orchid_die "--attempts $grant would grant task $id nothing: its budget is already $budget with $attempts spent, so it has $(( budget - attempts )) round(s) left and a grant only ever raises the cap (never lowers it). Retry on the rounds it already has with 'orchid task retry $id --reason \"...\"', or ask for one beyond them with '--attempts $(( budget - attempts + 1 ))' or more."
     fi
     journal --task "$id" --kind intervention "retry: $reason"
+    # T025: and the failing output itself, captured before the `rm -f` below.
+    # THIS is the edge the capture was missing most. `retry` is what an
+    # operator runs after `attempts exhausted`, and that stop advances the task
+    # to `blocked` -- a status whose edge captures nothing and deletes nothing,
+    # so the verify log of the run that spent the last attempt is still sitting
+    # on disk when this verb starts. Without this call the operator's own
+    # recovery verb is what destroys it, and the granted round begins with
+    # exactly the empty hand F27 is about. `from` is passed through rather than
+    # hard-coded, but neither admitted origin (`blocked`, `rework`) is
+    # `merging`, so the source is always <id>-verify.log: a <id>-merge.log left
+    # standing by a `merging -> rework` advance documents a failure that advance
+    # already filed, and re-reading it here would be the duplicate
+    # rework_evidence_recaptured exists to refuse.
+    capture_rework_evidence "$f" "$id" "$from"
     # T010: the same rework brief, lifted before the logs go (see the
     # advance:rework arm). `retry` is the verb an operator reaches for after
     # `attempts exhausted`, which is exactly the moment the last verify log's

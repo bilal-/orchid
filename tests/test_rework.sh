@@ -719,3 +719,129 @@ rc=0; grep -q "DISPROVEDBYALATERPASS" "$WORK/pack-post/rework.md" || rc=$?
   || fail "and the retired round is not resurrected as the baseline it is diffed against"
 assert_eq "1" "$(fm T006 rework_signature_repeats)" \
   "a post-pass failure is a first sighting, whatever the pre-pass rounds said"
+
+# ===========================================================================
+# Part F -- the OPERATOR's entries to rework. `task retry` and `task unblock`
+# delete the same evidence the advance arm does, so they have to capture it
+# the same way first.
+# ===========================================================================
+# THE ROUTE IS F27's OWN, walked one verb further. A task spends its last
+# attempt, and the driver stops it with "attempts exhausted (n/n)" -- an
+# advance to `blocked`, which is the one entry to a rework loop that captures
+# nothing and deletes nothing, so the failing verify log of the run that spent
+# that attempt is still sitting on disk. The operator reads it, diagnoses, and
+# types `orchid task retry`: the verb whose entire purpose is "here is another
+# round, and here is why". That verb takes the task to `rework` and deletes
+# the log on the way, so before this part the granted round began with the
+# pointer already dangling -- lesson L023's defect reached through the
+# recovery FROM it, and reached by the one route where the log was still there
+# to lose. `unblock` is the same shape with the guidance attached instead of
+# the budget.
+#
+# Deliberately separate tasks: T001/T003/T006 are the subjects of the pack
+# assertions above, and another captured round would move the evidence those
+# parts read.
+"$ORCHID_BIN" task create T007 "retry captures before it deletes" >/dev/null
+"$ORCHID_BIN" task set T007 base_sha "$(git rev-parse HEAD)" >/dev/null
+"$ORCHID_BIN" task set T007 candidate_sha "$(git rev-parse HEAD)" >/dev/null
+"$ORCHID_BIN" task advance T007 implementing --reason "last round" >/dev/null
+"$ORCHID_BIN" task advance T007 testing --reason "last round" >/dev/null
+mk_log "$STATE/reviews/T007-verify.log" 2026-08-14T09:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "FAIL tests/OrderTest: RETRYROUTEFAILURE assertSame order differs" 1
+sig_retry="$(rework_signature "$STATE/reviews/T007-verify.log")"
+# The stop itself, spelled the way the driver spells it. The counter is not
+# what this part is about (`retry` reads it, `advance blocked` does not), so
+# the fixture states the edge rather than claiming a budget it did not spend.
+"$ORCHID_BIN" task advance T007 blocked --reason "the last round's verify failed: see .orchid/reviews/T007-verify.log" >/dev/null
+# The load-bearing precondition, asserted rather than assumed: the stop leaves
+# the log alone, which is exactly why `retry` is the verb that destroys it.
+[ -f "$STATE/reviews/T007-verify.log" ] \
+  || fail "fixture: the exhausted stop must leave the failing verify log on disk — without it this part proves nothing"
+
+"$ORCHID_BIN" task retry T007 --reason "two of those rounds were the environment" >/dev/null
+assert_eq rework "$(fm T007 status)" "fixture: retry takes blocked -> rework"
+[ ! -f "$STATE/reviews/T007-verify.log" ] \
+  || fail "retry must still invalidate the verify log (INV-11 stays armed on the operator's route too)"
+[ -f "$STATE/reviews/T007-r1-rework.log" ] \
+  || fail "and it must CAPTURE that log first — the round it just bought is the one F27 sends into the same wall"
+grep -q "RETRYROUTEFAILURE" "$STATE/reviews/T007-r1-rework.log" \
+  || fail "the captured round carries the failing output verbatim, not a pointer to the file retry deleted"
+assert_eq "$sig_retry" "$(fm T007 rework_signature)" "the round's signature is recorded on the task"
+assert_eq "1" "$(fm T007 rework_rounds)" "an operator-granted round is a captured round like any other"
+assert_eq "1" "$(fm T007 rework_signature_repeats)" "a first sighting is repeat 1"
+assert_match "rework evidence captured: reviews/T007-r1-rework.log" "$(cat "$STATE/journal.md")" \
+  "and the capture is journalled by the operator's verb exactly as it is by the advance — named with the round it filed, so this cannot pass on some earlier task's entry"
+
+pack_build "$REPO" T007 implement "$WORK/pack-retry" || fail "post-retry implementer pack build"
+grep -q "RETRYROUTEFAILURE" "$WORK/pack-retry/rework.md" \
+  || fail "the granted round's implementer is handed what the exhausting run actually failed on — the whole point of the retry"
+
+# THE CONVERGENCE RECORD FOLLOWS THE OPERATOR'S ROUTE TOO. An identical
+# failure reached through `blocked -> retry` is the same evidence of a loop
+# that is not converging as one reached through `testing -> rework`, and it
+# has to reach the counter the identical-signature failover and the
+# non-convergence stop are driven by. A fresh run of the same failure, so the
+# volatile header differs and this is a repeat rather than a re-read.
+"$ORCHID_BIN" task advance T007 implementing --reason "the granted round" >/dev/null
+"$ORCHID_BIN" task advance T007 testing --reason "the granted round" >/dev/null
+mk_log "$STATE/reviews/T007-verify.log" 2026-08-15T09:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "FAIL tests/OrderTest: RETRYROUTEFAILURE assertSame order differs" 1
+"$ORCHID_BIN" task advance T007 blocked --reason "the granted round failed identically" >/dev/null
+"$ORCHID_BIN" task retry T007 --reason "one more, and this time read the previous round" >/dev/null
+assert_eq "2" "$(fm T007 rework_rounds)" "the second granted round is captured as round two"
+assert_eq "2" "$(fm T007 rework_signature_repeats)" \
+  "an unchanged signature over the operator's route is the same non-convergence evidence it is over the driver's"
+assert_eq "$sig_retry" "$(fm T007 rework_signature)" "and the signature it repeats is the one on record"
+
+# ...and a retry with nothing left to capture mints nothing. The verify log is
+# gone (the retry above deleted it), so this is the ordinary "operator retries
+# a parked task" shape: no round, no counter movement, no second copy of a
+# round already filed.
+"$ORCHID_BIN" task retry T007 --reason "same diagnosis, said twice" >/dev/null
+assert_eq "2" "$(fm T007 rework_rounds)" \
+  "a retry over no evidence at all captures nothing rather than re-filing the round before it"
+[ ! -f "$STATE/reviews/T007-r3-rework.log" ] \
+  || fail "and files no round-3 log — rework_rounds must never outrun the files on disk"
+assert_eq "2" "$(fm T007 rework_signature_repeats)" \
+  "nor may a bare retry advance the streak that reroutes the role and blocks the task"
+
+# `unblock`, the other operator door into rework: guidance instead of budget,
+# and the same two lines of `rm -f` at the end of it.
+"$ORCHID_BIN" task create T008 "unblock captures before it deletes" >/dev/null
+"$ORCHID_BIN" task set T008 base_sha "$(git rev-parse HEAD)" >/dev/null
+"$ORCHID_BIN" task set T008 candidate_sha "$(git rev-parse HEAD)" >/dev/null
+"$ORCHID_BIN" task advance T008 implementing --reason "first round" >/dev/null
+"$ORCHID_BIN" task advance T008 testing --reason "first round" >/dev/null
+mk_log "$STATE/reviews/T008-verify.log" 2026-08-16T09:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "FAIL tests/OrderTest: UNBLOCKROUTEFAILURE expected 3 elements, got 4" 1
+sig_unblock="$(rework_signature "$STATE/reviews/T008-verify.log")"
+"$ORCHID_BIN" task advance T008 blocked --reason "stopped for an operator decision" >/dev/null
+"$ORCHID_BIN" task unblock T008 --reason "here is the fix: the column is unordered" >/dev/null 2>&1
+assert_eq rework "$(fm T008 status)" "fixture: unblock takes blocked -> rework"
+[ ! -f "$STATE/reviews/T008-verify.log" ] \
+  || fail "unblock must still invalidate the verify log"
+[ -f "$STATE/reviews/T008-r1-rework.log" ] \
+  || fail "and capture it first — an operator's guidance is delivered ON TOP of the failure, never instead of it"
+grep -q "UNBLOCKROUTEFAILURE" "$STATE/reviews/T008-r1-rework.log" \
+  || fail "the captured round carries the failing output verbatim"
+assert_eq "$sig_unblock" "$(fm T008 rework_signature)" "the unblocked round's signature is on record"
+assert_eq "1" "$(fm T008 rework_rounds)" "one captured round"
+pack_build "$REPO" T008 implement "$WORK/pack-unblock" || fail "post-unblock implementer pack build"
+grep -q "UNBLOCKROUTEFAILURE" "$WORK/pack-unblock/rework.md" \
+  || fail "and the next attempt's pack carries it, alongside the guidance the operator wrote into the body"
+grep -q "the column is unordered" "$WORK/pack-unblock/task.md" \
+  || fail "witness: the guidance really does ride in the same capsule — the capture must not be read as a replacement for it"
+
+# THE STRUCTURAL HALF. Every entry to `rework` deletes the evidence, so every
+# entry must capture it first, and the way that stopped being true is that the
+# capture lived at ONE of them while the invalidating `rm -f` was copied to
+# three. Counting the call sites is what notices a fourth door: wire it to the
+# same composer and raise this number, rather than discovering it the way this
+# part was discovered.
+kernel_task="$REPO_ROOT/libexec/orchid-task"
+capture_calls="$(grep -c '^ *capture_rework_evidence "' "$kernel_task")" || true
+assert_eq "3" "$capture_calls" \
+  "all three entries to rework (advance, unblock, retry) call the one capture composer"
+rm_calls="$(grep -c 'rm -f "\$state/reviews/\$id-verify.log"' "$kernel_task")" || true
+assert_eq "4" "$rm_calls" \
+  "witness: and the invalidating delete is spelled at four sites in that file — the three rework doors counted above plus the reverify edge (to = testing), which re-runs the verifier instead of dispatching an implementer and so has nothing to feed forward. A fifth is a door that needs a capture in front of it."
