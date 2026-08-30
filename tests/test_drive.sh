@@ -3934,7 +3934,9 @@ CAPD="$WORK/attemptcap"
 mkdir -p "$CAPD"
 cd "$CAPD" || exit 1
 git init -q .
-printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nrework_max=1\n' > orchid.config
+# Keep T025's independent identical-signature stop out of this T026 fixture:
+# Part S is proving the attempt-budget boundary, so only that cap should fire.
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nrework_max=1\nrework_nonconvergence_max=99\n' > orchid.config
 git add -A
 git commit -q -m "fixture: config"
 ORCHID_REPO="$CAPD" "$ORCHID_BIN" init >/dev/null || fail "orchid init (attempt-budget fixture)"
