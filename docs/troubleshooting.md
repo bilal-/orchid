@@ -1222,11 +1222,13 @@ An approval clears the field and journals the clear; anything else leaves it
 standing. There is no other door — `unblock`, `retry` and `reverify` do not
 clear it, and `orchid task set` refuses the key by name, because none of them
 is an answer to "was this defect fixed". Nor is there a way around it: `orchid
-task advance <id> merging` is refused out of `arbitrating` (as is every other
-non-`blocked` edge), because it records no arbitration result and would carry
-the objection into the merge queue with nothing having answered it. `orchid
-task advance <id> blocked --reason "..."` is still there if what you want is to
-stop the task rather than decide it.
+task advance <id> merging` is refused out of `arbitrating` (as are the other
+two destinations an arbitration result derives — `done` and `rework`), because
+it records no arbitration result and would carry the objection into the merge
+queue with nothing having answered it. `orchid task advance <id> blocked
+--reason "..."` is still there if what you want is to stop the task rather than
+decide it, and so is any edge out of `arbitrating` that decides nothing about
+the candidate (an archetype's own `arbitrating:reviewing`, say).
 
 **It is filed as `operator-decision` rather than `review-conflict` so that it
 reaches you.** A `review-conflict` on an `arbitrating` task is arbitrable: the
@@ -1243,6 +1245,23 @@ standing objection, so a model woken for some other boundary cannot reach this
 one by naming its id. If you see that refusal in a tick's output, the model did
 the right thing next — its move there is `orchid notify`, which is how this page
 got to you.
+
+**You can decide it from the page.** Answering it *is* the decision, and the
+next actor to reach the repository will carry it out for you:
+
+```sh
+orchid answer <qid> approve      # the qid on the page, from BLOCKERS.md or your channel
+```
+
+The relay is deliberately narrow. `orchid task arbitrate --result approve` run
+by a woken orchestrator is credited as *yours* only when a question about this
+task, quoting this objection and naming this verb, has an answer recording
+exactly `approve` — and `orchid answer` is a verb no orchestrator may run on
+any surface, so the state it reads is state only you can write. An answer of
+anything else, an answer about another task, an answer given about an objection
+you have since superseded: none of them carries. The refusal you would then see
+names the page to answer. Nothing about the model's own reasoning is an input —
+not its `--reason` prose, not a flag, not an environment variable.
 
 If the objection is genuinely obsolete
 (the task was re-scoped, the code it named is gone), that is still an

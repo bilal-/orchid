@@ -177,7 +177,7 @@ walk_full_archetype() {  # id archetype
   # >arbitrating below without replanting)
   #
   # Taken through `task arbitrate`, which is the only public verb that reaches
-  # a non-`blocked` edge out of `arbitrating` since T032: the destination is
+  # an arbitration OUTCOME edge out of `arbitrating` since T032: the destination is
   # still derived from THIS archetype's declared transitions, so the edge under
   # test is the same one, and the assertion below still fails if the archetype
   # stops declaring it.

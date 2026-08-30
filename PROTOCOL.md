@@ -432,12 +432,18 @@ incomplete review set is never also reported as a conflict, and vice versa:
    records is something no woken model is in a position to assert. Here it
    records that **the arbiter's own objection was met** — and the arbiter is
    the actor who saw, twice, what two reviewers reading that diff did not.
-   `orchid answer` does not clear the field either: it records an answer, it
-   does not run a verb. Nor does this page carry the `approve` /
-   `request-changes` / `defer` menu a `review-conflict` on the same status
-   declares — `operator-decision` declares no choice set, so the reply is free
-   text and the record names the verb to run. Losing the one-tap `approve` is
-   the point: an objection this specific is not answered from a phone.
+   `orchid answer` does not clear the field: it records an answer, it does not
+   run a verb, and nothing consumes an answer file. What it does do (T032
+   convergence) is make the decision DURABLE and attributable, which is what
+   lets the next actor to reach the repository record the arbitration on the
+   operator's behalf — see "unless the operator has already decided it" under
+   `orchid task arbitrate` below for the three axes that relay is bound on, and
+   for why only the clearing direction travels. This page carries no `approve` /
+   `request-changes` / `defer` menu, either: `operator-decision` declares no
+   choice set, so the reply is free text, and the word that carries is the
+   result spelled exactly (`approve`) on a page whose own text names the verb.
+   An objection this specific is not answered by tapping a button — but it can
+   be answered from wherever the page reached, which is a different thing.
 
    **All of which is a claim about the ARBITER, not about objections** (T032
    convergence). `orchid task arbitrate` has two callers who are not the same
@@ -460,7 +466,10 @@ incomplete review set is never also reported as a conflict, and vice versa:
    not the whole guarantee — `orchid task arbitrate` itself refuses a
    non-operator arbitration, of either result, on a task carrying an
    operator's standing objection, so a model woken for some other boundary
-   cannot reach this one by naming its id. `orchid task set` refuses both keys.
+   cannot reach this one by naming its id; the one thing that gets past that
+   refusal is the operator's own answer to this objection's page, relayed
+   under the bindings described at that verb. `orchid task set` refuses both
+   keys.
 
 1. **Evidence** — the evidence set is EXACTLY the one the kernel's own
    `reviewing`→`arbitrating` gate counts, and this arm mirrors that gate
@@ -601,18 +610,39 @@ outright, either result, on a task carrying an operator's standing objection —
 approving would clear their objection from the same diff that produced it, and
 requesting changes would replace their words with the model's own. A woken
 orchestrator's move there is `orchid notify`.
-**And it is the only public door onto those edges** (T032 convergence). It used
-to be one of two: `orchid task advance <id> merging` out of `arbitrating` was
-legal for an operator and for the hand-executed walk, and it records no
-arbitration result — so it neither raises an objection nor clears one, and a
-task carrying a live `unresolved_objection` could be walked straight into the
-merge queue by typing the other command. Every non-`blocked` edge out of
-`arbitrating` is therefore refused by `orchid task advance` now, naming this
-verb; `orchid task advance <id> blocked --reason "..."` is untouched, because
-stopping a task is not deciding it. The driver and the brokered orchestrator
-surface used only `task arbitrate` already, which is what makes "who decided
-this, and what did they decide" one greppable fact — the refusal is what makes
-it a complete one.
+**Unless the operator has already decided it** (T032 convergence). That stop is
+paged with `orchid notify`, answered with `orchid answer`, and no verb consumes
+an answer file — so an operator who has decided still needs an actor to record
+the arbitration, and in an unattended run that actor is the woken orchestrator.
+Refusing it there refuses to carry out a decision its owner has already made
+and already made durable. So the class of an arbitration is the ACTOR's unless
+durable operator state authorises it, bound on three axes the relaying model
+does not supply: the TASK (the question's own `task:` header), the OBJECTION
+(the question must carry the standing objection's text, which opens with the
+round it was raised in, so an answer about a superseded objection carries
+nothing) and the DECISION (the answer must record the result, spelled exactly,
+on a page that carries the kernel's own remedy clause naming this task's verb).
+No flag, no environment variable and no word of the arbitration's `--reason` is
+an input; `orchid answer` is on no surface's admitted verb list, so the state
+this credits is state no model can write. Only the CLEARING direction is
+relayed: refusing a relayed `request-changes` costs an operator nothing, since
+their objection is already standing, and admitting one would put a model's
+paraphrase on the record under their authority.
+**And it is the only public door onto the OUTCOME edges** (T032 convergence).
+It used to be one of two: `orchid task advance <id> merging` out of
+`arbitrating` was legal for an operator and for the hand-executed walk, and it
+records no arbitration result — so it neither raises an objection nor clears
+one, and a task carrying a live `unresolved_objection` could be walked straight
+into the merge queue by typing the other command. The three destinations an
+arbitration result derives — `merging`, `done` and `rework` — are therefore
+refused by `orchid task advance` now, naming this verb. Every other edge out of
+`arbitrating` is untouched: `blocked`, because stopping a task is not deciding
+it, and any non-outcome edge an archetype declares (`arbitrating:reviewing`,
+sending a round back for another reviewer), because no `--result` derives it,
+so refusing it would delete a transition rather than close a bypass. The driver
+and the brokered orchestrator surface used only `task arbitrate` already, which
+is what makes "who decided this, and what did they decide" one greppable fact —
+the refusal is what makes it a complete one.
 
 **A finding you approve past is a finding you must record.** Arbitration is
 where a run decides that a real defect is out of THIS task's scope — the
@@ -2384,9 +2414,11 @@ ones its archetype never declares.
   "..." "..."`. Then:
   Both outcomes are recorded with the SAME verb, `orchid task arbitrate`,
   which derives the destination from the archetype and is the only public
-  route onto a non-`blocked` edge out of `arbitrating` (`orchid task advance`
-  refuses them: it records no result, so a round settled through it says
-  nothing about who decided it or whether a standing objection was answered):
+  route onto the three edges an arbitration result takes — `arbitrating` to
+  `merging`, `done` or `rework` (`orchid task advance` refuses those three: it
+  records no result, so a round settled through it says nothing about who
+  decided it or whether a standing objection was answered; `blocked` and any
+  non-outcome edge an archetype declares are unaffected):
   - approve: `orchid task arbitrate <id> --result approve --reason "..."`.
   - reject: `orchid task arbitrate <id> --result request-changes --reason
     "..."` (add

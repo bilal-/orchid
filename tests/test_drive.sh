@@ -10390,3 +10390,61 @@ assert_eq objection "$(decision_of P56)" \
 assert_match "0 of 1 review" "$p56_bare" \
   "T032: ...but the shortfall is disclosed in the objection's own record, where the arbiter can see the round was never complete"
 red_case "a standing objection over an incomplete round: still the objection, and the shortfall is named in its record rather than implied"
+
+# ===========================================================================
+# Part AI (T032 convergence, after the attempt-4 arbitration) -- THE PAGE
+# CARRIES WHAT THE READER OF THE PAGE REQUIRES.
+#
+# An operator's objection stops on a boundary only they may settle, and the
+# page this detail becomes is how they settle it from wherever they are:
+# `orchid answer <qid> approve` records the decision durably, and `orchid task
+# arbitrate` relays it when the actor that next reaches the repository is a
+# woken orchestrator (libexec/orchid-task, and tests/test_task.sh's own block
+# for the whole of that reading). The relay credits an answer only when the
+# QUESTION it was given about names this task, quotes this objection and
+# carries the clause naming the settling verb -- so if this detail stops
+# carrying either of the last two, an operator's answer becomes uncreditable
+# and the run parks on a decision that has already been made, with the refusal
+# blaming their answer rather than the prose that moved.
+#
+# Three links in that chain. Two of them live here: the DETAIL carries the
+# objection's own line and the remedy clause, and the driver's page text IS the
+# detail (read from the runner's source, comment-stripped per this suite's rule
+# for source-shape checks -- spawning a real pass to read a question file is
+# Part C's job). The third, the reader requiring exactly these, is pinned where
+# the reader is.
+#
+# RED: a detail that quotes the objection but names the verb in words the
+#      reader does not recognise, or a page text that is not the detail --
+#      each leaves an answered page nothing can act on.
+# GREEN: one composer for the clause, called by the detail here and by the
+#      relay there, so the two ends cannot drift apart.
+# ===========================================================================
+mk_policy_task P57 low high
+mk_review P57 "" approve true '[]'
+fm_set "$POLICY/.orchid/tasks/P57.md" unresolved_objection "a1: $OBJ_TEXT" \
+  || fail "fixture: P57's objection must be recordable"
+assert_eq objection "$(decision_of P57)" "fixture: P57 stops on its operator objection"
+p57_detail="$(detail_of P57)"
+# `grep -qF -e`, not assert_match: both of these are matched by the relay as
+# FIXED strings, and the objection is free prose an operator typed -- an ERE
+# assertion here would pass on a detail the relay cannot read, which is the
+# one failure this Part exists to catch.
+grep -qF -e "a1: $OBJ_TEXT" <<<"$p57_detail" \
+  || fail "T032: the detail must carry the objection's stored line verbatim — the relay matches it literally, so a paraphrase here leaves the operator's own answer uncreditable"
+p57_remedy="$(review_objection_remedy P57)"
+grep -qF -e "$p57_remedy" <<<"$p57_detail" \
+  || fail "T032: the detail must carry the remedy clause the relay requires ('$p57_remedy') — it is composed once, in lib/review.sh, precisely so this page and its reader cannot disagree"
+# And the clause is TASK-BOUND, or the page for any objection would satisfy the
+# reader for every other one.
+[ "$(review_objection_remedy P57)" != "$(review_objection_remedy P58)" ] \
+  || fail "T032: the remedy clause must name the task it belongs to — a constant clause would let an answer about one task settle another"
+red_case 'an objection detail missing the objection line or the remedy clause: caught here, because the answered page would be uncreditable'
+
+# The page an operator is actually sent is this detail, prefixed. If that ever
+# becomes a summary of the reason rather than the reason, everything above is
+# pinning a string nobody is shown.
+drv_page_text="$(grep -v '^[[:space:]]*#' "$DRIVE" | grep -F 'page_text=')"
+assert_match 'page_text="judgment boundary \[\$page_kind\] needs an operator: \$page_reason"' "$drv_page_text" \
+  "T032: the operator's page is the boundary's own reason, verbatim — a page composed from anything else carries neither the objection nor the remedy clause the relay reads back"
+green_case 'the objection detail, the page composed from it, and the clause the relay requires: one composer, asserted at both ends'

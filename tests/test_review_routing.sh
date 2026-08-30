@@ -284,9 +284,9 @@ jq -n --arg cand "$head_w" \
 assert_eq arbitrating "$(fm_get "$repoW/.orchid/tasks/TW1.md" status)" "sanity: round 1 reaches arbitrating"
 
 before_attempts="$(fm_get "$repoW/.orchid/tasks/TW1.md" attempts)"
-# `task arbitrate`, not `task advance TW1 rework`: since T032 every
-# non-`blocked` edge out of `arbitrating` is an arbitration RESULT and only this
-# verb records one. Same edge, same `--waive-attempt` accounting.
+# `task arbitrate`, not `task advance TW1 rework`: since T032 `arbitrating:
+# rework` is an arbitration RESULT that verb refuses, and only this one records
+# a result. Same edge, same `--waive-attempt` accounting.
 "$ORCHID_BIN" task arbitrate TW1 --result request-changes --waive-attempt --reason "distinct forward progress, waived" >/dev/null
 assert_eq "$before_attempts" "$(fm_get "$repoW/.orchid/tasks/TW1.md" attempts)" \
   "sanity: --waive-attempt leaves attempts (and so the attempt number) unchanged"

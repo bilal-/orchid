@@ -538,9 +538,9 @@ assert_match "convergence streak reset after successful verification" "$(tail -n
 printf '{"status":"ok","candidate_sha":"%s"}\n' "$(git rev-parse HEAD)" \
   > "$STATE/reviews/T004-a3-reviewer.json"
 "$ORCHID_BIN" task advance T004 arbitrating --reason "review fixture" >/dev/null
-# `task arbitrate`, not `task advance T004 rework`: since T032 every
-# non-`blocked` edge out of `arbitrating` is an arbitration RESULT and only this
-# verb records one. It takes the same `arbitrating:rework` edge and charges the
+# `task arbitrate`, not `task advance T004 rework`: since T032 `arbitrating:
+# rework` is an arbitration RESULT that verb refuses, and only this one records
+# a result. It takes the same `arbitrating:rework` edge and charges the
 # same attempt.
 "$ORCHID_BIN" task arbitrate T004 --result request-changes --reason "review requested changes" >/dev/null
 "$ORCHID_BIN" task advance T004 implementing --reason "post-green red round" >/dev/null

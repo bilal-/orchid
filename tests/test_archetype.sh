@@ -284,7 +284,7 @@ assert_eq arbitrating "$(r003_status)" "R003 rework cycle: reviewing -> arbitrat
 # kind=arbitration since from=arbitrating).
 #
 # Taken through `orchid task arbitrate`, which since T032 is the only public
-# verb that reaches a non-`blocked` edge out of `arbitrating`: it derives the
+# verb that reaches an arbitration OUTCOME edge out of `arbitrating`: it derives the
 # destination from THIS archetype's declared transitions and still takes it
 # through `task advance`, so the edge, the attempt charge and the journal kind
 # asserted here are all the same ones.

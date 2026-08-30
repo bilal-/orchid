@@ -1292,7 +1292,16 @@ drive_review_decision() {
       obj_who="recorded by an operator"
       obj_settler="the operator who raised it"
     fi
-    obj_detail="an objection $obj_who in a previous arbitration of this task is still uncleared: \"$objection\" — this pass may not approve on the reviews alone, and a reviewer that flipped to approve without addressing it has not answered the arbiter; $obj_round. Expected: $obj_settler reads the diff, decides whether the objection was met, and settles it with orchid task arbitrate $id --result approve|request-changes --reason \"...\" — an explicit arbitration approval is the only thing that clears it"
+    # THE REMEDY CLAUSE IS THE SHARED LITERAL, not a sentence written here.
+    # This detail becomes the page an operator is sent (runners/orchid-drive
+    # composes `judgment boundary [<kind>] needs an operator: <reason>` and
+    # hands it to `orchid notify` verbatim), and lib/review.sh's
+    # review_operator_relay requires that clause back out of the question
+    # before it will credit the operator's answer to it as a decision about
+    # this objection. Composed from one function so the page and the reader of
+    # the page cannot drift apart -- a reworded copy here would leave an
+    # operator's `approve` uncreditable, with the refusal blaming their answer.
+    obj_detail="an objection $obj_who in a previous arbitration of this task is still uncleared: \"$objection\" — this pass may not approve on the reviews alone, and a reviewer that flipped to approve without addressing it has not answered the arbiter; $obj_round. Expected: $obj_settler reads the diff, decides whether the objection was met, and settles it with $(review_objection_remedy "$id") --reason \"...\" — an explicit arbitration approval is the only thing that clears it"
     # THE DETAIL IS SHARED; THE DECISION WORD IS NOT. Two literal `printf`s,
     # never one fed a computed word -- INV-13 pins every arm of this function to
     # a literal for the reason this arm illustrates best: the word chosen here

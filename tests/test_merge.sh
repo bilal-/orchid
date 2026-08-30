@@ -37,8 +37,8 @@ walk_to_merging() {
   "$ORCHID_BIN" task advance "$id" reviewing
   plant_reviewer_envelope "$id"
   "$ORCHID_BIN" task advance "$id" arbitrating --reason "single reviewer approved"
-  # `task arbitrate`, not `task advance <id> merging`: every non-`blocked` edge
-  # out of `arbitrating` is an arbitration RESULT, and since T032 the only
+  # `task arbitrate`, not `task advance <id> merging`: `arbitrating:merging` is
+  # an arbitration RESULT, and since T032 the only
   # public verb that records one is this (libexec/orchid-task's `advance` arm
   # refuses the rest).
   "$ORCHID_BIN" task arbitrate "$id" --result approve --reason "approved for merge"

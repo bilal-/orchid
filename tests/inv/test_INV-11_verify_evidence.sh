@@ -161,9 +161,9 @@ plant_reviewer_envelope T004
 
 [ -f .orchid/reviews/T004-verify.log ] || fail "sanity: verify evidence exists before rework"
 
-# `task arbitrate`, not `task advance T004 rework`: since T032 every
-# non-`blocked` edge out of `arbitrating` is an arbitration RESULT and only this
-# verb records one. It takes the same `arbitrating:rework` edge, so the evidence
+# `task arbitrate`, not `task advance T004 rework`: since T032 `arbitrating:
+# rework` is an arbitration RESULT that verb refuses, and only this one records
+# a result. It takes the same `arbitrating:rework` edge, so the evidence
 # invalidation asserted below is the same one.
 "$ORCHID_BIN" task arbitrate T004 --result request-changes --reason "found an issue in review" >/dev/null
 

@@ -763,8 +763,8 @@ self_walk_to_merging() {
   "$ORCHID_BIN" task advance "$id" reviewing
   plant_reviewer_envelope "$id"
   "$ORCHID_BIN" task advance "$id" arbitrating --reason "single reviewer approved"
-  # `task arbitrate`: since T032 it is the only public verb that reaches a
-  # non-`blocked` edge out of `arbitrating`.
+  # `task arbitrate`: since T032 it is the only public verb that reaches an
+  # arbitration OUTCOME edge out of `arbitrating`.
   "$ORCHID_BIN" task arbitrate "$id" --result approve --reason "approved for merge"
 }
 

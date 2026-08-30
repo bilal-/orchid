@@ -232,8 +232,8 @@ assert_match "^T2[[:space:]]ok[[:space:]]approve" "$review_reconcile_both" "T2 r
 
 run_ok "advance T1 arbitrating" "$ORCHID_BIN" task advance T1 arbitrating --reason "review reconciled: approve" >/dev/null
 run_ok "advance T2 arbitrating" "$ORCHID_BIN" task advance T2 arbitrating --reason "review reconciled: approve" >/dev/null
-# `task arbitrate`: since T032 it is the only public verb that reaches a
-# non-`blocked` edge out of `arbitrating`, and it derives `merging` itself.
+# `task arbitrate`: since T032 it is the only public verb that reaches an
+# arbitration OUTCOME edge out of `arbitrating`, and it derives `merging` itself.
 run_ok "arbitrate T1 approve" "$ORCHID_BIN" task arbitrate T1 --result approve --reason "approved for merge" >/dev/null
 run_ok "arbitrate T2 approve" "$ORCHID_BIN" task arbitrate T2 --result approve --reason "approved for merge" >/dev/null
 

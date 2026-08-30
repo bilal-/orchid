@@ -40,7 +40,7 @@ for s in implementing testing; do "$ORCHID_BIN" task advance T001 "$s" >/dev/nul
 plant_reviewer_envelope T001
 "$ORCHID_BIN" task advance T001 arbitrating >/dev/null
 # Asked of `orchid task arbitrate`, which since T032 is the only public verb
-# that reaches a non-`blocked` edge out of `arbitrating` — `task advance T001
+# that reaches an arbitration OUTCOME edge out of `arbitrating` — `task advance T001
 # merging` is now refused for being an arbitration result taken by a verb that
 # records none, which would make the reason-less probe below pass for a reason
 # that has nothing to do with INV-08. The requirement itself is unchanged and

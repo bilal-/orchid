@@ -984,11 +984,11 @@ case "$sub" in
     legal "$from" "$to" "$arch" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
     # AN ARBITRATION OUTCOME IS RECORDED BY ONE VERB (T032, dogfood F33).
     #
-    # Every edge out of `arbitrating` except the universal `blocked` escape IS
-    # an arbitration result: approve is `arbitrating:merging` (or
-    # `arbitrating:done` on an outcome=report archetype), request-changes is
-    # `arbitrating:rework`. `task arbitrate` derives which from the archetype,
-    # journals the result, and -- since T032 -- raises and clears the standing
+    # Three edges out of `arbitrating` ARE the arbitration's result: approve is
+    # `arbitrating:merging` (or `arbitrating:done` on an outcome=report
+    # archetype), request-changes is `arbitrating:rework`. `task arbitrate`
+    # derives which of them from the archetype, journals the result, and --
+    # since T032 -- raises and clears the standing
     # objection that keeps a later round from being approved past a defect an
     # arbiter already rejected. `task advance` does NONE of that. Taken by hand
     # it settles the round with nothing in the state saying who decided it, what
@@ -1010,15 +1010,30 @@ case "$sub" in
     # task. It is a private kernel handshake, not an option: nothing documents
     # it, and an operator reaching for it has the verb the refusal names.
     #
-    # `arbitrating:blocked` is NOT one of them, and is matched out first: it is
-    # the universal escape hatch every status has, it decides nothing about the
-    # candidate, and it is the move this refusal itself sends an operator to.
-    # Written as "everything else out of `arbitrating`" rather than as a list of
-    # three destinations so an archetype that declares some further arbitrating
-    # edge cannot quietly land outside the rule.
+    # THE OUTCOME DESTINATIONS, AND ONLY THOSE. The three below are exactly the
+    # ones `task arbitrate` derives a few hundred lines down -- `merging` and
+    # `done` for an approval (whichever the archetype declares), `rework` for a
+    # request-changes -- which is what makes them arbitration RESULTS rather
+    # than merely edges leaving `arbitrating`. The list is written out here so
+    # it can be read against that derivation, and both twins are pinned in
+    # tests/test_task.sh.
+    #
+    # This used to read `arbitrating:*`, refusing everything but `blocked`, and
+    # that was wider than the argument for it (T032 convergence, after the
+    # attempt-4 arbitration). An archetype is free to declare an `arbitrating`
+    # edge that decides nothing about the candidate -- `arbitrating:reviewing`,
+    # sending a round back for more review, is the obvious one -- and such an
+    # edge records no result, so `task arbitrate` cannot take it and this verb
+    # is the only door there is. Refusing it did not close a bypass; it deleted
+    # a transition, in the one verb whose refusal names an alternative that
+    # cannot reach it. What the rule protects is the merge queue and the
+    # attempt counter, and a destination outside these three touches neither.
+    #
+    # `arbitrating:blocked` is outside the list for the same reason and one
+    # more: it is the universal escape hatch every status has, and it is the
+    # move this refusal itself sends an operator to.
     case "$from:$to" in
-      arbitrating:blocked) ;;
-      arbitrating:*)
+      arbitrating:merging|arbitrating:done|arbitrating:rework)
         if [ "${ORCHID_ARBITRATION_ID:-}" != "$id" ]; then
           echo "orchid: $from -> $to is an arbitration RESULT, and 'orchid task advance' records none — refused" >&2
           echo "orchid: use 'orchid task arbitrate $id --result approve|request-changes --reason \"...\"', which derives this destination from the archetype, journals the decision, and is the only thing that raises or clears the standing objection a later round is judged against (T032, dogfood F33). To stop the task instead of deciding it: 'orchid task advance $id blocked --reason \"...\"'." >&2
@@ -1635,10 +1650,14 @@ case "$sub" in
     # objection this verb raises and clears could be walked past by typing the
     # other command -- an approval with nothing recording who made it and a live
     # `unresolved_objection` riding into the merge queue underneath it. That
-    # edge, and every other non-`blocked` edge out of `arbitrating`, is now
-    # refused unless this verb is the caller (see the refusal's own note in the
-    # `advance` arm above). `task advance <id> blocked` is untouched: stopping a
-    # task is not deciding it.
+    # edge, and the two other destinations an arbitration RESULT derives
+    # (`arbitrating:done`, `arbitrating:rework`), are now refused unless this
+    # verb is the caller (see the refusal's own note in the `advance` arm
+    # above). Edges out of `arbitrating` that decide nothing about the
+    # candidate are untouched -- `blocked`, because stopping a task is not
+    # deciding it, and any non-outcome edge an archetype declares, because this
+    # verb cannot derive it and refusing it would delete a transition rather
+    # than close a bypass.
     verb_lock_guard "$repo"
     epoch_require "$repo"; export ORCHID_EPOCH
     id="${1:-}"; shift || true
@@ -1742,13 +1761,50 @@ case "$sub" in
     # in `arbitrating` is reachable by one. Both results are refused, because
     # `request-changes` would supersede the operator's words with the model's
     # own and leave a stop the model may then clear, which reaches F33's
-    # outcome by a longer road than `approve` does.
+    # outcome by a longer road than `approve` does. The one thing that gets a
+    # model past this guard is the operator's own answer, read off durable
+    # notify/answer state rather than asserted by the caller -- see the relay
+    # note below.
     obj_prev="$(fm_get "$f" unresolved_objection)"
     obj_prev_by_raw="$(fm_get "$f" unresolved_objection_by)"
     obj_prev_by="$(review_objection_arbiter "$obj_prev" "$obj_prev_by_raw")"
     arb_by="$(review_arbiter_class)"
+    # ...AND THE OPERATOR MAY HAVE ALREADY DECIDED THIS (T032 convergence,
+    # after the attempt-4 arbitration). The stop an operator's objection raises
+    # is paged with `orchid notify`, the operator answers it with `orchid
+    # answer`, and no verb consumes an answer file -- so an operator who has
+    # decided still needs an actor to run the arbitration, and the actor at the
+    # keyboard for an unattended run is a woken orchestrator. Refusing THAT is
+    # refusing to carry out the operator's own recorded decision, which leaves
+    # the run parked on a question its owner has already answered.
+    #
+    # So the class of this arbitration is the actor's UNLESS a durable operator
+    # answer authorises it, bound to this task, this objection and this result
+    # -- lib/review.sh's review_operator_relay is the whole of that reading, and
+    # its header is where the four axes and the residual are argued. Nothing the
+    # relaying model supplies is an input: not `--reason` (its own prose), not a
+    # flag (there is none), not an environment variable (the one read here can
+    # only ever make the arbitration a MODEL's). `orchid answer` is off the
+    # brokered verb table, so a woken model cannot write the state this credits.
+    #
+    # The qid is kept, not just the verdict: an arbitration recorded with an
+    # authority its actor did not have on its own must say, durably, which
+    # answer lent it -- the clear below journals it, so a reader of the record
+    # can go and open the operator's page.
+    #
+    # READ ONLY WHEN IT IS NEEDED, which is also what keeps it honest in the
+    # record: an OPERATOR arbitrating at their own shell needs no relay, and
+    # crediting one anyway would put "relayed by ..." on the clear of an
+    # arbitration nobody relayed. The condition is the refusal's own, so the
+    # only arbitration this state can speak for is the one it would otherwise
+    # have refused.
+    relay_qid=""
     if [ "$obj_prev_by" = operator ] && [ "$arb_by" != operator ]; then
-      orchid_die "$id carries an OPERATOR's unresolved objection, and this arbitration is not the operator's (actor: ${ORCHID_ACTOR:-unset}) — refused, and nothing was written. The standing objection is: \"$obj_prev\". Whether it was answered is the call of the arbiter who raised it, who saw twice what a review of this diff did not; a --result approve here would clear it from the same diff that produced it, and a --result request-changes would replace their words with these. Raise it to the operator instead: orchid notify --task $id \"<what they must decide>\"."
+      relay_qid="$(review_operator_relay "$repo" "$id" "$result" "$obj_prev")"
+      [ -z "$relay_qid" ] || arb_by=operator
+    fi
+    if [ "$obj_prev_by" = operator ] && [ "$arb_by" != operator ]; then
+      orchid_die "$id carries an OPERATOR's unresolved objection, and this arbitration is not the operator's (actor: ${ORCHID_ACTOR:-unset}) — refused, and nothing was written. The standing objection is: \"$obj_prev\". Whether it was answered is the call of the arbiter who raised it, who saw twice what a review of this diff did not; a --result approve here would clear it from the same diff that produced it, and a --result request-changes would replace their words with these. Raise it to the operator instead: orchid notify --task $id \"<what they must decide>\". If they have already decided, they answer the page for this objection ('orchid answer <qid> approve') and this verb will then relay THAT decision — an answer to some other page, or in any other words, is not one."
     fi
     if [ "$result" = request-changes ]; then
       # SUPERSEDED, NOT ACCUMULATED: the arbiter's latest word is the operative
@@ -1791,8 +1847,18 @@ case "$sub" in
       # `fm_set` on an absent key APPENDS it, so an unguarded clear would give
       # an `unresolved_objection:` line to every task in every repository that
       # never carried one. An approval that clears nothing has nothing to say.
+      #
+      # THE RELAY IS NAMED IN THE RECORD, and this is the only place it can be:
+      # the entry's own actor string is the process's (a model's, when one
+      # relayed), and `cleared by:` is the AUTHORITY the arbitration acted with.
+      # Those are two different facts on a relayed clear, so the entry carries
+      # both and the qid that joins them -- otherwise the record says an
+      # operator cleared it while every other trace of the pass says a model
+      # ran the verb, and there is nothing to reconcile the two.
+      obj_relay_note=""
+      [ -z "$relay_qid" ] || obj_relay_note=" — relayed by ${ORCHID_ACTOR:-unset} from the operator's own answer to $relay_qid"
       journal --task "$id" --kind arbitration \
-        "objection cleared by an explicit arbitration approval — was: \"$obj_prev\" (raised by: $obj_prev_by, cleared by: $arb_by)"
+        "objection cleared by an explicit arbitration approval — was: \"$obj_prev\" (raised by: $obj_prev_by, cleared by: $arb_by)$obj_relay_note"
       fm_set "$f" unresolved_objection ""
       # Both halves, so a later `request-changes` cannot inherit a class from an
       # objection that is no longer standing -- and the text first, per the note

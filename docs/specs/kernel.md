@@ -1200,10 +1200,14 @@ them is COMPOSED into the objection's detail rather than discarded, so the
 arbiter is told both what stands against the task and what the reviewers in
 front of them said. WHICH stop it raises is
 `unresolved_objection_by`'s answer, below. The verb surface is closed the same
-way: every non-`blocked` edge out of `arbitrating` is refused by `orchid task
-advance` (which records no arbitration result), so `orchid task arbitrate` is
-the only public route past a standing objection and not merely the driver's
-one. And every shipped `review` adapter
+way: the three destinations an arbitration result derives — `merging`, `done`
+and `rework` — are refused by `orchid task advance` (which records no
+arbitration result), so `orchid task arbitrate` is the only public route past a
+standing objection and not merely the driver's one. The refusal is scoped to
+those three and not to the status: `blocked` is the universal escape hatch, and
+a non-outcome edge an archetype declares (`arbitrating:reviewing`) is one no
+`--result` derives, so refusing it would delete a transition rather than close
+a bypass. And every shipped `review` adapter
 appends the objection to the
 reviewer's prompt (the pack copies `task.md` whole, so no new pack item is
 needed), narrowing the next round's question to "was the arbiter's objection
@@ -1246,6 +1250,24 @@ a task carrying an operator's standing objection, since `task arbitrate <id>`
 takes an id and a model woken for another task's boundary could otherwise name
 this one; `--result approve` would clear their objection and
 `--result request-changes` would supersede their words with its own.
+THE OPERATOR'S OWN DECISION IS STILL RELAYABLE (T032 convergence): that stop is
+paged with `orchid notify` and answered with `orchid answer`, and no verb
+consumes an answer file — so an operator who has decided still needs an actor
+to record the arbitration, and in an unattended run that actor is a woken
+orchestrator. `review_operator_relay` (lib/review.sh) is the reader that credits
+one: `--result approve` recorded by a non-operator counts as the operator's iff
+a question in `runtime/answers/` names this task in its `task:` header, carries
+the standing objection's text and the remedy clause `review_objection_remedy`
+composes for this task, and has an `.answer` recording exactly `approve`.
+`orchid answer` is on no surface's admitted verb list, so that state is state no
+model can write (`notify` IS admitted, which is why the question is not the
+evidence and the answer is). The objection's text opens with the round it was
+raised in, so an answer given about a superseded objection authorises nothing.
+Only the clearing direction is relayed: refusing a relayed `request-changes`
+leaves the operator's objection standing, which is what they asked for, while
+admitting one would record a model's paraphrase under their authority. The
+clear's journal entry names the relaying actor and the qid beside the
+authority, since the entry's own actor is the model that ran the verb.
 `hook_guidance` (v1-m3):
 written by the orchestrator from a bound `hook.on_verify_fail` handler's
 `.artifact.guidance` string, via `orchid task set <id> hook_guidance
@@ -1724,8 +1746,9 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
   judgment-bearing verb refuses to run without `--reason`, which it journals
   BEFORE writing the state change — `task advance` to `blocked`, and `task
   arbitrate` on either result (both arbitration outcomes recorded; `task
-  advance` refuses every non-`blocked` edge out of `arbitrating` outright,
-  since a result recorded by no verb is a decision nobody signed);
+  advance` refuses the three destinations an arbitration result derives —
+  `merging`, `done`, `rework` — out of `arbitrating` outright, since a result
+  recorded by no verb is a decision nobody signed);
   `task set risk_tier` (monotonicity enforced separately from prose);
   `--waive-attempt`; `task unblock/retry/reverify`; `run accept`;
   `lessons retire`. Sequential atomic writes (journal first, state second) mean

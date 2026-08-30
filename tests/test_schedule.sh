@@ -320,8 +320,8 @@ jq -n --arg jid "j-fixture-K004-a1" --arg cand "$repo3_sha" \
     verdict:"approve", scope_complete:true, summary:"fixture reviewer", candidate_sha:$cand}' \
   > "$repo3/.orchid/reviews/K004-a1-reviewer.json"
 "$ORCHID_BIN" task advance K004 arbitrating --reason "single reviewer approved" >/dev/null
-# `task arbitrate`: since T032 it is the only public verb that reaches a
-# non-`blocked` edge out of `arbitrating`, and on an outcome=report archetype
+# `task arbitrate`: since T032 it is the only public verb that reaches an
+# arbitration OUTCOME edge out of `arbitrating`, and on an outcome=report archetype
 # `--result approve` derives `done`.
 "$ORCHID_BIN" task arbitrate K004 --result approve --reason "accepted" >/dev/null
 assert_eq "done" "$("$ORCHID_BIN" task show K004 | grep '^status: ' | cut -d' ' -f2)" "K004 reached done"
@@ -341,8 +341,8 @@ jq -n --arg jid "j-fixture-K002-a1" --arg cand "$repo3_sha" \
     verdict:"approve", scope_complete:true, summary:"fixture reviewer", candidate_sha:$cand}' \
   > "$repo3/.orchid/reviews/K002-a1-reviewer.json"
 "$ORCHID_BIN" task advance K002 arbitrating --reason "single reviewer approved" >/dev/null
-# `task arbitrate`: since T032 it is the only public verb that reaches a
-# non-`blocked` edge out of `arbitrating`, and it derives `rework` itself.
+# `task arbitrate`: since T032 it is the only public verb that reaches an
+# arbitration OUTCOME edge out of `arbitrating`, and it derives `rework` itself.
 "$ORCHID_BIN" task arbitrate K002 --result request-changes --reason "needs another pass" >/dev/null
 assert_eq rework "$("$ORCHID_BIN" task show K002 | grep '^status: ' | cut -d' ' -f2)" "K002 is rework"
 

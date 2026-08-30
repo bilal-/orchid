@@ -224,14 +224,16 @@ The same walk, in verbs:
    nobody hand-edits.
 5. Agreement → `orchid task arbitrate T001 --result approve --reason "..."`
    (the one verb that records an arbitration result, and the only public route
-   out of `arbitrating`) → `orchid merge T001`
+   onto the edges a result takes out of `arbitrating`) → `orchid merge T001`
    re-verifies in a temp worktree and advances the integration branch.
    Disagreement → the orchestrator (inline, ≤10 lines of judgment) reads
    the diff and arbitrates. An arbitration that asks for changes is recorded
    on the task and stands until an arbitration approves it: no later round
    is approved deterministically past it, settling it takes an arbiter of at
    least the authority that raised it — an operator's objection, only the
-   operator — and the next round's reviewers are shown what the arbiter said.
+   operator, or a model relaying that operator's own recorded `orchid answer`
+   to the page for it — and the next round's reviewers are shown what the
+   arbiter said.
 6. `done`. Repeat, up to `concurrency` tasks in flight at once, until the
    roadmap is complete.
 
