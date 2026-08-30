@@ -221,6 +221,42 @@ rm -f "$C/reviews/T001-empty2.log"
 rc=0; rework_evidence_source "$C" T001 testing aaaa >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "a non-empty log without the bare header terminator is a torn write, not failure evidence"
 
+# --- the `from` status picks the ORDER, never the admitted set --------------
+# A rework can be documented by either log, and every door into rework deletes
+# BOTH -- so a door that only ever asks one of them answers "nothing failed"
+# over the file it is about to remove.
+#
+# The route is `merge_gate` exhaustion, and it is the sharpest one left after
+# the operator's doors were wired in. A red repo-wide gate charges the round,
+# and on the round that spends the budget `orchid merge` takes
+# `merging -> blocked` -- an edge that captures nothing and deletes nothing, so
+# BOTH logs survive it: a PASSING verify log from before the merge and the
+# failing merge log that is the whole reason the task stopped. The operator's
+# recovery verbs then arrive `from = blocked`, prefer the verify log, and find
+# a pass.
+C2="$WORK/order/.orchid"
+mkdir -p "$C2/reviews"
+mk_log "$C2/reviews/T001-verify.log" 2026-08-07T00:00:00Z candaaaa /tmp/w "all good" 0
+mk_log "$C2/reviews/T001-merge.log" 2026-08-07T01:00:00Z candaaaa /tmp/w "gate FAIL" 1
+assert_eq "$C2/reviews/T001-merge.log" "$(rework_evidence_source "$C2" T001 blocked candaaaa)" \
+  "a non-merging door falls back to the merge log when the verify log is a PASS — the merge_gate stop's own failure, in the file that door is about to delete"
+# ...but the fallback is a second QUESTION, not a lowered bar. The binding is
+# asked of it exactly as it is of the preferred log, so a merge log left
+# standing by a superseded candidate's merge is still refused rather than
+# captured because the verify log happened to answer nothing.
+rc=0; rework_evidence_source "$C2" T001 blocked candbbbb >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "the fallback must not bypass the candidate binding — a superseded merge log is not this round's failure"
+# And the preference still holds when both logs failed: `from` says which
+# producer documents this rework, and only the fallback is new.
+mk_log "$C2/reviews/T001-verify.log" 2026-08-07T02:00:00Z candaaaa /tmp/w "verify FAIL" 1
+assert_eq "$C2/reviews/T001-verify.log" "$(rework_evidence_source "$C2" T001 blocked candaaaa)" \
+  "with both logs failing, a non-merging door still prefers the verify log"
+assert_eq "$C2/reviews/T001-merge.log" "$(rework_evidence_source "$C2" T001 merging candaaaa)" \
+  "and the merging door still prefers the merge log"
+rm -f "$C2/reviews/T001-merge.log"
+assert_eq "$C2/reviews/T001-verify.log" "$(rework_evidence_source "$C2" T001 merging candaaaa)" \
+  "the fallback is symmetric: a merging door with no merge log at all reads the verify log rather than nothing"
+
 # --- evidence is bound to the candidate that produced it --------------------
 # Both logs the kernel writes carry a `candidate:` header, and a capture that
 # ignores it files some OTHER candidate's output as this round's failure --
@@ -845,3 +881,135 @@ assert_eq "3" "$capture_calls" \
 rm_calls="$(grep -c 'rm -f "\$state/reviews/\$id-verify.log"' "$kernel_task")" || true
 assert_eq "4" "$rm_calls" \
   "witness: and the invalidating delete is spelled at four sites in that file — the three rework doors counted above plus the reverify edge (to = testing), which re-runs the verifier instead of dispatching an implementer and so has nothing to feed forward. A fifth is a door that needs a capture in front of it."
+# THE MERGE LOG IS DELETED AT THREE OF THOSE FOUR, and counted separately
+# because it is a separate way to lose the evidence. The reverify edge
+# deliberately keeps it (it is the record of a merge that really happened, and
+# that edge re-runs the verifier rather than dispatching anyone), so the three
+# here are exactly the three rework doors — each of which reads it as the
+# fallback source when its verify log has no failure to report. A fourth site
+# is another door that has to capture first.
+merge_rm_calls="$(grep -c 'rm -f .*\$id-merge\.log' "$kernel_task")" || true
+assert_eq "3" "$merge_rm_calls" \
+  "witness: the merge log's invalidating delete is spelled at exactly the three rework doors — the same three the capture composer is wired to"
+
+# ===========================================================================
+# Part G -- the MERGE GATE's failure, at the operator's doors. Those doors
+# delete `<id>-merge.log` as well, and there is one stop that leaves it as the
+# only failing evidence there is.
+# ===========================================================================
+# THE ROUTE. A red repo-wide `merge_gate` is the one merge failure that charges
+# the task a round, and on the round that spends the gate budget `orchid merge`
+# takes `merging -> blocked` rather than `merging -> rework`. That edge captures
+# nothing and deletes nothing, so the task parks with BOTH logs on disk: the
+# PASSING `<id>-verify.log` that got it out of `testing` in the first place, and
+# the failing `<id>-merge.log` that is the entire reason it stopped. The
+# operator then types `retry` or `unblock` -- neither of which arrives
+# `from = merging` -- and both delete the merge log on their way to `rework`.
+#
+# Preferring the verify log and stopping there reads that pass as "no failing
+# evidence", captures nothing, and then removes the gate's own output: lesson
+# L023's defect one door along, on the one edge where the evidence had survived
+# everything else. So `from` picks which log is asked FIRST and never which is
+# admitted.
+
+# mk_gate_log <file> <date> <candidate> <cwd> <body> -- the header shape
+# `orchid merge` really writes for a red repo-wide gate (Part A pins the same
+# fields against the producer).
+mk_gate_log() {
+  { printf 'date: %s\n' "$2"
+    printf 'sha: mergedtree0000\n'
+    printf 'candidate: %s\n' "$3"
+    printf 'cwd: %s\n' "$4"
+    printf 'command: /bin/bash tests/run.sh\n'
+    printf 'command_status: 0\n'
+    printf 'gate: shellcheck lib\n'
+    printf 'gate_status: ran\n'
+    printf 'gate_exit: 3\n'
+    printf -- '---\n'
+    printf '%s\n' "$5"
+    printf 'exit: 1\n'
+  } > "$1"
+}
+
+# gate_walk <id> <title> -- a task walked to `blocked` the way the gate's own
+# exhaustion arm walks it: a passing verification, a review, an approval, a
+# merge whose repo-wide gate went red, and the block that spends the last
+# round. Leaves both logs on disk, which is the precondition this whole part
+# rests on and is therefore asserted rather than assumed.
+gate_walk() {
+  local gid="$1" gtitle="$2" ghead
+  ghead="$(git rev-parse HEAD)"
+  "$ORCHID_BIN" task create "$gid" "$gtitle" >/dev/null
+  "$ORCHID_BIN" task set "$gid" base_sha "$ghead" >/dev/null
+  "$ORCHID_BIN" task set "$gid" candidate_sha "$ghead" >/dev/null
+  "$ORCHID_BIN" task advance "$gid" implementing --reason "the round the gate stopped" >/dev/null
+  "$ORCHID_BIN" task advance "$gid" testing --reason "the round the gate stopped" >/dev/null
+  # The candidate's OWN suite passed -- that is what `reviewing` requires, and
+  # it is what makes this shape different from every other blocked task here.
+  mk_log "$STATE/reviews/$gid-verify.log" 2026-08-20T09:00:00Z "$ghead" "$REPO" \
+    "OK 41 assertions, 0 failures" 0
+  "$ORCHID_BIN" task advance "$gid" reviewing --reason "verify passed" >/dev/null
+  # The count gate reads `.status` and `.candidate_sha` and nothing else, so
+  # the fixture states exactly those (same shape as T004's above): attempts is
+  # still 0 here, the charge below is what spends it, so the envelope belongs
+  # to attempt 1.
+  printf '{"status":"ok","candidate_sha":"%s"}\n' "$ghead" \
+    > "$STATE/reviews/$gid-a1-reviewer.json"
+  "$ORCHID_BIN" task advance "$gid" arbitrating --reason "approved" >/dev/null
+  "$ORCHID_BIN" task advance "$gid" merging --reason "approved" >/dev/null
+  # `orchid merge`'s own log, and then its exhaustion arm's advance, spelled
+  # the way that verb spells them.
+  mk_gate_log "$STATE/reviews/$gid-merge.log" 2026-08-20T10:00:00Z "$ghead" "$REPO" \
+    "lib/example.sh:12: SC2086: GATEONLYFAILURE Double quote to prevent globbing"
+  "$ORCHID_BIN" task advance "$gid" blocked --charge-attempt \
+    --reason "gate_failed: repo-wide merge_gate exited 3 (see reviews/$gid-merge.log)" >/dev/null
+  assert_eq blocked "$(fm "$gid" status)" "fixture: the gate's exhaustion arm parks the task at blocked"
+  [ -f "$STATE/reviews/$gid-merge.log" ] \
+    || fail "fixture: merging -> blocked must leave the merge log on disk — without it this part proves nothing"
+  [ -f "$STATE/reviews/$gid-verify.log" ] \
+    || fail "fixture: and the PASSING verify log beside it, which is what makes the wrong answer available"
+}
+
+gate_walk T009 "the gate's failure survives retry"
+"$ORCHID_BIN" task retry T009 --reason "the gate is red for the repository, not for this candidate" >/dev/null
+assert_eq rework "$(fm T009 status)" "fixture: retry takes blocked -> rework"
+[ ! -f "$STATE/reviews/T009-merge.log" ] \
+  || fail "retry must still invalidate the merge log (INV-07 symmetry is unchanged)"
+[ -f "$STATE/reviews/T009-r1-rework.log" ] \
+  || fail "and it must CAPTURE it first — the merge log is the ONLY failing output a merge_gate stop leaves behind"
+grep -q "GATEONLYFAILURE" "$STATE/reviews/T009-r1-rework.log" \
+  || fail "the captured round carries the gate's own output, not the passing suite that ran before it"
+grep -q "0 failures" "$STATE/reviews/T009-r1-rework.log" \
+  && fail "and it is the MERGE log: capturing the verify PASS would hand the next attempt a green suite as its previous failure"
+assert_eq "1" "$(fm T009 rework_rounds)" "the gate's round is a captured round like any other"
+assert_eq "1" "$(fm T009 rework_signature_repeats)" "a first sighting is repeat 1"
+assert_match "rework evidence captured: reviews/T009-r1-rework.log" "$(cat "$STATE/journal.md")" \
+  "and it is journalled, named with the round it filed"
+pack_build "$REPO" T009 implement "$WORK/pack-gate" || fail "post-retry implementer pack build"
+grep -q "GATEONLYFAILURE" "$WORK/pack-gate/rework.md" \
+  || fail "the granted round's implementer is handed what actually went red — a gate failure it may be able to fix, or evidence for the human who cannot"
+
+# THE BINDING IS NOT RELAXED BY THE FALLBACK. A merge log naming a candidate
+# this task has moved off is refused on the second question exactly as on the
+# first: the fallback is another log to ask, never a lower bar to clear.
+gate_walk T010 "a superseded merge log is still refused"
+"$ORCHID_BIN" task set T010 candidate_sha \
+  "$(git commit-tree "HEAD^{tree}" -p HEAD -m "T010 re-derived")" >/dev/null
+"$ORCHID_BIN" task unblock T010 --reason "re-derived onto a new base; the gate needs a repository fix" >/dev/null 2>&1
+assert_eq rework "$(fm T010 status)" "fixture: unblock takes blocked -> rework"
+[ ! -f "$STATE/reviews/T010-r1-rework.log" ] \
+  || fail "a merge log describing a superseded candidate must not be captured as this round's failure"
+assert_eq "0" "$(fm T010 rework_rounds)" \
+  "nor may it move the counter that reroutes the role and blocks the task for not converging"
+assert_match "rework evidence NOT captured: T010-merge.log names candidate" "$(cat "$STATE/journal.md")" \
+  "and the refusal is journalled, NAMING this task's own merge log — 'rework arrived with nothing to act on' is the complaint this task exists to answer, so a deliberate non-capture has to say so, and an earlier task's refusal must not be able to satisfy this line"
+
+# `unblock` over a BOUND gate failure captures it: the same door, the same
+# evidence, on the ordinary path where the candidate has not moved.
+gate_walk T011 "unblock captures the gate's failure too"
+"$ORCHID_BIN" task unblock T011 --reason "here is the repository fix; re-run the gate" >/dev/null 2>&1
+[ -f "$STATE/reviews/T011-r1-rework.log" ] \
+  || fail "unblock must capture the merge log before it deletes it, exactly as retry does"
+grep -q "GATEONLYFAILURE" "$STATE/reviews/T011-r1-rework.log" \
+  || fail "and carry the gate's output verbatim"
+[ ! -f "$STATE/reviews/T011-merge.log" ] || fail "unblock must still invalidate the merge log"

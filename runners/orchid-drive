@@ -1510,11 +1510,13 @@ drive_dispatch() {
         # field only when it finds one, so a round whose envelope was absent,
         # refused as a no-op delivery, or degraded (T040) records nothing about
         # who ran it. On a chain that never reports, the field is EMPTY, which
-        # this arm can see and does. (On a MIXED chain the same round instead
-        # leaves the previous round's value standing, which no state visible
-        # here distinguishes from a current one -- that is the kernel record's
-        # to fix, not this walk's, and it is why the walk must not invent a
-        # second unverifiable answer beside it.)
+        # this arm can see and does. On a MIXED chain the same round used to
+        # leave the PREVIOUS round's value standing, which no state visible
+        # here distinguishes from a current one; that was the kernel record's
+        # to fix and it is fixed there rather than guessed at here -- `task
+        # advance implementing -> testing` now CLEARS the field when the
+        # round's own envelope names no engine, so a stale name never reaches
+        # this walk and "empty" means exactly one thing at this line.
         #
         # This arm used to guess: fall back to whichever engine the role
         # resolves to right now, "absent a ledger change, exactly the one that

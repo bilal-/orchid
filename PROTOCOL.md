@@ -2126,7 +2126,11 @@ ones its archetype never declares.
     delete that log too, and `retry` is the verb reached for after `attempts
     exhausted`, which stops the task at `blocked` with the failing log still
     on disk — so both capture before they delete, and a round an operator
-    grants starts with the same evidence a round the driver sends does.
+    grants starts with the same evidence a round the driver sends does. Every
+    door deletes `reviews/<id>-merge.log` as well, so every door reads it too
+    when the verify log has no failure to report: a red repo-wide `merge_gate`
+    ends at `merging → blocked` with a PASSING verify log beside the failing
+    merge log, and that is the failure the operator is unblocking.
     Nothing here needs a separate call; what the walk must do with the result
     is:
 
@@ -3123,7 +3127,10 @@ Once `orchid status --explain` shows every task `done`:
   jobs review-plan`, backed by `lib/review.sh`'s
   `review_implementer_engine`) read this field directly, falling back to
   `resolve_role <repo> implementer` (first-of-chain) only for a task that
-  hasn't reached `testing` yet.
+  hasn't reached `testing` yet — or for one whose latest round reported no
+  engine at all, which that same advance now CLEARS the field on (v1.1)
+  rather than leaving the previous round's engine standing as the record of a
+  candidate it did not build.
 - **`orchid task unblock`** — `docs/specs/kernel.md:525` used to document it
   as `orchid task unblock <id> [--guidance "..."]`, drifted from its own
   state table two hundred-odd lines earlier (`docs/specs/kernel.md:239`),

@@ -138,12 +138,19 @@ quotes. The candidate moves under captured evidence in ordinary operation (the
 reworking implementer commits, `orchid merge`'s rebase arm mints a new sha, an
 operator re-derives the branch), and "you already tried this and got exactly
 this" said about a superseded candidate is a confident false claim rather than
-a weaker true one. A round that does not bind is withheld and recorded with
-its reason (`{"name":"rework.md","omitted":"superseded-candidate"}`, or
-`"unbindable"` for a log written by an older kernel that claims no candidate
-at all). `implement` only: a reviewer judges `base_sha..candidate_sha` as it
-stands, and the previous attempt's failure would prejudge a candidate that no
-longer carries it.
+a weaker true one. A round that is not fed forward is withheld and recorded
+with its reason, as an `items[]` entry of its own rather than in the plain
+budget-omission list — `{"name":"rework.md","omitted":"<reason>"}`, one of
+exactly four: `superseded-candidate` (the round names a candidate the task has
+moved off), `unbindable` (it claims no candidate at all — an older kernel
+wrote it), `no-candidate` (the TASK has none to bind to, so there is nothing
+for two vacuous sentinels to agree about), and `unreadable` (the brief could
+not be built from a round that is there, which is a different fact from a
+budget that could not carry one and is never routed into the overflow refusal
+above). A first attempt, with no captured round at all, is not an omission and
+records nothing. `implement` only: a reviewer judges `base_sha..candidate_sha`
+as it stands, and the previous attempt's failure would prejudge a candidate
+that no longer carries it.
 
 One adapter serves many roles by branching on `operation` — no pseudo-engine
 identities. Adapters never guess paths, never choose output locations, exit

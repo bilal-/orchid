@@ -38,7 +38,12 @@
 # functions here are called by one composer in libexec/orchid-task
 # (capture_rework_evidence) that all three verbs share; the rule for what
 # counts as this round's failure must not vary by who sent the task round
-# again.
+# again. It does not: `rework_evidence_usable` is one predicate applied to
+# BOTH evidence logs, and the door's `from` status decides only which of them
+# is asked first. All three doors delete both logs, so all three read both --
+# the `merging -> blocked` stop a red repo-wide `merge_gate` ends at leaves a
+# PASSING verify log beside the failing merge log, and it is `retry`/`unblock`
+# that arrive there.
 
 # lib/findings.sh, sourced relative to THIS file's own directory -- the same
 # deliberate exception, for the same reason, that lib/pack.sh already makes to
@@ -306,23 +311,69 @@ rework_evidence_current() {
   rework_evidence_bound "$latest" "$cand"
 }
 
+# rework_evidence_usable <log> [candidate] -- 0 iff <log> is a COMPLETE record
+# of a FAILURE that binds to <candidate>. The whole of what disqualifies a log
+# from being captured, asked in one place so that the two logs a rework can be
+# documented by are judged by identical rules.
+rework_evidence_usable() {
+  local log="$1" cand="${2:-}"
+  [ -f "$log" ] || return 1
+  # A ZERO-BYTE log is not evidence, and its absence is the more dangerous of
+  # the two: an empty file has a perfectly stable digest, so two torn writes in
+  # a row read as ONE IDENTICAL FAILURE REPEATING. The driver would then
+  # reroute the role to another engine and block the task as "not converging"
+  # on the strength of no output at all -- a confident, fully-journalled
+  # judgment derived from nothing. `orchid verify` always writes at least a
+  # header and an `exit:` line, so this is a torn or truncated file rather than
+  # an ordinary one, and refusing to capture it degrades to the pre-T025
+  # behaviour (no captured round, streak untouched) rather than to a wrong one.
+  # lib/pack.sh guards the same shape at the READ end; this is the write end,
+  # and it is the one that keeps the counters honest.
+  [ -s "$log" ] || return 1
+  # A non-empty partial write is no more trustworthy than a zero-byte one.
+  # The producer's bare `---` terminates the volatile header; without it,
+  # rework_signature discards the entire file as header and returns the same
+  # digest for every such truncation. Two torn writes would therefore look
+  # like one byte-identical candidate failure repeating and could reroute or
+  # block the task on evidence that contains no completed header or output.
+  grep -qx -- '---' "$log" || return 1
+  # A PASSING log is not evidence of a failure and is never captured:
+  # `merging -> rework` can be reached by a rebase CONFLICT, which writes no
+  # merge log at all and leaves a passing verify log behind. Capturing that
+  # would hand the next attempt a green suite as its "previous failure" --
+  # worse than handing it nothing.
+  [ "$(tail -n1 "$log")" != "exit: 0" ] || return 1
+  [ -z "$cand" ] || rework_evidence_bound "$log" "$cand"
+}
+
 # rework_evidence_source <state> <id> <from-status> [candidate] -- which log
 # documents the failure that is causing THIS rework, or nothing when no failing
 # evidence exists.
 #
-# `merging -> rework` is the validation-failure path: `orchid merge` re-ran
-# the suite in its own temp worktree and wrote <id>-merge.log, and the task's
-# own <id>-verify.log is a PASS from before the merge (which is exactly why
-# that arm exempts merge.log from the invalidating delete). Every other rework
-# entry is documented by <id>-verify.log.
+# TWO LOGS, ONE PREFERENCE, AND A FALLBACK TO THE OTHER. `merging -> rework` is
+# the validation-failure path: `orchid merge` re-ran the suite in its own temp
+# worktree and wrote <id>-merge.log, and the task's own <id>-verify.log is a
+# PASS from before the merge (which is exactly why that arm exempts merge.log
+# from the invalidating delete). Every other entry to rework is ordinarily
+# documented by <id>-verify.log. The `from` status therefore only picks which
+# of the two is asked FIRST; whichever is not preferred is still asked, because
+# on the operator's doors the preferred one is frequently the wrong question.
 #
-# In both cases a PASSING log is not evidence of a failure and is never
-# captured: `merging -> rework` can also be reached by a rebase CONFLICT,
-# which writes no merge log at all and leaves a passing verify log behind.
-# Capturing that would hand the next attempt a green suite as its "previous
-# failure" -- worse than handing it nothing.
+# THE ROUTE THAT MADE THE FALLBACK NECESSARY is `merge_gate` exhaustion. A red
+# repo-wide gate charges the round, and on the round that spends the budget
+# `orchid merge` takes `merging -> blocked` rather than `merging -> rework` --
+# an edge that captures nothing and deletes nothing, so BOTH logs survive it:
+# a PASSING <id>-verify.log from before the merge and the failing
+# <id>-merge.log that is the entire reason the task stopped. The operator then
+# types `orchid task unblock` or `orchid task retry`, neither of which arrives
+# `from = merging`, and both of which delete <id>-merge.log on their way to
+# `rework`. Preferring verify.log and stopping there answers "no failing
+# evidence" over a passing log while the failure sits in the file the same verb
+# is about to remove -- the gate's own output destroyed by the recovery from
+# it, which is lesson L023's defect one door along and the shape this whole
+# feature exists to end.
 #
-# THE `candidate` ARGUMENT IS WHAT KEEPS THE MERGING ARM HONEST, and it is not
+# THE `candidate` ARGUMENT IS WHAT KEEPS BOTH ARMS HONEST, and it is not
 # hypothetical: `orchid merge`'s rebase arm mints a NEW candidate_sha under a
 # tree whose <id>-merge.log is still on disk, and the `merging` arm of `task
 # advance rework` deliberately exempts that log from its invalidating delete
@@ -331,41 +382,30 @@ rework_evidence_current() {
 # exactly like a current one, and would be captured as this round's failure,
 # digested into this round's signature, and counted toward the streak that
 # reroutes the role and blocks the task for not converging. So the log must
-# CLAIM the candidate the caller is reworking. Absent (the caller has no
-# candidate to bind to, e.g. a direct unit call), the check is skipped rather
-# than failed -- there is nothing to compare against, and refusing every
-# capture on that basis would make the feature inert instead of careful.
+# CLAIM the candidate the caller is reworking -- and that check is what makes
+# the fallback safe rather than merely wider: a merge log left standing by an
+# earlier candidate's merge is refused here, not captured because verify.log
+# happened to be missing. Absent (the caller has no candidate to bind to, e.g.
+# a direct unit call), the check is skipped rather than failed -- there is
+# nothing to compare against, and refusing every capture on that basis would
+# make the feature inert instead of careful.
+#
+# The other half of the fallback's safety is at the caller: a merge log the
+# `merging -> rework` advance ALREADY captured is byte-identical to the newest
+# captured round, so rework_evidence_recaptured refuses it and no round is
+# filed twice (see capture_rework_evidence in libexec/orchid-task).
 rework_evidence_source() {
-  local state="$1" id="$2" from="$3" cand="${4:-}" src=""
-  if [ "$from" = merging ] && [ -f "$state/reviews/$id-merge.log" ]; then
-    src="$state/reviews/$id-merge.log"
-  elif [ -f "$state/reviews/$id-verify.log" ]; then
-    src="$state/reviews/$id-verify.log"
+  local state="$1" id="$2" from="$3" cand="${4:-}" first second
+  if [ "$from" = merging ]; then
+    first="$state/reviews/$id-merge.log"; second="$state/reviews/$id-verify.log"
+  else
+    first="$state/reviews/$id-verify.log"; second="$state/reviews/$id-merge.log"
   fi
-  [ -n "$src" ] || return 1
-  # A ZERO-BYTE log is not evidence either, and its absence is the more
-  # dangerous of the two: an empty file has a perfectly stable digest, so two
-  # torn writes in a row read as ONE IDENTICAL FAILURE REPEATING. The driver
-  # would then reroute the role to another engine and block the task as "not
-  # converging" on the strength of no output at all -- a confident,
-  # fully-journalled judgment derived from nothing. `orchid verify` always
-  # writes at least a header and an `exit:` line, so this is a torn or
-  # truncated file rather than an ordinary one, and refusing to capture it
-  # degrades to the pre-T025 behaviour (no captured round, streak untouched)
-  # rather than to a wrong one. lib/pack.sh guards the same shape at the READ
-  # end; this is the write end, and it is the one that keeps the counters
-  # honest.
-  [ -s "$src" ] || return 1
-  # A non-empty partial write is no more trustworthy than a zero-byte one.
-  # The verifier's bare `---` terminates the volatile header; without it,
-  # rework_signature discards the entire file as header and returns the same
-  # digest for every such truncation. Two torn writes would therefore look
-  # like one byte-identical candidate failure repeating and could reroute or
-  # block the task on evidence that contains no completed header or output.
-  grep -qx -- '---' "$src" || return 1
-  [ "$(tail -n1 "$src")" != "exit: 0" ] || return 1
-  if [ -n "$cand" ]; then
-    rework_evidence_bound "$src" "$cand" || return 1
+  if rework_evidence_usable "$first" "$cand"; then
+    printf '%s\n' "$first"; return 0
   fi
-  printf '%s\n' "$src"
+  if rework_evidence_usable "$second" "$cand"; then
+    printf '%s\n' "$second"; return 0
+  fi
+  return 1
 }

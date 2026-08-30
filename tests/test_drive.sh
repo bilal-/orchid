@@ -9612,10 +9612,14 @@ fi
 #
 # THE THIRD WAY THE REROUTE CAN NAME THE WRONG ENGINE, after AC1's renamed
 # directory and AC2's uninstalled plugin: `implementer_engine_id` is EMPTY.
-# libexec/orchid-task writes that field only when it finds an engine to write --
-# an adapter is not required to report `.engine`, and an envelope that was
+# libexec/orchid-task writes that field from the round's own implement envelope
+# -- an adapter is not required to report `.engine`, and an envelope that was
 # absent, refused as a no-op delivery, or degraded (T040) is skipped outright --
-# so a round can end with nothing recorded about who ran it.
+# so a round can end with nothing recorded about who ran it. (An envelope that
+# IS there and reports no engine CLEARS the field rather than leaving the
+# previous round's answer standing, which is how a mixed chain reaches this
+# state; that write is pinned in tests/test_review_routing.sh's Part W, and it
+# is what makes "empty" mean exactly one thing at the arm below.)
 #
 # RED BEFORE THIS ROUND, and it was the arm's own comment that was wrong rather
 # than a case it had not thought of. The empty field fell back to "whichever

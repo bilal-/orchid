@@ -350,6 +350,17 @@ such rounds failing identically therefore build the same
 intent: an identical failure is not less of a repeat for having been retried
 by hand.
 
+Both verbs delete `reviews/<id>-merge.log` as well, so both look there too
+when the verify log has nothing failing to say. That is the shape a red
+repo-wide `merge_gate` leaves: the candidate's own suite PASSED (which is how
+it reached `merging` at all), the gate went red, and once it has been red for
+every round the task's budget allows, `orchid merge` parks the task at
+`blocked` with both logs on disk. The verify log is a pass, so the failure you
+are unblocking exists only in the merge log — and it is captured before it
+goes, exactly like a verify failure. A merge log describing a candidate the
+task has since moved off is refused instead, and the refusal says so in the
+journal.
+
 ## A task sits in `testing` and nothing verifies it
 
 **Symptom:** `orchid status --explain` shows a task in `testing` as
@@ -883,7 +894,10 @@ anything.** The reroute excludes the task's recorded `implementer_engine_id`
 and nothing else, so it is withheld — and says so on the pass output — when
 that record names an actor no single installed plugin answers to, or when it is
 empty because the round's implement envelope was absent, refused as a no-op
-delivery, or degraded. The dispatch still happens on the chain as written, and
+delivery, degraded, or present but reporting no engine (that last one clears
+the field on the way into `testing`, so a mixed chain leaves an empty record
+rather than the previous round's engine). The dispatch still happens on the
+chain as written, and
 the engine that runs still gets the previous round's output in its brief; what
 is withheld is the preference and the journal line, because the alternative is
 a durable record naming an engine nothing on disk says ran. If you want the

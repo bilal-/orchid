@@ -31,18 +31,6 @@ resolve_role() {  # repo role -> primary engine name (first entry of the chain)
 # config key to set, from THIS function, before resolve_role_available's own
 # chain-walk (which would otherwise just report an empty chain with no
 # disqualifiers, a confusing dead end for an operator).
-#
-# The optional FOURTH argument to resolve_role_available (below) names ONE
-# engine the caller wants skipped regardless of its chain position. The third
-# argument is the operation-aware capability-routing step (T018), and the two
-# are deliberately independent: the driver's rework failover (T025) must skip
-# the engine that did not converge without letting an incapable engine take
-# the work. Two consecutive attempts whose failure output was byte-identical
-# are evidence that THIS engine is not converging on THIS task, so the next
-# attempt is routed to the next capable entry in the same role's chain. The
-# exclusion is a preference, never a requirement -- a caller that gets exit
-# 14 back is expected to fall through to the unexcluded call rather than stall
-# the task over it.
 resolve_role_chain() {
   local repo="$1" role="$2" v
   v="$(config_get "$repo" "role.$role")"
@@ -410,6 +398,17 @@ resolve_role_checked() {  # repo role -> engine name, or exit 1 with a reason
 # skips any chain entry that equals `resolve_role <repo> orchestrator`'s
 # engine -- the engine that drafted a plan never critiques its own draft --
 # regardless of that entry's chain position.
+#
+# <exclude-engine> IS THAT SAME SKIP, MADE A PARAMETER (T025): one engine the
+# caller wants passed over regardless of its chain position. It is independent
+# of <step> on purpose -- the driver's rework failover has to skip the engine
+# that did not converge WITHOUT letting an incapable one take the work, so the
+# capability gate below still applies to every remaining entry. Two consecutive
+# attempts whose failure output was byte-identical are evidence that this engine
+# is not converging on this task, and the next attempt goes to the next capable
+# entry in the same chain. It is a PREFERENCE, never a requirement: a chain with
+# no other eligible entry answers exit 14, and the caller is expected to
+# dispatch unexcluded rather than stall the task over a routing nicety.
 #
 # WHY SELECTION IS OPERATION-AWARE AT ALL (T018/INV-16). Without <step> this
 # walk answers "who may hold this ROLE", and the caller then discovers -- one
