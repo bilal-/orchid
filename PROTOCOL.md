@@ -417,12 +417,14 @@ incomplete review set is never also reported as a conflict, and vice versa:
    are split on that. `plugins/engines/claude/run` asks a `review` reply for
    `FINDING: <low|medium|high>: <title>` lines alongside the `VERDICT:` line
    and parses them into `findings[]`, so for a claude reviewer the gate is
-   live (a review that reports nothing still writes `findings: []`, which
-   blocks nothing — an engine reporting no findings is a valid review, not
-   evidence of a broken gate). `plugins/engines/codex/run` and the other
-   shipped `review` adapters still ask for a `VERDICT:` line only and write
-   `findings: []` verbatim (`FINDING:` lines are requested by the `critique`
-   prompt alone). On an approving review from those reviewers the
+   live (an **approving** review that reports nothing still writes
+   `findings: []`, which blocks nothing — an engine reporting no findings is
+   a valid review, not evidence of a broken gate; a review that WITHHOLDS
+   approval does not keep an empty array — see the `WITHHOLDS` note below).
+   `plugins/engines/codex/run` and the other shipped `review` adapters still
+   ask their review for a `VERDICT:`/`REASON:` pair and no `FINDING:` line,
+   so they write `findings: []` verbatim (`FINDING:` lines are requested by
+   the `critique` prompt alone). On an approving review from those reviewers the
    `blocking_severity` gate is **inert**, and a deterministic approval rests
    on `verdict` and `scope_complete` alone. Check which adapter reviewed
    before reading a clean gate as a second opinion you are already getting.
@@ -435,7 +437,13 @@ incomplete review set is never also reported as a conflict, and vice versa:
    disagreement (which blocks on its own) but the next reviewer who approves
    while keeping the same caveat. The envelope is filed, never quarantined:
    `findings: []` is what those adapters write on every review, so refusing
-   it would throw the objection away.
+   it would throw the objection away. That summary is not a lucky accident
+   either — every shipped `review` adapter asks its reply for a `REASON:`
+   line and carries it into `summary`, which is the field the synthesis
+   reads, so a reviewer that answers the contract is quoted rather than
+   summarized. A reply that files neither a finding nor a reason still gets
+   an entry: the gate has to be told that it is weighing nothing, and an
+   empty array said the opposite.
    **And this arm's own line says how much it weighed.** "No finding at or
    above `<severity>`" reads identically whether the gate weighed several
    findings that all ranked below the threshold or weighed an empty array, so

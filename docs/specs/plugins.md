@@ -141,8 +141,14 @@ the summary as it files it, at `severity: high` — the one value no task's
 `blocking_severity` filters out — tagged with a `source` of
 `orchid:synthesized-from-summary` and `synthesized: true`, and with the
 summary kept whole in `detail`. Reconcile prints a `synthesized-finding:`
-line naming the filed envelope when it does. An adapter that files its own
-findings is never touched, so the way to keep severity yours is to report it.
+line naming the filed envelope when it does. Those last two keys are the
+kernel's own and are absent from the sample above deliberately: no adapter is
+asked to write either, and their presence on an entry is exactly what tells a
+later reader that no reviewer chose that severity. An adapter that files its
+own findings is never touched, so the way to keep severity yours is to report
+it — which is why every shipped `review` prompt asks for a `REASON:` line as
+well: that line becomes the `summary` this arm reads, and an adapter that
+collects no prose leaves it with nothing but the fact of the objection.
 
 **`failure_kind` — a refusal is not a fault (v1-m5).** Optional, and
 meaningful only on a non-`ok` envelope (`capability` or `engine`; absent means

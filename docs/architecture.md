@@ -79,10 +79,17 @@ as the reviewing adapter: `plugins/engines/claude/run` asks a `review` reply
 for `FINDING:` lines and populates `findings[]`, while the other shipped
 review adapters ask for a `VERDICT:` line only and never populate it, so
 there approval rests on `verdict` + `scope_complete`. Where it is populated
-the gate cuts both ways: an empty `findings[]` blocks nothing, and one
-finding at or above the task's own `blocking_severity` turns an otherwise
-unanimous `approve` into a `review-conflict` for the arbiter to settle.
-It stops at a named judgment boundary and exits
+the gate cuts both ways: on an approving review an empty `findings[]` blocks
+nothing, and one finding at or above the task's own `blocking_severity` turns
+an otherwise unanimous `approve` into a `review-conflict` for the arbiter to
+settle. A review that WITHHOLDS approval never reaches that gate with an empty
+array whichever adapter filed it: `orchid jobs reconcile` composes one
+`high`-severity finding from its free-text `summary` as it files the envelope
+(marked `synthesized: true`), because an objection that exists only as prose
+weighs nothing in any severity gate — and the danger there is not the
+disagreement, which blocks on its own, but the next reviewer who approves
+while keeping the same caveat.
+The driver stops at a named judgment boundary and exits
 16 rather than guessing; `orchid run boundary set|clear|show` owns that
 record, one per pass, preferring a boundary a woken orchestrator could
 actually settle over an operator-only one. A run whose tasks are

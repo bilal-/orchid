@@ -320,6 +320,19 @@ if [ -f "$input_pack/task.md" ]; then
   # `low` is named as the home for anything worth mentioning but not worth
   # blocking on. The parser and the envelope schema are unchanged; this only
   # tells the model what it is choosing.
+  #
+  # AND A REPLY THAT WITHHOLDS APPROVAL IS ASKED FOR PROSE TOO (T033, dogfood
+  # F32). This adapter wrote no `summary` at all until now, which was harmless
+  # while findings[] carried everything -- but a `request-changes` reply whose
+  # FINDING lines all get dropped by the best-effort scrape below (or that
+  # files none) leaves an envelope with an empty findings[] AND no prose, and
+  # `orchid jobs reconcile`'s synthesis then has nothing to lift into the
+  # severity gate but a placeholder. `REASON:` is the same optional line
+  # plugins/engines/codex/run and plugins/engines/agy/run already carry into
+  # `summary`, captured by the same idiom at the foot of this file, so the one
+  # field every gate reads is never populated from nothing. The prompt names
+  # the consequence rather than the mechanism: a reviewer who wants the
+  # severity to stay its own call reports the finding itself.
   prompt="Acceptance criteria: $ac
 Stop condition: $stop
 $manifest_line
@@ -331,6 +344,7 @@ Reply with:
 VERDICT: approve OR request-changes
 One line per issue found, exactly: FINDING: <low|medium|high>: <title>
 (omit FINDING lines entirely when there are none).
+REASON: one sentence
 
 Severity decides what happens next, so pick it for consequence, not for
 emphasis. This task's blocking_severity is $bsev: a finding at or above $bsev
@@ -339,7 +353,13 @@ STOPS the run for human arbitration even when your verdict is approve.
 - medium: a real defect or a missed acceptance criterion — worth halting the
   run over wherever the threshold above reaches it.
 - low: worth telling the author, never worth stopping for — style, naming,
-  wording, optional cleanups. Use low for anything you would call a nit."
+  wording, optional cleanups. Use low for anything you would call a nit.
+
+A request-changes verdict carries at least one FINDING line. Severity gates
+read findings[] and nothing else, so an objection written only as prose is
+weighed by nothing: if you withhold approval without one, the kernel composes
+a high-severity finding from your REASON line on your behalf. Reporting the
+finding yourself is how the severity stays your call."
 else
   # v1-m3: a PLAN pack (task id `plan`, role.plan_critic) has no task.md/
   # diff.patch at all -- lib/pack.sh's _pack_build_plan builds
@@ -440,9 +460,14 @@ scope_complete=true; [ "$any_trunc" = "true" ] && scope_complete=false
 # `<low|medium|high>` and all, contributes nothing).
 #
 # An empty result stays the literal `[]` and is NOT an error: a reviewer that
-# genuinely found nothing to report is a valid, still-`ok` review, and the
-# driver's blocking_severity gate (lib/drive.sh) reads an empty findings[] as
-# "nothing blocking", exactly as it always has.
+# genuinely found nothing to report is a valid, still-`ok` review, and on an
+# APPROVING one the driver's blocking_severity gate (lib/drive.sh) reads an
+# empty findings[] as "nothing blocking", exactly as it always has. On a reply
+# that WITHHOLDS approval the array does not stay empty for long (T033): what
+# this adapter writes is unchanged, but `orchid jobs reconcile` composes one
+# `high` finding from the envelope's `summary` as it files it, since an
+# objection no gate can weigh is the defect dogfood F32 named. That is the
+# reason the REASON line below is captured at all.
 findings_json='[]'
 findings_ndjson=""
 while IFS= read -r rest; do
@@ -455,5 +480,20 @@ while IFS= read -r rest; do
 done < <(printf '%s\n' "$stdout" | grep '^FINDING:' | sed 's/^FINDING:[[:space:]]*//')
 [ -z "$findings_ndjson" ] || findings_json="$(printf '%s' "$findings_ndjson" | jq -s -c '.')"
 
-write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --argjson f "$findings_json" '{verdict:$v, scope_complete:$sc, findings:$f}')"
+# Optional REASON line (last one wins, the same idiom the VERDICT grep above
+# uses) carried into the envelope's `summary` -- character for character
+# plugins/engines/codex/run's and plugins/engines/agy/run's, including the
+# 200-character cut, so the three shipped reviewers put their prose in one
+# place. ABSENT rather than a placeholder when the reply has no REASON line:
+# lib/envelope.sh's review/critique union never requires `summary`, every
+# reply written before this contract existed stays valid, and inventing text
+# here would hand reconcile's synthesis a sentence no reviewer wrote.
+reason_line="$(printf '%s\n' "$stdout" | grep '^REASON:' | tail -n1 || true)"
+reason="$(printf '%s' "$reason_line" | sed 's/^REASON:[[:space:]]*//')"
+reason="${reason:0:200}"
+if [ -n "$reason" ]; then
+  write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --argjson f "$findings_json" --arg s "$reason" '{verdict:$v, scope_complete:$sc, findings:$f, summary:$s}')"
+else
+  write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --argjson f "$findings_json" '{verdict:$v, scope_complete:$sc, findings:$f}')"
+fi
 exit 0
