@@ -1014,9 +1014,10 @@ grep -qF 'A genuine third-party beta run and any publication remain operator-own
 grep -qF 'Neither has happened, and nothing in this repository claims otherwise.' "$REPO_ROOT/README.md" \
   || fail "README.md must state that neither has happened"
 
-# Candidate evidence must remain honest until the operator performs the steps
-# a candidate cannot. These are explicit OPEN/NOT-RUN claims, not placeholders
-# that a docs edit may silently soften into past tense.
+# Candidate evidence must remain honest while the operator completes the steps
+# an implementer cannot. The suite and remote rows stay explicitly open; the
+# journal and lesson rows carry their exact operator results without implying
+# that those results accept the run.
 grep -qF 'Status: **NOT YET ACCEPTED. Operator completion is required after merge.**' "$ACCEPTANCE_MD" \
   || fail "r-002 evidence must identify itself as a candidate hand-off, not completed run acceptance"
 grep -qF 'Canonical candidate-local CI | **NOT RUN**' "$ACCEPTANCE_MD" \
@@ -1033,8 +1034,12 @@ grep -qF 'The shipped version remains `1.0.0-beta.1`' "$ACCEPTANCE_MD" \
   || fail "r-002 evidence must keep the shipped version in the beta series"
 grep -qF 'Bootstrap-journal audit' "$ACCEPTANCE_MD" \
   || fail "r-002 evidence must own the pre-bootstrap dispatch journal audit"
-grep -qF 'Operator result: **OPEN — do not accept the run.**' "$ACCEPTANCE_MD" \
-  || fail "r-002 evidence must not hide an unperformed journal/lesson audit"
+grep -qF 'Operator result: **117 unmatched dispatch passes.**' "$ACCEPTANCE_MD" \
+  || fail "r-002 evidence must report the operator's exact bootstrap-journal audit result"
+grep -qF 'Operator result: **COMPLETE FOR THE CURRENT CANDIDATE.**' "$ACCEPTANCE_MD" \
+  || fail "r-002 evidence must report the operator's durable lesson reconciliation"
+grep -qF 'The run remains unaccepted.' "$ACCEPTANCE_MD" \
+  || fail "completed journal and lesson audits must not imply run acceptance"
 
 # The threat model owns the one thing the harness really does execute inside a
 # candidate repository.
