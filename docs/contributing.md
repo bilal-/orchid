@@ -106,10 +106,13 @@ violation next to a case proving prose no longer trips them:
   rather than regex-matching quoted runs (a regex pairs one word's closing
   quote with the next word's opening quote and eats the live code between
   them), and it leaves a line whose quotes do not balance completely alone.
-  Its scans over *data* — redirection targets, and the `.summary`/`.actions`
-  read that proves the driver never decides on prose — deliberately keep
-  reading the raw text, because a jq selector **is** a string literal and
-  eliding it would switch that check off.
+  Its scans over *data* — redirection targets, quoted `boundary.json` paths,
+  and the `.summary`/`.actions` read that proves the driver never decides on
+  prose — deliberately keep reading the raw text, because a path or jq
+  selector **is** a string literal and eliding it would switch that check off.
+  A string handed to `bash -c` or `sh -c` is executable rather than inert, so
+  the policy-library scan rejects both shell-code forms structurally; forbidden
+  work cannot hide in an argument that `operations_of` otherwise elides.
 
 **The two that are ShellCheck's cannot be fixed here**, so they are written
 out instead. Both are parse errors rather than lint opinions, which is why the

@@ -634,16 +634,17 @@ grep -qF 'An `ok` implementer envelope is not itself a candidate.' <<<"$drive_he
   || fail "orchid drive --help must say an ok envelope with no candidate is refused rather than advanced"
 grep -qF '`orchid verify` exit 20 is REFUSED, not FAIL' <<<"$drive_help" \
   || fail "orchid drive --help must distinguish verify tree-drift refusal from a charged candidate failure"
-grep -qF 'An approval is also never deterministic while the task carries an unresolved' <<<"$drive_help" \
+grep -qF 'An approval is also never deterministic while the task carries an unresolved objection from an earlier arbitration.' <<<"$drive_help_one_line" \
   || fail "orchid drive --help must say a later review round cannot erase an unresolved objection"
 grep -qF 'Completing the run does not remove an installed schedule' <<<"$drive_help" \
   || fail "orchid drive --help must keep the run-complete/service-lifetime boundary visible"
 
 ci_help="$("$BASH" "$REPO_ROOT/scripts/ci-local.sh" --help)" \
   || fail "scripts/ci-local.sh --help must exit 0"
+ci_help_one_line="$(printf '%s' "$ci_help" | tr -s '[:space:]' ' ')"
 grep -qF 'local equivalent of the hosted CI command' <<<"$ci_help" \
   || fail "scripts/ci-local.sh --help must identify the command whose local result corresponds to hosted CI"
-grep -qF 'PATH-restricted no-vendor-CLI proof' <<<"$ci_help" \
+grep -qF 'hermetic suite proof that vendor CLIs are not required on PATH' <<<"$ci_help_one_line" \
   || fail "scripts/ci-local.sh --help must name the hermetic proof included in a full local run"
 grep -qF 'does not claim the merged integration' <<<"$ci_help" \
   || fail "scripts/ci-local.sh --help must not let a candidate-local run imply the integration-branch row passed"

@@ -108,14 +108,16 @@ code_of() { grep -vE '^[[:space:]]*#' "$1"; }
 #     reach for a verb or a state path in these files is written
 #     "$ORCHID_BIN", "$state/...", "$f" -- all carry a `$`, all survive.
 #
-# It is applied ONLY to the scans whose subject is a shell OPERATION (a
-# command word, which can never be performed from inside a quoted argument).
-# The two scans whose subject is DATA -- the redirection targets in section 2
-# and the `.summary`/`.actions` prose read in section 4 -- keep reading
-# code_of, because those tokens live inside quotes by construction: `jq -r
-# '.summary'` is exactly the line section 4 exists to catch, and eliding it
-# would turn that gate off. Which view a check takes is therefore a statement
-# about what it is looking for, and each one below says which it uses.
+# It is applied ONLY to scans whose subject is a shell OPERATION. A command
+# word inside an ordinary quoted argument is text; the exception is a shell
+# code argument, so policy_impurity rejects `bash -c` and `sh -c` structurally
+# rather than preserving every diagnostic string just in case it is code.
+# Scans whose subject is DATA -- redirection targets, `boundary.json`, and the
+# `.summary`/`.actions` read in section 4 -- keep reading code_of, because those
+# tokens live inside quotes by construction: `jq -r '.summary'` is exactly the
+# line section 4 exists to catch, and eliding it would turn that gate off.
+# Which view a check takes is therefore a statement about what it is looking
+# for, and each one below says which it uses.
 operations_of() {
   code_of "$1" | awk -v sq="'" '
     function elide(line,   n, i, c, st, out, buf) {
@@ -143,6 +145,14 @@ operations_of() {
   '
 }
 
+# driver_boundary_refs <file> -- the production scan for direct references to
+# the boundary record. Named once so its RED probe and the real driver audit
+# cannot drift onto different views or patterns.
+#
+driver_boundary_refs() {
+  code_of "$1" | grep -nE 'boundary\.json' || true
+}
+
 # THE PURITY SCAN ITSELF, named once so the shipped libraries and this file's
 # own RED/GREEN probes are judged by the SAME pattern. An earlier round aimed
 # the two cases at `code_of` instead -- so the RED case demonstrated a helper
@@ -150,16 +160,17 @@ operations_of() {
 # said the check had "KEPT" a line, which is the ACCEPTING direction wearing
 # the rejecting name. A proof aimed at the wrong function, or labelled the
 # wrong way round, is indistinguishable in the record from a real one.
-POLICY_IMPURE='fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:space:]]+(add|remove)|^[[:space:]]*(rm|mv|cp)[[:space:]]'
+POLICY_IMPURE='fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:space:]]+(add|remove)|(^|[[:space:];|&()])([^[:space:];|&()]*/)?(bash|sh)[[:space:]]+-c([^_[:alnum:]]|$)|^[[:space:]]*(rm|mv|cp)[[:space:]]'
 
 # policy_impurity <file> -- the lines of <file> that make it something other
 # than read-only policy: a mutation, or a reach for a verb. Silent for a pure
 # library. `grep -n` reads its input to EOF, so this pipeline has never been
 # exposed to the SIGPIPE race the capture below section 1 exists for.
 #
-# Reads operations_of, not code_of: every term in POLICY_IMPURE names a
-# COMMAND WORD, and a command word inside a quoted argument is text. See that
-# helper for what is elided and what is deliberately not.
+# Reads operations_of, not code_of: the operation terms must ignore diagnostic
+# text. The shell-code term is the fail-closed edge -- once `bash -c` or `sh -c`
+# appears as a command, the elided argument is executable code rather than an
+# inert description, so the policy library is rejected without parsing it.
 policy_impurity() { operations_of "$1" | grep -nE "$POLICY_IMPURE" || true; }
 
 # RED: a synthetic policy library containing a real `fm_set` line must be
@@ -206,11 +217,41 @@ literal_probe_green="$WORK/inv13-diagnostic-probe.sh"
 printf '%s\n' \
   'printf %s "git worktree add cannot reproduce it"' \
   "printf 'git worktree add cannot reproduce it\\n'" \
+  'printf %s "bash -c and sh -c are forbidden in policy libraries"' \
   > "$literal_probe_green"
 literal_probe_green_out="$(policy_impurity "$literal_probe_green")"
 [ -z "$literal_probe_green_out" ] \
   || fail "INV-13 self-check: the purity scan flagged a DIAGNOSTIC that merely quotes the words of an operation ($literal_probe_green_out) -- a gate that cannot tell an operation from a string describing one charges attempts against correct code and pushes authors to reword error messages to satisfy a linter (r-002/T019)"
-green_case "the same purity scan ACCEPTED both spellings of a printf whose text names git worktree add, so the operation terms read what the file DOES rather than what it says"
+green_case "the same purity scan ACCEPTED diagnostics naming git worktree add, bash -c and sh -c, so the operation terms read what the file DOES rather than what it says"
+
+# RED: string-literal elision must not make a policy library a place where
+#      forbidden work can hide inside an interpreter's code argument. These
+#      probes feed the SAME policy_impurity entry point as the production
+#      policy-library loop. Catching only the words inside the argument would
+#      undo the diagnostic fix above, so the structural violation is invoking
+#      either supported shell with -c at all.
+shell_code_probe="$WORK/inv13-shell-code-probe.sh"
+printf '%s\n' \
+  "bash -c 'git worktree add \"\$1\" \"\$2\"' -- \"\$path\" \"\$branch\"" \
+  "sh -c 'git worktree remove \"\$1\"' -- \"\$path\"" \
+  > "$shell_code_probe"
+shell_code_probe_out="$(policy_impurity "$shell_code_probe")"
+assert_match 'bash -c' "$shell_code_probe_out" \
+  "INV-13 self-check: the production policy scan must FLAG bash -c even when its elided code argument contains the only spelling of a forbidden worktree mutation"
+assert_match 'sh -c' "$shell_code_probe_out" \
+  "INV-13 self-check: the production policy scan must FLAG sh -c even when its elided code argument contains the only spelling of a forbidden worktree mutation"
+red_case "INV-13's production purity scan rejected bash -c and sh -c policy code arguments, so literal elision cannot hide a worktree mutation inside an interpreter"
+
+# RED: boundary.json is DATA, not a command word. A quoted literal path is a
+#      real direct reference even though operations_of quite properly removes
+#      it when deciding which operations a line performs. This probe drives
+#      the SAME driver_boundary_refs entry point used by section 2 below; it
+#      fails if that production scan is ever moved back to operations_of.
+boundary_data_probe="$WORK/inv13-boundary-data-probe.sh"
+printf '%s\n' 'cat ".orchid/run/boundary.json"' > "$boundary_data_probe"
+assert_match 'boundary\.json' "$(driver_boundary_refs "$boundary_data_probe")" \
+  "INV-13 self-check: the production boundary-record scan must FLAG a quoted literal boundary.json path -- data-token scans must read code_of because operations_of elides the token by design"
+red_case "INV-13's production boundary-record scan flagged a quoted literal path, so direct record access cannot disappear with inert string contents"
 
 # Every POSITIVE assertion below matches against this capture, never against a
 # live `code_of ... | grep -q` pipeline. Under helpers.sh's `set -uo pipefail`,
@@ -252,16 +293,20 @@ done
 if code_of "$DRIVER" | grep -nE '>[[:space:]]*"?\$(state|rt)|>>[[:space:]]*"?\$(state|rt)'; then
   fail "INV-13: the driver redirects output into .orchid state or runtime"
 fi
-# The four below name COMMAND WORDS and read operations_of, so a diagnostic
-# that quotes one -- naming the verb an operator should run, or the record it
-# should look at -- is text rather than a violation.
+# The operation scans below read operations_of, so a diagnostic that quotes a
+# command word is text rather than a violation.
 if operations_of "$DRIVER" | grep -nE '^[[:space:]]*(rm|mv|cp|mkdir|touch|ln)[[:space:]]'; then
   fail "INV-13: the driver creates, moves or removes files directly"
 fi
 if operations_of "$DRIVER" | grep -nE 'fm_set|atomic_write|update-ref'; then
   fail "INV-13: the driver writes frontmatter, files or refs directly instead of through a verb"
 fi
-if operations_of "$DRIVER" | grep -nE 'boundary\.json'; then
+# boundary.json is a DATA TOKEN, so its production scan deliberately reads
+# code_of through driver_boundary_refs. A quoted literal path still names the
+# record; operations_of would erase it and silently disable this check.
+driver_boundary_out="$(driver_boundary_refs "$DRIVER")"
+if [ -n "$driver_boundary_out" ]; then
+  printf '%s\n' "$driver_boundary_out"
   fail "INV-13: the driver touches the boundary record directly instead of through orchid run boundary"
 fi
 if operations_of "$DRIVER" | grep -nE '(^|[^_[:alnum:]])eval([^_[:alnum:]]|$)'; then
