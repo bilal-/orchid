@@ -1968,7 +1968,23 @@ red_case 'a branch outside the run carrying .orchid/ is named by orchid merge'
 mkdir -p .orchid/runs/r-000/tasks
 printf -- '---\nid: T900\nbranch: retired/T900-work\n---\n# T900\n' \
   > .orchid/runs/r-000/tasks/T900.md
-git branch retired/T900-work "$integ"
+#
+# Cutting the branch from "$integ" is NOT enough to build it: this fixture
+# repository creates `.orchid/` on disk but never commits it, so a branch cut
+# from the integration branch here carries an EMPTY `.orchid/` tree and the
+# containment scan skips it before the exemption is ever consulted -- the case
+# would pass without testing anything. Run state is put on the branch the same
+# way the leak twin above does it, and in a throwaway worktree for the same
+# reason: the suite's own checkout must never be switched onto a branch that
+# tracks `.orchid/`, because checking back out would delete the live run state
+# under it.
+arch_wt="$WORK/archived-wt"
+git worktree add -q -b retired/T900-work "$arch_wt" "$integ"
+mkdir -p "$arch_wt/.orchid"
+printf -- '---\nrun_status: archived\nrun_id: r-000\n---\n# Roadmap\n' > "$arch_wt/.orchid/roadmap.md"
+git -C "$arch_wt" add -f .orchid
+git -C "$arch_wt" commit -q -m "archived run: task branch carrying the run state it was cut with"
+git worktree remove --force "$arch_wt"
 [ -n "$(git ls-tree retired/T900-work -- .orchid)" ] \
   || fail "fixture: the archived run's branch must carry .orchid/ for this case to mean anything"
 
