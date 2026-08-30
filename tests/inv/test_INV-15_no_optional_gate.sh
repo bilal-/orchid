@@ -170,7 +170,13 @@ source "$(dirname "$0")/../helpers.sh"
 #      section sits BELOW the `--no-tests` cut (so it is outside the merge
 #      floor and only reaches tasks that opted into the full suite), and a
 #      second one that differs from it only by NAMING a test script in its
-#      comments. An inv-shaped gate file that never loads tests/helpers.sh, so
+#      comments -- with two more whose late section holds a correctly-spelled
+#      call the shell never reaches, one inside a function body nothing
+#      invokes and one below an unconditional `exit`, since code that does not
+#      run excuses a gate from the floor exactly as a comment would; and a
+#      fifth whose function definition is never closed, which the walk must
+#      call unjudgeable rather than clean.
+#      An inv-shaped gate file that never loads tests/helpers.sh, so
 #      its `red_case`/`green_case` calls satisfy a text linter and are
 #      enforced by nothing at run time -- and two more whose source line a
 #      text scan accepts and a shell never executes. A trust-boundary entry
@@ -250,8 +256,12 @@ source "$(dirname "$0")/../helpers.sh"
 #      backticked prose the shell executes, which must be refused -- with the
 #      fixture run first, so the words really are seen to go missing.
 # GREEN: the twins, in this file: the shipped scripts/ci-local.sh, whose
-#      static sections are all above the cut, and two late sections that
-#      really do run a test script and must be left alone; the shipped
+#      static sections are all above the cut, and four late sections that
+#      really do run a test script and must be left alone -- two of them the
+#      one-line twins of the unreachable pair above, where the call is
+#      identical and the only difference is that the section invokes the
+#      function it defines, or that the `exit` above the call is guarded
+#      rather than unconditional; the shipped
 #      tests/inv/ gates AND the whole-file proofs helpers.sh enrols by name,
 #      every one of them RUN at the depth it ships at and observed to reach
 #      helpers.sh, beside two fixtures -- one at each depth -- whose only
@@ -384,6 +394,37 @@ ci_local_cut_line() {
 # subject one level down: a gate satisfied by text that never executes. So
 # every line is comment-stripped before it is classified, and a section is
 # credited with running the suite only when something in it actually would.
+#
+# AND COMMENT-STRIPPING IS NOT ENOUGH, WHICH IS THE SAME MISTAKE ONE STEP IN.
+# Code is not execution either. A section whose only `ci_run_test` sits in a
+# function body nothing calls, or on a line below an unconditional `exit`, has
+# a call that a comment-stripping scan reads as code and that the shell never
+# reaches -- so the section is excused from the merge floor for a call it does
+# not make, which is precisely the excuse the comment pair above closes, in
+# executable clothing. This is section 2's own subject applied to section 1's
+# derivation: there, a `red_case` in a file no trap watches; here, a
+# `ci_run_test` in a body nothing invokes. Both are text that satisfies a
+# reader and runs for nobody.
+#
+# So the classification is REACHABILITY, and it decides exactly two shapes,
+# each of which is decidable from the file alone:
+#
+#   * a function body. Lines between a column-0 `name() {` and its column-0
+#     `}` are that function's, not the section's: a definition is inert until
+#     something calls it. A call there credits the section only when the
+#     section itself INVOKES that function on a line it reaches -- which is
+#     what `ci_fn_bodies_running_tests` below is for -- so the live shape and
+#     the dead shape are told apart rather than both being read as code.
+#   * dead code. After a column-0 `exit`, nothing further in the file runs,
+#     so no call below it can credit anything.
+#
+# What it does NOT decide is stated as a not-tested claim at the end of this
+# file rather than glossed here: a call under a guard that is false at run
+# time is REACHED as far as this is concerned, because deciding otherwise
+# means evaluating the guard. The residual error runs toward crediting a
+# section, which is the same direction as the comment-stripper's, so the
+# fixture pairs below pin both edges: the unreachable call must be reported,
+# and the live call in the identical file must not.
 ci_code_line() {
   local s="$1" tab code
   tab=$'\t'
@@ -403,19 +444,96 @@ ci_code_line() {
   printf '%s' "${code%%"$tab"#*}"
 }
 
+# ci_fn_bodies_running_tests <file> -- the names of <file>'s column-0 shell
+# functions whose BODY runs a test script, as a space-padded list.
+#
+# A definition is not an execution, and the shipped file says so on its own
+# line: `ci_run_test() {` names the runner and runs nothing. A scan that read
+# that line as a call would credit whichever section happens to contain the
+# definition -- for a helper that, until something invokes it, is inert text
+# with a shell's blessing. So the bodies are collected first, and the walk
+# below credits a section for one of these names only when the section reaches
+# a line that CALLS it. The names are shell function names, so none of them
+# contains a space and the padded membership test below cannot be satisfied by
+# two adjacent entries.
+ci_fn_bodies_running_tests() {
+  local file="$1" line code fn out col0
+  fn=""
+  out=" "
+  while IFS= read -r line; do
+    case "$line" in
+      [![:space:]]*) col0=1 ;;
+      *) col0=0 ;;
+    esac
+    code="$(ci_code_line "$line")"
+    [ -n "$code" ] || continue
+    if [ -z "$fn" ]; then
+      if [ "$col0" -eq 1 ]; then
+        case "$code" in
+          [A-Za-z_]*'() {')
+            fn="${code%%'('*}"
+            fn="${fn%"${fn##*[![:space:]]}"}"
+            ;;
+        esac
+      fi
+      continue
+    fi
+    if [ "$col0" -eq 1 ] && [ "$code" = '}' ]; then
+      fn=""
+      continue
+    fi
+    case "$code" in
+      *tests/run.sh*|*ci_run_test*)
+        case "$out" in
+          *" $fn "*) ;;
+          *) out="$out$fn " ;;
+        esac
+        ;;
+    esac
+  done < "$file"
+  printf '%s' "$out"
+}
+
 ci_local_late_sections() {
   local file="$1" cut_at line code no section_no section_runs section_label
+  local col0 fn dead runners word
   cut_at="$(ci_local_cut_line "$file")"
   if [ -z "$cut_at" ]; then
     printf 'cut-not-located: %s\n' "$file"
     return 0
   fi
+  runners="$(ci_fn_bodies_running_tests "$file")"
   section_no=0
   section_runs=0
   section_label=""
+  fn=""
+  dead=0
   no=0
   while IFS= read -r line; do
     no=$((no + 1))
+    case "$line" in
+      [![:space:]]*) col0=1 ;;
+      *) col0=0 ;;
+    esac
+    code="$(ci_code_line "$line")"
+    # Inside a function body, nothing belongs to the section's own flow --
+    # including a banner, which a definition can contain without the run ever
+    # printing it.
+    if [ -n "$fn" ]; then
+      if [ "$col0" -eq 1 ] && [ "$code" = '}' ]; then
+        fn=""
+      fi
+      continue
+    fi
+    if [ "$col0" -eq 1 ]; then
+      case "$code" in
+        [A-Za-z_]*'() {')
+          fn="${code%%'('*}"
+          fn="${fn%"${fn##*[![:space:]]}"}"
+          continue
+          ;;
+      esac
+    fi
     case "$line" in
       'echo "== '*)
         if [ "$section_no" -gt "$cut_at" ] && [ "$section_runs" -eq 0 ]; then
@@ -427,13 +545,54 @@ ci_local_late_sections() {
         continue
         ;;
     esac
-    code="$(ci_code_line "$line")"
+    # Below an unconditional column-0 `exit` the shell reaches nothing, so a
+    # call down there is dead code wearing a call's spelling.
+    [ "$dead" -eq 0 ] || continue
+    [ -n "$code" ] || continue
+    # A one-line definition is still a definition.
+    case "$code" in
+      *'() {'*) continue ;;
+    esac
     case "$code" in
       *tests/run.sh*|*ci_run_test*) section_runs=1 ;;
     esac
+    word="${code%%[[:space:]]*}"
+    # An environment assignment PREFIXES a command rather than being one --
+    # scripts/ci-local.sh's own suite line is written that way -- so step over
+    # any that lead the line before asking what it invokes. Each pass removes
+    # a non-empty prefix, and a line with no whitespace left is a lone
+    # assignment that invokes nothing, so this terminates.
+    while [ "$word" != "$code" ]; do
+      case "$word" in
+        [A-Za-z_]*=*) ;;
+        *) break ;;
+      esac
+      code="${code#"$word"}"
+      code="${code#"${code%%[![:space:]]*}"}"
+      word="${code%%[[:space:]]*}"
+    done
+    # Only a name can be a function call, and the guard also keeps a bare `[`
+    # or `*` out of the membership pattern below.
+    case "$word" in
+      [A-Za-z_]*)
+        case "$runners" in
+          *" $word "*) section_runs=1 ;;
+        esac
+        ;;
+    esac
+    if [ "$col0" -eq 1 ] && [ "$word" = exit ]; then
+      dead=1
+    fi
   done < "$file"
   if [ "$section_no" -gt "$cut_at" ] && [ "$section_runs" -eq 0 ]; then
     printf 'late-static-section: %s:%s: %s\n' "$file" "$section_no" "$section_label"
+  fi
+  # A function this never saw closed swallowed the rest of the file, so every
+  # section after it went unread. That is the reachability walk's own blind
+  # spot, and it is reported as unjudgeable for the same reason a missing cut
+  # is: a scan that stopped reading must not answer "clean".
+  if [ -n "$fn" ]; then
+    printf 'unclosed-function: %s: %s\n' "$file" "$fn"
   fi
 }
 
@@ -498,9 +657,9 @@ assert_match '[-][-]no-tests' "$merge_gate_line" \
 CI_FIXTURES="$WORK/ci-local-fixtures"
 mkdir -p "$CI_FIXTURES"
 
-# write_ci_fixture <path> <early|late|late-comment|late-test|late-test-comment>
-# -- five ci-local-shaped files differing in ONE section: where it goes, and
-# whether it RUNS a test script or merely mentions one. Everything else is
+# write_ci_fixture <path> <placement> -- ci-local-shaped files differing in ONE
+# section: where it goes, and whether it RUNS a test script, merely mentions
+# one, or contains a call the shell never reaches. Everything else is
 # identical, so each outcome below is attributable to that section and to
 # nothing else.
 #
@@ -509,6 +668,21 @@ mkdir -p "$CI_FIXTURES"
 # difference between them is a COMMENT naming tests/run.sh. A scan that reads
 # text excuses it from the merge floor for that sentence; a scan that reads
 # code reports it, because nothing in it runs a test.
+#
+# `late-fn` and `late-dead` are the pairs that make it EXECUTABLE rather than
+# merely code, each with a twin that differs from it by one line:
+#
+#   * `late-fn` defines a function that would run the doc test and never calls
+#     it; `late-fn-called` is the identical file with the call added. The
+#     `ci_run_test` token is on the same line, at the same depth, past the
+#     same comment-stripper, in both.
+#   * `late-dead` puts the call below a column-0 `exit`; `late-dead-live` puts
+#     the identical `exit` inside a conditional, so the same call is reached.
+#
+# So the difference between the reported file and the cleared one is
+# reachability and nothing else, which is what makes the report attributable
+# to it -- and `late-unclosed` is the walk's own failure mode: a function it
+# never sees closed, which must be called unjudgeable rather than clean.
 write_ci_fixture() {
   local path="$1" placement="$2"
   {
@@ -543,6 +717,32 @@ write_ci_fixture() {
       printf 'echo "== Documentation checks"\n'
       printf 'ci_run_test "$ROOT/tests/test_docs.sh"  # the doc gate\n'
     fi
+    if [ "$placement" = late-fn ] || [ "$placement" = late-fn-called ]; then
+      printf 'echo "== Documentation checks"\n'
+      printf 'run_doc_tests() {\n'
+      printf '  ci_run_test "$ROOT/tests/test_docs.sh"\n'
+      printf '}\n'
+      if [ "$placement" = late-fn-called ]; then
+        printf 'run_doc_tests\n'
+      fi
+    fi
+    if [ "$placement" = late-dead ]; then
+      printf 'echo "== Documentation checks"\n'
+      printf 'exit 0\n'
+      printf 'ci_run_test "$ROOT/tests/test_docs.sh"\n'
+    fi
+    if [ "$placement" = late-dead-live ]; then
+      printf 'echo "== Documentation checks"\n'
+      printf 'if [ -n "$SKIP_DOCS" ]; then\n'
+      printf '  exit 0\n'
+      printf 'fi\n'
+      printf 'ci_run_test "$ROOT/tests/test_docs.sh"\n'
+    fi
+    if [ "$placement" = late-unclosed ]; then
+      printf 'echo "== Documentation checks"\n'
+      printf 'run_doc_tests() {\n'
+      printf '  ci_run_test "$ROOT/tests/test_docs.sh"\n'
+    fi
   } > "$path"
 }
 write_ci_fixture "$CI_FIXTURES/early.sh"             early
@@ -550,6 +750,11 @@ write_ci_fixture "$CI_FIXTURES/late.sh"              late
 write_ci_fixture "$CI_FIXTURES/late-comment.sh"      late-comment
 write_ci_fixture "$CI_FIXTURES/late-test.sh"         late-test
 write_ci_fixture "$CI_FIXTURES/late-test-comment.sh" late-test-comment
+write_ci_fixture "$CI_FIXTURES/late-fn.sh"           late-fn
+write_ci_fixture "$CI_FIXTURES/late-fn-called.sh"    late-fn-called
+write_ci_fixture "$CI_FIXTURES/late-dead.sh"         late-dead
+write_ci_fixture "$CI_FIXTURES/late-dead-live.sh"    late-dead-live
+write_ci_fixture "$CI_FIXTURES/late-unclosed.sh"     late-unclosed
 
 assert_match 'late-static-section: .*A new static check' "$(ci_local_late_sections "$CI_FIXTURES/late.sh")" \
   "INV-15: a static check placed below the --no-tests cut must be reported — it is in the suite and outside the merge floor, which is exactly the shape of an opt-in gate"
@@ -563,21 +768,52 @@ assert_match 'late-static-section: .*A new static check' "$(ci_local_late_sectio
   "INV-15: a static check below the cut whose only mention of a test script is in a COMMENT must still be reported — crediting a section for the sentence rather than for the call is a gate satisfied by text that never executes, which is this file's own subject"
 red_case "a static section below the cut that merely NAMES tests/run.sh and ci_run_test in its comments was reported anyway, so this derivation classifies executable code rather than the prose beside it"
 
+# And the same question one step in, where the mention is not prose but CODE:
+# a section below the cut whose only ci_run_test sits in a function body that
+# nothing invokes. The comment-stripper hands that line straight through -- it
+# is code, correctly spelled, at the right depth -- and the shell never runs
+# it. Crediting the section for it excuses a gate from the merge floor for a
+# call that is never made, which is this file's own subject in executable
+# clothing.
+assert_match 'late-static-section: .*Documentation checks' "$(ci_local_late_sections "$CI_FIXTURES/late-fn.sh")" \
+  "INV-15: a section below the cut whose only test-script call sits in a function body NOTHING CALLS must still be reported — a definition is not an execution, and crediting the section for it excuses a gate from the merge floor for a call the shell never reaches"
+red_case "a static section below the cut whose only ci_run_test call sits inside an uninvoked function definition was reported anyway, so this derivation classifies reachable code rather than any correctly-spelled call it can find"
+
+# The other decidable shape: a call that IS at the section's own level, and is
+# below an unconditional column-0 exit, so the shell has left before it.
+assert_match 'late-static-section: .*Documentation checks' "$(ci_local_late_sections "$CI_FIXTURES/late-dead.sh")" \
+  "INV-15: a section below the cut whose only test-script call sits below an unconditional column-0 exit must still be reported — nothing after that line runs, so the section is static in fact whatever its text says"
+red_case "a static section below the cut whose only ci_run_test call sits below an unconditional exit was reported anyway, so dead code does not buy a gate its way out of the merge floor"
+
 ci_early_out="$(ci_local_late_sections "$CI_FIXTURES/early.sh")"
 [ -z "$ci_early_out" ] \
   || fail "INV-15: the identical check placed ABOVE the cut was reported anyway ($ci_early_out) — a locator that flags every section would make the shipped-file assertion above meaningless"
-for ci_ok in late-test late-test-comment; do
+# The live twins of both RED shapes above, each differing from the file that
+# was reported by ONE line: late-fn-called adds the invocation, and
+# late-dead-live indents the exit into a conditional. A derivation that
+# reported these too would be refusing every gate rather than detecting one,
+# and the shipped file -- whose late sections are exactly this shape -- would
+# never pass it.
+for ci_ok in late-test late-test-comment late-fn-called late-dead-live; do
   ci_late_test_out="$(ci_local_late_sections "$CI_FIXTURES/$ci_ok.sh")"
   [ -z "$ci_late_test_out" ] \
     || fail "INV-15: a section below the cut that DOES run a test script ($ci_ok) was reported anyway ($ci_late_test_out) — the test half belongs below the cut, and a scan that flags it would flag the shipped file and could never be satisfied"
 done
-green_case 'the identical static check placed ABOVE the cut, and two sections below the cut that do run a test script -- one of them with a trailing comment on the very line that runs it -- were all left alone, so the report above is position-and-kind detection rather than a scan that flags every section banner or one that loses a call to the comment beside it'
+green_case 'the identical static check placed ABOVE the cut, and four sections below the cut that do run a test script -- one with a trailing comment on the very line that runs it, one whose call is reached only through a function the section INVOKES, and one whose call sits below an exit that is guarded rather than unconditional -- were all left alone, so the report above is position-and-reachability detection rather than a scan that flags every section banner, or one that loses a call to the comment beside it, or one that treats every call it cannot watch run as unreachable'
 
 # The locator's own failure mode is a violation, never a pass: a ci-local that
 # has lost its cut cannot be judged, and saying nothing about it is how a
 # blind scan reads as a clean one.
 assert_match 'cut-not-located' "$(ci_local_late_sections "$CI_FIXTURES/nonexistent.sh")" \
   "INV-15: a file whose --no-tests cut cannot be located must be reported as unjudgeable, never passed"
+
+# The reachability walk has a failure mode of its own, and it is the same
+# shape: a function definition it never sees closed swallows every line after
+# it, so the sections below go unread and a scan that answered "clean" would
+# be reporting silence as a verdict.
+assert_match 'unclosed-function' "$(ci_local_late_sections "$CI_FIXTURES/late-unclosed.sh")" \
+  "INV-15: a file whose function definition is never closed must be reported as unjudgeable — the walk stopped reading there, and every section after it is unexamined rather than clean"
+red_case "a ci-local-shaped file whose function definition is never closed was reported as unjudgeable, so the reachability walk's own blind spot is named rather than passed over in silence"
 
 # ===========================================================================
 # 2 -- ENROLMENT IN THE RED-CASE RULE MUST BE ENFORCED AT RUN TIME, NOT IN
@@ -4214,6 +4450,8 @@ green_case "the same fixture ledger, once a run of the SHIPPED file that really 
 # ===========================================================================
 not_tested "gate-omission-beyond-the-five-families" \
   "enforcement gates outside the five this file derives — the static sections of scripts/ci-local.sh, the files tests/helpers.sh enrols in the red-case rule (by location under tests/inv/ and by name in PROOF_ENROLLED_FILES), the stale-root guard's reach across every shipped file that loads lib/common.sh, the early-exit matcher shape across the shipped kernel, the bundled plugins and those same gate files, and the enrolment contract of section 10 — the requirement that every shipped entry point whose gate placement only a run can settle has been run here, out of a genuinely stale root, and observed to refuse. A gate that is none of those (a check living only inside one verb, a hook a plugin installs) is held to the same rule by review. What makes the five checkable is that each has a DISCOVERABLE membership: a banner, a glob plus the array beside it, a source line, a syntactic shape, and — for the fifth — a machine-local trust decision paired with a firing site, derived from the same walked inventory as the third. Three of the five are now derived over an inventory that is WALKED rather than listed, so 'which directories does this look in' has stopped being a question anybody has to keep answering; the other two are bounded by tests/inv/ and by scripts/ci-local.sh, which are the files those gates live in. A new gate family belongs here the moment its membership becomes derivable"
+not_tested "section-reachability-beyond-definitions-and-dead-code" \
+  "whether a test-script call section 1 credits a late section for is reached on the run that matters, beyond the two shapes that derivation decides: a call inside a column-0 function definition the section never invokes, and a call below an unconditional column-0 exit. Both are decidable from the file alone and both are pinned with a one-line twin that must NOT be reported. What is not decided is a call under a guard — an if, a case arm, a loop over a list that can be empty — which is credited as reached, because deciding otherwise means evaluating the guard rather than reading the file. The shipped file's late sections are of exactly that kind (one runs the suite unconditionally, one loops over a glob), so the residual runs in the direction of CREDITING a section, the same direction as the comment-stripper's: a check that never actually runs a test would be excused from the merge floor rather than a real one dragged into it. Two structural shapes are outside it as well. A function defined or closed at an indent — this repository writes neither — is read as ordinary code, so a call in its body would be credited to whatever section encloses it; and a definition the walk never sees closed swallows every line after it, which is reported as unjudgeable rather than passed, because a scan that stopped reading must not answer clean. The question this derivation answers is the one a comment-stripper cannot: is the call one the shell would ever arrive at, or is it text with a shell's blessing"
 not_tested "gate-reach-into-code-that-arms-nothing" \
   "shipped code that executes out of \$ORCHID_ROOT without loading lib/common.sh at all. Section 4's universe is every file in the shipped inventory that SOURCES the library — and that inventory is now a WALK of the tree (Git's tracked-plus-untracked set in a checkout, a filesystem walk in an extracted archive) rather than a list of directory families, with tests/ and Markdown the two declared exclusions, so a loader under a directory nobody has thought of is inside it — because sourcing the library is what arms the guard and the question this file asks is whether what was armed is fired. A helper that runs kernel code some other way — a plugin's notify sender that shells to the orchid dispatcher rather than sourcing it, a hook script, anything reached through a subprocess — arms nothing here, so it is neither reported nor cleared. The subprocess case is the benign half: whatever it invokes is itself in the universe and fires the gate on its own account. The case that is not covered is a file that reads and acts on \$ORCHID_ROOT's contents directly without loading the library, which no shipped file does today and which this derivation would not notice arriving"
 not_tested "firing-site-reachability-within-an-entry-point" \
