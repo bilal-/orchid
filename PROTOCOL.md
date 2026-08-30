@@ -3154,8 +3154,12 @@ is normal, never an error:
   uninstall --repo <path>`: a missing checkout is not a wait state, because no
   later pass finds it again. The same refusal covers a directory that survived
   while its repository did not (a linked worktree whose main checkout was
-  deleted, a pruned registration) — checked after the uninitialized/split-
-  brain/`complete` arms, all three of which are legitimate quiet no-ops.
+  deleted, a pruned registration) — checked after the uninitialized and
+  split-brain arms, both of which are legitimate quiet no-ops, and BEFORE the
+  `complete` arm, which is not the same kind of no-op: a run reaching
+  `complete` is the likeliest moment for its checkout to be torn down, so
+  asked the other way round the cheerful `exit 0` swallows the refusal and a
+  dead checkout reports `pump: run complete` every interval forever.
 - **No lease yet, and `run_status` isn't `running`:** a run still in
   `planning` (PLANNING above) has never written `runtime/lease.json` at
   all — there is no interactive session to have been abandoned, so a
@@ -3220,10 +3224,13 @@ is normal, never an error:
   unchanged by content and resets it to 1 when it is not, so it counts passes
   this exact boundary has survived. What it counts is WAKEUPS, not wall
   passes — the driver passes `--no-count` on any pass that cannot spend one
-  (the boundary is operator-only, or no orchestrator engine resolves at all:
-  rate-limited, ledger-disabled, none configured), because a pass that asked
-  no model anything is no evidence that asking one does not work. Without
-  that, a transient engine outage would exhaust the budget over four quiet
+  (the pass is not a scheduled one at all, since `orchid drive` is also a verb
+  run by hand and only the pump hands off to a tick; or the boundary is
+  operator-only; or no orchestrator engine resolves at all: rate-limited,
+  ledger-disabled, none configured, or refused the `orchestrate` step), because
+  a pass that asked no model anything is no evidence that asking one does not
+  work. Without that, a transient engine outage — or an operator debugging with
+  `orchid drive` — would exhaust the budget over four quiet
   passes and park a settleable boundary permanently. Once it exceeds the budget the pump stops
   waking a model for it (`pump: judgment boundary [<kind>] has survived N
   passes unchanged`, exit 0) and the driver raises the `orchid notify` blocker
@@ -3233,7 +3240,11 @@ is normal, never an error:
   finished run never reaches it, because no surface admits `orchid run accept`
   and the operator-only gate above declines `run-complete` without spending a
   wakeup at all. With all four satisfied, the
-  pump probes `resolve_role_available orchestrator` and `exec`s
+  pump probes `resolve_role_available orchestrator orchestrate` — with the
+  step, so an entry that cannot perform the work is failed over rather than
+  settled on (INV-16), and the driver's own availability check above asks that
+  same question so the budget is never charged for a wakeup the pump then
+  declines — and `exec`s
   `runners/orchid-tick` — the only path that reaches it, since a pass the
   deterministic policy can resolve on its own goes through
   `runners/orchid-drive` above and never wakes a model — which resolves that
@@ -3353,8 +3364,10 @@ Once `orchid status --explain` shows every task `done`:
    was installed.** Nothing else removes one: `run accept` does not, a merged
    last task does not, and a completed run does not. Until this runs, the
    launchd agent / crontab line keeps firing on its interval; every wake after
-   the run reaches `complete` is a certain no-op (the pump prints `pump: run
-   complete` and exits), but it is a no-op that runs forever.
+   the run reaches `complete` is a certain no-op, but it is a no-op that runs
+   forever. The pump says so on each of them while a binding names this
+   checkout — `pump: run complete`, then a second line stating that nothing
+   here will change again and naming the uninstall command above.
 
 **TEARDOWN ORDERING.** When the run is over and you are removing the
 integration worktree, the order is not interchangeable:

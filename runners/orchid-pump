@@ -176,16 +176,7 @@ if orchid_split_brain "$repo"; then
   exit 0
 fi
 
-# 3. run_status complete -- never spend quota / spawn anything for a run
-# that has nothing left to do. roadmap.md is guaranteed present here (step
-# 2 above already exited on its absence).
-rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null || true)"
-if [ "$rs" = complete ]; then
-  echo "pump: run complete"
-  exit 0
-fi
-
-# 3b. The other half of step 0's question. The DIRECTORY survived, but the
+# 2b. The other half of step 0's question. The DIRECTORY survived, but the
 # repository behind it did not: a linked worktree whose main checkout was
 # deleted, a `.git` file pointing at a pruned/removed registration, a common
 # directory that moved. Reaching here means this really is an orchid checkout
@@ -194,9 +185,18 @@ fi
 # the deterministic driver does is read a ref. Same reasoning as step 0: no
 # later pass repairs it, so it is a loud failure rather than exit 0.
 #
-# Placed AFTER the not-an-orchid-repo/split-brain/complete arms on purpose. All
-# three are legitimate quiet no-ops that must stay quiet, and this question is
-# meaningless for a directory that was never an orchid checkout.
+# ORDERING. It sits AFTER the not-an-orchid-repo and split-brain arms: both are
+# legitimate quiet no-ops that must stay quiet, and this question is meaningless
+# for a directory that was never an orchid checkout. It sits BEFORE the
+# `complete` arm below, which is NOT the same kind of no-op and where an
+# earlier revision of this file wrongly put it. A run reaching `complete` is
+# the single likeliest moment for its checkout to be torn down -- that is what
+# the live finding's cleanup step was -- so "the run is finished" and "the
+# repository behind this directory is gone" are the two facts most likely to be
+# true at once. Asked in the other order, the one arm that returns a cheerful
+# `exit 0` for a completed run swallows the refusal, and a schedule firing
+# against a dead checkout reports "pump: run complete" every interval forever.
+# The broken target is the more urgent fact and is answered first.
 #
 # _pump_git_checkout_alive answers it from the FILESYSTEM alone -- no `git` is
 # run. That is not an optimization: this arm sits BEFORE the unattended trust
@@ -230,6 +230,30 @@ if ! _pump_git_checkout_alive "$repo"; then
   echo "pump: refusing to run: $repo is no longer a git checkout -- its repository or worktree registration is gone" >&2
   echo "pump: no later pass will repair it; remove the schedule with: $(orchid_service_uninstall_command "$repo")" >&2
   exit 1
+fi
+
+# 3. run_status complete -- never spend quota / spawn anything for a run
+# that has nothing left to do. roadmap.md is guaranteed present here (step
+# 2 above already exited on its absence).
+#
+# THE SECOND LINE IS THE WHOLE OF THE LIVE FINDING'S FIRST HALF. A complete run
+# has nothing left for any pass to do, ever: `run_status` never leaves a
+# terminal state on its own, so every wake from here on is a certain no-op, and
+# the schedule that keeps producing them is the only thing still costing
+# anything. Exit 0 stays -- a finished run is not a failure, and a scheduler
+# that starts erroring after a successful run is worse than one that is quiet
+# -- but silence is what let an agent fire every 240s against a finished run
+# for a whole afternoon. So when a binding says a schedule really is installed
+# against this checkout, the no-op names the command that ends it. No binding,
+# no line: a hand-run pump against a complete run is told nothing it did not
+# already know.
+rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null || true)"
+if [ "$rs" = complete ]; then
+  echo "pump: run complete"
+  if orchid_service_bound "$repo"; then
+    echo "pump: nothing will change here again — every further wake is a no-op; uninstall the schedule, THEN remove the checkout: $(orchid_service_uninstall_command "$repo")"
+  fi
+  exit 0
 fi
 
 # The first potentially effectful operation below is orchid_runtime (which
@@ -637,7 +661,13 @@ fi
 # tick's.
 export ORCHID_REPO="$repo"
 drive_rc=0
-"$ORCHID_ROOT/runners/orchid-drive" || drive_rc=$?
+# `__orchid_pump_pass=1` tells the driver that this pass can end in a wakeup,
+# which is the only kind of pass the wake budget below is allowed to charge.
+# `orchid drive` is also a verb an operator or a test runs by hand, and those
+# invocations wake nobody -- the hand-off at step 7 is what does, and only this
+# file reaches it. A command-prefix assignment rather than an `export`: it is
+# true of exactly this one call, and nothing downstream of it.
+__orchid_pump_pass=1 "$ORCHID_ROOT/runners/orchid-drive" || drive_rc=$?
 # The epoch this pass is running under, read the instant the drive that fenced
 # it returns. Nothing below writes durable state except the capability hand-off
 # at step 6b, and that write has to carry THIS pass's epoch rather than
@@ -773,7 +803,7 @@ else
   exit 0
 fi
 
-# 6b. THE WAKE BUDGET, and the last thing asked before the hand-off. Even a
+# 6c. THE WAKE BUDGET, and the last thing asked before the hand-off. Even a
 # boundary an orchestrator CAN settle gets a BOUNDED number of tries at it.
 # "Could settle" is static -- a kind, a task status, a manifest label -- so it
 # is satisfied identically on the hundredth pass as on the first, and it cannot

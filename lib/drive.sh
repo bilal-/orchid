@@ -667,9 +667,23 @@ drive_wake_budget_max() {
 # narrowest honest SURFACE, and a brokered surface still admits `orchid task
 # arbitrate` -- so an arbitration boundary reads as orchestrator-resolvable
 # while nobody can actually be woken for it. Availability is its own fact.
+#
+# THE `orchestrate` STEP IS PASSED, and it is not decoration. Without it this
+# walk answers "who may hold the orchestrator ROLE" while the pump's probe
+# answers "who may hold it AND perform `orchestrate`" (lib/resolver.sh's
+# <step> argument, INV-16) -- two different questions whose answers differ for
+# exactly the chain the step gate refuses. Drifted, this function calls a
+# wakeup available that the pump then declines one gate later, and the budget
+# is charged for a model nobody asked. The two calls must be the same call;
+# drive_orchestrator_surface below already passes it for the same reason.
+#
+# An exit 3 (a caller that passed a step without lib/capability.sh sourced)
+# lands on `return 1` with everything else that cannot answer yes. That is the
+# conservative direction: an unanswerable availability question spends no
+# budget, exactly as an unavailable engine does.
 drive_orchestrator_available() {
   local engine
-  engine="$(resolve_role_available "$1" orchestrator 2>/dev/null)" || return 1
+  engine="$(resolve_role_available "$1" orchestrator orchestrate 2>/dev/null)" || return 1
   [ -n "$engine" ]
 }
 

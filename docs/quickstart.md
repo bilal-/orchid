@@ -400,7 +400,8 @@ when it is happening (a warning from `orchid merge`, and a refused `git push`).
 A completed run does not stop a schedule. Nothing does — not the last task
 merging, not `orchid run accept`, not `run_status: complete`. If you installed
 the service in step 6, the launchd agent or crontab line is still firing every
-`pump_interval_s`, and every one of those wakes is now a certain no-op.
+`pump_interval_s`, and every one of those wakes is now a certain no-op. The
+pump says so on each of them, in its own log, and names the command below.
 
 So when you are done with the working checkout, the order matters:
 

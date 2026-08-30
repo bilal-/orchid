@@ -500,17 +500,25 @@ rm -rf "$WORK2"
 #
 # The gap was never a missing verb (`uninstall` has always existed). It was
 # that nothing tied the schedule's lifetime to anything, and nothing said it
-# had to be undone. Four parts, in the order an operator meets them:
+# had to be undone. Six parts, in the order an operator meets them:
 #
 #   K1  install RECORDS what it bound itself to, on both sides of the
 #       boundary, and says the ordering that record exists to keep.
 #   K2  RED/GREEN: a pump whose checkout is GONE fails loudly; the same pump
 #       against a checkout that is present stays an ordinary quiet no-op.
+#       Then the two arms about ORDER: that refusal is reached even when the
+#       run is `complete` (the cheerful no-op must not answer first), and a
+#       `complete` run that still has a schedule bound to it names the
+#       command that ends the certain waste.
 #   K3  RED/GREEN: a checkout carrying a live binding is refused for removal,
 #       naming the uninstall command; one without a binding is not.
 #   K4  uninstall still works once the checkout is gone -- the command
 #       `orchid doctor` names for a leftover schedule must not itself need
 #       the directory that is missing.
+#   K5  the binding lands whole or not at all, and it lands BEFORE the
+#       scheduler does: an install that cannot record it installs nothing.
+#   K6  ...and the record that ordering can leave behind is always clearable,
+#       so a half-failed install cannot wedge the removal guard.
 # ===========================================================================
 source "$REPO_ROOT/lib/common.sh"
 
@@ -637,6 +645,71 @@ assert_eq "pump: not an orchid repo" "$quiet_pump" \
   "and says so plainly -- a non-git scratch directory must not trip the dead-repository refusal"
 green_case "an ordinary not-an-orchid-repo directory keeps its exit-0 no-op, git or no git"
 
+# ...and the liveness question is asked BEFORE the arm most likely to be true
+# at the same time. A run reaching `complete` is exactly when its checkout gets
+# torn down -- that was the live finding's cleanup step -- so "the run is
+# finished" and "the repository behind this directory is gone" arrive together.
+# The `complete` arm is a cheerful `exit 0`; asked first, it swallows the
+# refusal entirely and the schedule reports "pump: run complete" against a dead
+# checkout every interval, forever.
+DEAD_DONE="$BIND/dead-git-complete"
+mkdir -p "$DEAD_DONE"
+(
+  cd "$DEAD_DONE" || exit 1
+  git init -q .
+  git commit -q --allow-empty -m root
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: complete\nrun_id: r-dead-done\n---\n# Roadmap\n' > .orchid/roadmap.md
+)
+rm -rf "$DEAD_DONE/.git"
+printf 'gitdir: %s\n' "$DEAD_DONE/no-such-common-dir" > "$DEAD_DONE/.git"
+rc=0
+dead_done_pump="$(ORCHID_REPO="$DEAD_DONE" "$PUMP" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "a dead checkout must refuse even when its run is complete -- the 'run complete' no-op must not be what answers for a repository that is gone"
+assert_match 'no longer a git checkout' "$dead_done_pump" \
+  "and refuses with the broken-target reason, not with the run's status"
+red_case "a completed run's dead checkout still refuses: liveness is asked before the no-op that would swallow it"
+
+# -- the first half of the finding: a COMPLETE run keeps waking forever ----
+# `run_status` never leaves a terminal state on its own, so every wake after
+# the last task merges is a certain no-op. Exit 0 is right -- a finished run is
+# not a failure -- but the silence is what let an agent fire every 240s against
+# a finished run for an afternoon. When a binding says a schedule really is
+# installed here, the no-op names the command that ends it.
+DONE_REPO="$BIND/done-run"
+mkdir -p "$DONE_REPO"
+(
+  cd "$DONE_REPO" || exit 1
+  git init -q .
+  git commit -q --allow-empty -m root
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: complete\nrun_id: r-done\n---\n# Roadmap\n' > .orchid/roadmap.md
+)
+DONE_CANON="$(cd "$DONE_REPO" && pwd -P)"
+trust_repo "$DONE_REPO"
+done_install="$("$SERVICE" install --repo "$DONE_REPO" --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the finished-run fixture installs a schedule first (out: $done_install)"
+rc=0
+done_pump="$(ORCHID_REPO="$DONE_CANON" "$PUMP" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "a completed run is still a quiet, successful no-op -- a cron poll must not start erroring once a run finishes"
+assert_match '^pump: run complete$' "$done_pump" "and still reports the run's state verbatim, on its own line"
+assert_match 'every further wake is a no-op' "$done_pump" \
+  "but says plainly that nothing here will ever change again"
+assert_match 'service uninstall --repo' "$done_pump" \
+  "and names the command that stops the waste, which nothing anywhere used to do"
+red_case "a completed run with a schedule still installed against it names the command that ends the waste"
+
+# The same complete run with NO schedule bound is told nothing extra: the line
+# exists to end a real obligation, not to lecture a hand-run pump.
+"$SERVICE" uninstall --repo "$DONE_REPO" --dry-run >/dev/null 2>&1
+rc=0
+done_unbound="$(ORCHID_REPO="$DONE_CANON" "$PUMP" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "an unbound completed run is still a quiet no-op"
+assert_eq "pump: run complete" "$done_unbound" \
+  "and says only that -- with no schedule installed there is no teardown to name"
+green_case "a completed run with no schedule bound to it keeps its one-line no-op"
+
 # -- K3: no removal walks past a live binding ------------------------------
 # The guard is asked at every checkout-removal site orchid owns (the durable-
 # commit temp worktree, `run new`'s rollover worktree, `orchid merge`'s
@@ -700,6 +773,64 @@ rc=0
 guard_after="$(orchid_service_removal_guard "$BIND_REPO" 2>&1)" || rc=$?
 assert_eq 0 "$rc" "and the removal guard lets the checkout go once the schedule is gone"
 green_case "a checkout whose schedule has been uninstalled passes the removal guard"
+
+# -- K5: the binding lands whole, or not at all ----------------------------
+# An install writes its binding BEFORE it touches the scheduler, and both
+# halves land together or neither does. The ordering is the point: a record
+# with no schedule is harmless and self-correcting (the guard is merely
+# conservative, doctor names it, uninstall clears it), while a schedule with no
+# record is precisely the invisible leftover this whole section exists to stop
+# -- and every failure between the two produces one, if the scheduler goes
+# first.
+#
+# The store is made unwritable by putting a regular FILE where the directory
+# belongs, which is the one injection that fails at the STAGING step, before
+# anything at all has been committed. (A directory at the record's own path
+# would not: `mv file dir` moves the file INTO it and succeeds.) Moved aside
+# rather than removed -- other sections' bindings live in there.
+mv "$HOME/.orchid/services" "$HOME/.orchid/services.saved" \
+  || fail "fixture: could not set the machine-local binding store aside"
+printf 'not a directory\n' > "$HOME/.orchid/services"
+rc=0
+atom_out="$("$SERVICE" install --repo "$BIND_REPO" --interval-s 240 --dry-run 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "an install that cannot record its binding must refuse -- the copy that survives the checkout is the only thing that can ever name a leftover schedule"
+assert_match 'could not record the service binding' "$atom_out" \
+  "and names the binding as what it refused on, not some generic install failure"
+[ -f "$bind_rec" ] \
+  && fail "a refused install must leave NO repo-local record either: both halves are prepared and only then committed"
+[ -f "$HOME/Library/LaunchAgents/$bind_label.plist" ] \
+  && fail "and must have placed no scheduler artifact at all: the binding is written BEFORE the scheduler is touched, so a failure there installs nothing"
+rc=0
+orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "and the checkout stays removable -- a refused install must not wedge the guard it never armed"
+red_case "an install whose binding cannot be recorded installs nothing at all"
+
+rm -f "$HOME/.orchid/services"
+mv "$HOME/.orchid/services.saved" "$HOME/.orchid/services" \
+  || fail "fixture: could not restore the machine-local binding store"
+
+# -- K6: the record is always clearable -----------------------------------
+# Writing the record first makes "a binding with no artifact behind it" a
+# REACHABLE state, and that record makes the removal guard refuse the checkout.
+# So the one verb the guard names must not itself require the artifact, or a
+# half-failed install wedges a checkout that has no schedule at all.
+reinstall_out="$("$SERVICE" install --repo "$BIND_REPO" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the fixture re-installs cleanly once its record store is writable again (out: $reinstall_out)"
+[ -f "$bind_rec" ] || fail "fixture: the re-install must have recorded the binding"
+rm -f "$HOME/Library/LaunchAgents/$bind_label.plist"
+rc=0
+orphan_out="$("$SERVICE" uninstall --repo "$BIND_REPO" --dry-run 2>&1)" || rc=$?
+assert_eq 0 "$rc" \
+  "uninstall must clear a binding whose scheduler artifact is not there (out: $orphan_out)"
+assert_match 'clearing the binding record' "$orphan_out" \
+  "and says it is doing exactly that, rather than reporting an agent it did not unload"
+[ -f "$bind_rec" ] && fail "the orphaned repo-local record must be gone"
+[ -f "$bind_mrec" ] && fail "and so must its machine-local copy"
+rc=0
+orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "and the checkout is removable again -- the guard cannot be left armed by a record no verb could clear"
+green_case "uninstall clears a binding record whose scheduler artifact never landed"
 
 # The linux/cron branch keeps its own binding record too -- the record is not
 # a launchd-only affordance, and the cron record it points at lives inside the

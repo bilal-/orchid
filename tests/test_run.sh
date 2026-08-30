@@ -309,9 +309,23 @@ rc=0; ORCHID_EPOCH=$(( ORCHID_EPOCH - 1 )) "$ORCHID_BIN" run release-lease >/dev
 # the malformed-value arm and falls back to the very default the assertion
 # below checks for -- so the arm would pass while proving nothing, which is
 # exactly what the configured-value assertion further down now rules out.
+#
+# The rest of the list is runners/orchid-pump's own source order, and it is
+# here for the availability probe at the very end of this block:
+# drive_orchestrator_available walks the role chain through lib/resolver.sh and
+# prices the `orchestrate` step through lib/capability.sh, and a caller that
+# passes a step without the latter sourced is REFUSED (exit 3) rather than
+# answered -- which would make "an incapable engine is unavailable" pass
+# without the capability table ever having been consulted.
 source "$REPO_ROOT/lib/common.sh"
 source "$REPO_ROOT/lib/frontmatter.sh"
+source "$REPO_ROOT/lib/manifest.sh"
+source "$REPO_ROOT/lib/roles.sh"
+source "$REPO_ROOT/lib/resolver.sh"
+source "$REPO_ROOT/lib/capsuite.sh"
+source "$REPO_ROOT/lib/ledger.sh"
 source "$REPO_ROOT/lib/drive.sh"
+source "$REPO_ROOT/lib/capability.sh"
 
 make_scratch WB
 WB_BARE="$WB/bare"; mkdir -p "$WB_BARE"
@@ -505,6 +519,30 @@ assert_eq 3 "$(wb_wakes)" "and still wakes nobody -- the refusal is durable, not
 assert_eq "$wb_blocker_lines" "$(wc -l < "$WB_WT/.orchid/BLOCKERS.md")" \
   "and raises no second blocker: the budget runs out exactly once per boundary"
 
+# -- RED: a pass nobody scheduled is not a wakeup, and is not charged -------
+# The budget is denominated in orchestrator WAKEUPS, and runners/orchid-pump is
+# the only caller that goes on to produce one. `orchid drive` is ALSO a verb an
+# operator runs by hand and a test runs to reach one arm; neither asks a model
+# anything. Charged, a handful of debugging invocations would park a live
+# boundary on a human under a blocker naming wakeups nobody ever made -- and
+# because an uncharged pass leaves the counter exactly where it stands, the
+# once-per-boundary page above would fire again on every one of them.
+#
+# Deliberately the SAME pass the pump makes -- same repo, same staled lease,
+# same driver binary -- with only the provenance different, so what is being
+# asserted is the provenance and nothing else.
+wb_stale_lease
+wb_hand_passes="$(wb_field '.passes // 0')"
+rc=0
+ORCHID_REPO="$WB_WT" "$REPO_ROOT/runners/orchid-drive" >/dev/null 2>&1 || rc=$?
+assert_eq 16 "$rc" "sanity: a hand-run drive parks on the same judgment boundary the pump's own drive does"
+assert_eq "$wb_hand_passes" "$(wb_field '.passes // 0')" \
+  "a drive nobody scheduled charges nothing -- only a pump pass can spend a wakeup"
+assert_eq 3 "$(wb_wakes)" "and wakes nobody itself"
+assert_eq "$wb_blocker_lines" "$(wc -l < "$WB_WT/.orchid/BLOCKERS.md")" \
+  "and re-pages nobody: an uncharged pass cannot re-announce a budget that ran out once"
+red_case "a hand-run orchid drive spends none of the pump's wake budget"
+
 # -- the counter resets when the boundary actually CHANGES -----------------
 # Without this the budget would be a one-way latch: a run that got past the
 # parked condition (an operator arbitrates, a new review lands) would never
@@ -549,3 +587,59 @@ assert_eq "$wb_wakes_before_done" "$(wb_wakes)" \
 assert_eq 0 "$(wb_field '.passes // 0')" \
   "and charges nothing to the wake budget: no wakeup was ever available to spend"
 red_case "a run whose tasks are all done stops waking an orchestrator"
+
+# ===========================================================================
+# T036 -- THE AVAILABILITY PROBE ASKS THE PUMP'S EXACT QUESTION.
+#
+# `--no-count` is decided by drive_orchestrator_available, and what it is FOR
+# is predicting the arm runners/orchid-pump will take at its step 6. The pump
+# probes `resolve_role_available <repo> orchestrator orchestrate` -- with the
+# STEP -- because an entry that cannot perform `orchestrate` must be failed
+# over rather than settled on (INV-16). Asked without the step, the same walk
+# answers a DIFFERENT question: "who may hold the orchestrator role", which
+# says yes for exactly the chain the step gate then refuses. Drifted that way,
+# the driver calls a wakeup available, charges the budget for it, and the pump
+# declines one gate later having woken nobody -- a budget spent on models that
+# were never asked, which is the one failure mode the `--no-count` arms exist
+# to prevent.
+#
+# roles/orchestrator.role and the `orchestrate` row happen to require the same
+# two atoms, so on the shipped tree the two questions agree and the drift is
+# invisible. A role descriptor asking for LESS than the step costs is what
+# separates them -- the custom-descriptor case INV-16 was written for -- so the
+# fixture repoints ORCHID_ROOT at a roles directory carrying a weakened
+# orchestrator descriptor. That is the only way to isolate one: INV-10 refuses
+# a second `orchestrator.role` alongside the built-in rather than shadowing it.
+# ===========================================================================
+WB_ALT="$WB/altroot"; mkdir -p "$WB_ALT/roles"
+cp "$REPO_ROOT/roles/"*.role "$WB_ALT/roles/"
+printf 'id=orchestrator\nrequires=shell\ndescription=weakened descriptor: role-eligible without git\n' \
+  > "$WB_ALT/roles/orchestrator.role"
+
+# An engine this weakened descriptor admits and the `orchestrate` row does not:
+# it claims `shell` and not `git`, and `orchestrate` is priced at both.
+mkdir -p "$WB/eng/wbnogit"
+printf 'manifest_version=1\nid=test/wbnogit\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=shell\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WB/eng/wbnogit/plugin.conf"
+# Deliberately NOT a copy of wbstub's entrypoint: these arms only ever RESOLVE
+# this engine, never spawn it, and an entrypoint sharing wbstub's wake marker
+# would quietly corrupt the wake counts asserted above if that ever changed.
+printf '#!/usr/bin/env bash\nexit 1\n' > "$WB/eng/wbnogit/run"
+chmod +x "$WB/eng/wbnogit/run"
+
+# GREEN witness first. Without it a probe that refused everything -- a mistyped
+# role, an unsourced capability table, an engines dir the alternate root cannot
+# see -- would satisfy the RED arm below while proving nothing at all.
+printf 'role.orchestrator=wbstub\n' >> "$WB_WT/orchid.config"
+if ! ORCHID_ROOT="$WB_ALT" drive_orchestrator_available "$WB_WT"; then
+  fail "sanity: an engine claiming both priced atoms must read as available -- the probe is not simply refusing everything"
+fi
+
+printf 'role.orchestrator=wbnogit\n' >> "$WB_WT/orchid.config"
+if ! ORCHID_ROOT="$WB_ALT" resolve_role_available "$WB_WT" orchestrator >/dev/null 2>&1; then
+  fail "fixture: the shell-only engine must be ROLE-eligible under the weakened descriptor, or the two questions were never different here"
+fi
+if ORCHID_ROOT="$WB_ALT" drive_orchestrator_available "$WB_WT"; then
+  fail "an engine the 'orchestrate' step refuses is NOT an available orchestrator: the probe must ask the pump's question, step and all, or it charges the budget for a wakeup the pump then declines"
+fi
+red_case "the wake budget's availability probe prices the orchestrate step, exactly as the pump's own probe does"

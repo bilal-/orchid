@@ -92,9 +92,15 @@ every `pump_interval_s`.
 
 That is expected, and it is yours to stop. Nothing ties a schedule's lifetime
 to the run it serves: not the last task merging, not `orchid run accept`, not
-`run_status: complete`. Each wake after completion is a certain no-op (the
-pump prints `pump: run complete` and exits 0), but it is a no-op that runs
-forever.
+`run_status: complete`. Each wake after completion is a certain no-op, but it
+is a no-op that runs forever. The pump says so on every one of them, as long as
+a schedule really is bound to that checkout:
+
+```
+pump: run complete
+pump: nothing will change here again — every further wake is a no-op; uninstall
+  the schedule, THEN remove the checkout: orchid service uninstall --repo <path>
+```
 
 ```sh
 orchid service status --repo "$PWD"    # names the binding and this ordering
@@ -139,9 +145,12 @@ pump: judgment boundary [review-conflict] has survived 4 passes unchanged
 ```
 
 What the counter charges is a WAKEUP, not merely a pass. A pass that could not
-wake anyone — the boundary is operator-only, or no orchestrator engine resolves
-(rate-limited, ledger-disabled, none configured) — is recorded but not counted,
-so an engine outage cannot quietly spend the budget on your behalf.
+wake anyone is recorded but not counted, so neither an engine outage nor your
+own debugging quietly spends the budget on your behalf. Three ways a pass
+cannot wake anyone: it was not a scheduled pass at all (a hand-run `orchid
+drive` never hands off to a tick), the boundary is operator-only, or no
+orchestrator engine resolves — rate-limited, ledger-disabled, none configured,
+or one the `orchestrate` step refuses outright.
 
 The driver raises the blocker on the same pass, exactly once. Read it in
 `.orchid/BLOCKERS.md`, or with `orchid run boundary show`, and act on the

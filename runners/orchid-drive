@@ -3559,12 +3559,30 @@ if [ -n "$boundary_kind" ]; then
   prev_reason="$(printf '%s' "$prev_boundary" | jq -r '.reason // ""' 2>/dev/null || echo "")"
 
   # WILL THIS PASS ACTUALLY SPEND A WAKEUP? The counter the wake budget reads
-  # is charged here, so it is charged only when the answer is yes. Both ways of
-  # answering no are quiet, ordinary states that must not consume budget: the
-  # boundary is operator-only (the pump exits at its step 5c), or no
-  # orchestrator engine resolves at all -- rate-limited, ledger-disabled, none
-  # configured -- and the pump exits one step later at its step 6. Neither asks
-  # a model anything, so neither is evidence that asking one does not work.
+  # is charged here, so it is charged only when the answer is yes. Three ways
+  # of answering no, and all three are quiet, ordinary states that must not
+  # consume budget: nothing here can wake anybody at all (this pass is not a
+  # pump pass -- see just below), the boundary is operator-only (the pump exits
+  # at its step 5c), or no orchestrator engine resolves at all -- rate-limited,
+  # ledger-disabled, none configured -- and the pump exits one step later at
+  # its step 6. None of the three asks a model anything, so none of them is
+  # evidence that asking one does not work.
+  #
+  # ONLY A PUMP PASS CAN SPEND A WAKEUP. This driver is a VERB (`orchid
+  # drive`): an operator runs it by hand, a test harness runs it to reach one
+  # arm, and neither of those wakes an orchestrator -- runners/orchid-pump is
+  # the sole caller that goes on to hand off to a tick. Charging a hand-run
+  # `orchid drive` would let a few debugging invocations exhaust a budget
+  # denominated in wakeups and park a live boundary on a human, having asked
+  # no model at all. So the pump says, in its own environment, that this pass
+  # is one of its; an invocation that did not come from the pump is `charged`
+  # 0 and reads the counter without moving it.
+  #
+  # `__orchid_pump_pass` rather than an `ORCHID_*` name on purpose: lib/spawn.sh
+  # forwards every ORCHID_* variable into an adapter's `env -i` allowlist, and
+  # a brokered adapter inheriting "you are the pump" would be able to charge
+  # the budget from inside a job. This spelling is not on that allowlist, so it
+  # reaches the driver the pump execs and stops there.
   #
   # ONE CASE IS DELIBERATELY CHARGED WITHOUT A WAKEUP, and it is the pass after
   # the budget has already run out: from there on the pump declines the wake
@@ -3583,10 +3601,14 @@ if [ -n "$boundary_kind" ]; then
   # `! { a && b; }` rather than an empty `then` branch: this file runs under
   # `set -e`, where a bare `a && b` statement whose left side fails would abort
   # the pass outright.
-  if ! { drive_boundary_wakes_orchestrator "$boundary_kind" "$boundary_status" \
-           "$orchestrator_surface" && drive_orchestrator_available "$repo"; }; then
-    bset_args+=(--no-count)
+  charged=1
+  if [ "${__orchid_pump_pass:-0}" != 1 ]; then
+    charged=0
+  elif ! { drive_boundary_wakes_orchestrator "$boundary_kind" "$boundary_status" \
+             "$orchestrator_surface" && drive_orchestrator_available "$repo"; }; then
+    charged=0
   fi
+  [ "$charged" -eq 1 ] || bset_args+=(--no-count)
   "$ORCHID_BIN" run boundary set "${bset_args[@]}" >/dev/null
 
   now_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
@@ -3687,7 +3709,14 @@ if [ -n "$boundary_kind" ]; then
     # unchanged by content from here on, so the dedup above would suppress
     # this forever, and an equality test on the counter is what makes "the
     # moment it ran out" a distinct, once-only fact.
-    if [ "$boundary_passes" -eq $(( wake_max + 1 )) ]; then
+    #
+    # `charged` is half of what makes it once-only. An equality test alone is
+    # a once-only fact only while every pass moves the counter, and since an
+    # uncharged pass leaves it exactly where it was, a hand-run `orchid drive`
+    # against an already-spent budget would re-page a human on every
+    # invocation. The pass that charges the counter INTO this value is the one
+    # that reports it.
+    if [ "$charged" -eq 1 ] && [ "$boundary_passes" -eq $(( wake_max + 1 )) ]; then
       drive_notify "$boundary_kind" "$boundary_task" "$boundary_status" \
         "judgment boundary [$boundary_kind] has survived $wake_max orchestrator wakeup(s) unchanged and now needs an operator: $boundary_reason"
       drive_note "notified: [$boundary_kind] outlasted its wake budget (pump_wake_max=$wake_max) — no further orchestrator will be woken for it"

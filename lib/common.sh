@@ -1249,23 +1249,43 @@ orchid_service_machine_dir() {
 
 # orchid_service_uninstall_command <repo> -- the exact command that reverses
 # an install for <repo>, shell-quoted so an operator can paste it verbatim
-# even when the path contains a space. Centralized because four different
-# refusals name it, and a refusal that names the wrong command is worse than
-# one that names none.
+# even when the path contains a space. Centralized because refusals, warnings
+# and no-op notices across the service runner, the pump, the driver-facing
+# removal guard, `orchid doctor` and `orchid start` all name it, and a refusal
+# that names the wrong command is worse than one that names none.
 orchid_service_uninstall_command() {
   local q; printf -v q '%q' "$1"
   echo "orchid service uninstall --repo $q"
 }
 
 # orchid_service_binding_write <repo> <label> <platform> <artifact> <interval_s>
-# Records both halves. The repo-local write is the one that matters (the
-# removal guard reads it), so its failure is this function's failure; the
-# machine-local copy is best effort -- an unwritable HOME must not turn a
-# working `service install` into a failed one, and the schedule it describes
-# was installed either way.
+# Records both halves, or neither. Nonzero -- with nothing left behind -- when
+# either could not be written.
+#
+# WHY BOTH ARE REQUIRED. An earlier revision made the machine-local copy best
+# effort, on the reasoning that the schedule is installed either way. That has
+# the priority backwards: the copy inside the checkout dies WITH the checkout,
+# and the machine-local one is the only thing that can name a leftover schedule
+# afterwards -- which is the entire failure this binding exists to catch. A
+# `service install` that quietly recorded only the half that cannot survive
+# would report success while re-creating the invisible leftover.
+#
+# WHY IT IS PREPARE-THEN-COMMIT. Two files cannot be renamed as one operation,
+# so both are staged as temp files and only committed once BOTH have been
+# produced. A jq failure, a full disk, an unwritable HOME: any of them aborts
+# before either record exists, and the caller refuses the install with nothing
+# to clean up. The remaining window is the two renames themselves, and it is
+# ordered so the residue is the safe one -- see the commit block below.
+#
+# THE CALLER MUST CALL THIS BEFORE IT TOUCHES THE SCHEDULER. That ordering is
+# the other half of the atomicity, and it cannot be enforced from here, so it
+# is stated here: a record with no schedule is harmless (the removal guard is
+# merely conservative, `orchid doctor` names it, and `uninstall` clears it), a
+# schedule with no record is the invisible leftover. Write the intent, then
+# install; uninstall reverses both in the mirror order.
 orchid_service_binding_write() {
   local repo="$1" label="$2" plat="$3" artifact="$4" interval="$5"
-  local rec tmp mdir stamp
+  local rec rtmp mdir mrec="" mtmp="" stamp
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   rec="$(orchid_service_repo_record "$repo")"
   mkdir -p "$(dirname "$rec")" || return 1
@@ -1274,22 +1294,50 @@ orchid_service_binding_write() {
   # a zero-byte service.json reads to every consumer below as "a service IS
   # installed here" while naming nothing. Write the temp file first, check jq
   # actually succeeded, and only then let it become the record.
-  tmp="$rec.tmp.$$"
+  rtmp="$rec.tmp.$$"
   if ! jq -n --arg l "$label" --arg p "$plat" --arg r "$repo" --arg a "$artifact" \
              --arg i "$interval" --arg at "$stamp" \
         '{schema:1, label:$l, platform:$p, repo:$r, artifact:$a,
-          interval_s:($i|tonumber? // 0), installed_at:$at}' > "$tmp" 2>/dev/null; then
-    rm -f "$tmp" 2>/dev/null || true
+          interval_s:($i|tonumber? // 0), installed_at:$at}' > "$rtmp" 2>/dev/null \
+     || [ ! -s "$rtmp" ]; then
+    rm -f "$rtmp" 2>/dev/null || true
     return 1
   fi
-  mv "$tmp" "$rec" || { rm -f "$tmp" 2>/dev/null || true; return 1; }
 
+  # The machine-local half is staged from the repo-local temp, so the two are
+  # byte-identical by construction rather than by two producers agreeing.
+  # A HOME that does not resolve at all is the one accepted exception: there is
+  # no machine-local store to write to, and refusing would break a cron install
+  # in an environment that never had one. Everything else -- an unwritable
+  # store, a failed copy -- aborts.
   if mdir="$(orchid_service_machine_dir)"; then
-    ( umask 077; mkdir -p "$mdir" ) 2>/dev/null || return 0
-    tmp="$mdir/$label.json.tmp.$$"
-    if ( umask 077; cp "$rec" "$tmp" ) 2>/dev/null; then
-      mv "$tmp" "$mdir/$label.json" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+    mrec="$mdir/$label.json"
+    mtmp="$mrec.tmp.$$"
+    if ! ( umask 077; mkdir -p "$mdir" && cp "$rtmp" "$mtmp" ) 2>/dev/null; then
+      rm -f "$rtmp" "$mtmp" 2>/dev/null || true
+      return 1
     fi
+  fi
+  # COMMIT. Each cleanup below skips an unset machine-local temp rather than
+  # passing it as an empty argument -- `rm -f ""` is a portability question
+  # nobody should have to answer while cleaning up a failed write, and unlike
+  # the staging block above, `$mtmp` really can be empty here.
+  #
+  # The repo-local record goes first: it is what the removal guard
+  # reads, so if the process dies between these two renames the residue is a
+  # checkout that refuses to be removed (recoverable, and recoverable in the
+  # safe direction) rather than one that is removable while its schedule is
+  # live. A failed second rename is reported like any other failure, with the
+  # first record rolled back, so "nonzero means nothing was recorded" stays
+  # true for every caller.
+  if ! mv "$rtmp" "$rec" 2>/dev/null; then
+    rm -f "$rtmp" 2>/dev/null || true
+    [ -z "$mtmp" ] || rm -f "$mtmp" 2>/dev/null || true
+    return 1
+  fi
+  if [ -n "$mtmp" ] && ! mv "$mtmp" "$mrec" 2>/dev/null; then
+    rm -f "$mtmp" "$rec" 2>/dev/null || true
+    return 1
   fi
   return 0
 }
@@ -1297,14 +1345,36 @@ orchid_service_binding_write() {
 # orchid_service_binding_remove <repo> <label> -- reverses the above. Both
 # removals are unconditional and quiet: `uninstall` has already established
 # that something was installed, and a binding record that was never written
-# (an older install, a read-only HOME) must not make uninstall fail.
+# (an older install, a HOME that does not resolve) must not make uninstall
+# fail.
+#
+# MIRROR ORDER: the machine-local copy goes first, so the record left behind by
+# an interrupted uninstall is the repo-local one -- the same conservative
+# residue the write commits to, a checkout that refuses removal until the
+# operator re-runs a verb that is idempotent anyway. Removing the repo-local
+# copy first would leave the opposite: `orchid doctor` reporting a schedule
+# that is already gone while the guard waves the checkout through.
 orchid_service_binding_remove() {
   local repo="$1" label="$2" mdir
-  rm -f "$(orchid_service_repo_record "$repo")" 2>/dev/null || true
   if mdir="$(orchid_service_machine_dir)"; then
     rm -f "$mdir/$label.json" 2>/dev/null || true
   fi
+  rm -f "$(orchid_service_repo_record "$repo")" 2>/dev/null || true
   return 0
+}
+
+# orchid_service_binding_present <repo> <label> -- 0 iff EITHER half of the
+# binding is on disk. This is what `uninstall` asks before refusing, and the
+# reason it asks at all is the prepare-then-commit ordering above: a record is
+# written before the scheduler is touched, so an install that failed at the
+# scheduler leaves a record with no artifact. That record makes the removal
+# guard refuse the checkout, so the only verb that can clear it must not itself
+# require the artifact to be there.
+orchid_service_binding_present() {
+  local repo="$1" label="$2" mdir
+  [ ! -f "$(orchid_service_repo_record "$repo")" ] || return 0
+  mdir="$(orchid_service_machine_dir)" || return 1
+  [ -f "$mdir/$label.json" ]
 }
 
 # orchid_service_bound <path> -- 0 iff a pump service records itself as

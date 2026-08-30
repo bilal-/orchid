@@ -10,9 +10,10 @@ set -euo pipefail
 #
 # Every subverb accepts --dry-run: the exact launchctl/crontab command(s)
 # are PRINTED, prefixed "DRY-RUN:", instead of run. File rendering +
-# placement (the plist under ~/Library/LaunchAgents, and the local
+# placement (the plist under ~/Library/LaunchAgents, the local
 # .orchid/runtime/pump.cron record kept as the linux-side install record --
-# see _svc_install_linux below for why that record exists) still happens
+# see _svc_install_linux below for why that record exists -- and both halves
+# of the binding record described under TEARDOWN ORDERING) still happens
 # for REAL under --dry-run: that part is plain, safe, repo/HOME-local file
 # I/O, never a system scheduler mutation. Only the launchctl/crontab call
 # itself is gated. This is deliberate: the test suite runs EVERY subverb
@@ -317,6 +318,22 @@ _svc_install_darwin() {
   path_val="$(_svc_install_path)"
   [ -f "$plist_path" ] && existed=1
 
+  # RECORD WHAT THIS SCHEDULE IS BOUND TO, BEFORE THERE IS A SCHEDULE. The
+  # ordering is the point (see lib/common.sh's own header): a binding record
+  # with no schedule behind it is harmless and self-correcting -- the removal
+  # guard is merely conservative about this checkout, `orchid doctor` names the
+  # binding, and `uninstall` clears it -- while a schedule with no record is
+  # exactly the invisible leftover this whole mechanism exists to prevent.
+  # Written the other way round, every failure between the two (a plist that
+  # renders but will not move, a `launchctl load` that errors out under this
+  # file's `set -e`) leaves the agent installed and unnameable.
+  #
+  # Fatal, unlike the warning an earlier revision printed here: nothing has
+  # been installed at this point, so refusing costs the operator a retry rather
+  # than a live schedule nothing can find.
+  orchid_service_binding_write "$repo" "$label" darwin "$plist_path" "$interval_s" \
+    || orchid_die "could not record the service binding for $repo — refusing to install a schedule nothing would be able to name"
+
   mkdir -p "$agents_dir"
   local tmp="$plist_path.tmp.$$"
   _svc_render_plist "$label" "$repo" "$parent" "$interval_s" "$pump_exe" "$path_val" > "$tmp"
@@ -338,15 +355,6 @@ _svc_install_darwin() {
     launchctl load "$plist_path"
   fi
 
-  # Record what this schedule is bound to, on both sides of the boundary (see
-  # lib/common.sh's own header for why there are two records). Written AFTER
-  # the scheduler mutation, so a binding never claims an install that did not
-  # happen; a failure to record is loud but not fatal -- the agent IS
-  # installed by this point, and refusing here would leave the operator with
-  # a live schedule and a nonzero exit telling them it failed.
-  orchid_service_binding_write "$repo" "$label" darwin "$plist_path" "$interval_s" \
-    || echo "orchid: warning: could not record the service binding for $repo (the agent is installed; 'orchid doctor' will not be able to name it)" >&2
-
   echo "orchid: service installed for $repo"
   echo "  label:      $label"
   echo "  plist:      $plist_path"
@@ -360,8 +368,18 @@ _svc_uninstall_darwin() {
   local repo="$1" dry="$2"
   local label; label="$(_svc_label "$repo")"
   local plist_path="$HOME/Library/LaunchAgents/$label.plist"
-  [ -f "$plist_path" ] || orchid_die "no service installed for $repo (label $label)"
-  if [ "$dry" -eq 1 ]; then
+  # A binding record with no plist behind it is a REACHABLE state, not a
+  # contradiction: install writes the record first, so anything that fails
+  # between the two leaves one. That record makes the removal guard refuse the
+  # checkout, so the verb the guard names has to be able to clear it -- refusing
+  # here on the artifact alone would wedge a checkout that has no schedule at
+  # all. Nothing is installed only when NEITHER is there.
+  if [ ! -f "$plist_path" ] && ! orchid_service_binding_present "$repo" "$label"; then
+    orchid_die "no service installed for $repo (label $label)"
+  fi
+  if [ ! -f "$plist_path" ]; then
+    echo "orchid: no launchd agent for $repo (label $label) — clearing the binding record it left behind" >&2
+  elif [ "$dry" -eq 1 ]; then
     _svc_dryprint launchctl unload "$plist_path"
   else
     launchctl unload "$plist_path" >/dev/null 2>&1 || true
@@ -463,6 +481,13 @@ _svc_install_linux() {
   line="$(_svc_render_cron_line "$label" "$repo" "$parent" "$interval_s" "$pump_exe" "$path_val")"
   marker="# orchid-service:$label"
 
+  # Same binding record as the darwin branch, written for the same reason and
+  # in the same place in the sequence: BEFORE the scheduler artifact exists.
+  # The `artifact` here is the local pump.cron record rather than the crontab
+  # itself, matching what uninstall/status already reason from on this branch.
+  orchid_service_binding_write "$repo" "$label" linux "$record" "$interval_s" \
+    || orchid_die "could not record the service binding for $repo — refusing to install a schedule nothing would be able to name"
+
   printf '%s\n' "$line" > "$record"
 
   # Idempotent re-install: strip any PRIOR line carrying this exact label's
@@ -484,12 +509,6 @@ _svc_install_linux() {
     eval "$pipeline"
   fi
 
-  # Same binding record as the darwin branch -- see there, and lib/common.sh.
-  # The `artifact` here is the local pump.cron record rather than the crontab
-  # itself, matching what uninstall/status already reason from on this branch.
-  orchid_service_binding_write "$repo" "$label" linux "$record" "$interval_s" \
-    || echo "orchid: warning: could not record the service binding for $repo (the crontab line is installed; 'orchid doctor' will not be able to name it)" >&2
-
   echo "orchid: service installed for $repo"
   echo "  label:      $label"
   echo "  crontab:    $line"
@@ -503,16 +522,15 @@ _svc_uninstall_linux() {
   local repo="$1" dry="$2"
   local label; label="$(_svc_label "$repo")"
   local record; record="$(_svc_cron_record_path "$repo")"
-  local mdir mrec=""
-  if [ ! -f "$record" ]; then
-    # The cron record lives INSIDE the checkout, so a schedule that outlived
-    # its repository has none left to reason from -- and that is precisely the
-    # case an operator most needs uninstall for. The machine-local binding is
-    # the copy that survives it; with it, the marker is still removable from
-    # the real crontab, which is where the leftover schedule actually lives.
-    if mdir="$(orchid_service_machine_dir)"; then mrec="$mdir/$label.json"; fi
-    [ -n "$mrec" ] && [ -f "$mrec" ] \
-      || orchid_die "no service installed for $repo (label $label)"
+  # The cron record lives INSIDE the checkout, so a schedule that outlived its
+  # repository has none left to reason from -- and that is precisely the case
+  # an operator most needs uninstall for. Either half of the binding is enough
+  # to proceed: the machine-local copy is the one that survives the checkout,
+  # and the repo-local one is what an install that failed before it wrote the
+  # cron record leaves behind. With either, the marker is still removable from
+  # the real crontab, which is where the leftover schedule actually lives.
+  if [ ! -f "$record" ] && ! orchid_service_binding_present "$repo" "$label"; then
+    orchid_die "no service installed for $repo (label $label)"
   fi
   local marker="# orchid-service:$label"
   local pipeline; pipeline="$(_svc_cron_pipeline_uninstall "$marker")"
