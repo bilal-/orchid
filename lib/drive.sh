@@ -120,13 +120,17 @@ drive_threshold_rank() {
 #                        somebody's output, not a rung of a ladder). The THIRD
 #                        operator-owned stop that has a real settling verb and
 #                        withholds it on purpose, beside the two above: an
-#                        uncleared `unresolved_objection` (T032, dogfood F33).
-#                        `orchid task arbitrate --result approve` settles it,
-#                        and routing it as `review-conflict` would hand that
-#                        verb to a woken model -- which is the actor F33
-#                        showed will approve a twice-rejected defect from the
-#                        diff alone. Whether an arbiter's objection was met is
-#                        that arbiter's call (drive_review_decision, arm 0)
+#                        uncleared `unresolved_objection` an OPERATOR raised
+#                        (T032, dogfood F33). `orchid task arbitrate --result
+#                        approve` settles it, and routing it as
+#                        `review-conflict` would hand that verb to a woken
+#                        model -- which is the actor F33 showed will approve a
+#                        twice-rejected defect from the diff alone. Whether an
+#                        arbiter's objection was met is that arbiter's call, so
+#                        an objection the run's OWN orchestrator raised goes to
+#                        `review-conflict` instead: still no deterministic
+#                        approval, but a stop the actor who raised it may
+#                        settle (drive_review_decision, arm 0)
 _DRIVE_BOUNDARY_KINDS=" planning blocked-task review-evidence review-conflict hook-failure worktree-conflict operator-handoff task-prerequisite run-complete operator-decision "
 
 drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
@@ -353,16 +357,26 @@ drive_surface_admits() {
 # notify path to an operator, which is the surface the condition actually
 # needs. This is why `_DRIVE_BROKERED_WRITE_VERBS` lists neither of them.
 #
-# The third is the ARBITER'S STANDING OBJECTION (T032, dogfood F33), and it is
+# The third is the OPERATOR'S STANDING OBJECTION (T032, dogfood F33), and it is
 # the one case where the verb IS admitted -- `orchid task arbitrate` is the
 # broker's one judgment write. The kind carries the policy instead: an uncleared
-# `unresolved_objection` is raised as `operator-decision`, never as
-# `review-conflict`, precisely so this table's `task-arbitrate` answer is never
-# reached for it. What `--result approve` records there is that the arbiter's
-# own objection was met, and the arbiter is the actor who saw, twice, what two
-# reviewers reading the same diff did not; a woken model reading that diff a
-# third time is the actor F33 showed will say `approve`. See
-# `drive_review_decision`'s arm 0 and runners/orchid-drive's `objection)` arm.
+# `unresolved_objection` an operator raised is filed as `operator-decision`,
+# never as `review-conflict`, precisely so this table's `task-arbitrate` answer
+# is never reached for it. What `--result approve` records there is that the
+# arbiter's own objection was met, and that arbiter is the actor who saw, twice,
+# what two reviewers reading the same diff did not; a woken model reading that
+# diff a third time is the actor F33 showed will say `approve`.
+#
+# WHICH IS A CLAIM ABOUT THE ARBITER, NOT ABOUT OBJECTIONS. The same verb is how
+# a woken orchestrator records a `request-changes` of its own, and reading that
+# back as an operator's would hand an unattended run a stop nothing can settle:
+# the boundary wakes nobody, so it stands until a human appears. Those are filed
+# as `review-conflict` and DO reach this table's `task-arbitrate` answer --
+# still no deterministic approval, but an arbitrable one. The rule underneath
+# both is single: an objection is settled by an arbiter of at least the
+# authority that raised it, and the authority is recorded at the arbitration
+# (lib/review.sh). See `drive_review_decision`'s arm 0 and
+# runners/orchid-drive's `objection)` arm.
 drive_boundary_settling_verb() {
   case "$1" in
     review-evidence|review-conflict) printf 'task-arbitrate\n' ;;
@@ -842,8 +856,11 @@ drive_blocking_finding_title() {
 #                           one credited to a `worktree` slot of the plan.
 #   conflict<TAB><detail>   a request-changes verdict, a finding at or above
 #                           blocking_severity, mixed verdicts, or a review that
-#                           reports scope_complete false.
-#   objection<TAB><detail>  an operator objection from a previous arbitration
+#                           reports scope_complete false -- or an uncleared
+#                           objection the run's OWN orchestrator raised, which
+#                           is a judgment owed on this task that a woken model
+#                           may make, since it is the actor that made it once.
+#   objection<TAB><detail>  an OPERATOR objection from a previous arbitration
 #                           of this task that no arbitration has cleared. Its
 #                           own word, not `conflict`, because the two route to
 #                           DIFFERENT boundary kinds: a conflict is arbitrable
@@ -852,8 +869,9 @@ drive_blocking_finding_title() {
 # The three review arms are mutually exclusive and evaluated in that order, so
 # an incomplete review set is never also reported as a conflict (and vice
 # versa). AHEAD of all three sits one precondition -- an uncleared
-# `unresolved_objection` on the task -- which short-circuits to `objection`
-# before any envelope is read; see its own note in the body. No prose is
+# `unresolved_objection` on the task -- which short-circuits before any envelope
+# is read, to `objection` or to `conflict` according to the class of arbiter
+# recorded with it; see its own note in the body. No prose is
 # parsed anywhere: every input to the DECISION is a
 # structured envelope field the kernel already validates. The conflict arm
 # QUOTES engine-written text into its detail (F32, below) in all three of the
@@ -1002,7 +1020,7 @@ drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n depth_n conflicts base verdict scope status ecand eengine pool
   local plan pin_state entry nfind excerpt ftitle weighed_n weighed_note sum_carried
-  local objection
+  local objection obj_by
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
@@ -1024,7 +1042,8 @@ drive_review_decision() {
   # defect the operator had rejected twice: round 3's reviewers, judging the
   # diff cold, both said `approve`, and the approve arm below duly said so.
   #
-  # ITS OWN DECISION WORD, AND IT IS NOT `conflict`. A `conflict` lands on a
+  # AN OPERATOR'S GETS ITS OWN DECISION WORD, AND IT IS NOT `conflict`. A
+  # `conflict` lands on a
   # `review-conflict` boundary, which `drive_boundary_priority` ranks ARBITRABLE
   # from `arbitrating` -- so the pump wakes the brokered orchestrator, no human
   # is paged (`drive_boundary_wakes_orchestrator` suppresses the notify path for
@@ -1047,11 +1066,14 @@ drive_review_decision() {
   # reader of that diff is not a second opinion on whether their objection was
   # answered, it is the actor F33 already showed will say `approve`.
   #
-  # The driver is therefore structurally unable to clear its own way past this
-  # twice over: the only call it makes to `task arbitrate --result approve` is
-  # the one the approve arm below makes, and this return is in front of it --
-  # and the boundary it raises instead is one no orchestrator it could wake is
-  # allowed to settle.
+  # The driver is therefore structurally unable to clear its own way past
+  # EITHER kind of objection: the only call it makes to `task arbitrate
+  # --result approve` is the one the approve arm below makes, and this return
+  # is in front of it. For an operator's it is unable twice over, because the
+  # boundary it raises instead is one no orchestrator it could wake is allowed
+  # to settle -- and the verb refuses a non-operator arbitration on that task
+  # in any case, so the guarantee does not rest on the routing alone
+  # (libexec/orchid-task's `arbitrate`).
   #
   # FIRST, not merged into the `conflicts` record below, for the reason the
   # ordering of the other arms is already argued from: an evidence shortfall
@@ -1059,7 +1081,38 @@ drive_review_decision() {
   # reviews for a decision no review can make. It is also independent of the
   # candidate -- a rework round moves `candidate_sha` and `attempts`, and the
   # objection survives both, since what it names is a defect and not a commit.
+  #
+  # WHO RAISED IT DECIDES WHO MAY SETTLE IT, and everything above is the
+  # OPERATOR half of that. `orchid task arbitrate` is the brokered surface's one
+  # judgment write, so a woken orchestrator raises `request-changes` through
+  # this same field -- and reading its own objection back as an operator's
+  # would park an unattended run on a human page it never needed, permanently:
+  # the boundary wakes nobody, so no later pass can move it, and the very
+  # disagreement the broker exists to arbitrate becomes the thing that stops
+  # the run. Refusing the DETERMINISTIC approval is the part that is owed to
+  # every objection; requiring a HUMAN is owed only to a human's.
+  #
+  # So the class of the arbiter, recorded on the task by the arbitration that
+  # wrote the objection (lib/review.sh, and `orchid task arbitrate`'s own note),
+  # picks the decision word: an operator's goes out as `objection` and stops on
+  # `operator-decision`, an orchestrator's goes out as `conflict` and stops on
+  # `review-conflict` -- the kind whose whole meaning is "a judgment is owed
+  # here and a woken model may make it". Both refuse the deterministic
+  # approval; both carry the objection's own words into the record and into the
+  # next round's reviewer prompt; they differ in exactly one thing, which is
+  # the authority a settling arbitration needs. An objection is settled by an
+  # arbiter of at least the authority that raised it.
+  #
+  # The branch is on the recorded CLASS, never on the objection text -- which
+  # stays what it has always been here, a display string this function quotes
+  # and does not read (INV-13's own sweep pins that).
   objection="$(review_objection_line "$(fm_get "$tf" unresolved_objection)")"
+  obj_by="$(review_objection_arbiter "$objection" "$(fm_get "$tf" unresolved_objection_by)")"
+  if [ "$obj_by" = orchestrator ]; then
+    printf 'conflict\tan objection recorded by the run orchestrator in a previous arbitration of this task is still uncleared: "%s" — this pass may not approve on the reviews alone, and a reviewer that flipped to approve without addressing it has not answered the arbiter. Expected: whoever arbitrates reads the diff, decides whether that objection was met, and settles it with orchid task arbitrate %s --result approve|request-changes --reason "..." — an explicit arbitration approval is the only thing that clears it\n' \
+      "$objection" "$id"
+    return 0
+  fi
   if [ -n "$objection" ]; then
     printf 'objection\tan operator objection recorded by a previous arbitration of this task is still uncleared: "%s" — this pass may not approve on the reviews alone, and a reviewer that flipped to approve without addressing it has not answered the arbiter. Expected: the operator who raised it reads the diff, decides whether the objection was met, and settles it with orchid task arbitrate %s --result approve|request-changes --reason "..." — an explicit arbitration approval is the only thing that clears it\n' \
       "$objection" "$id"

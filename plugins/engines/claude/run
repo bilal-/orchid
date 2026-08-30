@@ -323,9 +323,17 @@ if [ -f "$input_pack/task.md" ]; then
   # pack task.md as everything above -- lib/pack.sh copies the file whole, so
   # a field the kernel writes reaches every adapter without a new pack item.
   # Empty on the overwhelming majority of reviews, and the whole block below
-  # is omitted then; a task only carries one after a human arbitrated
+  # is omitted then; a task only carries one after an arbiter recorded
   # `request-changes` on it and no arbitration has cleared it.
   objection="$(fm_get "$input_pack/task.md" unresolved_objection)"
+  # AND WHO RAISED IT, from the field the arbitration wrote it with. An
+  # operator's objection and this run's own orchestrator's are worth different
+  # things to a reviewer -- one is a human who read the merged source, the
+  # other is a model that read this diff -- and the prompt must not describe
+  # either as the other. Defaulted like `bsev` above, and to the same stricter
+  # reading the kernel's own gate takes on an absent field.
+  objection_by="$(fm_get "$input_pack/task.md" unresolved_objection_by)"
+  [ -n "$objection_by" ] || objection_by=operator
   diff="$(cat "$input_pack/diff.patch" 2>/dev/null || true)"
   # Reply contract (v1-m4 T006): VERDICT **plus** the same `FINDING:
   # <low|medium|high>: <title>` line shape the critique prompt below already
@@ -403,8 +411,9 @@ finding yourself is how the severity stays your call."
   # more consideration buried above the instructions.
   [ -z "$objection" ] || prompt="$prompt
 
-A HUMAN ARBITER REJECTED AN EARLIER ROUND OF THIS TASK and that objection is
-still recorded as unresolved:
+AN ARBITER REJECTED AN EARLIER ROUND OF THIS TASK and that objection is still
+recorded as unresolved. It was raised by: $objection_by (operator = the human
+running this repository; orchestrator = this run's own arbiter). The objection:
   $objection
 Judge this round on whether that objection was addressed, before anything
 else, and say which in your REASON line. If it was not addressed, withhold

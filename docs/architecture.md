@@ -162,7 +162,10 @@ reconciled review envelopes for the task's risk tier; a deterministic
 `unresolved_objection` — an arbiter's own `request-changes` that no later
 arbitration has approved, which outlives the round it was raised in because
 the next round's reviews are not an answer to it, and which stops on an
-operator-only boundary so that no woken model settles it either (T032,
+operator-only boundary when an operator raised it, so that no woken model
+settles it either; an objection the run's own orchestrator raised stops on an
+arbitrable one instead, since the actor that raised it is in the loop and a
+stop nothing can answer parks the run (T032,
 dogfood F33); `merging → done`
 re-runs the whole suite in a temp worktree before advancing the integration
 ref, and a moved base forces re-verify plus re-review (INV-07). Every

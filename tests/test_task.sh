@@ -1824,3 +1824,154 @@ assert_eq "" "$(t40_objection)" \
 assert_match 'objection cleared by an explicit arbitration approval.*RETRY_MAX and BACKOFF_MS' "$(cat .orchid/journal.md)" \
   "...and journals the clear, naming what was cleared — the field does not simply disappear from the record"
 green_case 'orchid task arbitrate --result approve: the standing objection is cleared, and the clear is journaled'
+
+# ============================================================================
+# AN OBJECTION IS SETTLED BY AN ARBITER OF AT LEAST THE AUTHORITY THAT RAISED
+# IT (T032 convergence, after the attempt-2 arbitration).
+#
+# `orchid task arbitrate` has two callers who are not the same actor. An
+# OPERATOR runs it from their own shell. A BROKERED ORCHESTRATOR runs it
+# through runners/orchid-orchestrator-command after the pump woke it for a
+# `review-conflict` — `task-arbitrate` is the single judgment write that
+# surface admits, so a model reaching the verb is the broker working as
+# designed. The block above records an objection for both of them and does not
+# distinguish them, which is wrong in one direction each way:
+#
+#   * read as the operator's, a woken model's own `request-changes` becomes a
+#     stop only a human may clear. The boundary it raises wakes nobody, so no
+#     later pass can move it: the very disagreement the brokered surface exists
+#     to arbitrate becomes the thing that parks an unattended run forever.
+#   * read as the orchestrator's, F33 comes back — a woken model clears the
+#     operator's twice-stated objection from the same diff that produced it.
+#
+# So the arbitration records the CLASS of arbiter beside the text, from the
+# same `ORCHID_ACTOR` provenance libexec/orchid-journal has always derived its
+# own actor string from (kernel-set by runners/orchid-tick, carried into the
+# spawned adapter by lib/spawn.sh's ORCHID_* allowlist, absent in an operator's
+# shell). Refusing the DETERMINISTIC approval is owed to every objection;
+# requiring a HUMAN is owed only to a human's.
+#
+# RED: a brokered arbitration that clears — or silently supersedes — an
+#      OPERATOR's standing objection; and a `task set` that relabels one.
+# GREEN: the orchestrator's own objection is recorded as its own and settled by
+#      the same surface that raised it, so an unattended run still converges;
+#      and the operator's is settled by the operator.
+# ============================================================================
+# The brokered surface `exec`s `bin/orchid` with the tick's environment intact,
+# so this prefix is exactly what the verb sees when a woken model runs it. The
+# epoch-marked shape is runners/orchid-tick's own (`<engine>/orchestrator
+# tick-e<epoch>`), which libexec/orchid-journal passes through verbatim.
+T4X_BROKER_ACTOR="claude/orchestrator tick-e$ORCHID_EPOCH"
+
+t4x_status()       { "$ORCHID_BIN" task show "$1" | grep '^status: ' | cut -d' ' -f2; }
+t4x_objection()    { "$ORCHID_BIN" task show "$1" | grep '^unresolved_objection: ' | cut -d' ' -f2-; }
+t4x_objection_by() { "$ORCHID_BIN" task show "$1" | grep '^unresolved_objection_by: ' | cut -d' ' -f2-; }
+
+# The same light-weight walk the T040 block uses, taking its id: base and
+# candidate both pinned to the fixture's own HEAD, `verification_commands=true`,
+# and a planted reviewer envelope for the kernel's reviewing->arbitrating count
+# gate. plant_reviewer_envelope derives the attempt from the task itself, so it
+# plants against whichever round is current.
+t4x_new_task() {
+  "$ORCHID_BIN" task create "$1" "$2" \
+    || fail "fixture: task create $1 must succeed (a taken id would make every assertion below read another case's task)"
+  "$ORCHID_BIN" task set "$1" base_sha "$t32_sha" >/dev/null
+  "$ORCHID_BIN" task set "$1" candidate_sha "$t32_sha" >/dev/null
+  "$ORCHID_BIN" task set "$1" verification_commands true >/dev/null
+}
+t4x_to_arbitrating() {
+  "$ORCHID_BIN" task advance "$1" implementing --reason "dispatch" >/dev/null
+  "$ORCHID_BIN" task advance "$1" testing --reason "implemented" >/dev/null
+  "$ORCHID_BIN" verify "$1" >/dev/null
+  "$ORCHID_BIN" task advance "$1" reviewing --reason "verify passed" >/dev/null
+  plant_reviewer_envelope "$1"
+  "$ORCHID_BIN" task advance "$1" arbitrating --reason "reviews reconciled" >/dev/null
+}
+
+# --- the run's own orchestrator objects, and can answer its own objection ---
+t4x_new_task T041 "an objection the brokered surface raised itself"
+t4x_to_arbitrating T041
+assert_eq arbitrating "$(t4x_status T041)" "fixture: T041 reaches arbitrating"
+
+T41_OBJ='the retry path drops the error; return it rather than logging it'
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T041 \
+  --result request-changes --reason "$T41_OBJ" >/dev/null \
+  || fail "fixture: a brokered request-changes arbitration must still succeed"
+assert_eq rework "$(t4x_status T041)" "a brokered request-changes lands in rework exactly as an operator's does"
+assert_eq "a1: $T41_OBJ" "$(t4x_objection T041)" \
+  "T032: the objection is recorded whoever raised it — the persistence is not the operator's alone"
+assert_eq orchestrator "$(t4x_objection_by T041)" \
+  "T032: ...and it is recorded as the ORCHESTRATOR's, from the actor identity the kernel set for that wakeup"
+red_case "an objection with no recorded provenance: the arbiter's class is written on the task beside the text"
+
+t4x_to_arbitrating T041
+assert_eq "a1: $T41_OBJ" "$(t4x_objection T041)" \
+  "fixture: the brokered objection survives its rework round, exactly as an operator's does"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T041 \
+  --result approve --reason "the error is returned now" >/dev/null \
+  || fail "T032: the surface that raised an objection must be able to answer it — a brokered stop only a human can clear parks an unattended run forever"
+assert_eq merging "$(t4x_status T041)" "and the approving arbitration derives merging as usual"
+assert_eq "" "$(t4x_objection T041)" "the orchestrator's own objection is cleared by its own explicit approval"
+assert_eq "" "$(t4x_objection_by T041)" \
+  "...and the class is cleared with it, so a later rejection cannot inherit an authority nobody granted it"
+# One PATTERN across all three facts, for the reason the T040 block's own
+# journal assertions give: this file's earlier walk already wrote a "cleared by
+# an explicit arbitration approval" line, so a search for that phrase alone
+# would pass with nothing here at all. The objection's own words pin WHICH
+# clear, and the two actors pin what this case is actually about.
+assert_match 'objection cleared by an explicit arbitration approval.*retry path drops the error.*raised by: orchestrator, cleared by: orchestrator' "$(cat .orchid/journal.md)" \
+  "...and the journal names both actors, so a machine settling its own objection is legible as exactly that"
+green_case "the run orchestrator's own objection: recorded, survived a rework round, and settled by the same surface"
+
+# --- an OPERATOR's objection is not the brokered surface's to settle --------
+# The routing half of this (an operator's objection raises `operator-decision`,
+# which wakes nobody) is tests/test_drive.sh's Part AF. This is the verb half,
+# and it is not redundant: `task arbitrate <id>` takes an ID, so a model woken
+# for some OTHER task's boundary can name this one, and a guarantee that rests
+# only on which boundary got recorded is a guarantee one stray argument walks
+# past.
+t4x_new_task T042 "an objection only its author may settle"
+t4x_to_arbitrating T042
+T42_OBJ='the lock is still taken after the early return at lib/foo.sh:140'
+"$ORCHID_BIN" task arbitrate T042 --result request-changes --reason "$T42_OBJ" >/dev/null \
+  || fail "fixture: the operator's request-changes arbitration must succeed"
+assert_eq operator "$(t4x_objection_by T042)" \
+  "an arbitration run with no kernel-set actor identity is the operator's, which is the rule the journal has always used"
+t4x_to_arbitrating T042
+
+for _res in approve request-changes; do
+  rc=0
+  t42_out="$(ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T042 \
+    --result "$_res" --reason "reads fine to me" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "T032: a brokered --result $_res on an OPERATOR's standing objection must be refused — approve clears it from the same diff that produced it, and request-changes replaces their words with the model's own"
+  assert_match "not the operator" "$t42_out" \
+    "the refusal says whose objection it is and that this actor is not them (--result $_res)"
+  assert_match "orchid notify --task T042" "$t42_out" \
+    "...and names the move that IS available to a woken model: raise it to the operator (--result $_res)"
+  assert_eq "a1: $T42_OBJ" "$(t4x_objection T042)" "and the refused arbitration left the objection exactly as it was (--result $_res)"
+  assert_eq operator "$(t4x_objection_by T042)" "...including its class (--result $_res)"
+  assert_eq arbitrating "$(t4x_status T042)" "...and took no transition at all (--result $_res)"
+done
+red_case "a brokered arbitration over an operator's standing objection: refused at the verb, both results, nothing written"
+
+# --- and the class cannot be written away either ----------------------------
+# The objection's own key is already on `task set`'s deny-list. Without its
+# class beside it, an operator-only stop could be relabelled as a model's
+# without touching a character of the text an operator would reread — the same
+# bypass by a quieter door.
+rc=0; t42_set_out="$("$ORCHID_BIN" task set T042 unresolved_objection_by orchestrator 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T032: task set unresolved_objection_by must be refused (kernel-owned) — it decides who may clear the objection"
+assert_match "kernel-owned" "$t42_set_out" "the refusal says the key is kernel-owned"
+assert_match "task arbitrate" "$t42_set_out" "...and names the verb that does write it"
+assert_eq operator "$(t4x_objection_by T042)" "and the refused write left the arbiter class exactly as it was"
+red_case 'task set on unresolved_objection_by: refused, so an operator-only stop cannot be relabelled as a model-settleable one'
+
+"$ORCHID_BIN" task arbitrate T042 --result approve --reason "the early return releases the lock now" >/dev/null \
+  || fail "fixture: the operator's own approving arbitration must succeed"
+assert_eq merging "$(t4x_status T042)" "the operator settles their own objection, and the task moves"
+assert_eq "" "$(t4x_objection T042)" "...clearing it"
+assert_eq "" "$(t4x_objection_by T042)" "...and its class with it"
+assert_match 'objection cleared by an explicit arbitration approval.*early return at lib/foo.sh:140.*raised by: operator, cleared by: operator' "$(cat .orchid/journal.md)" \
+  "...and the journal records both actors, so who overrode whom is answerable from the record alone"
+green_case "an operator's own objection: settled by the operator, cleared, and both arbiters named in the journal"

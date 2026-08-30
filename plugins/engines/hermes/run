@@ -152,6 +152,11 @@ if [ -f "$input_pack/task.md" ]; then
   # plugins/engines/claude/run's own note, and lib/review.sh, for why every
   # review adapter carries it rather than the one that happens to be routed.
   objection="$(fm_get "$input_pack/task.md" unresolved_objection)"
+  # ...and the class of arbiter who raised it, so the prompt never describes
+  # this run's own orchestrator as a human or a human as a model. Defaulted to
+  # the stricter reading on an absent field, as the kernel's own gate is.
+  objection_by="$(fm_get "$input_pack/task.md" unresolved_objection_by)"
+  [ -n "$objection_by" ] || objection_by=operator
   manifest_line="$(jq -r '"pack manifest: " +
     ([.items[] | .name + "(" + (.bytes|tostring) + "b,truncated:" + (.truncated|tostring) + ")"] | join(" "))' \
     "$input_pack/pack.json")"
@@ -169,8 +174,9 @@ VERDICT: approve OR request-changes
 REASON: one sentence"
   [ -z "$objection" ] || prompt="$prompt
 
-A HUMAN ARBITER REJECTED AN EARLIER ROUND OF THIS TASK and that objection is
-still recorded as unresolved:
+AN ARBITER REJECTED AN EARLIER ROUND OF THIS TASK and that objection is still
+recorded as unresolved. It was raised by: $objection_by (operator = the human
+running this repository; orchestrator = this run's own arbiter). The objection:
   $objection
 Judge this round on whether that objection was addressed, before anything
 else, and say which in your REASON line. If it was not addressed, withhold

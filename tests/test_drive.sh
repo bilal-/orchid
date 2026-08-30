@@ -10154,7 +10154,131 @@ for _run in "$REPO_ROOT"/plugins/engines/*/run; do
     || fail "T032: $_name builds a review prompt but never reads the task's unresolved_objection — a reviewer it dispatches re-forms an opinion with no idea an arbiter already rejected this"
   grep -qE '^[[:space:]]*\$objection[[:space:]]*$' <<<"$_code" \
     || fail "T032: $_name reads unresolved_objection but never renders it into the prompt text — the field reaches the pack and stops there"
+  # AND WHO RAISED IT (T032 convergence). The same verb records an operator's
+  # objection and this run's own orchestrator's, and they are worth different
+  # things to a reviewer: one is a human who read the merged source, the other
+  # a model that read this diff. A prompt that names neither, or names one as
+  # the other, is telling the reviewer something the task file does not say.
+  grep -qF 'task.md" unresolved_objection_by' <<<"$_code" \
+    || fail "T032: $_name renders the objection but never reads unresolved_objection_by — its prompt cannot say whether a human or this run's own orchestrator raised it"
+  # The RENDERED form, not a bare `$objection_by` -- that would be satisfied by
+  # the `[ -n "$objection_by" ]` default guard on the line above the read, which
+  # is not the prompt.
+  grep -qE 'raised by: \$objection_by' <<<"$_code" \
+    || fail "T032: $_name reads unresolved_objection_by but never renders it into the prompt text — the class reaches the adapter and stops there"
+  # Defaulted, and to the stricter reading: an absent class is every task
+  # written before this field existed, and describing a human's objection as a
+  # model's is the direction that invites a reviewer to discount it.
+  grep -qE 'objection_by=operator' <<<"$_code" \
+    || fail "T032: $_name does not default unresolved_objection_by — an absent class must read as the operator's, exactly as the kernel's own gate reads it"
 done
 [ "$obj_adapters" -ge 3 ] \
   || fail "T032: this sweep matched only $obj_adapters review adapters — its selector has gone stale and it is now proving nothing"
 green_case 'every shipped adapter that builds a review prompt reads the standing objection and renders it into that prompt'
+
+# ===========================================================================
+# Part AG (T032 convergence) -- WHO RAISED THE OBJECTION DECIDES WHO MAY
+# SETTLE IT.
+#
+# Part AF stops a deterministic approval on any standing objection and routes
+# it to a stop only an operator can settle. The first half is owed to every
+# objection. The second half is owed only to an OPERATOR's, and `orchid task
+# arbitrate` has two callers: the operator at their own shell, and a brokered
+# orchestrator the pump woke for a `review-conflict` -- `task-arbitrate` is the
+# single judgment write `_DRIVE_BROKERED_WRITE_VERBS` admits, so a model
+# recording `request-changes` through it is the broker working as designed.
+#
+# Read as the operator's, that model's own objection becomes a stop nothing in
+# the loop can clear: `operator-decision` names no settling verb, so the pump
+# wakes nobody, so no later pass moves it. The disagreement the brokered surface
+# exists to arbitrate becomes the thing that parks an unattended run until a
+# human happens to look. That is not F33 being prevented, it is a second way to
+# lose a run -- and quieter, because `status` says the run is simply waiting.
+#
+# So the class of arbiter is recorded on the task at the arbitration
+# (tests/test_task.sh's own block covers the write end and the verb-level
+# refusal), and the policy reads it: an operator's goes out as `objection`, the
+# orchestrator's as `conflict`. Both refuse the deterministic approval, both
+# carry the objection's words into the record; they differ in exactly one
+# thing, which is the authority a settling arbitration needs.
+#
+# RED: an objection this run's own orchestrator raised, routed to a stop
+#      nothing but a human can settle -- and an unreadable or absent class
+#      read as anything other than the operator's.
+# GREEN: the same task and the same reviews approve once the objection is
+#      cleared, and the kind the orchestrator's objection routes to really is
+#      one a woken model can settle.
+# ===========================================================================
+OBJ_TEXT_BROKERED='the error is swallowed on the retry path at lib/foo.sh:118 — return it'
+
+# --- an orchestrator's own objection: still no deterministic approval -------
+mk_policy_task P53 low high
+mk_review P53 "" approve true '[]'
+assert_eq approve "$(decision_of P53)" \
+  "Part AG premise: with no objection recorded, this review set is the deterministic approval F33 shipped"
+fm_set "$POLICY/.orchid/tasks/P53.md" unresolved_objection "a1: $OBJ_TEXT_BROKERED" \
+  || fail "fixture: P53's objection must be recordable"
+fm_set "$POLICY/.orchid/tasks/P53.md" unresolved_objection_by orchestrator \
+  || fail "fixture: P53's arbiter class must be recordable"
+p53_decision="$(decision_of P53)"
+[ "$p53_decision" != approve ] \
+  || fail "T032: an uncleared objection refuses a deterministic approval whoever raised it — the reviews on this round were never asked about it"
+red_case "an uncleared objection raised by the run's own orchestrator: never a deterministic approval either"
+
+# ...but it is the ARBITRABLE refusal, not the operator-only one.
+assert_eq conflict "$p53_decision" \
+  "T032: an orchestrator's own objection comes back as conflict, not objection — the actor that raised it is in the loop and may answer it"
+p53_detail="$(detail_of P53)"
+assert_match "the error is swallowed on the retry path" "$p53_detail" \
+  "the detail quotes the arbiter's own words here too, so the next arbitration reads what it must answer"
+assert_match "task arbitrate P53 --result approve" "$p53_detail" \
+  "...and names the verb that clears it, on this task"
+assert_match "orchestrator" "$p53_detail" \
+  "...and says whose objection it is, because 'an arbiter objected' is a different fact from 'the operator objected'"
+# The kind that word routes to must really be settleable, or this is the
+# operator-only stop under a different name. Both shipped surfaces, since a
+# soft-surfaced orchestrator is woken for the same boundaries.
+for _surface in brokered soft; do
+  assert_eq 1 "$(drive_boundary_priority review-conflict arbitrating "$_surface")" \
+    "T032: the kind a conflict routes to is settleable by a woken orchestrator on a $_surface surface — otherwise an unattended run parks on its own objection forever"
+  drive_boundary_wakes_orchestrator review-conflict arbitrating "$_surface" \
+    || fail "T032: a brokered objection must WAKE the surface that raised it ($_surface) — a stop that pages a human for a model's own request-changes is a second way to lose a run"
+done
+green_case "the run orchestrator's own standing objection: refused an approval, routed to a stop that same surface can settle"
+
+# --- and the class read is fail-closed --------------------------------------
+# `orchestrator` is one token and nothing else is. A field that cannot be read
+# is not evidence that a machine raised the objection, and the expensive
+# direction of that doubt is the one F33 already paid for.
+for _bad in 'the operator, probably' 'Orchestrator' '' 'operator'; do
+  fm_set "$POLICY/.orchid/tasks/P53.md" unresolved_objection_by "$_bad" \
+    || fail "fixture: P53's arbiter class must be rewritable (value: '$_bad')"
+  assert_eq objection "$(decision_of P53)" \
+    "T032: an arbiter class that is not exactly 'orchestrator' reads as the operator's, the stricter stop (value: '$_bad')"
+done
+red_case "an unreadable, empty or unrecognised arbiter class: read as the operator's, never as the one a woken model may clear"
+
+# A task that carries an objection but no class LINE at all -- every task
+# written before the class was recorded, and the shape an upgrade in flight
+# leaves behind.
+mk_policy_task P54 low high
+mk_review P54 "" approve true '[]'
+fm_set "$POLICY/.orchid/tasks/P54.md" unresolved_objection "a1: $OBJ_TEXT_BROKERED" \
+  || fail "fixture: P54's objection must be recordable"
+grep -q '^unresolved_objection_by' "$POLICY/.orchid/tasks/P54.md" \
+  && fail "fixture: P54 must carry NO arbiter class line — it is the pre-existing shape this case exists to read"
+assert_eq objection "$(decision_of P54)" \
+  "T032: an objection recorded before the class existed reads as the operator's — an upgrade in flight must not downgrade a stop already standing"
+red_case "an objection carrying no arbiter class line at all: the operator-only stop, not the arbitrable one"
+
+# --- and neither reading survives the objection being cleared ---------------
+# The gate is the field, not the class: with nothing standing, the class says
+# nothing at all and the same reviews approve. Asserted on the task left
+# labelled `orchestrator`, which is the one a stale class could speak for.
+fm_set "$POLICY/.orchid/tasks/P53.md" unresolved_objection_by orchestrator \
+  || fail "fixture: P53's arbiter class must be restorable"
+fm_set "$POLICY/.orchid/tasks/P53.md" unresolved_objection "" \
+  || fail "fixture: P53's objection must be clearable"
+assert_eq approve "$(decision_of P53)" \
+  "T032: a class with no objection behind it decides nothing — the same reviews approve again"
+green_case 'an arbiter class left behind an empty objection: inert, and the deterministic approval is restored'

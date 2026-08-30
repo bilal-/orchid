@@ -2839,6 +2839,14 @@ drive_arbitrating() {
       # and what it records is something no woken model is in a position to
       # assert. The detail still names `orchid task arbitrate`, because that IS
       # the remedy -- run by the operator whose objection it is.
+      #
+      # ONLY AN OPERATOR'S REACHES THIS ARM. An objection this run's own
+      # orchestrator recorded comes back from the policy as `conflict` and takes
+      # the arm above -- still refused a deterministic approval, but routed to
+      # the actor that raised it rather than parked on a human page nothing can
+      # move. The policy decides which, from the arbiter class the arbitration
+      # wrote onto the task; this file never re-derives it, so the two cannot
+      # disagree about who a given objection belongs to.
       set_boundary operator-decision "$id" "$detail"
       ;;
     *)

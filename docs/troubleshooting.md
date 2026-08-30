@@ -1196,10 +1196,20 @@ same concurrency hole was rejected twice, round 3's reviewers returned
 `approve`, and the deterministic path merged it.
 
 ```sh
-orchid task show <id> | grep unresolved_objection   # the objection, as recorded
+orchid task show <id> | grep unresolved_objection   # the objection, and who raised it
 orchid journal show --task <id>                     # every arbitration, in full
 git diff <base_sha>..<candidate_sha>                # what this round actually changed
 ```
+
+That `grep` prints the objection and, beside it, `unresolved_objection_by` —
+who raised it, which is what decided that this stop reached you rather than a
+woken model. `operator` is the case this section is about.
+`unresolved_objection_by: orchestrator` means the run's own orchestrator
+recorded the rejection, and that one is filed as `review-conflict` instead: it
+still refuses the deterministic approval, but the pump wakes the surface that
+raised it, so you would not normally be reading this page for one. A task
+carrying an objection but no `_by` line at all was rejected before the field
+existed, and is read as yours.
 
 Then settle it, whichever way the diff says:
 
@@ -1221,6 +1231,13 @@ your objection from the same diff that produced it, and you would find out the
 way F33's operator did, by reading the merged source. `operator-decision` names
 no settling verb, so it is operator-only on every surface. The run stops here
 until you decide, which is the point.
+
+That is enforced at the verb as well as in the routing: `orchid task arbitrate`
+refuses a non-operator arbitration of either result on a task carrying your
+standing objection, so a model woken for some other boundary cannot reach this
+one by naming its id. If you see that refusal in a tick's output, the model did
+the right thing next — its move there is `orchid notify`, which is how this page
+got to you.
 
 If the objection is genuinely obsolete
 (the task was re-scoped, the code it named is gone), that is still an

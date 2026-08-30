@@ -306,7 +306,7 @@ The kernel-owned boundary kinds:
 | `operator-handoff` | work no actor in the loop declares the capability for: a step whose requirements the resolved actor's manifest does not cover, so it was never dispatched (INV-16, `orchid jobs prepare` exit 19) — or this candidate's execution-requiring mechanical steps are not acknowledged for it, because `handoff_before_verify` is on, or because its implementer is installed under neither name it is looked up by — the directory a binding names, or the qualified `id=` a manifest claims. See "The operator hand-off" below |
 | `task-prerequisite` | the task declares an `operator_prerequisite` — a step outside the sandbox its verification depends on — that nobody has acknowledged for this candidate; raised by either stage that runs the suite (see THE TICK's `testing` and `merging` steps) |
 | `run-complete` | every task is `done`; the acceptance checks and `orchid run accept --evidence` behind COMPLETION below are judgment work no verb decides |
-| `operator-decision` | everything else policy deliberately refuses to decide: a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree. A merge left in `merging` is this kind. So is the ONE block that is a judgment about the REPOSITORY rather than about a candidate — a repo-wide `merge_gate` still red at the rework cap — and it must be filed this way by the blocking pass AND by every later walk of that blocked task, from the one journaled cause, or the record changes under the task and pages a second time. Every OTHER stop that ends in a block is `blocked-task` above. Being the catch-all does not make a page less answerable: raised on a task in `blocked`, this kind declares that state's whole recovery list, exactly as `blocked-task` does. This is also the kind an uncleared `unresolved_objection` raises — an arbiter's own `request-changes` that no arbitration has cleared, ahead of every review arm and before any envelope is read (the arbitration truth table's arm 0). Filed here rather than as `review-conflict` on purpose: that kind is arbitrable from `arbitrating`, so it would hand the clearing verb to a woken model, and whether an arbiter's objection was met is that arbiter's call |
+| `operator-decision` | everything else policy deliberately refuses to decide: a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree. A merge left in `merging` is this kind. So is the ONE block that is a judgment about the REPOSITORY rather than about a candidate — a repo-wide `merge_gate` still red at the rework cap — and it must be filed this way by the blocking pass AND by every later walk of that blocked task, from the one journaled cause, or the record changes under the task and pages a second time. Every OTHER stop that ends in a block is `blocked-task` above. Being the catch-all does not make a page less answerable: raised on a task in `blocked`, this kind declares that state's whole recovery list, exactly as `blocked-task` does. This is also the kind an uncleared `unresolved_objection` raises when an OPERATOR raised it — an arbiter's own `request-changes` that no arbitration has cleared, ahead of every review arm and before any envelope is read (the arbitration truth table's arm 0). Filed here rather than as `review-conflict` on purpose: that kind is arbitrable from `arbitrating`, so it would hand the clearing verb to a woken model, and whether an arbiter's objection was met is that arbiter's call. An objection the run's own orchestrator raised is filed as `review-conflict` instead — still no deterministic approval, but a stop the actor that raised it may settle, since a model's own `request-changes` routed here would park an unattended run on a page nothing in the loop can answer |
 
 **Waking a model for one asks the SAME question.** The precedence above
 decides which of several boundaries goes into the record;
@@ -383,7 +383,9 @@ incomplete review set is never also reported as a conflict, and vice versa:
 0. **A standing objection, ahead of all three** (T032, dogfood F33) — the task
    carries an `unresolved_objection`, meaning an arbiter recorded
    `request-changes` on an earlier round and no arbitration has recorded that
-   it was answered. → boundary `operator-decision`, **no transition**, before a
+   it was answered. → boundary `operator-decision` when an OPERATOR raised it,
+   `review-conflict` when the run's own orchestrator did (see "who may settle
+   it" below), **no transition** either way, before a
    single envelope is read. Every arm below is a reading of the ROUND's
    evidence; this is a reading of the TASK, and it is the one fact no quantity
    of fresh reviews can settle — which is why it is not folded into arm 3's
@@ -425,6 +427,29 @@ incomplete review set is never also reported as a conflict, and vice versa:
    declares — `operator-decision` declares no choice set, so the reply is free
    text and the record names the verb to run. Losing the one-tap `approve` is
    the point: an objection this specific is not answered from a phone.
+
+   **All of which is a claim about the ARBITER, not about objections** (T032
+   convergence). `orchid task arbitrate` has two callers who are not the same
+   actor: an operator at their own shell, and a brokered orchestrator the pump
+   woke for a `review-conflict` — `task-arbitrate` is the single judgment write
+   that surface admits, so a model recording `request-changes` through it is
+   the broker working as designed. Read back as an operator's, that model's own
+   objection becomes a stop nothing in the loop can clear: `operator-decision`
+   wakes nobody, so no later pass moves it, and the disagreement the brokered
+   surface exists to arbitrate is what parks the run. So the arbitration
+   records the CLASS of the arbiter beside the objection —
+   `unresolved_objection_by`, `operator` or `orchestrator`, derived from the
+   same kernel-set `ORCHID_ACTOR` identity the journal has always named its
+   actor from — and this arm reads it. **An objection is settled by an arbiter
+   of at least the authority that raised it.** Refusing the deterministic
+   approval is owed to every objection; requiring a *human* is owed only to a
+   human's. The stricter reading is the default on every axis: an absent,
+   empty or unrecognised class reads as the operator's, so a task written
+   before the field existed keeps the operator-only stop. And the routing is
+   not the whole guarantee — `orchid task arbitrate` itself refuses a
+   non-operator arbitration, of either result, on a task carrying an
+   operator's standing objection, so a model woken for some other boundary
+   cannot reach this one by naming its id. `orchid task set` refuses both keys.
 
 1. **Evidence** — the evidence set is EXACTLY the one the kernel's own
    `reviewing`→`arbitrating` gate counts, and this arm mirrors that gate
@@ -552,7 +577,20 @@ is what the boundary quotes back, what the next round's reviewers are shown,
 and what someone three rounds later reads to decide whether it was met. Nothing
 else clears it — not `unblock`, not `retry`, not `reverify`, and `orchid task
 set` refuses the key by name — because none of those is an answer to "was this
-defect fixed". `orchid task advance` from `arbitrating` remains legal for
+defect fixed".
+**And it records WHO objected** (T032 convergence): `unresolved_objection_by`
+is written alongside, `operator` when nothing set an actor identity for the
+process and `orchestrator` when the kernel did — the same `ORCHID_ACTOR`
+provenance `orchid journal add` has always derived its actor string from, so
+the class on the task and the actor on that arbitration's journal entry can
+never disagree. It is what decides whether the next round's stop is
+operator-only or arbitrable (arm 0 above), and it is enforced at this verb as
+well as in the routing: an arbitration that is not the operator's is REFUSED
+outright, either result, on a task carrying an operator's standing objection —
+approving would clear their objection from the same diff that produced it, and
+requesting changes would replace their words with the model's own. A woken
+orchestrator's move there is `orchid notify`.
+`orchid task advance` from `arbitrating` remains legal for
 an operator and for the hand-executed walk below — but it records no
 arbitration result, so it neither raises an objection nor clears one; and the driver and the
 brokered orchestrator surface only ever use `task arbitrate`, which is what

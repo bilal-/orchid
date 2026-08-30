@@ -878,8 +878,16 @@ case "$sub" in
       # objection has been answered is the judgment `task arbitrate` records;
       # a bare frontmatter write records nothing, and a cleared objection with
       # no journal entry behind it is indistinguishable from one that was met.
-      unresolved_objection)
-        orchid_die "'unresolved_objection' is kernel-owned — 'task arbitrate <id> --result request-changes' writes it and 'task arbitrate <id> --result approve --reason \"...\"' is the ONLY thing that clears it. It is what keeps a deterministic approval from firing on a defect an arbiter already rejected, so it is cleared by a recorded judgment or not at all." ;;
+      #
+      # `unresolved_objection_by` is on it for a sharper reason still: it is
+      # the field that decides WHO may clear the objection. Left writable, the
+      # stop an operator raised could be relabelled as an orchestrator's by
+      # anything holding the verb -- downgrading an operator-only boundary to
+      # one a woken model settles, without touching a character of the
+      # objection an operator would reread. The two fields are written by one
+      # arbitration and refused by one arm, so neither can drift from the other.
+      unresolved_objection|unresolved_objection_by)
+        orchid_die "'$key' is kernel-owned — 'task arbitrate <id> --result request-changes' writes it (recording the arbiter's own class alongside, which is what decides whether a woken orchestrator may settle the stop or only an operator may) and 'task arbitrate <id> --result approve --reason \"...\"' is the ONLY thing that clears it. It is what keeps a deterministic approval from firing on a defect an arbiter already rejected, so it is cleared by a recorded judgment or not at all." ;;
     esac
     # depends_on ids are checked HERE, at write time (dogfood F30). The
     # scheduler can only ever report an id it cannot satisfy as
@@ -1660,7 +1668,35 @@ case "$sub" in
     # would expire on precisely the event it exists to survive. Only an explicit
     # `--result approve` clears it -- not `unblock`, not `retry`, not
     # `reverify`, none of which is an answer to "was this defect fixed".
+    #
+    # AND IT RECORDS WHO RAISED IT. `orchid task arbitrate` has two callers who
+    # are not the same actor: an operator at their own shell, and a brokered
+    # orchestrator the pump woke for a `review-conflict` -- `task-arbitrate` is
+    # the one judgment write that surface admits, so a model reaching this line
+    # is the surface working as designed, not a leak. Recording the class of
+    # the arbiter beside the text is what lets one field serve both without
+    # either reading collapsing into the other: an orchestrator's own objection
+    # is not a human page nobody can answer, and an operator's is not something
+    # the next wakeup may clear. See lib/review.sh for the rule -- an objection
+    # is settled by an arbiter of at least the authority that raised it -- and
+    # for why ORCHID_ACTOR is the provenance rather than a new one.
+    #
+    # THE GUARD IS AT THE VERB, not only in the routing. lib/drive.sh raises an
+    # operator's standing objection as `operator-decision`, which names no
+    # settling verb and so wakes nobody; that keeps a model from being HANDED
+    # this task. It does not keep a model woken for some OTHER boundary from
+    # naming this id -- `task arbitrate <id>` takes an id, and any task sitting
+    # in `arbitrating` is reachable by one. Both results are refused, because
+    # `request-changes` would supersede the operator's words with the model's
+    # own and leave a stop the model may then clear, which reaches F33's
+    # outcome by a longer road than `approve` does.
     obj_prev="$(fm_get "$f" unresolved_objection)"
+    obj_prev_by_raw="$(fm_get "$f" unresolved_objection_by)"
+    obj_prev_by="$(review_objection_arbiter "$obj_prev" "$obj_prev_by_raw")"
+    arb_by="$(review_arbiter_class)"
+    if [ "$obj_prev_by" = operator ] && [ "$arb_by" != operator ]; then
+      orchid_die "$id carries an OPERATOR's unresolved objection, and this arbitration is not the operator's (actor: ${ORCHID_ACTOR:-unset}) — refused, and nothing was written. The standing objection is: \"$obj_prev\". Whether it was answered is the call of the arbiter who raised it, who saw twice what a review of this diff did not; a --result approve here would clear it from the same diff that produced it, and a --result request-changes would replace their words with these. Raise it to the operator instead: orchid notify --task $id \"<what they must decide>\"."
+    fi
     if [ "$result" = request-changes ]; then
       # SUPERSEDED, NOT ACCUMULATED: the arbiter's latest word is the operative
       # statement of what is still unresolved, and one frontmatter line cannot
@@ -1670,8 +1706,20 @@ case "$sub" in
       # so before it happens.
       if [ -n "$obj_prev" ]; then
         journal --task "$id" --kind arbitration \
-          "objection superseded by this arbitration — previous: \"$obj_prev\""
+          "objection superseded by this arbitration — previous: \"$obj_prev\" (raised by: $obj_prev_by)"
       fi
+      # THE CLASS GOES FIRST, and the text goes first when they are cleared
+      # below -- the same asymmetry the advance is bracketed by, for the same
+      # reason: each half fails in the direction that leaves the stop no weaker
+      # than it already was. A class written with no text yet behind it is
+      # inert (review_objection_arbiter answers "none standing" on an empty
+      # objection, whatever the class says), while a text written under a class
+      # that has not caught up yet reads as the operator's -- the stricter of
+      # the two. The reachable case that matters is an operator superseding an
+      # orchestrator's objection: with the class first, a failure between the
+      # two leaves the older text standing as operator-only rather than leaving
+      # the operator's own words labelled as a model's.
+      fm_set "$f" unresolved_objection_by "$arb_by"
       fm_set "$f" unresolved_objection \
         "a$(( $(fm_get "$f" attempts) + 1 )): $(review_objection_line "$reason")"
     fi
@@ -1685,8 +1733,18 @@ case "$sub" in
       # an `unresolved_objection:` line to every task in every repository that
       # never carried one. An approval that clears nothing has nothing to say.
       journal --task "$id" --kind arbitration \
-        "objection cleared by an explicit arbitration approval — was: \"$obj_prev\""
+        "objection cleared by an explicit arbitration approval — was: \"$obj_prev\" (raised by: $obj_prev_by, cleared by: $arb_by)"
       fm_set "$f" unresolved_objection ""
+      # Both halves, so a later `request-changes` cannot inherit a class from an
+      # objection that is no longer standing -- and the text first, per the note
+      # above: a failure between the two leaves an unread class behind an empty
+      # objection, which is inert, rather than the operator-only label behind a
+      # live one that nobody now needs to answer. Guarded on the RAW value for
+      # the reason the enclosing `-n "$obj_prev"` is guarded: `fm_set` on an
+      # absent key APPENDS it, and a task carrying an objection written before
+      # the class was recorded at all must not come out of this the owner of an
+      # empty `unresolved_objection_by:` line it never had.
+      [ -z "$obj_prev_by_raw" ] || fm_set "$f" unresolved_objection_by ""
     fi
     echo "arbitrated $id: result=$result from=$from to=$to" ;;
   handoff)

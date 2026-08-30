@@ -168,7 +168,12 @@ boundary that halts the run until an arbiter settles it.
 — a `request-changes` an arbiter recorded on an earlier round and no
 arbitration has cleared — the adapter appends it to the prompt, after the reply
 contract, and asks this round to answer it first: was it addressed, said in the
-`REASON:` line, with a `FINDING:` filed if it was not. This is the one input a
+`REASON:` line, with a `FINDING:` filed if it was not. The paragraph names WHO
+raised it, from the task's `unresolved_objection_by`: `operator` is the human
+running the repository, `orchestrator` is the run's own arbiter, and a prompt
+that described either as the other would be telling the reviewer something the
+task file does not say. An absent class reads as `operator`, the same
+fail-closed default the kernel's own gate takes. This is the one input a
 reviewer cannot re-derive from the pack, and on the run this comes from a
 reviewer that had itself withheld approval twice returned `approve` on the
 third round with the defect untouched — which is what a reviewer handed the

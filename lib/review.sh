@@ -104,6 +104,75 @@ review_objection_line() {
   envelope_fold_line "$1" "$REVIEW_OBJECTION_MAX"
 }
 
+# ---------------------------------------------------------------------------
+# WHO RAISED IT, AND WHY THE FIELD ABOVE IS NOT ENOUGH ON ITS OWN.
+#
+# `orchid task arbitrate` has two callers that are not the same actor. An
+# OPERATOR runs it from their own shell. A BROKERED ORCHESTRATOR runs it
+# through runners/orchid-orchestrator-command after the pump woke it for a
+# `review-conflict` -- that is the whole point of that surface, and
+# `task-arbitrate` is the one judgment write `_DRIVE_BROKERED_WRITE_VERBS`
+# admits. Both write `unresolved_objection`, and until this pair of helpers the
+# two were indistinguishable afterwards.
+#
+# That mattered in one direction each way. Treating every objection as the
+# operator's turns a woken model's own `request-changes` into a stop only a
+# human may clear -- so an unattended run that arbitrates its way through a
+# disagreement, which is exactly what the brokered surface exists to do, parks
+# on a human page it never needed and no later pass can move. Treating every
+# objection as the orchestrator's gives F33 back: a woken model clears the
+# operator's twice-stated objection from the same diff that produced it.
+#
+# So the class of the actor is recorded at the WRITE, durably, beside the text
+# -- and the rule it buys is one sentence: AN OBJECTION IS SETTLED BY AN
+# ARBITER OF AT LEAST THE AUTHORITY THAT RAISED IT. An operator's objection is
+# the operator's to clear; an orchestrator's may be cleared by the orchestrator
+# that raised it, or by the operator above it. Neither reading is the run's
+# default posture: both are read off a field the arbitration itself wrote.
+#
+# ORCHID_ACTOR IS THE PROVENANCE, and it is not a new one. It is the same
+# kernel-set variable libexec/orchid-journal has always derived its actor
+# string from, under the identical rule: runners/orchid-tick exports
+# `<engine>/orchestrator tick-e<epoch>` before spawning the orchestrator,
+# lib/spawn.sh's ORCHID_* allowlist carries it into the child, the broker
+# `exec`s `bin/orchid` with that environment intact, and an operator's own
+# shell has none of it -- which is why an unset variable has always read as
+# `operator` in the journal. Reusing it means the class recorded on the task
+# and the actor recorded in the journal entry for the same arbitration can
+# never disagree, and it is trusted-within-machine for exactly the reasons
+# documented there. runners/orchid-drive's `ORCHID_ACTOR="${ORCHID_ACTOR:-drive}"`
+# puts the deterministic driver on the non-operator side of this line too,
+# which is correct: an unattended approval is machine judgment, whoever started
+# the pass.
+
+# review_arbiter_class -- the class of the actor recording an arbitration RIGHT
+# NOW: `orchestrator` when the kernel set an actor identity for this process,
+# `operator` when nothing did. Never empty.
+review_arbiter_class() {
+  if [ -n "${ORCHID_ACTOR:-}" ]; then printf 'orchestrator\n'; else printf 'operator\n'; fi
+}
+
+# review_objection_arbiter <objection> <recorded-class> -- the class of arbiter
+# whose objection is standing. Empty when none stands, so a caller can test the
+# result for emptiness exactly as it does review_objection_line's.
+#
+# FAIL-CLOSED, and this is the half worth stating: `orchestrator` is returned
+# for that one token and nothing else. Absent, empty, unrecognised, or a task
+# written before the class was recorded at all: every one reads as `operator` -- the
+# stricter stop, the one a woken model may not settle. A provenance field that
+# cannot be read is not evidence that a machine raised the objection, and the
+# expensive direction of that doubt is the one F33 already paid for.
+review_objection_arbiter() {
+  # `${1:-}`/`${2:-}`: every caller reads both out of frontmatter, where an
+  # absent key is a missing ARGUMENT and not an empty one, and this file is
+  # sourced by verbs running under `set -u`.
+  [ -n "${1:-}" ] || return 0
+  case "${2:-}" in
+    orchestrator) printf 'orchestrator\n' ;;
+    *) printf 'operator\n' ;;
+  esac
+}
+
 # review_implementer_engine <repo> <task> -- the task's recorded
 # `implementer_engine_id` frontmatter if set (kernel-derived, single-writer:
 # `task advance implementing->testing` is the only writer of that field),

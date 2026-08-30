@@ -1191,17 +1191,12 @@ expired on either would expire on precisely the event it exists to survive — s
 `unblock`, `retry` and `reverify` all leave it standing, none of them being an
 answer to "was this defect fixed". Two readers act on it. The deterministic
 driver refuses to make an approval while one stands: `drive_review_decision`
-short-circuits to its own `objection` decision word ahead of all three arms of
-the arbitration truth table, and the driver raises that as an
-`operator-decision` boundary — the driver's one call to `task arbitrate
---result approve` sits behind that return, which is what makes it structurally
-unable to clear its own path. The kind is deliberate and is half the guarantee:
-`review-conflict` is arbitrable from `arbitrating`, so it would suppress the
-human page and let a woken model run the clearing verb from the same diff that
-produced the objection; `operator-decision` names no settling verb, so the stop
-is operator-only on every surface and reaches the human who raised it — the
-same policy, and the same reasoning, as `operator-handoff` and
-`task-prerequisite`. And every shipped `review` adapter appends the objection to the
+short-circuits ahead of all three arms of the arbitration truth table, and the
+driver takes no transition on the word it returns — the driver's one call to
+`task arbitrate --result approve` sits behind that return, which is what makes
+it structurally unable to clear its own path. WHICH stop it raises is
+`unresolved_objection_by`'s answer, below. And every shipped `review` adapter
+appends the objection to the
 reviewer's prompt (the pack copies `task.md` whole, so no new pack item is
 needed), narrowing the next round's question to "was the arbiter's objection
 addressed" rather than leaving the reviewer to re-form an opinion from the diff
@@ -1210,6 +1205,39 @@ hole twice, naming the constants and the line range the second time; round 3's
 reviewers, judging the diff cold, both returned `approve`; and the
 deterministic path merged it as "unanimous scope-complete approval from 2
 review(s), no finding at or above medium".
+`unresolved_objection_by` (v1.1, T032 convergence): kernel-owned, written and
+cleared by the same arbitrations that write and clear `unresolved_objection`,
+never alone; `orchid task set` refuses it by name too. It holds the CLASS of
+the arbiter who raised the standing objection — `operator` when nothing set an
+actor identity for the process running the verb, `orchestrator` when the kernel
+did (`runners/orchid-tick` exports `ORCHID_ACTOR` before spawning the
+orchestrator, `lib/spawn.sh`'s `ORCHID_*` allowlist carries it into the child,
+and the brokered command surface `exec`s `bin/orchid` with that environment
+intact). It is the same provenance `orchid journal add` has always derived its
+actor string from, deliberately: the class recorded on the task and the actor
+recorded on that arbitration's journal entry cannot disagree. It exists because
+`orchid task arbitrate` has two callers who are not the same actor — the
+operator, and a woken orchestrator for which `task-arbitrate` is the one
+judgment write the brokered surface admits — and reading a model's own
+`request-changes` back as an operator's would raise a stop that wakes nobody,
+which no later pass can move, on the exact disagreement the brokered surface
+exists to arbitrate. The rule it encodes: **an objection is settled by an
+arbiter of at least the authority that raised it.** An operator's is raised as
+`operator-decision` (`drive_review_decision`'s `objection` word), operator-only
+on every surface, for the reason `operator-handoff` and `task-prerequisite` are
+— naming a settling verb would hand the clearing decision to a woken model
+reading the same diff that produced the objection. The orchestrator's own is
+raised as `review-conflict` (the `conflict` word): still no deterministic
+approval, still quoted into the boundary and into the next round's reviewer
+prompt, but settleable by the actor that raised it. Fail-closed at every read:
+absent, empty or anything but the exact token `orchestrator` reads as the
+operator's, so a task carrying an objection written before this field existed
+keeps the stricter stop. And the routing is not the whole guarantee —
+`orchid task arbitrate` refuses a non-operator arbitration of EITHER result on
+a task carrying an operator's standing objection, since `task arbitrate <id>`
+takes an id and a model woken for another task's boundary could otherwise name
+this one; `--result approve` would clear their objection and
+`--result request-changes` would supersede their words with its own.
 `hook_guidance` (v1-m3):
 written by the orchestrator from a bound `hook.on_verify_fail` handler's
 `.artifact.guidance` string, via `orchid task set <id> hook_guidance
