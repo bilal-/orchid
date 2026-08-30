@@ -2975,6 +2975,216 @@ green_case "the same uninstall removes this checkout's own cron record when the 
 
 unset ORCHID_SERVICE_OS
 
+# -- K17: install does not stack a second schedule on a moved checkout ------
+# K13 made every REMOVING arm resolve its schedule from the binding rather than
+# from hashing the current path, because `git worktree move` separates the two.
+# Install kept hashing -- correctly, since install is where a label comes from --
+# and nothing on that side ever looked at the binding the checkout was already
+# carrying. So the same move that K13 is about, followed by the most ordinary
+# thing an operator does next, minted the leftover from the other end: a SECOND
+# label derived from the new path, a second plist rendered and loaded, a second
+# machine-local record written, and the repo-local half -- the last name the
+# FIRST schedule had from inside this checkout -- overwritten with the new one.
+# Two agents on the same interval against one run, one of them reachable only
+# through a machine-local record no verb resolves by path.
+#
+# Run under the real (stubbed-scheduler) install, never `--dry-run`: the fact
+# under test is whether a scheduler call and a second set of artifacts happen at
+# all, and a preview makes no scheduler call for reasons of its own.
+export ORCHID_SERVICE_OS=Darwin
+RI_MAIN="$BIND/ri-main"
+mkdir -p "$RI_MAIN"
+(
+  cd "$RI_MAIN" || exit 1
+  git init -q .
+  # Same shape as K13's fixture: runtime/ ignored and .orchid/ committed, so
+  # `git worktree move` has a clean tree to move.
+  printf '.orchid/runtime/\n' > .gitignore
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: complete\nrun_id: r-ri\n---\n# Roadmap\n' > .orchid/roadmap.md
+  git add .gitignore .orchid
+  git commit -q -m root
+  git worktree add -q -b ri-integration ../ri-wt
+) || fail "K17 fixture: could not build a main checkout with a linked integration worktree"
+[ -d "$BIND/ri-wt" ] || fail "K17 fixture: the linked worktree was not created"
+RI_WT="$(cd "$BIND/ri-wt" && pwd -P)"
+trust_repo "$RI_WT"
+
+ri_inst="$(svc_install_real --repo "$RI_WT" --interval-s 240 2>&1)"; rc=$?
+assert_eq 0 "$rc" "K17 fixture: the schedule installs at the ORIGINAL path first (out: $ri_inst)"
+ri_label="$(echo "$ri_inst" | grep -oE "$label_re" | head -n1)"
+ri_plist="$HOME/Library/LaunchAgents/$ri_label.plist"
+ri_mrec="$HOME/.orchid/services/$ri_label.json"
+[ -f "$ri_plist" ] || fail "K17 fixture: the install must have placed the plist"
+[ -f "$ri_mrec" ] || fail "K17 fixture: and the machine-local binding"
+
+# THE MOVE, through git's own verb -- what an operator actually does, not a
+# hand-built approximation of its result.
+git -C "$RI_MAIN" worktree move "$RI_WT" "$BIND/ri-wt-moved" \
+  || fail "K17 fixture: 'git worktree move' failed, so nothing below is about a moved worktree"
+RI_NEW="$(cd "$BIND/ri-wt-moved" && pwd -P)"
+ri_rec="$RI_NEW/.orchid/runtime/service.json"
+[ -f "$ri_rec" ] \
+  || fail "K17 fixture: the repo-local binding must have travelled inside the checkout, or there is no carried binding for install to resolve"
+[ ! -e "$RI_WT" ] || fail "K17 fixture: the original path must be gone, or the checkout was copied rather than moved"
+# Acknowledged at the path it now sits at, so no refusal below can be the
+# unattended-trust gate wearing this section's clothes. (The acknowledgement is
+# keyed to the Git common directory, which the move did not touch, so this is
+# belt and braces rather than a step an operator owes after a move.)
+trust_repo "$RI_NEW"
+
+# THE WITNESS THAT MAKES EVERY ASSERTION BELOW NON-VACUOUS: the path the
+# checkout now sits at hashes to a DIFFERENT label, and nothing of that label's
+# exists yet. Without this line, "no second plist appeared" could be true of a
+# second install that simply replaced the first.
+ri_new_label="$(orchid_service_derive_label "$RI_NEW")"
+[ "$ri_new_label" != "$ri_label" ] \
+  || fail "K17 fixture: the moved path must derive a different label, or there is no second schedule available to stack"
+ri_new_plist="$HOME/Library/LaunchAgents/$ri_new_label.plist"
+ri_new_mrec="$HOME/.orchid/services/$ri_new_label.json"
+[ -e "$ri_new_plist" ] && fail "K17 fixture: nothing may stand under the new label yet"
+[ -e "$ri_new_mrec" ] && fail "K17 fixture: nor a machine-local record for it"
+
+# HOW MANY SCHEDULES EXIST FOR THIS CHECKOUT, counted over BOTH labels rather
+# than asserted one file at a time: "the old one survives" and "no new one
+# appeared" are the two halves of singular, and a count says both at once.
+ri_schedules() {
+  local n=0
+  [ -f "$ri_plist" ] && n=$((n + 1))
+  [ -f "$ri_new_plist" ] && n=$((n + 1))
+  echo "$n"
+}
+assert_eq 1 "$(ri_schedules)" "K17 fixture: exactly one schedule stands before the re-install"
+
+# RED: the re-install a moved checkout meets.
+rc=0
+ri_red="$(svc_install_real --repo "$RI_NEW" --interval-s 240 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "THE FINDING: an install run in a MOVED checkout must refuse rather than mint a second schedule beside the one it carries (out: $ri_red)"
+assert_match 'already carries one, under a different name' "$ri_red" \
+  "and say what stopped it -- this checkout is bound to a schedule already"
+assert_match "$ri_label" "$ri_red" "naming the schedule it really has"
+assert_match "$ri_new_label" "$ri_red" \
+  "and the second one it would otherwise have derived from where the checkout now sits"
+assert_match 'a path this checkout has since left' "$ri_red" \
+  "and why the two differ, which is the fact an operator has to recognise"
+assert_match 'ONE operation' "$ri_red" \
+  "and that the recovery is one operation rather than two lines to run in order"
+assert_match 'only if the uninstall succeeded' "$ri_red" \
+  "with the install as the SUCCESS BRANCH of the uninstall, since an uninstall that refuses must not be followed by a second schedule"
+assert_match 'service uninstall --repo .* && orchid service install --repo .* --interval-s 240' "$ri_red" \
+  "spelled as the exact chain, carrying the interval this install was asked for"
+assert_eq 1 "$(ri_schedules)" \
+  "THE FINDING, as a count: the schedule stays SINGULAR -- re-hashed, this install left two agents firing on the same interval against one run"
+[ -f "$ri_plist" ] || fail "and the original plist is untouched"
+[ -f "$ri_mrec" ] || fail "and its machine-local binding, the only name that outlives the checkout"
+[ -e "$ri_new_plist" ] && fail "and no second plist was rendered"
+[ -e "$ri_new_mrec" ] && fail "and no second machine-local record was written"
+[ -f "$ri_rec" ] || fail "and the repo-local binding the checkout carried is still there"
+assert_eq "$ri_label" "$(jq -r '.label' "$ri_rec")" \
+  "still naming the ORIGINAL schedule -- overwriting this field is how the first schedule lost its last name inside this checkout"
+assert_eq "$RI_WT" "$(jq -r '.repo' "$ri_rec")" "and the path it was installed against"
+[ -s "$SCHED_LOG" ] \
+  && fail "and no scheduler call may have been made at all: the refusal is ahead of every write and ahead of launchd"
+red_case "an install run in a MOVED checkout refuses before any write or scheduler call, leaving the schedule it already carries singular and its records intact"
+
+# GREEN: the recovery the refusal names, run exactly as it is written -- the
+# uninstall first, resolving the ORIGINAL schedule from the binding (K13), and
+# the install only after it succeeded.
+rc=0
+ri_un="$(svc_uninstall_notfound 'launchctl (unload|list)' --repo "$RI_NEW" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the recovery's first half ends the schedule the moved checkout really has (out: $ri_un)"
+assert_match "$ri_label" "$ri_un" "and it is the ORIGINAL schedule it reports having ended"
+[ -f "$ri_plist" ] && fail "so the original plist is gone"
+[ -f "$ri_mrec" ] && fail "and its machine-local binding"
+[ -f "$ri_rec" ] && fail "and the repo-local half that travelled with the checkout"
+assert_eq 0 "$(ri_schedules)" \
+  "and no schedule is left standing, which is what makes the install below the one that lands rather than the second of two"
+
+rc=0
+ri_green="$(svc_install_real --repo "$RI_NEW" --interval-s 240 2>&1)" || rc=$?
+assert_eq 0 "$rc" "and the install that was refused a moment ago now succeeds (out: $ri_green)"
+assert_match "$ri_new_label" "$ri_green" "under the label the checkout's CURRENT path derives"
+grep -qE 'launchctl load' "$SCHED_LOG" \
+  || fail "and it really reached the scheduler, or the refusal above proved only that this verb never installs anything"
+[ -f "$ri_new_plist" ] || fail "with the plist placed"
+[ -f "$ri_new_mrec" ] || fail "and a machine-local binding naming it"
+[ -f "$ri_rec" ] || fail "and the repo-local half back inside the checkout"
+assert_eq "$ri_new_label" "$(jq -r '.label' "$ri_rec")" "which now names the new schedule"
+assert_eq "$RI_NEW" "$(jq -r '.repo' "$ri_rec")" "installed against where the checkout actually is"
+assert_eq 1 "$(ri_schedules)" \
+  "and the machine is left with exactly ONE schedule for this checkout, which is the whole of the recovery"
+green_case "the documented uninstall-then-install recovery ends the moved checkout's original schedule and leaves it with exactly one, under the label its current path derives"
+
+# GREEN: the guard is about a MOVE, not about installing twice. An ordinary
+# re-install at the SAME path still replaces its own schedule in place -- the
+# idempotence --help promises, and the thing a guard keyed to "a binding already
+# exists" rather than to "a binding naming a DIFFERENT schedule" would have
+# broken for every operator who re-runs install to change an interval.
+rc=0
+ri_again="$(svc_install_real --repo "$RI_NEW" --interval-s 300 2>&1)" || rc=$?
+assert_eq 0 "$rc" "an ordinary re-install at the same path is still accepted (out: $ri_again)"
+assert_match "$ri_new_label" "$ri_again" "under the same label, replacing that schedule in place"
+assert_match 'interval_s: 300' "$ri_again" "with the new interval it was re-run to set"
+assert_eq 1 "$(ri_schedules)" "and still exactly one schedule -- it replaced, it did not stack"
+green_case "a re-install at the SAME path remains idempotent: the stacking guard is keyed to a binding naming a different schedule, not to a binding existing"
+
+# GREEN: and the refusal must not reach a checkout that is not the one the
+# carried record names. A `cp -R` of a bound checkout carries that record inside
+# it too, and reads exactly like a move from the record alone -- but the
+# schedule it names belongs to the ORIGINAL, which is still standing and still
+# being driven, and is not this directory's to end. The recovery the refusal
+# names begins with `uninstall`, and uninstall run in a copy REFUSES (K14): said
+# here, it would be a command that cannot succeed. So the guard asks ownership,
+# and a copy gets its own schedule while the original keeps its own -- two
+# checkouts with one schedule each, which is not a stack.
+#
+# The copy is made from a checkout of its own rather than from the worktree
+# above, so that what is under test is the ownership arm and not a second
+# question about a duplicated worktree registration.
+RI_SOLO="$BIND/ri-solo"
+mkdir -p "$RI_SOLO"
+(
+  cd "$RI_SOLO" || exit 1
+  git init -q .
+  git commit -q --allow-empty -m root
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: planning\nrun_id: r-ri-solo\n---\n# Roadmap\n' > .orchid/roadmap.md
+) || fail "K17 fixture: could not build the checkout the copy is taken from"
+RI_SOLO_CANON="$(cd "$RI_SOLO" && pwd -P)"
+trust_repo "$RI_SOLO"
+ri_solo_inst="$(svc_install_real --repo "$RI_SOLO" --interval-s 240 2>&1)"; rc=$?
+assert_eq 0 "$rc" "K17 fixture: that checkout installs its own schedule first (out: $ri_solo_inst)"
+ri_solo_label="$(echo "$ri_solo_inst" | grep -oE "$label_re" | head -n1)"
+ri_solo_plist="$HOME/Library/LaunchAgents/$ri_solo_label.plist"
+[ -f "$ri_solo_plist" ] || fail "K17 fixture: with a plist for the copy to leave alone"
+
+cp -R "$RI_SOLO_CANON" "$BIND/ri-solo-copy" || fail "K17: could not copy the bound checkout"
+RI_SOLO_COPY="$(cd "$BIND/ri-solo-copy" && pwd -P)"
+ri_solo_copy_rec="$RI_SOLO_COPY/.orchid/runtime/service.json"
+assert_eq "$ri_solo_label" "$(jq -r '.label' "$ri_solo_copy_rec")" \
+  "K17: the copy carries the ORIGINAL's binding, which is what makes it indistinguishable from a move by record alone"
+[ -d "$RI_SOLO_CANON" ] \
+  || fail "K17: and the checkout that record names is still standing, which is the fact that tells the two apart"
+trust_repo "$RI_SOLO_COPY"
+rc=0
+ri_copy_out="$(svc_install_real --repo "$RI_SOLO_COPY" --interval-s 240 2>&1)" || rc=$?
+assert_eq 0 "$rc" "a copy of a bound checkout installs its OWN schedule rather than being refused (out: $ri_copy_out)"
+ri_copy_label="$(orchid_service_derive_label "$RI_SOLO_COPY")"
+[ "$ri_copy_label" != "$ri_solo_label" ] \
+  || fail "K17: the copy must derive a label of its own, or this proves nothing about the guard"
+assert_match "$ri_copy_label" "$ri_copy_out" "under the label its own path derives"
+[ -f "$HOME/Library/LaunchAgents/$ri_copy_label.plist" ] || fail "with its own plist"
+assert_eq "$ri_copy_label" "$(jq -r '.label' "$ri_solo_copy_rec")" \
+  "and the borrowed record replaced by an honest one naming this checkout's own schedule"
+assert_eq "$RI_SOLO_COPY" "$(jq -r '.repo' "$ri_solo_copy_rec")" "and this checkout"
+[ -f "$ri_solo_plist" ] || fail "while the schedule the copy borrowed the record from is untouched"
+assert_eq "$ri_solo_label" "$(jq -r '.label' "$RI_SOLO_CANON/.orchid/runtime/service.json")" \
+  "and so is that checkout's own binding -- a copy installing for itself takes nothing from the original"
+green_case "a COPY of a bound checkout still installs its own schedule: the stacking refusal is scoped to a binding this checkout could actually end, since the uninstall it names refuses in a copy"
+
+unset ORCHID_SERVICE_OS
+
 # ===========================================================================
 # J -- --help / usage documents idempotence for install and uninstall, and
 # the teardown ordering as the ONE conditional operation it actually is.
@@ -2985,6 +3195,8 @@ assert_match 'install' "$out" "help mentions install"
 assert_match 'uninstall' "$out" "help mentions uninstall"
 assert_match 'status' "$out" "help mentions status"
 assert_match 'idempotent' "$out" "help documents install/uninstall idempotence"
+assert_match 'idempotence is about the SAME path' "$out" \
+  "and scopes that idempotence, since a MOVED checkout is refused rather than given a second schedule beside the one it carries (K17)"
 assert_match 'dry-run' "$out" "help documents --dry-run"
 assert_match 'trust unattended' "$out" "help documents the unattended acknowledgement prerequisite"
 assert_match 'TEARDOWN ORDERING' "$out" "help documents the teardown ordering, where an operator reading about install will meet it"

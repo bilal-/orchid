@@ -215,6 +215,38 @@ that is genuinely installed. Re-hashed from the new path they would ask about a
 label nothing ever installed, report `no service installed`, and leave the agent
 firing every interval with no verb able to name it.
 
+**And it must not be given a second one.** `install` is the verb that still
+hashes the current path, because installing is where a label comes from. Run in
+a checkout that has moved, it used to derive a *second* label, render and load a
+second plist, write a second machine-local record, and overwrite the repo-local
+half that was the first schedule's last name inside that checkout — two agents
+waking on the same interval against one run, the older of them reachable only
+through a machine-local record no verb resolves by path. `install` now resolves
+the binding the checkout is carrying before it writes anything, and refuses
+rather than stacking:
+
+```
+orchid: refusing to install a schedule for /new/path: this checkout already
+  carries one, under a different name
+orchid: it is bound to com.orchid.pump.<12 hex>, installed against /old/path --
+  a path this checkout has since left, so installing from here would derive
+  com.orchid.pump.<other 12 hex> and leave ... scheduled with nothing in this
+  checkout still naming it
+orchid: ... end the schedule this checkout has before it is given another, as
+  ONE operation -- the install runs only if the uninstall succeeded: orchid
+  service uninstall --repo /new/path && orchid service install --repo /new/path
+  --interval-s 240
+```
+
+Run that chain and the checkout is left with exactly one schedule, under the
+label its current path derives — the `uninstall` half resolves the original from
+the binding, exactly as above. Re-installing **in place** is untouched: a
+checkout that has not moved resolves the same label it would derive, so
+`install` replaces its own schedule as it always has. And a `cp -R` copy of a
+bound checkout carries that record too while the original is still standing —
+the schedule it names is not the copy's to end and `uninstall` there would
+refuse, so the copy is not held to this and simply gets a schedule of its own.
+
 The two records have to agree about which schedule that is. A repo-local record
 and its machine-local twin naming different labels, platforms, repositories or
 artifacts are refused with nothing removed and no scheduler call made — that

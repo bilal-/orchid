@@ -99,6 +99,14 @@ a crontab line.
                idempotent: re-running install for the same repo REPLACES
                its existing schedule (same label/marker) in place -- it
                never stacks a second launchd job or a second crontab line.
+               that idempotence is about the SAME path. a checkout MOVED
+               since it was installed (`git worktree move`) still carries
+               the binding for the schedule it really has, while hashing
+               where it now sits would name a different one -- so install
+               refuses there rather than stacking a second schedule beside
+               the first, and names the one operation that resolves it:
+               uninstall (which resolves the original from the binding),
+               and only if that succeeded, install again.
   uninstall  remove exactly what install created for --repo (the plist
                file + its launchctl load, or the marker-guarded crontab
                line), and clear the binding record. which schedule that is
@@ -358,6 +366,72 @@ _svc_artifact() {
   else
     printf '%s\n' "$derived"
   fi
+}
+
+# _svc_install_one_schedule <repo> <interval_s> -- refuse an install that would
+# give this checkout a SECOND schedule beside one it is already carrying.
+#
+# INSTALL NAMES ITS SCHEDULE BY HASHING THE CURRENT PATH, and that is right:
+# install is where a label comes FROM. For a checkout that has never moved it is
+# also the label already written in the binding, so a re-install replaces its own
+# plist or its own crontab line and rewrites its own two records -- the
+# idempotence both branches document, and nothing here disturbs it.
+#
+# `git worktree move` separates the two, exactly as it does for a removal -- see
+# _svc_identity, which is why every REMOVING arm stopped re-hashing. Nothing on
+# the install side asked. Re-run from the new path, this file derived a SECOND
+# label, rendered and loaded a second plist, wrote a second machine-local record,
+# and overwrote the repo-local half -- the one name the FIRST schedule still had
+# from inside this checkout -- with the new one. Two agents then woke on the same
+# interval against the same run, and the older of the two could be reached only
+# through a machine-local record that no verb resolves by path. That is this
+# task's own leftover minted a third way, by the verb whose whole documented
+# promise is that it never stacks a second job.
+#
+# REFUSING RATHER THAN ADOPTING THE RECORDED IDENTITY, and the reason is
+# structural rather than a preference. "Reuse the original schedule" means
+# writing a binding that says repo=<here> and label=<the hash of where this
+# checkout used to be> -- and _orchid_service_record_usable holds every recorded
+# label to the derivation of the path that record itself names, so such a record
+# is rejected by every reader the moment it lands, including the `uninstall`
+# that would afterwards have to clear it. A schedule installed under an identity
+# no removal can validate is a worse leftover than the one this guard prevents.
+#
+# ONLY AGAINST A BINDING THIS CHECKOUT MAY END, which is what makes the recovery
+# it names a true one. A record naming a checkout that is STILL STANDING belongs
+# to that checkout (orchid_service_binding_owned): this is then a COPY carrying
+# the original's record, the schedule it names is not this directory's to end,
+# and `uninstall` run here refuses -- so a refusal naming that recovery would
+# send an operator to a command that cannot succeed. Installing is the honest
+# answer there: the schedule this path gets is its own, nothing of the
+# original's is touched, and the borrowed record is replaced by an honest one.
+#
+# AND ONLY WHEN A SCHEDULE RESOLVES AT ALL. orchid_service_identity's two
+# nonzero answers are findings about the RECORD -- twins that disagree, or a
+# record naming something install could not have written -- and neither names a
+# schedule to weigh this install against. They are also states install REPAIRS:
+# orchid_service_binding_write rewrites both halves from one staged file, which
+# is exactly the recovery an operator with disagreeing twins is left with. The
+# removing verbs are where those two findings must refuse, because that is where
+# a path gets built out of them; nothing on this side builds one.
+#
+# ASKED FOR --dry-run TOO. A preview of an install is not a preview of its
+# artifacts: install renders and places the plist, writes the cron record and
+# commits BOTH binding halves for real either way, and only the launchctl/crontab
+# call is printed. So --dry-run stacks everything this guard is about except the
+# one system call, and a guard it skipped would be a guard the flag walks past.
+_svc_install_one_schedule() {
+  local repo="$1" interval_s="$2" derived bound id_rc=0
+  derived="$(orchid_service_derive_label "$repo")"
+  orchid_service_identity "$repo" || id_rc=$?
+  [ "$id_rc" -eq 0 ] || return 0
+  bound="$ORCHID_SERVICE_ID_LABEL"
+  [ -n "$bound" ] || return 0
+  [ "$bound" != "$derived" ] || return 0
+  orchid_service_binding_owned "$repo" "$ORCHID_SERVICE_ID_REPO" || return 0
+  echo "orchid: refusing to install a schedule for $repo: this checkout already carries one, under a different name" >&2
+  echo "orchid: it is bound to $bound, installed against $ORCHID_SERVICE_ID_REPO -- a path this checkout has since left, so installing from here would derive $derived and leave $bound scheduled with nothing in this checkout still naming it" >&2
+  orchid_die "end the schedule this checkout has before it is given another, as ONE operation -- the install runs only if the uninstall succeeded: $(orchid_service_uninstall_command "$repo") && $(_svc_quote_cmd orchid service install --repo "$repo" --interval-s "$interval_s")"
 }
 
 # _svc_platform -- "darwin" (launchd) or "linux" (cron fallback, the
@@ -1537,6 +1611,15 @@ case "$sub" in
       ''|*[!0-9]*) orchid_die "--interval-s must be a positive integer (got '$interval_s')" ;;
     esac
     [ "$interval_s" -gt 0 ] || orchid_die "--interval-s must be a positive integer (got '$interval_s')"
+    # AHEAD OF THE PLATFORM BRANCH, not inside either arm, and for the same
+    # reason orchid_root_stale_gate sits above this whole dispatch: the question
+    # "does this checkout already carry a schedule" is about the checkout, not
+    # about which daemon holds the job, and written once per arm it is a check a
+    # third scheduler added tomorrow would silently not have. It is also the last
+    # line before either arm's first WRITE -- both begin by committing the
+    # binding record, so nothing after this point can refuse without leaving
+    # residue.
+    _svc_install_one_schedule "$repo" "$interval_s"
     if [ "$plat" = darwin ]; then
       _svc_install_darwin "$repo" "$interval_s" "$dry_run"
     else
