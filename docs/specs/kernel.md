@@ -2061,7 +2061,9 @@ The boundary has five distinct layers; none should be described as another:
 **Defense in depth (v1-m4 — SHIPPED):** `orchid init` installs a pre-push
 hook (`templates/pre-push.sh`,
 `push_guard` config, default true; never overwrites a pre-existing user
-hook) refusing any push whose destination ref is a task branch or the
+hook, and — T037 — `orchid start` UPGRADES one orchid itself installed, since
+init runs once per repository and an upgrade no existing repository can reach
+is not one) refusing any push whose destination ref is a task branch or the
 integration branch (the name baked in at install time, not read from
 `orchid.config` at push time, since a task worktree has no `orchid.config`
 at all), overridable per-push via `ORCHID_ALLOW_PUSH=1` — a backstop for

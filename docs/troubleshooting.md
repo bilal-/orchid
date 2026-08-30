@@ -2261,9 +2261,19 @@ want:
   undoes nothing: the merge that put it there is yours, on branches orchid
   does not own, and a run frozen behind a report would be worse than a run
   that reports.
-- The `pre-push` hook `orchid init` installs refuses a push that would put run
+- The `pre-push` hook orchid installs refuses a push that would put run
   state on a remote ref that does not already have it — see
-  [configuration.md](./configuration.md) (`push_guard`). It is the last local
+  [configuration.md](./configuration.md) (`push_guard`). `orchid init` installs
+  it and `orchid start` upgrades an orchid-installed one, so a repository set
+  up before this leg shipped gains it on the next `orchid start`; a hook you
+  wrote yourself is never touched by either. One shape that upgrade does not
+  reach: a run already past `planning`, where `orchid start` refuses outright
+  because it is a setup command. Until that run rolls over, render the hook
+  yourself from your orchid checkout — `sed
+  's|__INTEGRATION_BRANCH__|orchid/integration|g'
+  /path/to/orchid/templates/pre-push.sh > .git/hooks/pre-push && chmod +x
+  .git/hooks/pre-push`, substituting your own `integration_branch` — which is
+  exactly what those two verbs do. It is the last local
   gate that sees *every* route, including a squash, a cherry-pick or a rebase
   that carries the files across without ever making a merge commit, and a
   hosted MR that is merged where no local hook runs at all.

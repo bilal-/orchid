@@ -659,7 +659,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   invoking the vendor CLI at all (they have no worktree-read fallback) —
   see [docs/engines/agy.md](./engines/agy.md) and
   [docs/engines/hermes.md](./engines/hermes.md).
-- **`push_guard`** governs whether `orchid init` installs a `.git/hooks/pre-push`
+- **`push_guard`** governs whether orchid installs a `.git/hooks/pre-push`
   guard that refuses pushing `task/*` branches or the integration branch
   (defense-in-depth; PROTOCOL.md instructs the model not to push, but that
   prompt policy is not OS/network containment).
@@ -672,9 +672,19 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   repository that carries its own run state on purpose (orchid's own does)
   pushes it once with `ORCHID_ALLOW_PUSH=1` and is never asked again. See
   [troubleshooting.md](./troubleshooting.md) — "Run state in your product's
-  history". Note that `orchid init` never overwrites an existing pre-push
-  hook, so a repository initialized before this leg shipped keeps the hook it
-  has; delete it and re-run `orchid init` to pick up the newer one.
+  history". `orchid init` installs the hook, and `orchid start` upgrades it on
+  an already-initialized repository: init runs exactly once in a repository's
+  life (it refuses once the integration branch exists), so a repository set up
+  before a newer hook shipped picks it up on the next `orchid start` rather
+  than keeping the old one forever. A hook orchid did not write is never
+  overwritten by either verb — it is left alone and reported — and one that
+  already matches the current template is left byte-for-byte alone and
+  reported not at all. Changing `integration_branch` is picked up the same
+  way, since the branch name is baked into the hook at install time. Orchid
+  recognizes its own hook by the words `orchid pre-push guard` on the file's
+  second line, so if you have edited that file in place, your edit is what the
+  upgrade replaces — keep your version in a hook of your own instead, since a
+  file without that marker is never touched.
 - **`status_page`** is where `orchid status --html` writes its
   self-contained static page — never served, open the file directly.
 - **`notify.plugin`** (default `openclaw`) selects WHICH `kind=notify`

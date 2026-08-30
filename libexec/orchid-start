@@ -875,6 +875,24 @@ if [ "$mode" = new ]; then
   ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" init >/dev/null \
     || orchid_die "orchid init failed — nothing else was done; the messages above say why"
   echo "initialized: $integ"
+else
+  # The EXISTING-repository half of the push guard (T037). `orchid init`
+  # installs `.git/hooks/pre-push` and is the only thing that ever did -- and
+  # it runs exactly once per repository, dying with `branch $integ exists` on
+  # every later run. So a repository initialized by an older orchid keeps that
+  # day's hook forever, however many times it is upgraded afterwards: the
+  # run-state leg this task adds (templates/pre-push.sh), which is the one
+  # refusal standing between a run's bookkeeping and a product's remote, would
+  # have reached no existing repository at all. The reported leak was found on
+  # exactly such a repository.
+  #
+  # This verb is the supported door back into an initialized repo, so it is
+  # where the upgrade lands. It is the same function init calls, and it is
+  # conservative in the two directions that matter: a hook orchid did not write
+  # is left untouched and reported, and a hook already matching the template is
+  # rewritten never and reported never -- so a repeat `orchid start` prints
+  # this line only when it actually changed something.
+  orchid_install_push_guard "$repo" "$integ"
 fi
 
 if [ "$wt_action" = created ]; then

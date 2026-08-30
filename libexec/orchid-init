@@ -142,60 +142,18 @@ git -C "$repo" commit -q -m "orchid: initialize run state"
 # of the guard entirely. Fixed by resolving ONCE, here, at install time
 # instead -- substituting `__INTEGRATION_BRANCH__` into templates/pre-push.sh
 # -- and baking the resolved name into the installed hook file, so the hook
-# itself never has to locate or read `orchid.config` again. Re-running
-# `orchid init` after changing
-# `integration_branch` refreshes the baked-in name (subject to the
-# never-overwrite rule below, same as any other re-run).
+# itself never has to locate or read `orchid.config` again.
 #
-# This used to describe itself as copying `templates/task.md`'s
-# __ID__/__TITLE__ idiom. It no longer is one: T034 moved that renderer off
-# `sed` entirely, after a title containing `&` came out as the literal text
-# `__TITLE__` and a literal `\n` came out two different ways on GNU and BSD
-# sed. What is below is this site's own escaping, and it stays `sed` only
-# because a branch name is a far narrower input than an operator's prose --
-# lib/frontmatter.sh's fm_render_task_template is the literal-substitution
-# alternative if that ever stops being true.
-push_guard_cfg="$(config_get "$repo" push_guard true)"
-case "$push_guard_cfg" in
-  false|0|no) : ;;
-  *)
-    git_common_dir="$(cd "$repo" && git rev-parse --git-common-dir)"
-    case "$git_common_dir" in
-      /*) hooks_dir="$git_common_dir/hooks" ;;
-      *) hooks_dir="$repo/$git_common_dir/hooks" ;;
-    esac
-    if [ -e "$hooks_dir/pre-push" ]; then
-      echo "orchid: existing pre-push hook found at $hooks_dir/pre-push -- leaving it untouched (push guard not installed)"
-    else
-      mkdir -p "$hooks_dir"
-      # Post-review fix (trivial, re-review): $integ is substituted into a
-      # sed REPLACEMENT string, where `|` (the delimiter itself), `&` (whole-
-      # match backreference), and `\` (escape introducer) are all
-      # syntactically significant -- and all three are legal in a git branch
-      # name. Unescaped, a branch named e.g. `weird&name` would corrupt the
-      # substitution (the literal branch text, not `&`, is what must land in
-      # the hook) rather than erroring loudly. Escape every occurrence of
-      # those three characters with a leading backslash before substituting.
-      #
-      # Final review fix (Minor #9): the substituted value also lands INSIDE
-      # DOUBLE QUOTES in the rendered hook (`integ="__INTEGRATION_BRANCH__"`)
-      # -- `"`, `$`, and a backtick are all legal in a git refname too, and
-      # any of them left unescaped there becomes live shell syntax (command
-      # substitution / a broken quote) in the INSTALLED hook, not inert text.
-      # Escape those three for the SHELL context first (a leading backslash
-      # on each), THEN run the existing sed-escape pass (which itself
-      # doubles any backslash it finds, so the backslash just added here
-      # survives sed's own replacement-string grammar and reaches the
-      # rendered file as a single literal `\` ahead of the character it
-      # guards) -- never merge the two passes or reorder them.
-      integ_shell_esc="$(printf '%s' "$integ" | sed -e 's/[`$"]/\\&/g')"
-      integ_esc="$(printf '%s' "$integ_shell_esc" | sed -e 's/[|&\\]/\\&/g')"
-      sed "s|__INTEGRATION_BRANCH__|$integ_esc|g" "$ORCHID_ROOT/templates/pre-push.sh" > "$hooks_dir/pre-push"
-      chmod +x "$hooks_dir/pre-push"
-      echo "pre-push guard installed: $hooks_dir/pre-push (integration branch: $integ)"
-    fi
-    ;;
-esac
+# The install itself now lives in lib/common.sh's orchid_install_push_guard --
+# the escaping, the shared-hooks-dir resolution, the never-overwrite rule and
+# the `push_guard` config gate all moved there UNCHANGED, and this call is the
+# whole of what used to be here. It moved because this verb runs exactly once
+# in a repository's life (line 49 above: `branch $integ exists` is fatal), so
+# a repository initialized by an older orchid could never receive a newer hook
+# -- the T037 run-state leg included, which is the leg the reported leak needed
+# and never had. `orchid start`'s existing-repository path calls the same
+# function, which is where such a repository actually gets the upgrade.
+orchid_install_push_guard "$repo" "$integ"
 
 echo "initialized: $integ"
 # v1-m3 Task 2 operator UX (F7): init just restored the operator onto

@@ -547,6 +547,97 @@ assert_match "excluded by .gitignore" "$out37_config" "the orchid.config refusal
 git -C "$r37_config" rev-parse --verify -q orchid/integration >/dev/null 2>&1 \
   && fail "and it still lands above the mutation boundary"
 
+# ---------------------------------------------------------------------------
+# T037 -- the push guard an ALREADY-INITIALIZED repository can actually reach.
+#
+# `orchid init` installs .git/hooks/pre-push and, until now, was the only
+# thing that ever did -- and init runs exactly once in a repository's life
+# (every later run dies with `branch orchid/integration exists`). So a
+# repository initialized by an older orchid keeps that day's hook forever, no
+# matter how many times orchid itself is upgraded: the run-state leg added by
+# this task, the one refusal standing between a run's bookkeeping and a
+# product's remote, would have reached exactly zero existing repositories. The
+# leak this task exists for was reported from one of them.
+#
+# `orchid start` is the supported door back into an initialized repo, so it is
+# where the upgrade lands (lib/common.sh's orchid_install_push_guard, the same
+# function init calls).
+#
+# RED (before this fix): start touches no hook at all, so the stale one below
+# survives the run and never grows the run-state leg.
+# ---------------------------------------------------------------------------
+r37_hook="$W/r37-hook"; mk_repo "$r37_hook" 'verify=true'
+ORCHID_REPO="$r37_hook" "$ORCHID_BIN" init >/dev/null \
+  || fail "fixture: orchid init must succeed on r37-hook"
+hook37="$r37_hook/.git/hooks/pre-push"
+[ -f "$hook37" ] || fail "fixture: init must have installed a push guard to go stale"
+
+# Stand in for the hook a repository initialized by an older orchid carries:
+# orchid's own (it says so on line 2, which is the marker the upgrade
+# recognizes it by), with the name-based leg only and no run-state leg.
+cat > "$hook37" <<'STALE_HOOK'
+#!/usr/bin/env bash
+# orchid pre-push guard -- installed by `orchid init` (v1-m4 vintage: this is
+# the whole hook a repository initialized before T037 carries).
+[ "${ORCHID_ALLOW_PUSH:-0}" = 1 ] && exit 0
+integ="orchid/integration"
+exit 0
+STALE_HOOK
+chmod +x "$hook37"
+grep -q "run state" "$hook37" \
+  && fail "fixture: the stale hook must NOT already carry the run-state leg, or this case proves nothing"
+
+out37_hook="$(ORCHID_REPO="$r37_hook" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must succeed on an already-initialized repo: $out37_hook"
+assert_match "pre-push guard upgraded" "$out37_hook" \
+  "start says it replaced the stale guard, rather than upgrading it silently"
+assert_match "carries orchid.s own run state" "$(cat "$hook37")" \
+  "an existing repository's stale hook GAINS the run-state leg -- the whole point of the upgrade"
+assert_match "^integ=.orchid/integration.$" "$(cat "$hook37")" \
+  "and the integration branch is still baked in, resolved at install time as ever"
+[ -x "$hook37" ] || fail "an upgraded hook that is not executable is not a hook"
+
+# Idempotent, and quiet about it: the same start again must not report an
+# upgrade it did not perform, or the line stops meaning anything. Re-run under
+# the epoch the first one minted (INV-02: start never mints a fresh epoch over
+# an existing one).
+epoch37="$(cat "$W/r37-hook-orchid/.orchid/runtime/epoch" 2>/dev/null)"
+[ -n "$epoch37" ] || epoch37=0
+hook37_sum="$(cat "$hook37")"
+out37_hook2="$(ORCHID_REPO="$r37_hook" ORCHID_EPOCH="$epoch37" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "a repeat start on the same repo must still succeed: $out37_hook2"
+assert_eq "$hook37_sum" "$(cat "$hook37")" "a hook already current is left byte-for-byte alone"
+grep -q "pre-push guard upgraded" <<<"$out37_hook2" \
+  && fail "a repeat start must not claim an upgrade it did not make"
+
+# The never-overwrite rule is NOT relaxed by any of this: a hook orchid did
+# not write is the operator's, is authoritative whatever it does, and survives
+# start untouched -- said out loud rather than skipped in silence.
+r37_user="$W/r37-userhook"; mk_repo "$r37_user" 'verify=true'
+mkdir -p "$r37_user/.git/hooks"
+user_hook37="$r37_user/.git/hooks/pre-push"
+printf '#!/bin/sh\n# my own pre-push hook\nexit 0\n' > "$user_hook37"
+chmod +x "$user_hook37"
+user_hook37_body="$(cat "$user_hook37")"
+ORCHID_REPO="$r37_user" "$ORCHID_BIN" init >/dev/null \
+  || fail "fixture: orchid init must succeed on r37-userhook"
+out37_user="$(ORCHID_REPO="$r37_user" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must succeed on a repo carrying the operator's own pre-push hook: $out37_user"
+assert_eq "$user_hook37_body" "$(cat "$user_hook37")" \
+  "start never overwrites a pre-push hook orchid did not write"
+assert_match "leaving it untouched" "$out37_user" \
+  "and says so, so the operator knows the guard is not installed"
+
+# `push_guard=false` still opts out of the whole thing, upgrade included.
+r37_off="$W/r37-guardoff"; mk_repo "$r37_off" 'verify=true' 'push_guard=false'
+ORCHID_REPO="$r37_off" "$ORCHID_BIN" init >/dev/null \
+  || fail "fixture: orchid init must succeed on r37-guardoff"
+[ -e "$r37_off/.git/hooks/pre-push" ] && fail "fixture: push_guard=false must install no hook"
+out37_off="$(ORCHID_REPO="$r37_off" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must succeed with push_guard=false: $out37_off"
+[ -e "$r37_off/.git/hooks/pre-push" ] \
+  && fail "push_guard=false must opt out of the existing-repository upgrade too"
+
 # ===========================================================================
 # 5 -- worktrees: create at an explicit path, reuse only an EXACT integration
 # checkout, never adopt or overwrite anything else.

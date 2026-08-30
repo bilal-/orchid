@@ -19,12 +19,17 @@
 # worktree, and a runtime grep for it would silently fall back to the
 # default name there -- exactly the gap this baked-in substitution closes.
 # If `integration_branch` is ever changed in `orchid.config`, re-run `orchid
-# init` to refresh the name baked in here (init never overwrites a
-# pre-existing pre-push hook otherwise -- see below).
+# start` to refresh the name baked in here: `orchid init` cannot be re-run on
+# an initialized repository (it dies with `branch <integ> exists`), so start's
+# existing-repository path is the door that re-renders this file.
 #
-# `orchid init` never overwrites a pre-existing user pre-push hook (checked
-# before this file is ever copied in) -- this file is only ever installed
-# into a hooks dir that had none.
+# The words `orchid pre-push guard` on the second line of this file are
+# LOAD-BEARING, not decoration: lib/common.sh's orchid_install_push_guard
+# recognizes its own installed hook by exactly that phrase, and that is how a
+# hook written by an OLDER orchid gets upgraded to this one instead of being
+# mistaken for something the operator wrote. Any hook without the phrase is a
+# user's own and is left untouched -- never overwritten, whatever it does --
+# so do not reword line 2 without changing the marker with it.
 #
 # SECOND leg (T037): refuse any OTHER ref whose tip carries orchid's own run
 # state (`.orchid/`) when the remote's copy of that ref does not already carry

@@ -1840,6 +1840,119 @@ orchid_leaked_run_state_branches() {
   done <<<"$(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true)"
 }
 
+# orchid_install_push_guard <repo> <integ> -- render templates/pre-push.sh
+# with the run's integration branch baked in and install it at the repository's
+# SHARED hooks dir, INSTALLING it where there is none and UPGRADING one this
+# function itself wrote. Prints what it did (one line, or nothing when the
+# installed hook is already current). Never fails the caller.
+#
+# Lifted out of `orchid init` verbatim (T037) for one reason: the hook is the
+# only refusal orchid has at the boundary where run state actually leaves the
+# machine, and `orchid init` runs EXACTLY ONCE in a repository's life. It dies
+# on its second run -- `branch $integ exists` -- so every repository initialized
+# by an older orchid keeps the hook that shipped that day, forever. The leak
+# this task exists for was found on a repository like that: an upgrade an
+# operator never gets is not a fix, so the guard is installed from `orchid
+# start`'s existing-repository path too (libexec/orchid-start), which is the
+# supported door back into an initialized repo.
+#
+# THREE cases, and the middle one is the new one:
+#
+#   * No hook at all -> install, and say so. Unchanged from init's original.
+#   * A hook this function wrote (recognized by the marker below) that no
+#     longer matches what the template renders to -> overwrite it, and say so.
+#     The comparison is byte-for-byte against a fresh render, so a changed
+#     `integration_branch` refreshes the baked-in name by the same path a new
+#     template leg arrives -- and an already-current hook is rewritten never
+#     and reported never, so a repeat `orchid start` stays quiet.
+#   * ANY other hook -> leave it untouched and say so. The operator's own hook
+#     is authoritative regardless of what it does, exactly as before; this
+#     function must never be the reason a hook somebody wrote is lost.
+#
+# The marker is `templates/pre-push.sh`'s own second line, which has carried
+# the words `orchid pre-push guard` since the hook first shipped (v1-m4) --
+# that is what makes an OLD installed hook recognizable as orchid's own today,
+# and it is why that phrase is load-bearing and pinned by the template's own
+# comment. Recognizing orchid's hook by its content, not by a receipt written
+# somewhere at install time, is deliberate: a receipt would say "orchid wrote
+# this" about a file the operator has since replaced by hand.
+ORCHID_PUSH_GUARD_MARKER='orchid pre-push guard'
+orchid_install_push_guard() {
+  local repo="$1" integ="$2" guard git_common_dir hooks_dir
+  local integ_shell_esc integ_esc rendered hook
+  guard="$(config_get "$repo" push_guard true)"
+  case "$guard" in false|0|no) return 0 ;; esac
+
+  # Hooks live under the git dir, never inside a commit. `--git-common-dir`
+  # resolves the SHARED hooks dir even when invoked from a worktree (task
+  # worktrees all share one hooks dir with the main checkout), and is resolved
+  # relative to $repo, never the caller's cwd.
+  git_common_dir="$(cd "$repo" && git rev-parse --git-common-dir)" || return 0
+  case "$git_common_dir" in
+    /*) hooks_dir="$git_common_dir/hooks" ;;
+    *) hooks_dir="$repo/$git_common_dir/hooks" ;;
+  esac
+  hook="$hooks_dir/pre-push"
+
+  # $integ is substituted into a sed REPLACEMENT string, where `|` (the
+  # delimiter), `&` (whole-match backreference) and `\` (escape introducer) are
+  # all syntactically significant -- and all three are legal in a git branch
+  # name. It also lands INSIDE DOUBLE QUOTES in the rendered hook
+  # (`integ="__INTEGRATION_BRANCH__"`), where `"`, `$` and a backtick -- also
+  # all legal in a refname -- become live shell syntax rather than inert text.
+  # Escape for the SHELL context first, THEN for sed's replacement grammar
+  # (which doubles any backslash it finds, so the one added here survives to
+  # the rendered file as a single literal `\`). Never merge or reorder the two
+  # passes. This is not templates/task.md's __ID__/__TITLE__ idiom any more --
+  # T034 moved that renderer off `sed` entirely after a title containing `&`
+  # came out as the literal text `__TITLE__`. It stays `sed` here only because
+  # a branch name is a far narrower input than an operator's prose;
+  # lib/frontmatter.sh's fm_render_task_template is the literal-substitution
+  # alternative if that ever stops being true.
+  integ_shell_esc="$(printf '%s' "$integ" | sed -e 's/[`$"]/\\&/g')"
+  integ_esc="$(printf '%s' "$integ_shell_esc" | sed -e 's/[|&\\]/\\&/g')"
+  rendered="$(sed "s|__INTEGRATION_BRANCH__|$integ_esc|g" "${ORCHID_ROOT:-}/templates/pre-push.sh" 2>/dev/null || true)"
+  # An empty render is a missing or unreadable template, and the one outcome
+  # worse than not upgrading a hook is truncating a working one to nothing (the
+  # `producer | atomic_write` shape that destroys a file and exits 0, lesson
+  # L034). Say nothing and leave whatever is there.
+  [ -n "$rendered" ] || return 0
+
+  if [ -e "$hook" ]; then
+    if ! grep -Fq -- "$ORCHID_PUSH_GUARD_MARKER" "$hook" 2>/dev/null; then
+      echo "orchid: existing pre-push hook found at $hook -- leaving it untouched (push guard not installed)"
+      return 0
+    fi
+    # `$(cat)` strips trailing newlines from BOTH sides of this comparison
+    # (the render above lost its own to the same rule), so the two are compared
+    # on equal terms and a hook that is already current is left alone.
+    if [ "$rendered" = "$(cat "$hook" 2>/dev/null)" ]; then
+      return 0
+    fi
+    if ! printf '%s\n' "$rendered" > "$hook"; then
+      # Never fatal -- neither caller may die over a hook -- but never silent
+      # either: "the guard is not in place" is exactly the fact an operator
+      # must not have to infer from an absence of output. The shell's own
+      # diagnostic (a failed redirection prints one) lands just above this
+      # line and says which way the write failed; this says what it cost.
+      echo "orchid: could not replace the pre-push guard at $hook -- the older hook is still in place and does not carry the newer checks" >&2
+      return 0
+    fi
+    chmod +x "$hook" 2>/dev/null \
+      || echo "orchid: could not make $hook executable -- git runs only an executable hook, so the guard it holds is inert" >&2
+    echo "pre-push guard upgraded: $hook (integration branch: $integ)"
+    return 0
+  fi
+
+  if ! mkdir -p "$hooks_dir" || ! printf '%s\n' "$rendered" > "$hook"; then
+    echo "orchid: could not install the pre-push guard at $hook -- pushes of task branches, of $integ, and of run state are NOT guarded in this repository" >&2
+    return 0
+  fi
+  chmod +x "$hook" 2>/dev/null \
+    || echo "orchid: could not make $hook executable -- git runs only an executable hook, so the guard it holds is inert" >&2
+  echo "pre-push guard installed: $hook (integration branch: $integ)"
+}
+
 # with_timeout <secs> cmd... -- runs cmd (any command form, including a
 # shell function name) with a wall-clock deadline; returns cmd's own exit
 # status, or 124 on timeout. Both the timed command AND the watcher are

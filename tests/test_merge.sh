@@ -2008,3 +2008,99 @@ grep -q "retired/T900-work" "$err9" \
 assert_match "product/main" "$(cat "$err9")" \
   "containment: and the real leak is still named in the same warning"
 green_case 'an archived run task branch carrying .orchid/ is not reported as a leak'
+
+# The LIVE half of the same exemption, built the way the archived one is.
+#
+# It was asserted before this block, and asserted VACUOUSLY: `grep -q task/T00`
+# over the warning passed because no task branch in this fixture carries
+# `.orchid/` at all (this repository creates run state on disk and never
+# commits it), so the scan skipped every one of them on the tree test and the
+# exemption was never consulted. An exemption that is never reached is not
+# tested by an assertion that it did not fire. Here the branch really does
+# carry run state, so the scan reaches the record lookup and the record is what
+# has to answer.
+#
+# The branch is deliberately not named `task/*`, and the task that OWNS it is
+# not the task being merged: "inside the run" is a fact about the run's
+# records, not about a name or about which task happens to be in flight.
+"$ORCHID_BIN" task create T045 "live task whose branch carries run state"
+"$ORCHID_BIN" task set T045 branch live/T045-work
+live_wt="$WORK/live-wt"
+git worktree add -q -b live/T045-work "$live_wt" "$integ"
+mkdir -p "$live_wt/.orchid"
+printf -- '---\nrun_status: running\nrun_id: r-001\n---\n# Roadmap\n' > "$live_wt/.orchid/roadmap.md"
+git -C "$live_wt" add -f .orchid
+git -C "$live_wt" commit -q -m "live task: work on a branch cut from the integration branch"
+git worktree remove --force "$live_wt"
+[ -n "$(git ls-tree live/T045-work -- .orchid)" ] \
+  || fail "fixture: the live task's branch must carry .orchid/ for this case to mean anything"
+
+"$ORCHID_BIN" task create T046 "live-task containment"
+git checkout -q -b task/T046 "$integ"
+echo live > containment-live.txt && git add containment-live.txt \
+  && git commit -q -m "containment live-task candidate"
+cand10="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base10="$(git rev-parse "$integ")"
+walk_to_merging T046 task/T046 "$base10" "$cand10" "test -f containment-live.txt"
+
+err10="$WORK/merge10.err"; rc=0
+"$ORCHID_BIN" merge T046 >/dev/null 2>"$err10" || rc=$?
+assert_eq 0 "$rc" "containment: the live-task case still merges clean (exit 0)"
+grep -q "live/T045-work" "$err10" \
+  && fail "a branch a LIVE task's record names is inside the run, not a product leak"
+assert_match "product/main" "$(cat "$err10")" \
+  "containment: and the real leak is still named in the same warning"
+green_case 'a live task branch carrying .orchid/ is not reported as a leak'
+
+# ---------------------------------------------------------------------------
+# The INTEGRATION branch's own exemption -- the arm that decides whether this
+# warning is worth reading at all, since in every real repository that branch
+# is the one place run state is SUPPOSED to be, and a warning that names it on
+# every merge names it forever.
+#
+# Asked of the predicate directly, in a repository built for the question,
+# because it cannot honestly be asked of the fixture above: making THAT
+# integration branch carry `.orchid/` means committing the suite's own live run
+# state, and from that moment every `git checkout` between the integration
+# branch and a task branch cut before it either fails on untracked files or
+# deletes the state the rest of the suite is reading. The predicate is the
+# whole of the decision (libexec/orchid-merge only formats what it returns),
+# and the verb cases above already pin that the merge path reaches it.
+#
+# Every branch here carries run state, so NONE of them is skipped on the tree
+# test and all four reach the exemption: the assertion is the exact, whole
+# output, which is what makes each exemption non-vacuous -- a broken one shows
+# up as an extra line, and a scan that stopped working shows up as a missing
+# `product/main`.
+scan_repo="$WORK/containment-scan"
+mkdir -p "$scan_repo"
+git -C "$scan_repo" init -q
+git -C "$scan_repo" commit -q --allow-empty -m "the operator's own history"
+git -C "$scan_repo" checkout -q -b orchid/integration
+mkdir -p "$scan_repo/.orchid/tasks" "$scan_repo/.orchid/runs/r-000/tasks"
+printf -- '---\nrun_status: running\nrun_id: r-001\n---\n# Roadmap\n' > "$scan_repo/.orchid/roadmap.md"
+printf -- '---\nid: T801\nbranch: live/T801-work\n---\n# T801\n' \
+  > "$scan_repo/.orchid/tasks/T801.md"
+printf -- '---\nid: T802\nbranch: retired/T802-work\n---\n# T802\n' \
+  > "$scan_repo/.orchid/runs/r-000/tasks/T802.md"
+git -C "$scan_repo" add -f .orchid
+git -C "$scan_repo" commit -q -m "orchid: run state on the integration branch, as every real run has it"
+for scan_b in live/T801-work retired/T802-work product/main; do
+  git -C "$scan_repo" branch "$scan_b" orchid/integration
+  [ -n "$(git -C "$scan_repo" ls-tree "$scan_b" -- .orchid)" ] \
+    || fail "fixture: $scan_b must carry .orchid/ or its exemption is never reached"
+done
+[ -n "$(git -C "$scan_repo" ls-tree orchid/integration -- .orchid)" ] \
+  || fail "fixture: the integration branch must carry .orchid/ -- that is the whole case"
+
+# A subshell, so the library sourced for this one call cannot alter the suite
+# that runs after it.
+scan_out="$( (
+  ORCHID_ROOT="$REPO_ROOT"; export ORCHID_ROOT
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_leaked_run_state_branches "$scan_repo" orchid/integration
+) )"
+assert_eq "product/main" "$scan_out" \
+  "only the branch outside the run is named: not the integration branch, not a live task's branch, not an archived one's"
+green_case 'the integration branch carrying its own run state is never a leak'
