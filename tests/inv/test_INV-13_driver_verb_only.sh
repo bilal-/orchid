@@ -173,10 +173,11 @@ driver_boundary_refs() {
 # wrong way round, is indistinguishable in the record from a real one.
 #
 # A shell may spell its code option alone or inside a short-option bundle, and
-# long/short options may precede it. Match that option grammar after a literal
-# bash/sh path or the command-position "$BASH" variable; otherwise eliding the
-# following string would hide the only spelling of the forbidden operation.
-POLICY_SHELL_CODE='(^|[[:space:];|&()])(([^[:space:];|&()]*/)?(bash|sh)|"?\$BASH"?)[[:space:]]+((--[^[:space:];|&()]+|-[^-[:space:];|&()]+)[[:space:]]+)*-[^-[:space:];|&()]*c[^-[:space:];|&()]*([[:space:];|&()]|$)'
+# options plus their arguments may precede it. Match conservatively through
+# separator-bounded tokens after a literal bash/sh path or the command-position
+# "$BASH" variable; otherwise eliding the following string would hide the only
+# spelling of the forbidden operation.
+POLICY_SHELL_CODE='(^|[[:space:];|&()])(([^[:space:];|&()]*/)?(bash|sh)|"?\$BASH"?)([[:space:]]+[^[:space:];|&()]+)*[[:space:]]+-[^-[:space:];|&()]*c[^-[:space:];|&()]*([[:space:];|&()]|$)'
 POLICY_IMPURE="fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:space:]]+(add|remove)|${POLICY_SHELL_CODE}|^[[:space:]]*(rm|mv|cp)[[:space:]]"
 
 # policy_impurity <file> -- the lines of <file> that make it something other
@@ -266,6 +267,12 @@ printf '%s\n' \
   "sh -ec 'git worktree remove \"\$1\"' -- \"\$path\"" \
   "/bin/bash --noprofile -c 'git worktree add \"\$1\" \"\$2\"' -- \"\$path\" \"\$branch\"" \
   "\"\$BASH\" -c 'git worktree remove \"\$1\"' -- \"\$path\"" \
+  "bash -o pipefail -c 'git worktree add \"\$1\" \"\$2\"' -- \"\$path\" \"\$branch\"" \
+  "bash -O extglob -c 'git worktree add \"\$1\" \"\$2\"' -- \"\$path\" \"\$branch\"" \
+  "bash +O extglob -c 'git worktree add \"\$1\" \"\$2\"' -- \"\$path\" \"\$branch\"" \
+  "bash --rcfile /tmp/rc -c 'git worktree add \"\$1\" \"\$2\"' -- \"\$path\" \"\$branch\"" \
+  "bash --init-file /tmp/rc -c 'git worktree add \"\$1\" \"\$2\"' -- \"\$path\" \"\$branch\"" \
+  "sh -o errexit -c 'git worktree remove \"\$1\"' -- \"\$path\"" \
   > "$shell_code_probe"
 shell_code_probe_out="$(policy_impurity "$shell_code_probe")"
 assert_match 'bash -c' "$shell_code_probe_out" \
@@ -280,6 +287,18 @@ assert_match '/bin/bash --noprofile -c' "$shell_code_probe_out" \
   "INV-13 self-check: the production policy scan must FLAG a shell code option after preceding shell options"
 assert_match '"\$BASH" -c' "$shell_code_probe_out" \
   "INV-13 self-check: the production policy scan must FLAG a command-position shell variable followed by a code option"
+assert_match 'bash -o pipefail -c' "$shell_code_probe_out" \
+  "INV-13 self-check: the production policy scan must FLAG bash -o pipefail -c when an option argument precedes the code option"
+assert_match 'bash -O extglob -c' "$shell_code_probe_out" \
+  "INV-13 self-check: the production policy scan must FLAG bash -O extglob -c when an option argument precedes the code option"
+assert_match 'bash \+O extglob -c' "$shell_code_probe_out" \
+  "INV-13 self-check: the production policy scan must FLAG bash +O extglob -c when an option argument precedes the code option"
+assert_match 'bash --rcfile /tmp/rc -c' "$shell_code_probe_out" \
+  "INV-13 self-check: the production policy scan must FLAG bash --rcfile /tmp/rc -c when an option argument precedes the code option"
+assert_match 'bash --init-file /tmp/rc -c' "$shell_code_probe_out" \
+  "INV-13 self-check: the production policy scan must FLAG bash --init-file /tmp/rc -c when an option argument precedes the code option"
+assert_match 'sh -o errexit -c' "$shell_code_probe_out" \
+  "INV-13 self-check: the production policy scan must FLAG sh -o errexit -c when an option argument precedes the code option"
 red_case "INV-13's production purity scan rejected bash -c and sh -c policy code arguments, so literal elision cannot hide a worktree mutation inside an interpreter"
 
 # RED: boundary.json is DATA, not a command word. A quoted literal path is a
