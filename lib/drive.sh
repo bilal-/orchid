@@ -1024,7 +1024,7 @@ drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n depth_n conflicts base verdict scope status ecand eengine pool
   local plan pin_state entry nfind excerpt ftitle weighed_n weighed_note sum_carried
-  local objection obj_by obj_who obj_settler obj_round obj_detail
+  local objection obj_by obj_who obj_settler obj_relay obj_round obj_detail
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
@@ -1288,9 +1288,39 @@ drive_review_decision() {
     if [ "$obj_by" = orchestrator ]; then
       obj_who="recorded by the run orchestrator"
       obj_settler="whoever arbitrates"
+      # No relay clause, and the absence is the policy rather than an omission:
+      # an orchestrator's objection is settled by the actor that raised it, on a
+      # boundary that WAKES that actor, so there is no human decision for anyone
+      # to carry. Naming an answer word here would offer a route that authorises
+      # nothing (libexec/orchid-task's relay reads an OPERATOR's objection and no
+      # other), which is a page telling somebody to do something inert.
+      obj_relay=""
     else
       obj_who="recorded by an operator"
       obj_settler="the operator who raised it"
+      # ...AND THE PAGE NAMES THE ANSWER, NOT ONLY THE VERB (T032 convergence).
+      # This detail IS the page, and for an operator's objection it is the only
+      # thing they are given. The relay this feature exists for fires on one
+      # input: a `.answer` file whose sole line is the arbitration result spelled
+      # exactly (lib/review.sh's review_operator_relay). Everything else about
+      # that route is durable and kernel-owned; the one part that is the
+      # operator's to supply is the WORD, and until now nothing they could read
+      # said it. A page naming only `orchid task arbitrate` reads as "get to a
+      # shell" -- which is the state the relay was built to spare them, and the
+      # state a page delivered to a phone is least able to leave.
+      #
+      # `operator-decision` declares no choice set (drive_boundary_choices, and
+      # deliberately: the kind's reason text is composed per site, so a set there
+      # would refuse the sentence that answers some other page under it). That is
+      # what keeps the free-text reply, and it is also what means the page prints
+      # no menu -- so the sentence has to carry what the menu would have.
+      #
+      # Stated as WHAT IT DOES, not as a promise: the objection's own boundary
+      # wakes nobody by design, so the relay happens if and when an orchestrator
+      # reaches this repository for something else. "May then" is the honest
+      # tense, and an operator who wants it settled now still has the verb named
+      # in the same sentence.
+      obj_relay=" — and if this page reached you away from a shell, answering it with exactly 'approve' is the same decision: that records it durably against this objection, and an orchestrator that later reaches this repository may then record the arbitration on your behalf. Only that exact word carries — any other answer is recorded, and no relay will credit it"
     fi
     # THE OBJECTION'S OWN LINE, VERBATIM, and the remedy clause from its one
     # composer. This detail becomes the page an operator is sent
@@ -1303,7 +1333,7 @@ drive_review_decision() {
     # canonical stored value (review_objection_record makes it a fixpoint of the
     # fold above), so quoting it here neither truncates it again nor invents a
     # second spelling of what the field holds.
-    obj_detail="an objection $obj_who in a previous arbitration of this task is still uncleared: \"$objection\" — this pass may not approve on the reviews alone, and a reviewer that flipped to approve without addressing it has not answered the arbiter; $obj_round. Expected: $obj_settler reads the diff, decides whether the objection was met, and settles it with $(review_objection_remedy "$id") --reason \"...\" — an explicit arbitration approval is the only thing that clears it"
+    obj_detail="an objection $obj_who in a previous arbitration of this task is still uncleared: \"$objection\" — this pass may not approve on the reviews alone, and a reviewer that flipped to approve without addressing it has not answered the arbiter; $obj_round. Expected: $obj_settler reads the diff, decides whether the objection was met, and settles it with $(review_objection_remedy "$id") --reason \"...\" — an explicit arbitration approval is the only thing that clears it$obj_relay"
     # THE DETAIL IS SHARED; THE DECISION WORD IS NOT. Two literal `printf`s,
     # never one fed a computed word -- INV-13 pins every arm of this function to
     # a literal for the reason this arm illustrates best: the word chosen here

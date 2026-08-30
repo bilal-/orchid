@@ -10448,6 +10448,40 @@ grep -qF -e "$p57_remedy" <<<"$p57_detail" \
   || fail "T032: the remedy clause must name the task it belongs to — a constant clause would let an answer about one task settle another"
 red_case 'an objection detail missing the objection line or the remedy clause: caught here, because the answered page would be uncreditable'
 
+# --- and the ANSWER WORD, not only the verb (T032 convergence) --------------
+# The remedy clause above names a command. The relay fires on something else
+# entirely: a `.answer` file whose sole line is the arbitration result spelled
+# exactly (lib/review.sh's review_operator_relay compares `$ans` to `approve`
+# and to nothing else). Every other input to that route is durable and
+# kernel-owned; the WORD is the one part the operator supplies, and a page that
+# named only `orchid task arbitrate` left them nothing that said it.
+#
+# And the page is the only surface this stop is delivered on, so a page that
+# does not say it makes the relay unreachable in practice.
+# `operator-decision` declares no choice set — deliberately, and the choice-set
+# block near the top of this file pins exactly that, because the kind's reason
+# text is composed per site — so this page prints no menu either. With no menu
+# and no sentence, an operator reading it away from a shell is told to go and
+# find one, which is the state the relay exists to spare them.
+grep -qF -e "answering it with exactly 'approve'" <<<"$p57_detail" \
+  || fail "T032: an operator's objection detail must name the answer that carries their decision — the relay credits the exact word and nothing else, and a page naming only the verb makes the whole relay unreachable from the only surface that stop is delivered on"
+# NON-VACUOUS, on the axis that decides whether the clause is honest: an
+# orchestrator's objection is settled by the actor that raised it, on a boundary
+# that wakes that actor, and libexec/orchid-task's relay reads an OPERATOR's
+# objection and no other. Offering the answer word there would point at a route
+# that authorises nothing. Same task, same reviews, same composer — only the
+# recorded class moves.
+fm_set "$POLICY/.orchid/tasks/P57.md" unresolved_objection_by orchestrator \
+  || fail "fixture: P57's arbiter class must be recordable"
+p57_brokered="$(detail_of P57)"
+assert_eq conflict "$(decision_of P57)" \
+  "fixture: with the class flipped, P57 is the arbitrable stop — otherwise the assertion below reads the operator arm twice"
+grep -qF -e "answering it with exactly 'approve'" <<<"$p57_brokered" \
+  && fail "T032: an orchestrator's objection must NOT offer the answer-word route — no relay reads a model's own objection, so the clause would send an operator to record a decision nothing will act on"
+fm_set "$POLICY/.orchid/tasks/P57.md" unresolved_objection_by operator \
+  || fail "fixture: P57's arbiter class must be restorable"
+green_case "an operator's objection page: names the exact answer the relay credits, and only the operator's does"
+
 # The page an operator is actually sent is this detail, prefixed. If that ever
 # becomes a summary of the reason rather than the reason, everything above is
 # pinning a string nobody is shown.

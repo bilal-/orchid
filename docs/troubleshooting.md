@@ -1249,7 +1249,11 @@ the right thing next — its move there is `orchid notify`, which is how this pa
 got to you.
 
 **You can decide it from the page.** Answering it *is* the decision, and the
-next actor to reach the repository will carry it out for you:
+next actor to reach the repository will carry it out for you. The page says so
+itself — the detail an operator's objection composes names this answer beside
+the verb, because `operator-decision` declares no choice set, so there is no
+menu of permitted answers printed under it and the word has to come from the
+sentence:
 
 ```sh
 orchid answer <qid> approve      # the qid on the page, from BLOCKERS.md or your channel
