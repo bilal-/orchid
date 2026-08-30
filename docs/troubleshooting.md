@@ -1678,6 +1678,18 @@ it would remove, which costs no Git either. As everywhere else on this page, the
 way through is `ORCHID_ALLOW_STALE_ROOT=1` in front of the one command, so what
 you are about to read is knowably the stale kernel's answer.
 
+`./install.sh` refuses too, and it is the one entry point here that is not a
+verb. What it produces is a machine-scoped wiring: your `orchid` becomes a
+symlink into the checkout you ran it from, and so do the front-end skill
+bundles. Run out of a stale checkout, that installs the pre-merge tree *as* your
+orchid, at the one step nobody re-runs afterwards. `--uninstall` is behind the
+same refusal, because which symlinks a pre-merge installer decides are its own
+is decided by the pre-merge tree. The installer's own closing `orchid doctor`
+is not this check and could not be — it runs only when you are standing in some
+*other* repository, so it is skipped in exactly the case where the source
+checkout is the one at risk. Same way through:
+`ORCHID_ALLOW_STALE_ROOT=1 ./install.sh`.
+
 The reason is not consistency for its own sake. **A diagnosis read out of a
 stale checkout is produced by the stale code.** `orchid doctor` here runs the
 checks the pre-merge tree carries, so it can pass a checkout the merged

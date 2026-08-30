@@ -126,7 +126,7 @@ source "$(dirname "$0")/../helpers.sh"
 #     proved deleted from the record -- and the fixture that demonstrates it
 #     is RUN, so the deletion is observed rather than asserted about a shell.
 #
-# RED: twenty-six, each fed to the SAME derivation or the same shipped verb the
+# RED: twenty-eight, each fed to the SAME derivation or the same shipped verb the
 #      section runs over the real tree. A ci-local-shaped file whose static
 #      section sits BELOW the `--no-tests` cut (so it is outside the merge
 #      floor and only reaches tasks that opted into the full suite), and a
@@ -143,7 +143,11 @@ source "$(dirname "$0")/../helpers.sh"
 #      moment it loaded the library out of a stale root, which is the
 #      source-time fire that whole partition depends on being real.
 #      A doctor-shaped trust boundary that fires the Git-spending stale-root
-#      gate before it performs its machine-local trust decision, and a second
+#      gate before it performs its machine-local trust decision -- with two
+#      more beside it, one firing at the operator-PATH restore above its
+#      decision (the second firing spelling, and the one libexec/orchid-status
+#      is judged by) and one that never deferred at all, so its gate was spent
+#      at source time ahead of every line it contains -- and a second
 #      doctor-shaped fixture that is RUN and really does query its target
 #      repository before rendering its denial. The shipped `orchid doctor`
 #      itself, run where ORCHID_REPO and ORCHID_ROOT are one stale
@@ -177,7 +181,12 @@ source "$(dirname "$0")/../helpers.sh"
 #      off its arms and above its dispatch. A file shaped like one of the
 #      whole-file proofs tests/helpers.sh enrols BY NAME, probed at the depth
 #      those ship at, whose helpers.sh source line a text scan accepts and a
-#      shell never reaches. And a gate file whose recorded label carries
+#      shell never reaches. The shipped install.sh, RUN out of that same stale
+#      root, which must refuse having wired nothing -- no orchid symlink at the
+#      prefix, no per-user plugin directory -- since the only kernel check that
+#      file ever carried is its closing doctor run, and that one is skipped in
+#      exactly the self-hosted shape where its source checkout can be stale.
+#      And a gate file whose recorded label carries
 #      backticked prose the shell executes, which must be refused -- with the
 #      fixture run first, so the words really are seen to go missing.
 # GREEN: the twins, in this file: the shipped scripts/ci-local.sh, whose
@@ -187,15 +196,21 @@ source "$(dirname "$0")/../helpers.sh"
 #      every one of them RUN at the depth it ships at and observed to reach
 #      helpers.sh, beside two fixtures -- one at each depth -- whose only
 #      difference from the refused ones is that the source line is reachable; every shipped file that
-#      loads lib/common.sh -- across install.sh, bin/, libexec/, runners/,
-#      scripts/ and the bundled plugins, with the scripts/ and plugins/
-#      families each proved non-empty -- reaching a site that really fires the
-#      gate at the path it ships at; the same stub libexec/ refuses, left to
-#      RUN under scripts/ and under plugins/, which is the shadow the narrow
-#      universe could not see into; a deferring entry point that does reach
-#      its restore where restoring fires, an ordinary verb that defers
-#      nothing, an off-path harness that calls the gate itself, and a file
-#      that names lib/common.sh without ever loading it, all four left alone;
+#      loads lib/common.sh -- across the repository top level, bin/, libexec/,
+#      runners/, scripts/ and the bundled plugins, with the top-level, scripts/
+#      and plugins/ families each proved non-empty -- reaching a site that
+#      really fires the gate at the path it ships at; the same stub libexec/
+#      refuses, left to RUN under scripts/ and under plugins/, which is the
+#      shadow the narrow universe could not see into; a deferring entry point
+#      that does reach its restore where restoring fires, an ordinary verb that
+#      defers nothing, an off-path harness that calls the gate itself, and a
+#      file that names lib/common.sh without ever loading it, all four left
+#      alone; the two gate-order fixtures with their pair of lines swapped --
+#      one firing by the explicit call, one by the operator-PATH restore --
+#      both judged clean, and an ordinary verb that crosses no trust boundary
+#      passed over rather than judged; the shipped install.sh out of a root
+#      that is NOT stale, which must wire the symlink and the per-user
+#      directory whose absence the refusal above is measured by;
 #      the case that must NOT fire -- an
 #      ordinary checkout on a development branch, where the same construction
 #      spends no `git` and refuses nothing, so section 3 is detection rather
@@ -1218,11 +1233,14 @@ entry_code() { grep -vE '^[[:space:]]*#' "$1"; }
 #
 # The predicate is anchored on a `source`/`.` line and not on the mere
 # appearance of the path, and the widened universe is why. install.sh names
-# "$ROOT/lib/common.sh" three times -- in the test that decides whether a
-# directory IS an orchid tree -- and never loads it. Judged by "the file
-# mentions the path", the installer would be scanned as an entry point, found
-# to fire nothing, and reported: a violation invented out of a file that arms
-# nothing at all. The narrow universe hid that; the wide one does not.
+# "$ROOT/lib/common.sh" in the two-anchor test that decides whether a directory
+# IS an orchid tree, and did so for a long time without ever loading it -- so
+# judged by "the file mentions the path" the installer was scannable as an entry
+# point, findable to fire nothing, and reportable: a violation invented out of a
+# file that armed nothing at all. It loads the library for real now, and fires
+# the gate that load arms, so it is judged on that line rather than on those; a
+# file whose only relationship to the library is a `-f` test on its path is
+# still passed over, which is what the mentions-only fixture below pins.
 entry_loads_common() {
   grep -Eq '^[[:space:]]*(source|\.)[[:space:]]+[^#]*lib/common\.sh"' <<<"$1"
 }
@@ -1322,24 +1340,41 @@ entry_gate_violations() {
 # lives -- `plugins/*/*/*` and not `plugins/engines/*/run`, so a notify sender
 # or an adapter under a plugin kind invented tomorrow is inside it the day it
 # lands rather than the day somebody remembers this glob.
+#
+# The TOP LEVEL is a glob for the same reason, and it did not start as one. It
+# was written as the single literal path `$REPO_ROOT/install.sh`, which is a
+# hardcoded list of one wearing a derivation's clothes: a second top-level
+# harness -- a bootstrap script, an uninstaller, anything a release adds beside
+# the installer -- would have loaded the library, armed the guard, fired
+# nothing, and been outside the set that looks. The installer is exactly the
+# file that must not be reached that way, since what it produces is the
+# operator's own `orchid` symlinked into whatever checkout it was run from.
 entry_scanned=0
 entry_deferring=0
+entry_toplevel=0
 entry_scripts=0
 entry_plugins=0
 entry_unfired=""
-for entry_file in "$REPO_ROOT"/install.sh "$REPO_ROOT"/bin/* "$REPO_ROOT"/libexec/* \
+# The same universe, kept as repo-relative names so the gate-ORDER derivation
+# below reads exactly the set this loop discovered rather than re-deriving one
+# that could drift from it.
+ENTRY_UNIVERSE=()
+for entry_file in "$REPO_ROOT"/*.sh "$REPO_ROOT"/bin/* "$REPO_ROOT"/libexec/* \
                   "$REPO_ROOT"/runners/* "$REPO_ROOT"/scripts/* "$REPO_ROOT"/plugins/*/*/*; do
   [ -f "$entry_file" ] || continue
   entry_rel="${entry_file#"$REPO_ROOT"/}"
   entry_file_code="$(entry_code "$entry_file")"
   entry_loads_common "$entry_file_code" || continue
   entry_scanned=$((entry_scanned + 1))
+  ENTRY_UNIVERSE+=("$entry_rel")
   if grep -q '__orchid_entry_defer_restore=1' <<<"$entry_file_code"; then
     entry_deferring=$((entry_deferring + 1))
   fi
   case "$entry_rel" in
     scripts/*) entry_scripts=$((entry_scripts + 1)) ;;
     plugins/*) entry_plugins=$((entry_plugins + 1)) ;;
+    */*) ;;
+    *) entry_toplevel=$((entry_toplevel + 1)) ;;
   esac
   entry_out="$(entry_gate_violations "$entry_file" "$entry_rel")"
   [ -n "$entry_out" ] || continue
@@ -1358,12 +1393,22 @@ done
   || fail "INV-15: the entry universe reached no file under scripts/ that loads lib/common.sh. That is the shadow this section was widened for — a harness outside the three executable roots arms the gate and is left to fire it — so a scan that no longer sees scripts/ has quietly gone back to looking only where the gate cannot be missed"
 [ "$entry_plugins" -ge 1 ] \
   || fail "INV-15: the entry universe reached no file under plugins/ that loads lib/common.sh. A bundled engine adapter executes \$ORCHID_ROOT's own libraries and role profiles out of the installation root, which is the stale-adapter shape lesson L018 records, so this family may not fall out of the derivation silently"
+# The top level, on its own account for the same reason the other two are. This
+# family holds exactly one member today, install.sh, and it is the member whose
+# absence would be hardest to see: the installer wires the operator's own
+# `orchid` into whatever checkout it was run from, and the only kernel check it
+# ever performed -- the post-install doctor run -- is skipped precisely when cwd
+# IS that checkout, which is the one case its root can be the stale integration
+# tree at all. A derivation that stopped reaching the top level would report
+# nothing and mean nothing.
+[ "$entry_toplevel" -ge 1 ] \
+  || fail "INV-15: the entry universe reached no top-level file that loads lib/common.sh. install.sh is that file: it symlinks the operator's orchid, the front-end skill bundles and ~/.orchid out of \$ROOT, so out of a stale checkout it wires the pre-merge tree in as the installed orchid. A top-level family that has gone quiet means this scan is judging the installer by nothing"
 
 entry_unfired="${entry_unfired# }"
 assert_eq "$GATE_EXEMPT" "$entry_unfired" \
   "INV-15: the set of shipped files that arm the stale-root gate and never fire it must be exactly the declared one — a new member means code that runs pre-merge kernel with nothing left to say so, and a departed member means this exemption is stale"
 
-green_case "every shipped file that loads lib/common.sh — across install.sh, bin/, libexec/, runners/, scripts/ and the bundled plugins, with the scripts/ and plugins/ families each proved non-empty — reaches a site that really does fire the gate it arms at the path it ships at, with no exemption left standing"
+green_case "every shipped file that loads lib/common.sh — the $entry_toplevel top-level installer, and bin/, libexec/, runners/, scripts/ and the bundled plugins, with the top-level, scripts/ and plugins/ families each proved non-empty rather than assumed present — reaches a site that really does fire the gate it arms at the path it ships at, with no exemption left standing"
 
 # The blind spot itself, made observable, because everything above depends on
 # it being real: the SAME library, the SAME stale root, three paths, and the
@@ -1379,60 +1424,199 @@ for entry_shadow in scripts/inv15-probe.sh plugins/engines/inv15-probe/run; do
 done
 green_case "the identical stub, loading the identical lib/common.sh out of the identical stale root, was left to run under scripts/ and under plugins/ while being refused under libexec/ — so the source-time fire really is conditional on the directory, and a derivation that walked only the three executable roots really would share the implementation blind spot it exists to find"
 
-# Doctor was the first deferring entry point found to have TWO pre-report
-# gates, and it is no longer the only one: both scheduled runners now make the
-# same machine-local decision above the same explicit fire, because each has
-# routes that answer and leave without ever reaching its trust gate. The
-# unattended-trust decision must run first in all three: when Orchid is
-# operating on itself, the stale-root gate's Git query targets the very
-# repository whose machine-local acknowledgement has not yet been looked up.
-# In each file both calls are straight-line and uniquely named, so their
-# executable-code order is derived here rather than left as prose beside the
-# implementation.
+# THE ORDER OF THE TWO PRE-REPORT GATES, DERIVED RATHER THAN LISTED.
+#
+# Doctor was the first deferring entry point found to have TWO of them, and it
+# was never the only one. When Orchid operates on itself -- ORCHID_ROOT and the
+# target one directory, which is how orchid is developed and how it drives its
+# own repository -- the stale-root gate's Git query lands on the very repository
+# whose machine-local acknowledgement has not been looked up yet, and that is
+# the query the unattended-trust contract forbids before an acknowledgement is
+# found. Point an installed orchid at some other checkout and the two are
+# different directories, the ordering costs nothing to get wrong, and every
+# ordinary invocation is in that case: lesson L036's shape exactly.
+#
+# WHAT CHANGED HERE IS THIS FILE'S OWN SUBJECT, ONE LEVEL UP. The set used to be
+# three names written into an array -- doctor and the two scheduled runners --
+# and a hardcoded list is the thing this invariant exists to refuse. Two shipped
+# entry points were already outside it (libexec/orchid-status, which makes the
+# decision for its --explain arm, and runners/orchid-service, which crosses the
+# unattended boundary for its install arm), and an entry point growing its first
+# trust decision tomorrow would have been held to nothing while the list went on
+# passing. The candidates are derived from the entry universe above instead: a
+# file is judged the moment it carries both a machine-local trust DECISION and a
+# site that fires the stale-root gate.
+#
+# TWO FIRING SPELLINGS, because there are two firing sites, and reading only one
+# is how a file gets judged by a call it does not make. An entry point that
+# holds the fixed entry PATH for its whole run calls orchid_root_stale_gate; a
+# deferring entry point under the three executable roots fires at
+# _orchid_entry_restore_operator_path, which is where lib/common.sh puts the
+# gate for it. libexec/orchid-status fires by the second spelling alone, and a
+# matcher that knew only the first would have called it unprovable and moved on.
+#
+# AND A DECISION WITH NO FIRING SITE AT ALL IS THE WORST CASE, not a file to
+# pass over: a file that does not defer has already spent the gate's Git at
+# source time, while the library was still loading, which is ahead of every line
+# it contains and so ahead of any lookup it makes.
 #
 # This is a text answer to one half of a question section 9 answers by running
-# doctor and section 6 answers by running the two runners; it is kept because
-# it is cheap, it covers the files those sections do not re-run, and it fails
-# the moment somebody moves a line.
-doctor_gate_order_violations() {
-  local f="$1" code inspect_line stale_line
+# doctor and both `trust` arms, and section 6 answers by running the two
+# runners; it is kept because it is cheap, it covers the files those sections do
+# not re-run, and it fails the moment somebody moves a line.
+gate_order_violations() {
+  local f="$1" rel="$2" code decide_line fire_line
   code="$(entry_code "$f")"
-  inspect_line="$(awk '/^[[:space:]]*unattended_trust_inspect[[:space:]]/ { print NR; exit }' <<<"$code")"
-  stale_line="$(awk '/^[[:space:]]*orchid_root_stale_gate[[:space:]]*$/ { print NR; exit }' <<<"$code")"
-  case "$inspect_line:$stale_line" in
-    *[!0-9:]*|:*|*:) printf 'doctor-gate-order-unprovable: %s\n' "$f"; return 0 ;;
-  esac
-  if [ "$stale_line" -le "$inspect_line" ]; then
-    printf 'doctor-stale-before-trust: %s (stale line %s, trust line %s)\n' \
-      "$f" "$stale_line" "$inspect_line"
+  decide_line="$(awk '/^[[:space:]]*unattended_trust_(inspect|require|revoke_resolve)[[:space:]]/ { print NR; exit }' <<<"$code")"
+  # Not a candidate: no machine-local trust decision, so there is no
+  # acknowledgement lookup for a gate to land in front of.
+  if [ -z "$decide_line" ]; then printf 'skip\n'; return 0; fi
+  fire_line="$(awk '/^[[:space:]]*(orchid_root_stale_gate|_orchid_entry_restore_operator_path)[[:space:]]*$/ { print NR; exit }' <<<"$code")"
+  if [ -z "$fire_line" ]; then
+    if grep -q '__orchid_entry_defer_restore=1' <<<"$code"; then
+      printf 'gate-order-unprovable: %s (it makes a machine-local trust decision and defers the source-time fire, but names neither firing site, so nothing here can say where its gate lands — section 4 above reports the arming half of the same file)\n' "$rel"
+    else
+      printf 'gate-order-source-time-before-decision: %s (it makes a machine-local trust decision and does NOT defer the source-time fire, so lib/common.sh spends the gate against ORCHID_ROOT while the library is still loading — ahead of every line of this file, and so ahead of the acknowledgement lookup on line %s)\n' "$rel" "$decide_line"
+    fi
+    return 0
   fi
+  case "$decide_line:$fire_line" in
+    *[!0-9:]*) printf 'gate-order-unprovable: %s (line numbers did not come back numeric)\n' "$rel"; return 0 ;;
+  esac
+  if [ "$fire_line" -le "$decide_line" ]; then
+    printf 'gate-order-stale-before-trust: %s (stale line %s, trust line %s)\n' \
+      "$rel" "$fire_line" "$decide_line"
+    return 0
+  fi
+  printf 'ok\n'
 }
 
-GATE_ORDER_FILES=(
-  libexec/orchid-doctor
-  runners/orchid-pump
-  runners/orchid-tick
-)
-for doctor_order_file in "${GATE_ORDER_FILES[@]}"; do
-  doctor_order_out="$(doctor_gate_order_violations "$REPO_ROOT/$doctor_order_file")"
-  [ -z "$doctor_order_out" ] \
-    || fail "INV-15: $doctor_order_file queries stale-root Git before its trust decision ($doctor_order_out)"
+# THE ONE DECLARED EXEMPTION, and it is declared rather than special-cased for
+# the reason GATE_EXEMPT above is: an exemption that is written down is one the
+# next reader can argue with, and the comparison below is exact in BOTH
+# directions, so a file joining this set fails and a member that stops needing
+# it fails too.
+#
+# libexec/orchid-trust dispatches per subcommand, and this derivation reads a
+# file as one straight line. Its FIRST fire belongs to the `unattended` arm --
+# the operator authoring an acknowledgement, which is the one path licensed to
+# spend verification on the target, because there is no lookup being pre-empted
+# when this run is what puts a record on file. The two arms that do look one up
+# order themselves correctly and neither is visible to a first-match scan:
+# `show` inspects before it fires, `revoke` resolves the record it would unlink
+# before it fires. Both are proved by RUNNING them, against the self-hosted
+# target, in section 9 -- which is the evidence this exemption rests on and the
+# reason it costs nothing.
+GATE_ORDER_EXEMPT="libexec/orchid-trust"
+gate_order_candidates=0
+gate_order_reported=""
+gate_order_detail=""
+# The `+` guard is not decoration: this suite runs under `set -u`, and expanding
+# an EMPTY array with "${a[@]}" aborts the whole file on the Bash 3.2 that ships
+# as /bin/bash on macOS. An empty universe is already reported by the counters
+# above; it must not also silence every section below it.
+for gate_order_rel in ${ENTRY_UNIVERSE[@]+"${ENTRY_UNIVERSE[@]}"}; do
+  gate_order_out="$(gate_order_violations "$REPO_ROOT/$gate_order_rel" "$gate_order_rel")"
+  [ "$gate_order_out" != skip ] || continue
+  gate_order_candidates=$((gate_order_candidates + 1))
+  [ "$gate_order_out" != ok ] || continue
+  gate_order_reported="$gate_order_reported $gate_order_rel"
+  gate_order_detail="$gate_order_detail$gate_order_out"
 done
-green_case "each of the ${#GATE_ORDER_FILES[@]} shipped entry points that carry both a machine-local unattended-trust decision and an explicit stale-root fire — orchid-doctor and the two scheduled runners — performs the decision first, with both still ahead of its first report"
+gate_order_reported="${gate_order_reported# }"
+[ "$gate_order_candidates" -ge 5 ] \
+  || fail "INV-15: only $gate_order_candidates shipped entry point(s) were found to carry both a machine-local trust decision and a stale-root firing site. The shipped set is larger than that, so this derivation has stopped reading what it claims to and the ordering below is being proved about almost nothing"
+assert_eq "$GATE_ORDER_EXEMPT" "$gate_order_reported" \
+  "INV-15: the set of shipped entry points whose stale-root fire is not provably behind their machine-local trust decision must be exactly the declared one — a new member spends the gate's Git on an unacknowledged target in the self-hosted case, and a departed member means this exemption is stale ($gate_order_detail)"
+green_case "all $gate_order_candidates shipped entry points that carry both a machine-local unattended-trust decision and a stale-root firing site were DERIVED from the entry universe rather than listed — doctor, status, trust and all three runners, by either firing spelling — and every one but the single declared exemption performs the decision first, with both still ahead of its first report"
 
-DOCTOR_ORDER_BAD="$WORK/orchid-doctor-stale-first"
+GATE_ORDER_BAD="$WORK/orchid-doctor-stale-first"
 {
   printf '#!/bin/bash -p\n'
+  printf '__orchid_entry_defer_restore=1\n'
   printf 'source "$ORCHID_ROOT/lib/common.sh"\n'
   printf 'source "$ORCHID_ROOT/lib/trust.sh"\n'
   printf 'repo="$PWD"\n'
   printf 'orchid_root_stale_gate\n'
   printf 'unattended_trust_inspect "$repo"\n'
   printf 'unattended_trust_summary_loaded\n'
-} > "$DOCTOR_ORDER_BAD"
-assert_match 'doctor-stale-before-trust' "$(doctor_gate_order_violations "$DOCTOR_ORDER_BAD")" \
+} > "$GATE_ORDER_BAD"
+assert_match 'gate-order-stale-before-trust' \
+  "$(gate_order_violations "$GATE_ORDER_BAD" libexec/orchid-inv15-order-bad)" \
   "INV-15: a doctor-shaped entry point that queries stale-root Git before its trust decision must be reported"
-red_case 'the doctor gate-order derivation rejected a fixture whose stale-root Git query precedes its machine-local trust decision, so the shipped ordering is proved rather than merely described'
+red_case 'the gate-order derivation rejected a fixture whose stale-root Git query precedes its machine-local trust decision, so the shipped ordering is proved rather than merely described'
+
+# The SECOND firing spelling, both edges. Without these the widening above is a
+# regex nobody has watched work: a matcher that ignored the PATH restore would
+# call libexec/orchid-status unprovable, and one that reported every file it
+# recognised would report it too.
+GATE_ORDER_RESTORE_BAD="$WORK/orchid-status-restore-first"
+{
+  printf '#!/bin/bash -p\n'
+  printf '__orchid_entry_defer_restore=1\n'
+  printf 'source "$ORCHID_ROOT/lib/common.sh"\n'
+  printf 'repo="$PWD"\n'
+  printf '_orchid_entry_restore_operator_path\n'
+  printf 'unattended_trust_inspect "$repo"\n'
+} > "$GATE_ORDER_RESTORE_BAD"
+assert_match 'gate-order-stale-before-trust' \
+  "$(gate_order_violations "$GATE_ORDER_RESTORE_BAD" libexec/orchid-inv15-restore-bad)" \
+  "INV-15: a deferring entry point that fires the gate at its operator-PATH restore ABOVE its trust decision must be reported — that is the second firing spelling, and it is the one libexec/orchid-status is judged by"
+
+# The source-time shape: a decision, and no firing site at all because the file
+# never deferred. Its gate is already spent before line one.
+GATE_ORDER_SOURCE_TIME="$WORK/orchid-inv15-source-time"
+{
+  printf '#!/bin/bash -p\n'
+  printf 'source "$ORCHID_ROOT/lib/common.sh"\n'
+  printf 'repo="$PWD"\n'
+  printf 'unattended_trust_inspect "$repo"\n'
+  printf 'unattended_trust_summary_loaded\n'
+} > "$GATE_ORDER_SOURCE_TIME"
+assert_match 'gate-order-source-time-before-decision' \
+  "$(gate_order_violations "$GATE_ORDER_SOURCE_TIME" libexec/orchid-inv15-source-time)" \
+  "INV-15: an entry point that makes a trust decision without deferring the source-time fire must be reported — lib/common.sh spent the gate while it was loading, which is ahead of every line the file contains"
+red_case "the same derivation reported a fixture firing at the operator-PATH restore above its trust decision, and a second fixture whose gate was spent at source time because it never deferred — so both of the ways this ordering can be wrong are detected, not just the explicit call"
+
+# The three that must come back clean, and they are the same bodies as the two
+# refused fixtures above with the pair of lines swapped -- plus the ordinary
+# verb, which must be passed over rather than judged, since a file with no trust
+# decision has no acknowledgement lookup for a gate to precede.
+{
+  printf '#!/bin/bash -p\n'
+  printf '__orchid_entry_defer_restore=1\n'
+  printf 'source "$ORCHID_ROOT/lib/common.sh"\n'
+  printf 'source "$ORCHID_ROOT/lib/trust.sh"\n'
+  printf 'repo="$PWD"\n'
+  printf 'unattended_trust_inspect "$repo"\n'
+  printf 'orchid_root_stale_gate\n'
+  printf 'unattended_trust_summary_loaded\n'
+} > "$WORK/orchid-inv15-order-good"
+{
+  printf '#!/bin/bash -p\n'
+  printf '__orchid_entry_defer_restore=1\n'
+  printf 'source "$ORCHID_ROOT/lib/common.sh"\n'
+  printf 'repo="$PWD"\n'
+  printf 'unattended_trust_inspect "$repo"\n'
+  printf '_orchid_entry_restore_operator_path\n'
+} > "$WORK/orchid-inv15-restore-good"
+{
+  printf '#!/bin/bash -p\n'
+  printf 'source "$ORCHID_ROOT/lib/common.sh"\n'
+  printf 'echo "an ordinary verb: it crosses no trust boundary"\n'
+} > "$WORK/orchid-inv15-no-decision"
+
+while IFS=: read -r gate_ok_file gate_ok_want; do
+  [ -n "$gate_ok_file" ] || continue
+  gate_ok_out="$(gate_order_violations "$WORK/$gate_ok_file" "libexec/$gate_ok_file")"
+  assert_eq "$gate_ok_want" "$gate_ok_out" \
+    "INV-15: the $gate_ok_file fixture must be judged '$gate_ok_want' — a derivation that reports every file carrying these two calls, or that passes over a file it should judge, proves nothing about the shipped set"
+done <<'GATEORDEROK'
+orchid-inv15-order-good:ok
+orchid-inv15-restore-good:ok
+orchid-inv15-no-decision:skip
+GATEORDEROK
+green_case 'the identical fixtures with the two calls in the other order -- one by the explicit gate call, one by the operator-PATH restore -- were both judged clean, and an ordinary verb that makes no trust decision at all was passed over rather than judged, so the three reports above are ordering being detected rather than a scan that flags every file naming both calls'
 
 # The RED twins, on the same function. Six fixtures, and every one of them is
 # judged at a REPO-RELATIVE PATH as well as by its text, because the path is
@@ -1473,9 +1657,10 @@ mkdir -p "$ENTRY_FIXTURES"
   printf 'orchid_root_stale_gate\n'
   printf 'echo "a harness that fires the gate it armed"\n'
 } > "$ENTRY_FIXTURES/offpath-fired.sh"
-# The file that names lib/common.sh without ever loading it -- install.sh's
-# shape. It must be passed over entirely rather than reported for firing
-# nothing, since it arms nothing.
+# The file that names lib/common.sh without ever loading it -- the shape of
+# install.sh's two-anchor test, which is still in the installer beside the load
+# it now also performs. It must be passed over entirely rather than reported for
+# firing nothing, since a file that only tests for the path arms nothing.
 { printf '#!/usr/bin/env bash\n'
   printf 'if [ ! -f "$ROOT/lib/common.sh" ]; then exit 1; fi\n'
   printf 'echo "this checks for the library, it does not load it"\n'
@@ -1511,6 +1696,86 @@ offpath-fired.sh:scripts/inv15-fired.sh
 mentions-only.sh:scripts/inv15-mentions-only.sh
 ENTRYOK
 green_case 'a deferring entry point that reaches its restore at a path where restoring really fires, an ordinary verb that defers nothing at all, an off-path harness that calls orchid_root_stale_gate itself, and a file that names lib/common.sh without loading it were all left alone — so the four reports above are detection rather than a scan that flags every file it reads'
+
+# ---------------------------------------------------------------------------
+# THE INSTALLER, RUN, because the derivation above can only say it is WIRED.
+#
+# install.sh is the top-level family, and it is the one entry point whose
+# product is not a verb but a machine-scoped WIRING: the operator's own `orchid`
+# becomes a symlink into whatever checkout it was run from, and ~/.orchid is
+# created from that checkout's key list. Out of a stale integration checkout
+# that is the pre-merge tree installing itself as the operator's orchid, at the
+# one step nobody re-runs afterwards.
+#
+# AND ITS ONLY PRIOR KERNEL CHECK COULD NOT SEE THAT, which is why a scan of the
+# file was never going to be enough. The installer finishes by running `orchid
+# doctor`, but only when cwd is a git repo whose toplevel is NOT the source
+# checkout -- so the check is skipped in exactly the self-hosted shape, running
+# the installer from inside the orchid checkout itself, which is the only shape
+# in which that checkout can be the stale integration tree at all. A gate whose
+# single blind spot is the only environment that reaches the condition is
+# lesson L036 again, in the installer.
+#
+# BOTH EDGES, and the witness is a side effect rather than an exit code: the
+# refused run must leave no symlink at the prefix and no ~/.orchid tree, and the
+# permitted run out of a root that is NOT stale must create both -- otherwise
+# this pair is satisfied by an installer that wires nothing.
+INSTALL_STALE_ROOT="$WORK/installer-stale-root"
+make_probe_root "$INSTALL_STALE_ROOT" "$PROBE_INTEG"
+cp "$REPO_ROOT/install.sh" "$INSTALL_STALE_ROOT/install.sh"
+printf '\n# staged kernel edit\n' >> "$INSTALL_STALE_ROOT/libexec/orchid-version"
+git -C "$INSTALL_STALE_ROOT" add libexec/orchid-version
+[ -n "$(git -C "$INSTALL_STALE_ROOT" diff --cached --name-only HEAD -- libexec)" ] \
+  || fail "INV-15: the installer probe root carries no staged kernel edit, so it is not stale and the refusal below would prove nothing"
+
+INSTALL_OK_ROOT="$WORK/installer-fresh-root"
+make_probe_root "$INSTALL_OK_ROOT" probe/development
+cp "$REPO_ROOT/install.sh" "$INSTALL_OK_ROOT/install.sh"
+printf '\n# staged kernel edit\n' >> "$INSTALL_OK_ROOT/libexec/orchid-version"
+git -C "$INSTALL_OK_ROOT" add libexec/orchid-version
+
+# run_installer <root> <tag> -- the SHIPPED install.sh, out of <root>, into a
+# scratch HOME and prefix of its own. ~/.orchid/config is pre-created so the run
+# never reaches lib/config-keys.txt, which these minimal probe roots do not
+# carry: what is under test is where the gate lands, not the installer's config
+# authoring. The prefix directory is deliberately NOT pre-created, so its
+# absence afterwards is evidence the installer stopped before its first write.
+install_home=""
+install_prefix=""
+install_out=""
+install_rc=0
+run_installer() {
+  local root="$1" tag="$2"
+  install_home="$WORK/installer-home-$tag"
+  install_prefix="$WORK/installer-prefix-$tag"
+  mkdir -p "$install_home/.orchid"
+  printf '# scratch user config\n' > "$install_home/.orchid/config"
+  install_rc=0
+  install_out="$(HOME="$install_home" ORCHID_ALLOW_STALE_ROOT='' \
+    /bin/bash "$root/install.sh" --prefix "$install_prefix" 2>&1)" || install_rc=$?
+}
+
+run_installer "$INSTALL_OK_ROOT" fresh
+assert_eq 0 "$install_rc" \
+  "INV-15: the shipped installer must complete out of a root that is not stale — otherwise the refusal below is an installer that refuses everything (got: $install_out)"
+[ -L "$install_prefix/bin/orchid" ] \
+  || fail "INV-15: the permitted installer run created no orchid symlink at $install_prefix/bin — the side effect the refusal below has to prevent does not happen, so preventing it proves nothing ($install_out)"
+[ -d "$install_home/.orchid/plugins/engines" ] \
+  || fail "INV-15: the permitted installer run created no ~/.orchid/plugins/engines — the second side effect the refusal below has to prevent does not happen either ($install_out)"
+green_case "the shipped install.sh, run out of a checkout that is NOT stale with the identical staged kernel edit, wired the operator orchid symlink and the per-user plugin directory — so those writes really do happen, and their absence below is caused rather than inherited"
+
+run_installer "$INSTALL_STALE_ROOT" stale
+assert_eq 1 "$install_rc" \
+  "INV-15: the shipped installer, run out of a checkout genuinely parked on its configured integration branch with a kernel path staged, must refuse (got rc=$install_rc: $install_out)"
+assert_match 'refusing to run: the checkout orchid itself runs from' "$install_out" \
+  "INV-15: and it must be the stale-root refusal, not some other installer failure"
+assert_match 'libexec/orchid-version' "$install_out" \
+  "INV-15: the refusal must name the staged kernel path, which only the index comparison can have produced — the installer's gate is not merely present, it SAW something"
+[ ! -e "$install_prefix" ] \
+  || fail "INV-15: the refused installer run created $install_prefix anyway — the gate is reached after the wiring it exists to prevent, which is a gate reached too late"
+[ ! -e "$install_home/.orchid/plugins" ] \
+  || fail "INV-15: the refused installer run created ~/.orchid/plugins in the scratch HOME anyway — the gate sits below at least one of this installer's writes"
+red_case "the shipped install.sh, run out of a genuinely stale installation root, refused with the staged kernel path named and wired NOTHING — no orchid symlink at the prefix and no per-user plugin directory — so the top-level entry point that the source-time fire cannot reach, and whose own post-install doctor is skipped in exactly this self-hosted shape, fires the gate it arms ahead of its side effects"
 
 # ===========================================================================
 # 5 -- NO GATE MAY BE SKIPPED BY AN ACCIDENT OF PROCESS SCHEDULING.
@@ -1606,7 +1871,15 @@ pq_violations=""
 # mean what they say. The rest of tests/ is deliberately not here -- see the
 # not-tested claim at the end of this file for what that leaves open and why
 # the invariant gates were taken first.
-for pq_file in "$REPO_ROOT"/bin/* "$REPO_ROOT"/lib/*.sh "$REPO_ROOT"/libexec/* \
+# ...and the repository TOP LEVEL, for the reason section 4's universe grew the
+# same glob. install.sh carried this shape in its stable-channel ref check --
+# `printf ... | grep -Eq` on the version pin -- and no scan in the tree looked
+# there, because every family here was a directory. That one failed CLOSED, so
+# it cost a correctly pinned installer a refusal rather than letting a moving
+# ref through; the shape is removed anyway, and the glob is what keeps the next
+# top-level harness from reintroducing it in the direction that does not.
+for pq_file in "$REPO_ROOT"/*.sh "$REPO_ROOT"/bin/* "$REPO_ROOT"/lib/*.sh \
+               "$REPO_ROOT"/libexec/* \
                "$REPO_ROOT"/runners/* "$REPO_ROOT"/scripts/*.sh \
                "$REPO_ROOT"/plugins/*/*/* "$REPO_ROOT"/templates/*.sh \
                "$INV_GLOB_DIR"/test_*.sh; do
@@ -3145,11 +3418,11 @@ green_case "the identical revocation of the identical underivable target, differ
 not_tested "gate-omission-beyond-the-four-families" \
   "enforcement gates outside the four this file derives — the static sections of scripts/ci-local.sh, the files tests/helpers.sh enrols in the red-case rule (by location under tests/inv/ and by name in PROOF_ENROLLED_FILES), the stale-root guard's reach across every shipped file that loads lib/common.sh, and the early-exit matcher shape across the shipped kernel, the bundled plugins and those same gate files. A gate that is none of those (a check living only inside one verb, a hook a plugin installs) is held to the same rule by review. What makes the four checkable is that each has a DISCOVERABLE membership: a banner, a glob plus the array beside it, a source line, a syntactic shape. A new gate family belongs here the moment its membership becomes derivable"
 not_tested "gate-reach-into-code-that-arms-nothing" \
-  "shipped code that executes out of \$ORCHID_ROOT without loading lib/common.sh at all. Section 4's universe is every file under install.sh, bin/, libexec/, runners/, scripts/ and plugins/*/*/* that SOURCES the library, because sourcing it is what arms the guard and the question this file asks is whether what was armed is fired. A helper that runs kernel code some other way — a plugin's notify sender that shells to the orchid dispatcher rather than sourcing it, a hook script, anything reached through a subprocess — arms nothing here, so it is neither reported nor cleared. The subprocess case is the benign half: whatever it invokes is itself in the universe and fires the gate on its own account. The case that is not covered is a file that reads and acts on \$ORCHID_ROOT's contents directly without loading the library, which no shipped file does today and which this derivation would not notice arriving"
+  "shipped code that executes out of \$ORCHID_ROOT without loading lib/common.sh at all. Section 4's universe is every file at the repository top level (*.sh, which is install.sh today) and under bin/, libexec/, runners/, scripts/ and plugins/*/*/* that SOURCES the library, because sourcing it is what arms the guard and the question this file asks is whether what was armed is fired. A helper that runs kernel code some other way — a plugin's notify sender that shells to the orchid dispatcher rather than sourcing it, a hook script, anything reached through a subprocess — arms nothing here, so it is neither reported nor cleared. The subprocess case is the benign half: whatever it invokes is itself in the universe and fires the gate on its own account. The case that is not covered is a file that reads and acts on \$ORCHID_ROOT's contents directly without loading the library, which no shipped file does today and which this derivation would not notice arriving"
 not_tested "firing-site-reachability-within-an-entry-point" \
-  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the five sections 6, 8 and 9 execute. Section 4 is textual in that one respect by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call -- or runs past it BEFORE that work -- which it cannot. (What section 4 no longer takes on trust is the OTHER half of that question, whether a call it found fires anything where the file lives: that is answered by running a stub at the file's own path out of a genuinely stale root, so a firing site that is inert at that location is reported rather than counted.) Section 6 answers both questions for runners/orchid-pump and runners/orchid-tick, section 8 for libexec/orchid-trust and for runners/orchid-service, and section 9 for libexec/orchid-doctor, each by running the entry point and weighing its refusal against a side effect — a write, or a verdict — that really does happen otherwise; that is five entry points out of the deferring set. Section 6 is also where the ROUTE half of the question is put rather than only the file half: both scheduled runners answer an uninitialised, split-brain or finished repository above their trust gate and leave, and those routes had no fire on them at all, which no scan of either file could have said, because the call is in the text. All four of those verdicts are RUN, each on its own target: an uninitialised directory, a split-brain checkout built to trip a different predicate from the other two, and a finished run put to both runners. Three routes clearing a gate says nothing about a fourth, so none of them is argued from the others. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally on the route to its own work, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no ACTING arm that could forget; section 8 runs its status arm out of a stale root and requires the refusal to land ahead of the report, which is the half a scan of that file cannot answer. libexec/orchid-trust is the one that fires PER SUBCOMMAND, because what the gate must precede is per subcommand, and no ACTING arm of it is exempt any longer: the lookup arm carried an exemption for writing nothing durable, that exemption is gone, and section 8 executes both the acknowledgement, whose side effect is the record it writes, and the lookup, whose side effect is the report an operator acts on. What both files DO have above the call is the usage arm -- -h, --help, help, a bare invocation -- and that is the one route through either of them on which this gate does not fire. It is not left as an omission in one and a decision in the other: section 8 runs both verbs' usage arms out of the same stale root that refuses their acting arms, so the exemption is measured, bounded to the arm that resolves no target and reads no record, and identical in the two files. What is not tested is the claim UNDER it -- that a usage text can never carry anything an operator acts on about a repository -- which is an argument about the content of two here-documents rather than about an ordering, and belongs to review. Section 8 does not run the third arm, revocation; section 9 does, on the self-hosted target, and what is left untested there is narrower than the arm. Its ordering cannot be read off a trace: revocation walks no history by design, so its machine-local half — the bounded identity derivation that decides which record would be unlinked — spends no Git in any environment, and there is no position for an observer to measure. Section 9 measures the two halves that can be: the arm spends no target query of its own at all, so the gate's comparison is the only Git in a refused run and nothing precedes it; and the ORDER is pinned on the report edge instead, since an underivable identity is a diagnosis about the target and out of a stale root it must not be produced. What that leaves untested is the ordering between the derivation and the gate on the route where the derivation SUCCEEDS, which no instrumentation in this file can see. So a trust subcommand added tomorrow that acts and forgets the call is caught by nothing: section 4 sees the file's other call sites and is satisfied, and sections 8 and 9 only ever asked about the arms they run. An entry point that guards its call, or that acts before it, belongs to review, and the two questions to put to it are the ones sections 4, 6, 8 and 9 put to those five: on which route is your gate not reached, and what have you already done by the time it is"
+  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the six sections 4, 6, 8 and 9 execute. Section 4 is textual in that one respect by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call -- or runs past it BEFORE that work -- which it cannot. (What section 4 no longer takes on trust is the OTHER half of that question, whether a call it found fires anything where the file lives: that is answered by running a stub at the file's own path out of a genuinely stale root, so a firing site that is inert at that location is reported rather than counted.) Section 6 answers both questions for runners/orchid-pump and runners/orchid-tick, section 8 for libexec/orchid-trust and for runners/orchid-service, and section 9 for libexec/orchid-doctor, each by running the entry point and weighing its refusal against a side effect — a write, or a verdict — that really does happen otherwise; that is five entry points out of the deferring set, and section 4 executes a sixth from OUTSIDE that set — install.sh, the top-level installer, run out of a genuinely stale root with the prefix symlink and the per-user plugin directory as the witnesses, because the only kernel check that file ever carried is its closing doctor run and that one is skipped in exactly the self-hosted shape this refusal is for. Section 6 is also where the ROUTE half of the question is put rather than only the file half: both scheduled runners answer an uninitialised, split-brain or finished repository above their trust gate and leave, and those routes had no fire on them at all, which no scan of either file could have said, because the call is in the text. All four of those verdicts are RUN, each on its own target: an uninitialised directory, a split-brain checkout built to trip a different predicate from the other two, and a finished run put to both runners. Three routes clearing a gate says nothing about a fourth, so none of them is argued from the others. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally on the route to its own work, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no ACTING arm that could forget; section 8 runs its status arm out of a stale root and requires the refusal to land ahead of the report, which is the half a scan of that file cannot answer. libexec/orchid-trust is the one that fires PER SUBCOMMAND, because what the gate must precede is per subcommand, and no ACTING arm of it is exempt any longer: the lookup arm carried an exemption for writing nothing durable, that exemption is gone, and section 8 executes both the acknowledgement, whose side effect is the record it writes, and the lookup, whose side effect is the report an operator acts on. What both files DO have above the call is the usage arm -- -h, --help, help, a bare invocation -- and that is the one route through either of them on which this gate does not fire. It is not left as an omission in one and a decision in the other: section 8 runs both verbs' usage arms out of the same stale root that refuses their acting arms, so the exemption is measured, bounded to the arm that resolves no target and reads no record, and identical in the two files. What is not tested is the claim UNDER it -- that a usage text can never carry anything an operator acts on about a repository -- which is an argument about the content of two here-documents rather than about an ordering, and belongs to review. Section 8 does not run the third arm, revocation; section 9 does, on the self-hosted target, and what is left untested there is narrower than the arm. Its ordering cannot be read off a trace: revocation walks no history by design, so its machine-local half — the bounded identity derivation that decides which record would be unlinked — spends no Git in any environment, and there is no position for an observer to measure. Section 9 measures the two halves that can be: the arm spends no target query of its own at all, so the gate's comparison is the only Git in a refused run and nothing precedes it; and the ORDER is pinned on the report edge instead, since an underivable identity is a diagnosis about the target and out of a stale root it must not be produced. What that leaves untested is the ordering between the derivation and the gate on the route where the derivation SUCCEEDS, which no instrumentation in this file can see. So a trust subcommand added tomorrow that acts and forgets the call is caught by nothing: section 4 sees the file's other call sites and is satisfied, and sections 8 and 9 only ever asked about the arms they run. An entry point that guards its call, or that acts before it, belongs to review, and the two questions to put to it are the ones sections 4, 6, 8 and 9 put to those five: on which route is your gate not reached, and what have you already done by the time it is"
 not_tested "early-exit-matchers-outside-the-kernel-and-the-invariant-gates" \
-  "the rest of tests/. Section 5's glob is the shipped kernel, the bundled plugins and tests/inv/test_*.sh, and the last of those was added because an invariant gate deciding its verdict by a race is the same defect the section scans the kernel for. The other test files carry the shape too, in the hundreds, and they are not covered here: converting them is a mechanical sweep of a different size, and the argument for taking the gates first is that a wrong answer there is a wrong answer about the kernel, whereas a wrong answer in a feature test is a flaky test somebody re-runs. The tell is unchanged wherever it appears, and the direction that costs is the negative assertion: a producer piped into an early-exiting grep, then '&& fail', is skipped exactly when the pattern is present. Spelled in words rather than in code, here and in the failure message above, because these two lines are not comments: this file is inside the glob it runs, so a literal instance of the shape on a line of its own prose is a violation of this invariant reported against this file — which is the right answer, and the reason the wording works around it"
+  "the rest of tests/. Section 5's glob is the repository top level, the shipped kernel, the bundled plugins and tests/inv/test_*.sh, and the last of those was added because an invariant gate deciding its verdict by a race is the same defect the section scans the kernel for. The other test files carry the shape too, in the hundreds, and they are not covered here: converting them is a mechanical sweep of a different size, and the argument for taking the gates first is that a wrong answer there is a wrong answer about the kernel, whereas a wrong answer in a feature test is a flaky test somebody re-runs. The tell is unchanged wherever it appears, and the direction that costs is the negative assertion: a producer piped into an early-exiting grep, then '&& fail', is skipped exactly when the pattern is present. Spelled in words rather than in code, here and in the failure message above, because these two lines are not comments: this file is inside the glob it runs, so a literal instance of the shape on a line of its own prose is a violation of this invariant reported against this file — which is the right answer, and the reason the wording works around it"
 not_tested "early-exit-matchers-other-than-grep-q" \
   "producers killed by an early-exiting consumer that is not grep -q. A head -n1, a sed -n 1q, and a bare read in a pipeline all stop reading before their input ends and all SIGPIPE upstream the same way; section 5 derives exactly one consumer because that is the one the shipped tree used, and the sites that pipe into head today discard the status with an explicit fallback rather than branching on it. The tell is the same wherever it appears: a pipeline under set -o pipefail whose right-hand side can stop reading first, so its exit status may be the producer's death rather than the matcher's verdict"
 not_tested "recorded-label-integrity-outside-the-invariant-gates" \
