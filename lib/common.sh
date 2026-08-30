@@ -1869,17 +1869,34 @@ orchid_leaked_run_state_branches() {
 #     is authoritative regardless of what it does, exactly as before; this
 #     function must never be the reason a hook somebody wrote is lost.
 #
-# The marker is `templates/pre-push.sh`'s own second line, which has carried
-# the words `orchid pre-push guard` since the hook first shipped (v1-m4) --
-# that is what makes an OLD installed hook recognizable as orchid's own today,
-# and it is why that phrase is load-bearing and pinned by the template's own
-# comment. Recognizing orchid's hook by its content, not by a receipt written
-# somewhere at install time, is deliberate: a receipt would say "orchid wrote
-# this" about a file the operator has since replaced by hand.
-ORCHID_PUSH_GUARD_MARKER='orchid pre-push guard'
+# The marker is `templates/pre-push.sh`'s own second line, which has BEGUN with
+# `# orchid pre-push guard` since the hook first shipped (v1-m4) -- that is what
+# makes an OLD installed hook recognizable as orchid's own today, and it is why
+# that header is load-bearing and pinned by the template's own comment.
+# Recognizing orchid's hook by its content, not by a receipt written somewhere
+# at install time, is deliberate: a receipt would say "orchid wrote this" about
+# a file the operator has since replaced by hand.
+#
+# POSITION AND ANCHOR ARE THE WHOLE TEST, and both halves are load-bearing.
+# This used to be `grep -Fq` over the entire file, which asks a much weaker
+# question: does this file MENTION the phrase anywhere. A hook of the
+# operator's own that merely talks about orchid -- `# runs before the orchid
+# pre-push guard`, an `echo` naming it in a diagnostic, a dispatcher that
+# execs orchid's hook and says so in a comment -- answers yes to that and was
+# OVERWRITTEN, which is exactly the loss the never-overwrite rule exists to
+# prevent, and it lands on the operator most likely to have written a
+# deliberate hook. Read line 2 and require it to START with the header: a
+# mention is text somewhere in a file, a header is the second line and nothing
+# else, and only orchid's own renderer puts it there.
+#
+# A PREFIX of line 2, not the whole line: the text that FOLLOWS the header on
+# that line is ordinary prose and may be reworded, and pinning the whole line
+# would silently un-recognize the legacy hooks this upgrade exists for the
+# first time anyone edits it. The header itself is the contract.
+ORCHID_PUSH_GUARD_MARKER='# orchid pre-push guard'
 orchid_install_push_guard() {
   local repo="$1" integ="$2" guard git_common_dir hooks_dir
-  local integ_shell_esc integ_esc rendered hook
+  local integ_shell_esc integ_esc rendered hook hook_header
   guard="$(config_get "$repo" push_guard true)"
   case "$guard" in false|0|no) return 0 ;; esac
 
@@ -1919,10 +1936,18 @@ orchid_install_push_guard() {
   [ -n "$rendered" ] || return 0
 
   if [ -e "$hook" ]; then
-    if ! grep -Fq -- "$ORCHID_PUSH_GUARD_MARKER" "$hook" 2>/dev/null; then
-      echo "orchid: existing pre-push hook found at $hook -- leaving it untouched (push guard not installed)"
-      return 0
-    fi
+    # Line 2 EXACTLY -- see the marker's own comment above. `sed -n '2p'` on a
+    # file with fewer than two lines, on a directory, or on something
+    # unreadable all yield the empty string, which fails the prefix test and
+    # takes the leave-it-alone branch: the safe answer for anything this
+    # function cannot positively identify as its own.
+    hook_header="$(sed -n '2p' "$hook" 2>/dev/null || true)"
+    case "$hook_header" in
+      "$ORCHID_PUSH_GUARD_MARKER"*) : ;;
+      *)
+        echo "orchid: existing pre-push hook found at $hook -- leaving it untouched (push guard not installed)"
+        return 0 ;;
+    esac
     # `$(cat)` strips trailing newlines from BOTH sides of this comparison
     # (the render above lost its own to the same rule), so the two are compared
     # on equal terms and a hook that is already current is left alone.

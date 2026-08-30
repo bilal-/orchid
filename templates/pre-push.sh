@@ -23,13 +23,16 @@
 # an initialized repository (it dies with `branch <integ> exists`), so start's
 # existing-repository path is the door that re-renders this file.
 #
-# The words `orchid pre-push guard` on the second line of this file are
-# LOAD-BEARING, not decoration: lib/common.sh's orchid_install_push_guard
-# recognizes its own installed hook by exactly that phrase, and that is how a
-# hook written by an OLDER orchid gets upgraded to this one instead of being
-# mistaken for something the operator wrote. Any hook without the phrase is a
-# user's own and is left untouched -- never overwritten, whatever it does --
-# so do not reword line 2 without changing the marker with it.
+# The SECOND LINE of this file is LOAD-BEARING, not decoration:
+# lib/common.sh's orchid_install_push_guard recognizes its own installed hook
+# by line 2 STARTING with `# orchid pre-push guard`, and that is how a hook
+# written by an OLDER orchid gets upgraded to this one instead of being
+# mistaken for something the operator wrote. Any hook whose second line does
+# not start that way is a user's own and is left untouched -- never
+# overwritten, whatever it does, and however often it happens to mention
+# orchid elsewhere in its body. So do not move that header off line 2 or
+# reword its opening words without changing the marker with it; the rest of
+# line 2, after the header, is ordinary prose and free to change.
 #
 # SECOND leg (T037): refuse any OTHER ref whose tip carries orchid's own run
 # state (`.orchid/`) when the remote's copy of that ref does not already carry
@@ -58,6 +61,19 @@
 # yet is refused. A remote sha of all zeros (a brand-new remote branch) has no
 # copy to exempt, and one whose object is not present locally cannot be read
 # to check: both fail CLOSED, since the cost is a message and a variable.
+#
+# BRANCHES ONLY (`refs/heads/*`), and that bound is part of the design rather
+# than an omission. The leak this leg exists for is a leak along the merge
+# chain: run state rides a branch into a product's `main` and becomes part of
+# its history. A tag is a different object with a different job -- it names a
+# commit that is, by the time anyone tags it, already reachable from a branch
+# that this leg either passed or refused on its own merits -- so refusing
+# `git push origin v1.2.3` blocks nothing that is not decided elsewhere and
+# breaks a release the moment run state is anywhere in the tagged history.
+# The same goes for `refs/notes/*` and for a forge's own `refs/for/*`-style
+# review refs. Every ref that is not a branch pushes exactly as plain git
+# would, run state or no run state. The NAME-BASED leg above is unaffected and
+# runs first: it already keys on `refs/heads/...` destinations of its own.
 [ "${ORCHID_ALLOW_PUSH:-0}" = 1 ] && exit 0
 
 integ="__INTEGRATION_BRANCH__"
@@ -78,6 +94,11 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
     refs/heads/task/*) blocked=1; blocked_ref="$remote_ref"; continue ;;
     "refs/heads/$integ") blocked=1; blocked_ref="$remote_ref"; continue ;;
   esac
+  # The run-state leg is scoped to branches, and only AFTER the name-based
+  # checks above have had their say -- see the BRANCHES ONLY note in the
+  # header. A tag, a note, a forge review ref: normal git behaviour, whatever
+  # its commit carries.
+  case "$remote_ref" in refs/heads/*) ;; *) continue ;; esac
   # A deletion (all-zero local sha) pushes no tree and can leak nothing.
   case "$local_sha" in *[!0]*) ;; *) continue ;; esac
   carries_run_state "$local_sha" || continue

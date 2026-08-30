@@ -573,8 +573,16 @@ hook37="$r37_hook/.git/hooks/pre-push"
 [ -f "$hook37" ] || fail "fixture: init must have installed a push guard to go stale"
 
 # Stand in for the hook a repository initialized by an older orchid carries:
-# orchid's own (it says so on line 2, which is the marker the upgrade
-# recognizes it by), with the name-based leg only and no run-state leg.
+# orchid's own, with the name-based leg only and no run-state leg.
+#
+# Line 2 is what identifies it, and it is deliberately NOT byte-identical to
+# the template's own line 2 -- it STARTS with `# orchid pre-push guard` and
+# then says something else. That is the GREEN half of the recognizer's second
+# twin: the header is a prefix contract, so prose that has been reworded since
+# a legacy hook was written still recognizes it, which is the only reason the
+# upgrade reaches the repositories it exists for. The RED half -- a hook that
+# mentions the same words somewhere OTHER than the start of line 2 -- is
+# below, after the user-hook case.
 cat > "$hook37" <<'STALE_HOOK'
 #!/usr/bin/env bash
 # orchid pre-push guard -- installed by `orchid init` (v1-m4 vintage: this is
@@ -596,6 +604,7 @@ assert_match "carries orchid.s own run state" "$(cat "$hook37")" \
 assert_match "^integ=.orchid/integration.$" "$(cat "$hook37")" \
   "and the integration branch is still baked in, resolved at install time as ever"
 [ -x "$hook37" ] || fail "an upgraded hook that is not executable is not a hook"
+green_case 'a legacy hook whose line 2 STARTS with the header is recognized and upgraded'
 
 # Idempotent, and quiet about it: the same start again must not report an
 # upgrade it did not perform, or the line stops meaning anything. Re-run under
@@ -627,6 +636,59 @@ assert_eq "$user_hook37_body" "$(cat "$user_hook37")" \
   "start never overwrites a pre-push hook orchid did not write"
 assert_match "leaving it untouched" "$out37_user" \
   "and says so, so the operator knows the guard is not installed"
+
+# ---------------------------------------------------------------------------
+# The hook that MENTIONS orchid without being orchid's. This is the shape the
+# never-overwrite rule is actually load-bearing for, and the one that used to
+# lose: recognition was `grep -F` over the whole file, which asks "does this
+# file contain the phrase anywhere" -- and the operator most likely to have
+# written a deliberate pre-push hook is exactly the operator most likely to
+# name orchid in it, in a comment or in a chain to orchid's own guard. Theirs
+# was overwritten.
+#
+# Recognition is now POSITION plus ANCHOR: the second line, starting with the
+# header. Both halves are exercised by the one fixture below --
+#
+#   line 2 contains the phrase, but not at the start   -> the ANCHOR half
+#   line 3 starts with the phrase, but is not line 2   -> the POSITION half
+#
+# -- and either half failing overwrites a file the operator wrote by hand,
+# which is the one outcome this function must never produce.
+#
+# Both verbs are asked, because both install the guard: init on the way in,
+# start on every existing-repository pass afterwards.
+#
+# RED (before this fix): the hook below is replaced by orchid's template, its
+# `exec` chain lost silently, and start reports an upgrade of a file it had no
+# business touching.
+# ---------------------------------------------------------------------------
+r37_mention="$W/r37-mentionhook"; mk_repo "$r37_mention" 'verify=true'
+mkdir -p "$r37_mention/.git/hooks"
+mention_hook37="$r37_mention/.git/hooks/pre-push"
+cat > "$mention_hook37" <<'MENTION_HOOK'
+#!/bin/sh
+# pre-push: my own checks run first, then the orchid pre-push guard.
+# orchid pre-push guard -- chained below, if this checkout has one installed.
+./scripts/my-own-checks.sh || exit 1
+exec "$(dirname "$0")/pre-push.orchid" "$@"
+MENTION_HOOK
+chmod +x "$mention_hook37"
+mention_hook37_body="$(cat "$mention_hook37")"
+grep -Fq "orchid pre-push guard" "$mention_hook37" \
+  || fail "fixture: the operator's hook must MENTION the phrase, or it tests nothing"
+ORCHID_REPO="$r37_mention" "$ORCHID_BIN" init >/dev/null \
+  || fail "fixture: orchid init must succeed on r37-mentionhook"
+assert_eq "$mention_hook37_body" "$(cat "$mention_hook37")" \
+  "init leaves a hook that merely MENTIONS orchid byte-for-byte alone"
+out37_mention="$(ORCHID_REPO="$r37_mention" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must succeed on a repo carrying such a hook: $out37_mention"
+assert_eq "$mention_hook37_body" "$(cat "$mention_hook37")" \
+  "and so does start -- a mention of the marker is not the marker"
+assert_match "leaving it untouched" "$out37_mention" \
+  "and start says the guard is not installed rather than claiming an upgrade"
+grep -q "pre-push guard upgraded" <<<"$out37_mention" \
+  && fail "orchid must never report upgrading a hook the operator wrote"
+red_case 'a user hook that MENTIONS the marker off line 2 is left byte-for-byte alone'
 
 # `push_guard=false` still opts out of the whole thing, upgrade included.
 r37_off="$W/r37-guardoff"; mk_repo "$r37_off" 'verify=true' 'push_guard=false'

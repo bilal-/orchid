@@ -664,13 +664,16 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   (defense-in-depth; PROTOCOL.md instructs the model not to push, but that
   prompt policy is not OS/network containment).
   `ORCHID_ALLOW_PUSH=1` overrides it for one push.
-  The same hook also refuses a push of *any other* ref whose tip carries
-  orchid's own run state (`.orchid/`) when the remote's copy of that ref does
-  not already carry it — the leak that reaches a product's `main` by riding
-  the merge chain rather than by anyone pushing an orchid-named branch. A ref
-  whose remote copy already tracks run state is exempt automatically, so a
-  repository that carries its own run state on purpose (orchid's own does)
-  pushes it once with `ORCHID_ALLOW_PUSH=1` and is never asked again. See
+  The same hook also refuses a push of *any other branch* whose tip carries
+  orchid's own run state (`.orchid/`) when the remote's copy of that branch
+  does not already carry it — the leak that reaches a product's `main` by riding
+  the merge chain rather than by anyone pushing an orchid-named branch. A
+  branch whose remote copy already tracks run state is exempt automatically, so
+  a repository that carries its own run state on purpose (orchid's own does)
+  pushes it once with `ORCHID_ALLOW_PUSH=1` and is never asked again. Only
+  branches are checked: pushing a tag, a note, or any other non-branch ref
+  behaves exactly as plain git does, whatever its commit carries, so tagging a
+  release is never blocked by this. See
   [troubleshooting.md](./troubleshooting.md) — "Run state in your product's
   history". `orchid init` installs the hook, and `orchid start` upgrades it on
   an already-initialized repository: init runs exactly once in a repository's
@@ -681,10 +684,12 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   already matches the current template is left byte-for-byte alone and
   reported not at all. Changing `integration_branch` is picked up the same
   way, since the branch name is baked into the hook at install time. Orchid
-  recognizes its own hook by the words `orchid pre-push guard` on the file's
-  second line, so if you have edited that file in place, your edit is what the
-  upgrade replaces — keep your version in a hook of your own instead, since a
-  file without that marker is never touched.
+  recognizes its own hook only by the file's **second line starting with**
+  `# orchid pre-push guard`, so if you have edited that file in place, your
+  edit is what the upgrade replaces — keep your version in a hook of your own
+  instead. Any other file is never touched, including one that mentions
+  `orchid pre-push guard` somewhere else in its body: a hook of yours that
+  talks about orchid, or chains to it, is still yours.
 - **`status_page`** is where `orchid status --html` writes its
   self-contained static page — never served, open the file directly.
 - **`notify.plugin`** (default `openclaw`) selects WHICH `kind=notify`

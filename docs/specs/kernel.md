@@ -2076,13 +2076,18 @@ merge chain — integration branch → feature branch → `main` — into a
 product's history, where a large diff makes it read as tooling. Two guards,
 because the kernel never performs the merge that leaks it and never may:
 
-- The same pre-push hook additionally refuses a push of any **other** ref
-  whose tip carries `.orchid/` when the remote's copy of that ref does not
-  already carry it. Push is the chokepoint rather than merge, because a
-  squash, a cherry-pick or a rebase carries the files across without a merge
-  commit, and a hosted merge request is merged where no local hook runs at
-  all. A ref whose remote copy already tracks run state is exempt, so a
-  deliberately self-hosted repository is asked once and never again.
+- The same pre-push hook additionally refuses a push of any **other branch**
+  (`refs/heads/*`, checked only after the name-based leg above) whose tip
+  carries `.orchid/` when the remote's copy of that branch does not already
+  carry it. Push is the chokepoint rather than merge, because a squash, a
+  cherry-pick or a rebase carries the files across without a merge commit,
+  and a hosted merge request is merged where no local hook runs at all. A
+  branch whose remote copy already tracks run state is exempt, so a
+  deliberately self-hosted repository is asked once and never again. Scoped
+  to branches because the leak is a merge-chain leak: a tag, a note or a
+  forge review ref names a commit whose branch this leg has already judged,
+  so refusing it would decide nothing and break a release tag cut over any
+  history containing run state. Non-branch refs push exactly as plain git.
 - `orchid merge` **warns** (stderr, never refuses) when any local branch
   outside the run — not the integration branch, not a branch recorded on a
   task, including an **archived** run's tasks under `runs/<run_id>/tasks/`,

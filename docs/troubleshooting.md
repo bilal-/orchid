@@ -2262,11 +2262,14 @@ want:
   does not own, and a run frozen behind a report would be worse than a run
   that reports.
 - The `pre-push` hook orchid installs refuses a push that would put run
-  state on a remote ref that does not already have it — see
+  state on a remote **branch** that does not already have it (tags and other
+  non-branch refs push as they always did) — see
   [configuration.md](./configuration.md) (`push_guard`). `orchid init` installs
   it and `orchid start` upgrades an orchid-installed one, so a repository set
   up before this leg shipped gains it on the next `orchid start`; a hook you
-  wrote yourself is never touched by either. One shape that upgrade does not
+  wrote yourself is never touched by either — including one that mentions
+  orchid or chains to its guard, since only a file whose *second line* starts
+  with `# orchid pre-push guard` is treated as orchid's own. One shape that upgrade does not
   reach: a run already past `planning`, where `orchid start` refuses outright
   because it is a setup command. Until that run rolls over, render the hook
   yourself from your orchid checkout — `sed

@@ -462,6 +462,43 @@ green_case 'a ref whose remote copy already carries run state is exempt, no over
 rc=0; del_push_out="$(git -C "$pg" push origin :feature/carries-run-state 2>&1)" || rc=$?
 [ "$rc" -eq 0 ] || fail "the run-state leg must never block a ref DELETION (got: $del_push_out)"
 
+# ---------------------------------------------------------------------------
+# BRANCHES ONLY. The run-state leg is scoped to `refs/heads/*` and is reached
+# only after the name-based checks above, so a tag -- or a note, or a forge's
+# `refs/for/*` review ref -- pushes exactly as plain git would, whatever its
+# commit carries.
+#
+# The bound is the design, not an omission. The leak this leg exists for is a
+# merge-chain leak: run state rides a BRANCH into a product's `main` and
+# becomes part of its history. A tag names a commit that is, by the time
+# anyone tags it, already reachable from a branch this leg has judged on its
+# own merits -- so refusing `git push origin v1.2.3` decides nothing new and
+# breaks every release tag cut over any history that contains run state,
+# orchid's own repository first among them.
+#
+# RED (before this bound): the tag below is refused, and a release cannot be
+# cut at all.
+# ---------------------------------------------------------------------------
+git -C "$pg" tag v-run-state orchid/integration
+[ -n "$(git -C "$pg" ls-tree v-run-state -- .orchid)" ] \
+  || fail "fixture: the tagged commit must actually carry .orchid/, or the bound is never tested"
+rc=0; tag_push_out="$(git -C "$pg" push origin v-run-state 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "the run-state leg must never block a TAG push (got: $tag_push_out)"
+git -C "$pg" ls-remote --exit-code --tags "$remote" v-run-state >/dev/null 2>&1 \
+  || fail "and the tag must actually have landed on the remote, not merely not-errored"
+red_case 'a tag whose commit carries .orchid/ pushes exactly as plain git does'
+
+# The GREEN twin of that bound, asserted here rather than left to the block
+# above: the very same run-state commit, pushed to a BRANCH the remote does
+# not already carry it on, is still refused. That is what keeps the tag case
+# from passing because the leg stopped working.
+git -C "$pg" branch feature/tag-twin orchid/integration
+rc=0; twin_push_out="$(git -C "$pg" push origin feature/tag-twin 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "scoping the leg to refs/heads/* must not have disabled it for branches"
+assert_match "carries orchid.s own run state" "$twin_push_out" \
+  "the branch carrying the tagged commit is still refused, by the leg the tag walked past"
+green_case 'the same run-state commit pushed to a branch is still refused'
+
 # A pre-existing user pre-push hook must NEVER be overwritten by init.
 pg2="$WORK/pushguard-userhook"; mkdir -p "$pg2"
 (cd "$pg2" && git init -q . && git symbolic-ref HEAD refs/heads/trunk && git commit -q --allow-empty -m root)
