@@ -1504,15 +1504,54 @@ drive_dispatch() {
             reps=0
           fi
         fi
-        # An adapter is not REQUIRED to report `.engine` (reconcile only
-        # cross-checks it when present), so an empty field is not proof that
-        # no engine ran. Fall back to whichever engine this role would resolve
-        # to right now -- absent a ledger change, that is exactly the one that
-        # ran last time -- rather than skipping the reroute over a missing
-        # optional field. That fallback already speaks in chain names, so it is
-        # deliberately BELOW the resolution above rather than inside it.
+        # AND NO RECORDED ACTOR IS THE SAME ANSWER, for the same reason. An
+        # adapter is not REQUIRED to report `.engine` (reconcile only
+        # cross-checks it when present) and libexec/orchid-task writes this
+        # field only when it finds one, so a round whose envelope was absent,
+        # refused as a no-op delivery, or degraded (T040) records nothing about
+        # who ran it. On a chain that never reports, the field is EMPTY, which
+        # this arm can see and does. (On a MIXED chain the same round instead
+        # leaves the previous round's value standing, which no state visible
+        # here distinguishes from a current one -- that is the kernel record's
+        # to fix, not this walk's, and it is why the walk must not invent a
+        # second unverifiable answer beside it.)
+        #
+        # This arm used to guess: fall back to whichever engine the role
+        # resolves to right now, "absent a ledger change, exactly the one that
+        # ran last time". That claim is false in precisely the situation the
+        # guess is consulted in, and this feature is what makes it false. The
+        # walk below deliberately routes AWAY from the chain primary, so from
+        # the second reroute onward the engine that ran last is the ALTERNATE
+        # while the guess still names the primary. The exclusion then excludes
+        # an engine that did not run, the walk hands back the one that did, and
+        # the journal records -- durably, in the operator's own words -- "an
+        # identical failure signature under '<primary>' -- this attempt runs on
+        # '<alternate>'" when the last round was the alternate's and this one is
+        # the alternate's too. Two false halves and no reroute at all, in the
+        # single record that answers which engine produced which candidate.
+        #
+        # NOR IS THERE A NARROWER GUESS THAT HOLDS. "Only guess on the FIRST
+        # crossing (`reps` exactly 2), where the previous round cannot have been
+        # rerouted" is true of the streak and false of the dispatch: a reroute
+        # withheld for any of the reasons above leaves the round on the default
+        # anyway, a ledger window or a capsuite record can move that default
+        # between passes, and `orchid jobs prepare --engine` puts a round on an
+        # engine no chain walk would have picked. Every one of those breaks the
+        # correspondence between "what the role resolves to" and "what ran", and
+        # a guess that is right most of the time is exactly how a durable record
+        # comes to be trusted while being wrong.
+        #
+        # So an unrecorded actor is treated exactly as an unnameable one above:
+        # the PREFERENCE and its record are withheld, never the round. The
+        # dispatch still happens on the same chain, the engine that runs still
+        # SEES the previous failure, and the non-convergence stop still ends the
+        # loop. PROTOCOL.md says the exclusion reads the kernel-written
+        # `implementer_engine_id` and nothing else; with no such record there is
+        # no engine to name, and inventing one is not a weaker version of naming
+        # it.
         if [ "$reps" -ge 2 ] && [ -z "$last_engine" ]; then
-          last_engine="$(resolve_role_available "$repo" "$role" 2>/dev/null || true)"
+          drive_note "$id: rework signature unchanged $reps times, but no implementer_engine_id is recorded for the round that filed the last candidate, so the chain entry to exclude cannot be named — dispatching on the same chain, and claiming no reroute"
+          reps=0
         fi
         if [ "$reps" -ge 2 ] && [ -n "$last_engine" ]; then
           if rework_engine="$(resolve_role_available "$repo" "$role" "$op" "$last_engine" 2>/dev/null)"; then

@@ -9602,3 +9602,108 @@ fi
 if grep -qF "test/uninstalled" "$SKJOURNAL2"; then
   fail "an unresolvable actor must not reach the durable record either (journal: $(cat "$SKJOURNAL2" 2>/dev/null || true))"
 fi
+
+# ===========================================================================
+# Part AD (T025) -- AN UNRECORDED ACTOR IS NOT A GUESSABLE ONE.
+#
+# Lettered AD, APPENDED: `AA`..`AC` above are this task's own earlier Parts and
+# `S`..`Y7`, `Z`, `ZP` belong to T007/T023/T024/T026. Renaming any of them to
+# claim a letter would re-point every prose cross-reference in this file.
+#
+# THE THIRD WAY THE REROUTE CAN NAME THE WRONG ENGINE, after AC1's renamed
+# directory and AC2's uninstalled plugin: `implementer_engine_id` is EMPTY.
+# libexec/orchid-task writes that field only when it finds an engine to write --
+# an adapter is not required to report `.engine`, and an envelope that was
+# absent, refused as a no-op delivery, or degraded (T040) is skipped outright --
+# so a round can end with nothing recorded about who ran it.
+#
+# RED BEFORE THIS ROUND, and it was the arm's own comment that was wrong rather
+# than a case it had not thought of. The empty field fell back to "whichever
+# engine this role resolves to right now -- absent a ledger change, that is
+# exactly the one that ran last time", excluded that engine, and journalled the
+# result as fact: "an identical failure signature under '<primary>' -- this
+# attempt runs on '<alternate>'". Nothing on disk says the primary ran. The
+# entry is the only durable answer to which engine produced which candidate, and
+# it was being composed out of a lookup of the CURRENT routing table rather than
+# out of any record of the round it describes -- unfalsifiable by construction,
+# which is what makes it worse than silence rather than a rougher version of it.
+#
+# AND THE LOOKUP REALLY DOES DIVERGE FROM THE ROUND, which is why the claim is
+# not merely unsupported but wrong. This feature routes AWAY from the chain
+# primary, so once a reroute has happened the engine that ran last is the
+# ALTERNATE while the role still resolves to the primary: the exclusion then
+# skips an engine that did not run and hands the round back to the one that did,
+# under a line saying the opposite. Reachable on the shipped default: a
+# non-convergence stop that is REFUSED (Part AB3) leaves the task in `rework`
+# with the streak past the threshold, and `orchid task retry` after a stop
+# returns it there too, so the next pass dispatches at `reps` >= 3 with a reroute
+# already behind it. This Part parks the streak at the threshold instead of
+# replaying three real failures, for the same reason Part AC does.
+#
+# GREEN: with nothing recorded there is no engine to name, so the PREFERENCE and
+# its record are withheld and the ROUND is not. The dispatch happens on the
+# chain as written, the pass says why, and nothing durable claims a reroute.
+# PROTOCOL.md is explicit that this exclusion reads the kernel-written field and
+# never prose or inference; a guess is not a weaker version of that record.
+# ===========================================================================
+SKW3="$WORK/skewnoengine"
+mkdir -p "$SKW3"
+cd "$SKW3" || exit 1
+git init -q .
+printf 'role.implementer=skewdir,skewalt\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$SKW3" "$ORCHID_BIN" init >/dev/null || fail "orchid init (unrecorded-actor fixture)"
+git checkout -q orchid/integration
+SKEPOCH3="$(ORCHID_REPO="$SKW3" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+sk3orchid() { ORCHID_REPO="$SKW3" ORCHID_EPOCH="$SKEPOCH3" "$ORCHID_BIN" "$@"; }
+sk3orchid requirements import "$WORK/requirements.md" >/dev/null
+sk3orchid task create K030 "a round that recorded no engine" >/dev/null
+sk3orchid plan apply --reason "initial plan" >/dev/null
+SKTASK3="$SKW3/.orchid/tasks/K030.md"
+SKCAND3="$(git -C "$SKW3" rev-parse HEAD)"
+fm_set "$SKTASK3" base_sha "$SKCAND3"
+fm_set "$SKTASK3" candidate_sha "$SKCAND3"
+fm_set "$SKTASK3" rework_signature_repeats 2
+fm_set "$SKTASK3" status rework
+# The fixture witness the whole Part rests on: the field really is empty. It is
+# never SET here -- an untouched task carries the template's blank, which is
+# exactly the state a round with no usable implement envelope leaves behind.
+assert_eq "" "$(fm_get "$SKTASK3" implementer_engine_id)" \
+  "fixture witness: the task records no implementer at all, which is what an absent, refused or degraded implement envelope leaves"
+# ...and the OTHER non-vacuity, which is what makes the silence below a decision
+# rather than an accident: the chain does have an eligible alternate, so a
+# reroute aimed at the primary would have found somewhere to go. What is missing
+# is the NAME of the engine to exclude, not an engine to exclude it in favour of.
+assert_eq skewalt "$(resolve_role_available "$SKW3" implementer implement skewdir)" \
+  "fixture witness: excluding the chain primary really does yield the alternate, so the withheld reroute below is about the missing record and not an inert chain"
+
+SKDRIVE_RC=0
+SKDRIVE_OUT="$(ORCHID_REPO="$SKW3" ORCHID_EPOCH="$SKEPOCH3" "$DRIVE" 2>&1)" || SKDRIVE_RC=$?
+assert_match "no implementer_engine_id is recorded" "$SKDRIVE_OUT" \
+  "the pass SAYS the actor was never recorded, rather than inventing one from the chain (rc=$SKDRIVE_RC, out: $SKDRIVE_OUT)"
+assert_eq implementing "$(fm_get "$SKTASK3" status)" \
+  "...and the round still happens: an unrecorded actor withholds the PREFERENCE, never the dispatch (out: $SKDRIVE_OUT)"
+
+# WHERE IT ACTUALLY WENT. The job manifest is written by the pass itself, so
+# this is the dispatch fact rather than a race on the stub. Before this round
+# the guess excluded `skewdir` and sent the attempt to `skewalt` -- a reroute
+# built on a record that does not exist.
+sk3job_engine() {
+  local mf
+  for mf in "$SKW3/.orchid/runtime/jobs"/*.json; do
+    [ -e "$mf" ] || continue
+    [ "$(jq -r '.task // ""' "$mf")" = K030 ] || continue
+    [ "$(jq -r '.operation // ""' "$mf")" = implement ] || continue
+    jq -r '.engine // ""' "$mf"
+    return 0
+  done
+  return 1
+}
+assert_eq skewdir "$(sk3job_engine)" \
+  "the dispatch follows the chain as written, because nothing on disk says the primary is the engine that failed twice (out: $SKDRIVE_OUT)"
+
+SKJOURNAL3="$SKW3/.orchid/journal.md"
+if grep -qF "rework routed to a different engine" "$SKJOURNAL3"; then
+  fail "a reroute with no recorded actor to aim at must write no journal line claiming one: that entry is the only durable answer to which engine produced which candidate (journal: $(cat "$SKJOURNAL3" 2>/dev/null || true))"
+fi

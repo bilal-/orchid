@@ -878,6 +878,19 @@ then `orchid task reverify <id> --reason "..."`, which costs no attempt. For
 the same reason the run does not reroute the role to another engine on that
 kind of streak: there is nothing for a second engine to converge on.
 
+**A pass that says it cannot name the engine to exclude has not misrouted
+anything.** The reroute excludes the task's recorded `implementer_engine_id`
+and nothing else, so it is withheld — and says so on the pass output — when
+that record names an actor no single installed plugin answers to, or when it is
+empty because the round's implement envelope was absent, refused as a no-op
+delivery, or degraded. The dispatch still happens on the chain as written, and
+the engine that runs still gets the previous round's output in its brief; what
+is withheld is the preference and the journal line, because the alternative is
+a durable record naming an engine nothing on disk says ran. If you want the
+reroute back, the fix is at the adapter: have it report `.engine` in its
+envelope (`orchid jobs ls` shows what each round actually ran on while its job
+record is still around).
+
 Otherwise nothing in the candidate is moving that failure, so the useful
 question is usually about the assertion rather than the code under test: what
 is actually being asserted, and what is the failing value actually? Fold the answer into

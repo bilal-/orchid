@@ -746,7 +746,16 @@ buying a fresh implementation pass to reach the same tree.
     id's basename. An actor that resolves to no single installed plugin
     (uninstalled since, or claimed by two plugins at once) leaves this pass
     unable to name the entry to exclude, so the preference is dropped and no
-    reroute is journalled — the dispatch still happens, on the same chain;
+    reroute is journalled — the dispatch still happens, on the same chain.
+    So does a round that recorded NO actor: an adapter need not report
+    `.engine`, and an absent, refused or degraded implement envelope is
+    skipped, so the field can be empty. The pass does not then fall back to
+    whichever engine the role resolves to now — this reroute is what makes
+    that guess wrong, since after the first one the engine that ran last is
+    the alternate while the guess still names the primary, and the exclusion
+    would indict an engine that did not run and hand the round back to the
+    one that did under a journal line claiming otherwise. What is withheld
+    is the preference and its record, never the round;
   - `rework_nonconvergence_max` (config, default 3) consecutive identical
     signatures stop the loop — `blocked`, plus an `operator-decision`
     boundary. An unchanged signature is evidence the loop is not converging,

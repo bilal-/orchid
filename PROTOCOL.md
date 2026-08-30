@@ -2153,7 +2153,14 @@ ones its archetype never declares.
       a gate. Nor is it applied when the newest captured round records a red
       repo-wide `merge_gate`: that repeats identically until somebody outside
       the task acts, so it is not this engine's to converge on and no
-      alternate can change it.
+      alternate can change it. Nor when that field names an actor no single
+      installed plugin answers to, NOR WHEN IT IS EMPTY — the exclusion reads
+      that record and nothing else, and the role's currently-resolved engine
+      is not a substitute for it: this reroute is what makes that substitute
+      wrong, since after the first one the engine that ran last is the
+      alternate while the role still resolves to the primary. With nothing to
+      name, the preference and its journal line are withheld and the dispatch
+      still happens.
     - at `rework_signature_repeats` ≥ `rework_nonconvergence_max` (config,
       default 3), stop: `orchid task advance <id> blocked --reason "rework
       not converging: ..."`, and then record the blocked task's own boundary
