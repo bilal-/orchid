@@ -1618,11 +1618,13 @@ green_case 'a cleanup allowance is not a ref-wide exemption: re-added run state 
 # every commit in the repository. The hook is installed by default, so that is
 # user-visible push latency rather than an offline verifier cost.
 #
-# Run the real rendered hook with a PATH shim that counts only `git ls-tree`.
-# The clean tip must still take the one explicit tip-tree check; the historical
-# query must add zero more because it is one rev-list -> cat-file batch. This is
-# non-vacuous against the pre-optimization implementation: feature/clean-history
-# has ancestors, and that implementation called ls-tree once for each of them.
+# Run the real rendered hook with a PATH shim that counts `git ls-tree` and
+# emulates an older Git by rejecting rev-list's post-2.30
+# `--no-commit-header`. The clean tip must still take the one explicit tip-tree
+# check; the historical query must add zero more because it is one rev-list ->
+# cat-file batch. This is non-vacuous in both directions: the per-commit
+# implementation called ls-tree once for each ancestor, while the first batch
+# implementation used the rejected newer flag and failed closed on this push.
 # ---------------------------------------------------------------------------
 batch_git37="$W/r37-counting-git"
 mkdir -p "$batch_git37"
@@ -1634,6 +1636,12 @@ cat > "$batch_git37/git" <<'COUNTING_GIT'
 if [ "${1:-}" = ls-tree ]; then
   printf 'ls-tree\n' >> "$ORCHID_TEST_GIT_COUNT"
 fi
+for arg in "$@"; do
+  if [ "$arg" = --no-commit-header ]; then
+    printf 'error: unknown option no-commit-header (older-git fixture)\n' >&2
+    exit 129
+  fi
+done
 exec "$ORCHID_TEST_REAL_GIT" "$@"
 COUNTING_GIT
 chmod +x "$batch_git37/git"
@@ -1656,6 +1664,7 @@ batch_count37="$(wc -l < "$batch_count_file37" | tr -d '[:space:]')"
 assert_eq "1" "$batch_count37" \
   "the clean-tip check is the only ls-tree fork; history is resolved by one batch rather than one fork per commit"
 red_case 'the all-commit history check is batched instead of forking ls-tree per commit'
+green_case 'the batched history check does not require git rev-list --no-commit-header'
 
 # ===========================================================================
 # 5 -- worktrees: create at an explicit path, reuse only an EXACT integration

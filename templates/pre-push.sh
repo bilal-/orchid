@@ -196,6 +196,16 @@ carries_run_state() {
 # A resolved object of any type means the commit carries the path; only an
 # explicit `missing` answer means it does not.
 #
+# PORTABLE OUTPUT, including rev-list's ordinary `commit <sha>` header before
+# each formatted tree line. `--no-commit-header` would suppress those headers,
+# but that option requires Git 2.33 and this hook must still run on older
+# supported hosts. Feeding the header to `cat-file --batch-check` is harmless:
+# `commit <sha>` is not an object expression, so it yields an explicit
+# `<input> missing` line that the reader already ignores; the following
+# `<tree>:.orchid` line is the authoritative query. This doubles cheap batch
+# records rather than raising the repository's Git floor or adding a filter
+# process.
+#
 # The batch is allowed to finish before its output is inspected. Besides
 # preserving either git process's failure status through `pipefail`, this
 # avoids the early-reader/SIGPIPE ambiguity that a `... | grep -q` shortcut
@@ -212,7 +222,7 @@ history_carries_run_state() {
   [ "$#" -gt 0 ] && range+=(--not "$@")
   if ! batch="$(
     set -o pipefail
-    git rev-list --no-commit-header --format='%T:.orchid' "${range[@]}" 2>/dev/null \
+    git rev-list --format='%T:.orchid' "${range[@]}" 2>/dev/null \
       | git cat-file --batch-check='%(objecttype)' 2>/dev/null
   )"; then
     # A history/object query that cannot answer is not evidence of absence.
