@@ -637,9 +637,36 @@ for _mf in "$rt/jobs"/*.json; do
       # delivered: it was spawned. (The never-started arm above needs no such
       # guard -- nothing ran to write anything.) `jobs gc` holds the manifest
       # back for the same case, so the job simply resolves next pass.
+      #
+      # AND ONLY WHILE THAT IS TRUE (T031). "Resolves next pass" is an
+      # assumption about reconcile, and for this exact class reconcile makes
+      # the opposite call: with no pid ever stamped there is nothing to
+      # `kill -0`, so it refuses to read the silence as an exit and HOLDS the
+      # envelope (libexec/orchid-jobs' job_liveness -> `unresolved`). Skipping
+      # on the spool file alone would then have the two waiting on each other
+      # -- this sweep for a reconcile that will not happen, reconcile for an
+      # exit nobody can record -- while `jobs gc` spares the manifest for the
+      # same spooled envelope and the task sits in an active status forever,
+      # which is the silent-wedge shape the whole ladder exists to end.
+      #
+      # So the skip holds only while the exit CAN still be proven, and it is
+      # the same positive record job_exit_recorded reads: the launcher's
+      # wrapper writes $rt/exits/<job_id> after waiting on the engine, so its
+      # presence means the process really is over and the next reconcile will
+      # file that envelope. Absent it, this is the `untracked` class -- a
+      # report from something nobody can show has stopped.
       _mjid="$(jq -r '.job_id // empty' "$_mf" 2>/dev/null || true)"
-      if [ -n "$_mjid" ] && [ -e "$rt/spool/$_mjid.json" ]; then continue; fi
       _mkind=unstamped
+      if [ -n "$_mjid" ] && [ -e "$rt/spool/$_mjid.json" ]; then
+        [ ! -e "$rt/exits/$_mjid" ] || continue
+        # NOT IN PLANNING, where the skip stands exactly as it always did.
+        # This class is defined by reconcile HOLDING that envelope, and
+        # PLANNING deliberately drains no spool at all -- so there, a spooled
+        # envelope is simply one nothing has looked at yet, and reporting it as
+        # a report that cannot be admitted would name a refusal nobody made.
+        [ "$run_status" != planning ] || continue
+        _mkind=untracked
+      fi
     fi
     escalations="$escalations$(jq -r --arg kind "$_mkind" --arg lexit "$_mexit" \
       '[.task, .role, .operation, (.hook_point // ""), $kind, (.job_id // ""), $lexit] | @tsv' "$_mf")
@@ -990,9 +1017,23 @@ drive_capability_refusal() {
 # spends one rung on it and `jobs gc` retires it -- keeping the log, since no
 # pid was ever recorded to kill and that log is the only evidence left. The
 # three converge on the same instant because all three ask the same predicate.
+#
+# ...WITH ONE EXCEPTION PAST THAT BOUND (T031). The bound above ends the wait
+# because past it nothing is expected from the job any more. That is not true of
+# a job which has already FILED an envelope reconcile is holding: with no pid
+# ever stamped, `jobs reconcile` will not read the silence as an exit
+# (libexec/orchid-jobs' job_liveness -> `unresolved`), so the engine behind that
+# report may still be running and still committing. Letting a walk read "no job"
+# there is what would put a second engine into the same worktree -- the exact
+# duplicate-dispatch this predicate exists to prevent, arrived at one bound
+# later. So it stays outstanding for as long as that envelope is held, which is
+# NOT a new forever: the escalation sweep meets the identical state in the same
+# pass, spends one rung and stops the pass at an operator boundary. The moment
+# the job's exit is recorded the envelope files, the manifest is deleted, and
+# this reads "no job" again on its own.
 drive_job_outstanding() {
   local task="$1" op="$2" point="${3:-}"
-  local stall_s log mf
+  local stall_s log mf jid
   stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
   for mf in "$rt/jobs"/*.json; do
     [ -e "$mf" ] || continue
@@ -1004,7 +1045,10 @@ drive_job_outstanding() {
     if [ "$(jq -r '.pid // 0' "$mf" 2>/dev/null || echo 0)" = 0 ]; then
       log="$(jq -r '.log // ""' "$mf" 2>/dev/null || echo)"
       [ -n "$log" ] && [ -e "$log" ] || continue
-      [ $(( $(date +%s) - $(file_mtime "$log") )) -le "$stall_s" ] || continue
+      if [ $(( $(date +%s) - $(file_mtime "$log") )) -gt "$stall_s" ]; then
+        jid="$(jq -r '.job_id // empty' "$mf" 2>/dev/null || echo)"
+        [ -n "$jid" ] && [ -e "$rt/spool/$jid.json" ] && [ ! -e "$rt/exits/$jid" ] || continue
+      fi
     fi
     return 0
   done
@@ -1786,9 +1830,27 @@ drive_testing() {
     # `orchid verify` independently enforces the same gate. State can change
     # after the preflight above; exit 16 is still an operator stop, never a
     # candidate failure or a spent attempt.
+    #
+    # EACH REFUSAL ARM RETURNS, and the returns are the load-bearing half of
+    # them (T031 attempt-5 rework). Everything below this block is the
+    # CANDIDATE-FAILURE arm: it classifies the verify log, spends a rework
+    # round and sends the implementer a failure to act on. A refusal that
+    # merely recorded its boundary and fell through would be carried into all
+    # of that -- the operator's stop reported AND the candidate charged for a
+    # suite that never judged it. `vrc` is non-zero for both, so the
+    # `[ "$vrc" -eq 0 ]` gate below cannot tell them apart; the return is what
+    # does.
     if [ "$vrc" -eq 16 ]; then
       set_boundary task-prerequisite "$id" \
         "orchid verify refused: an operator prerequisite is not acknowledged for this candidate — orchid task prereq-ack $id --reason \"...\""
+      return 0
+    fi
+    if [ "$vrc" -eq 20 ]; then
+      # T031: the verifier refused because the worktree was not the recorded
+      # candidate (or moved while the suite ran). That establishes no defect
+      # in the candidate, so stop for the operator instead of charging it.
+      set_boundary worktree-conflict "$id" \
+        "verify refused: the task worktree is not the recorded candidate_sha — see .orchid/reviews/$id-verify.log"
       return 0
     fi
   else
@@ -2454,7 +2516,8 @@ drive_blocked() {
 # already, and the pass-local guard is the only one they ever needed.
 escalated_this_pass=" "
 drive_escalate() {
-  local id="$1" role="$2" op="$3" point="$4" why="$5" key="${6:-}" tf slot tstatus receipt lrc
+  local id="$1" role="$2" op="$3" point="$4" why="$5" key="${6:-}"
+  local norelaunch="${7:-}" tf slot tstatus receipt lrc
   tf="$state/tasks/$id.md"
   # Asked BEFORE anything else, including the missing-task-file arm below: a
   # charge that has already been recorded must not be re-journaled either, or
@@ -2538,6 +2601,17 @@ drive_escalate() {
     drive_note "$id: leaving the relaunch to the reviewing walk, which knows which SLOT is missing"
     return 0
   fi
+  # A CALLER THAT KNOWS THE JOB MAY NOT HAVE STOPPED (T031). The rung above is
+  # the whole of this ladder's answer for that class: dispatching the work again
+  # would put a second engine into a worktree the first may still be committing
+  # to. Passed in rather than derived here, because only the sweep can see the
+  # difference -- the same manifest with its envelope held is `untracked`, and
+  # without one is the ordinary `unstamped` corpse this does relaunch for. The
+  # caller raises the boundary that keeps the task from parking silently.
+  if [ -n "$norelaunch" ]; then
+    drive_note "$id: not relaunching — $why; a second engine in that worktree is the duplicate-implementer defect this ladder must not cause"
+    return 0
+  fi
   # The relaunch gets the SAME exit-19 arm as the other three call sites. A
   # ladder that swallowed it would keep charging rungs for a refusal no rung
   # can clear (see drive_capability_refusal's header): the rung already spent
@@ -2578,6 +2652,13 @@ if [ -n "$escalations" ]; then
       launch-failed) _ewhy="the launcher exited $_eexit without spawning a job" ;;
       never-started) _ewhy="job was prepared and never launched — no engine ever started, so no envelope was ever coming" ;;
       unstamped)     _ewhy="job was spawned but never recorded a pid, and wrote nothing for stall_minutes — there was no pid to signal and no envelope came" ;;
+      # The same manifest as `unstamped`, with one difference that changes who
+      # answers it: AN ENVELOPE IS SITTING IN THE SPOOL. So this is not a job
+      # that produced nothing -- it is a job that produced a report which
+      # cannot be admitted, because nothing on this machine can show the
+      # process behind it has stopped (T031). Never relaunched over, and the
+      # arm below stops the pass at a named boundary instead.
+      untracked)     _ewhy="job was spawned but never recorded a pid and has been silent for stall_minutes, and it filed an envelope that cannot be admitted — with no pid to signal and no exit recorded, nothing can show it has stopped" ;;
       *)             _ewhy="job died without an acceptable envelope" ;;
     esac
     # THE RESERVED `plan` ID IS NOT SKIPPED (T027 rework). It used to be, and
@@ -2611,6 +2692,41 @@ if [ -n "$escalations" ]; then
         "$ORCHID_BIN" journal add --task "$_etask" \
           "optional $_epoint hook: $_ewhy — not escalated (the binding gates nothing)$(drive_failure_receipt "$_ekey")" >/dev/null
       fi
+      continue
+    fi
+    # AN ENGINE NOBODY CAN SEE IS NOT RELAUNCHED OVER (T031). Every other class
+    # on this ladder recovers by dispatching the work again. This one cannot:
+    # the job that failed to report acceptably may not have STOPPED, and a
+    # second engine in the same worktree while the first is still committing is
+    # precisely the r-002/T013 defect this task exists to close, reached from
+    # the other end. The rung is still spent -- a round that ends this way
+    # really did cost the run one -- and the pass stops for a human instead of
+    # dispatching.
+    #
+    # THE BOUNDARY IS RAISED HERE, NOT INSIDE drive_escalate, and every pass.
+    # The CHARGE is deduplicated by its receipt and returns early once counted;
+    # the STOP is a statement about the state right now, which stays true on
+    # every later pass until somebody resolves it. Raised from inside the
+    # charge, the second pass would count nothing, say nothing and walk on --
+    # leaving a task parked in an active status with no live job, no acceptable
+    # envelope and no boundary, which is the disappearing act the walk below is
+    # careful about in its own arms.
+    #
+    # AND THE REMEDY IT NAMES IS A VERB (attempt-6 rework). This boundary used
+    # to end with a `printf` redirected straight into `.orchid/runtime/exits/`,
+    # which asked the operator to hand-write the single fact this whole task
+    # exists to protect -- "that process has stopped" -- with nothing between a
+    # mistyped job id and a filed report. `orchid jobs record-exit` is the same
+    # write with the checks the kernel would have made anyway: the id is held to
+    # the minted shape before it becomes a path, the job must still be
+    # outstanding, its liveness must actually be the unresolved state this
+    # boundary is about, and a record the launcher already wrote is never
+    # replaced. An operator following instructions gets those for free; one
+    # typing a path gets none of them.
+    if [ "$_ekind" = untracked ]; then
+      drive_escalate "$_etask" "$_erole" "$_eop" "$_epoint" "$_ewhy" "$_ekey" norelaunch
+      set_boundary operator-decision "$_etask" \
+        "job $_ekey filed an envelope and cannot be shown to have stopped: it never recorded a pid, so there is nothing to signal and nothing that proves it exited, and its report is being held rather than filed — read $rt/logs/$_ekey.log and check whether an engine is still running against this task's worktree. If one is, nothing needs doing: the envelope reconciles on its own as soon as that process exits and its status is recorded. If none is, record that it ended so the held report can be admitted: orchid jobs record-exit $_ekey <exit code>"
       continue
     fi
     drive_escalate "$_etask" "$_erole" "$_eop" "$_epoint" "$_ewhy" "$_ekey"

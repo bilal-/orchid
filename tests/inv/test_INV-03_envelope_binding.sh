@@ -83,9 +83,17 @@ rm -f "$m4"
 # reviewer/implementer verdict on disk. Both are forensic evidence; both must
 # survive, via a counter suffix.
 jobs_dir="$WORK/.orchid/runtime/jobs"
+# The log path must NOT EXIST (T031). These manifests carry pid 0, and reconcile
+# reads pid 0 with a log that exists as a job whose startup never resolved --
+# deferred or held, never filed. `/dev/null` used to stand here and always
+# exists, with an mtime that is the machine's BOOT TIME: whether these fixtures
+# reconciled at all would have depended on how recently the host booted. A path
+# under runtime/logs that was never created is the "no log, so the spawn line
+# was never reached" this fixture always meant, said in a way that cannot drift.
 for dj in j-dup-a j-dup-b; do
   jq -n --arg job_id "$dj" --arg task T001 --argjson attempt 9 --arg role implementer \
-    --arg operation implement --arg engine fake --arg log "/dev/null" --arg output "$sp/$dj.json" \
+    --arg operation implement --arg engine fake \
+    --arg log "$WORK/.orchid/runtime/logs/$dj.log" --arg output "$sp/$dj.json" \
     --arg base_sha "" --arg candidate_sha "" \
     '{job_id:$job_id, task:$task, attempt:$attempt, role:$role, operation:$operation,
       engine:$engine, pid:0, pgid:0, started_at:0, log:$log, output:$output,

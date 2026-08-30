@@ -173,6 +173,88 @@ job_unlaunched_reapable() {  # manifest now stall_s
   job_never_started "$1" || job_unstamped_stale "$1" "$2" "$3"
 }
 
+# THE POSITIVE terminal evidence a manifest can carry: 0 iff something on disk
+# RECORDS THAT THIS JOB ENDED, as opposed to merely failing to show that it is
+# still going. Two writers, both in runners/orchid-launch, and neither record
+# can exist before the event it reports:
+#
+#   $rt/exits/<job_id>   the ENGINE's own exit status. The launcher wraps the
+#                        engine in a subshell that outlives it by exactly one
+#                        write (T040), so this file exists BECAUSE the process
+#                        ended -- including when `jobs check` killed it, since
+#                        that subshell traps the group TERM in order to finish
+#                        its wait and record the status.
+#   .launch_exit         the LAUNCHER's own non-zero exit from before the spawn
+#                        line (T027): a record that no engine was ever started.
+#
+# SILENCE IS NOT ON THAT LIST, and that is the whole point (T031 attempt-5
+# rework). "Nothing has been written to the log for `stall_minutes`" is an
+# INFERENCE FROM AN ABSENCE; these two are facts written by a process about
+# itself. For a job that stamped a pid the distinction rarely matters, because
+# `kill -0` can ask the operating system directly. For one that never stamped a
+# pid there is nothing to ask and nothing to signal, so the inference is the
+# only other thing on offer -- and taking it as an exit is exactly how a
+# live-but-silent engine (a long model call writes nothing for many minutes)
+# has its mid-flight report filed as final while it goes on committing.
+job_exit_recorded() {  # manifest
+  local f="$1" jid
+  jid="$(jq -r '.job_id // empty' "$f" 2>/dev/null || echo)"
+  if [ -n "$jid" ] && [ -e "$rt/exits/$jid" ]; then return 0; fi
+  [ -n "$(jq -r '.launch_exit // empty' "$f" 2>/dev/null || echo)" ]
+}
+
+# THE LIVENESS QUESTION `reconcile` ASKS, in FOUR answers rather than two
+# (T031). An envelope is a COMPLETION report, so filing one is a claim about a
+# process that has finished -- and for a manifest that never stamped a pid,
+# "has it finished" has a third answer which is neither yes nor not-yet.
+#
+#   running     a stamped pid `kill -0` still answers for.
+#   exited      it is over, and something SAYS SO: a stamped pid that is gone
+#               (the kernel itself is the witness), or -- with pid 0 -- the
+#               positive record job_exit_recorded reads, or NO LOG AT ALL. The
+#               last of those is a fact about the launcher rather than a
+#               timeout: it creates the log by redirecting the spawn into it, so
+#               an absent log means the spawn line was never reached, no engine
+#               ran and none ever will (job_never_started -- the same reading
+#               `gc`, `prepare` and the driver already give that manifest, and
+#               an absence that no amount of waiting can turn into anything
+#               else).
+#   starting    pid 0 with a log written to inside `stall_minutes`: the
+#               launcher's post-spawn/pre-stamp window. An engine is producing
+#               output with its pid recorded nowhere, so it can still commit.
+#               Deliberately, exactly `runners/orchid-drive`'s
+#               drive_job_outstanding, which counts the same manifest as a live
+#               job -- the two must agree about one manifest, or the driver
+#               waits on a job whose envelope reconcile has already filed as
+#               done.
+#   unresolved  pid 0, a log, and silence past `stall_minutes`, with no exit
+#               recorded anywhere. NOT AN EXIT (see job_exit_recorded): there is
+#               no pid to probe and none to signal, so nothing on this machine
+#               can decide whether an engine is still running in that worktree.
+#               reconcile answers a question it cannot decide by declining to
+#               answer it, never by guessing the admissible way round; the
+#               driver's escalation sweep is what bounds that refusal.
+#
+# An unreadable manifest answers `starting`, the fail-closed direction every
+# other predicate in this file takes: never reaped, never refused over, never
+# reconciled out from under a process that might be behind it. In practice
+# reconcile cannot reach this arm with one, having just parsed `.job_id` out of
+# the very same file to match it to the envelope.
+job_liveness() {  # manifest now stall_s -> running|exited|starting|unresolved
+  local f="$1" now="$2" stall_s="$3" pid
+  pid="$(jq -r '.pid // 0' "$f" 2>/dev/null || echo 0)"
+  case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
+  if [ "$pid" -gt 0 ]; then
+    # `kill -0 0` would signal our OWN process group, so pid 0 never reaches
+    # this probe.
+    if kill -0 "$pid" 2>/dev/null; then echo running; else echo exited; fi
+    return 0
+  fi
+  if job_exit_recorded "$f" || job_never_started "$f"; then echo exited; return 0; fi
+  if job_unstamped_stale "$f" "$now" "$stall_s"; then echo unresolved; return 0; fi
+  echo starting
+}
+
 # Reaps ONE reapable-unlaunched manifest (job_unlaunched_reapable above), if it
 # is older than <threshold> seconds. Shared verbatim by BOTH of `gc`'s modes
 # below -- ordinary `gc` (which reaps this class too, T027) and the explicit
@@ -1310,6 +1392,11 @@ case "$sub" in
     # before any JSON parsing — a cheap, early defense against a runaway or
     # forged tier-3 adapter dumping an oversized payload into the spool dir.
     spool_max="$(config_get "$repo" spool_max_bytes 262144)"
+    # The bound on job_liveness's pid-0 (launcher-window) arm, read from
+    # the same `stall_minutes` key `check`, `gc`, `prepare` and the driver all
+    # read, so one manifest can never be live to one of them and finished to
+    # another.
+    reconcile_stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
     for f in "$spool_dir"/*.json; do
       [ -e "$f" ] || continue
       base="$(basename "$f")"
@@ -1349,6 +1436,69 @@ case "$sub" in
         echo "quarantined: $base (unknown-job)"
         continue
       fi
+      # T031: AN ENVELOPE IS A COMPLETION REPORT. A job that has not exited
+      # has not completed, so its envelope is not yet a completion signal --
+      # DEFER it, leaving both the spool file and the manifest exactly where
+      # they are for a later pass.
+      #
+      # Reconciling early is what defeated INV-11 from the inside on r-002.
+      # `runners/orchid-drive`'s drive_implementing treats a reconciled `ok`
+      # implement envelope as "the implementer is done", captures candidate_sha
+      # from the worktree's HEAD right then, and advances implementing ->
+      # testing. On T013 the implementer job was still alive when its envelope
+      # landed and committed AGAIN 19 minutes later, so the captured candidate
+      # (4bb8d03) was never final and the verification that ran afterwards
+      # exercised a different commit (680cfc0). Nothing downstream could tell:
+      # reconcile DELETES the manifest, so by the time the driver looks there
+      # is no job left to ask about, and `drive_job_outstanding` reports the
+      # task as having nothing running.
+      #
+      # "Has it exited" is job_liveness's question, not a pid comparison
+      # inlined here (attempt-4 rework). A pid of 0 is NOT an exit: `jobs
+      # prepare` mints every manifest that way and runners/orchid-launch
+      # stamps the real pid only after the spawn, so pid 0 means "nobody has
+      # recorded whether this began" -- and a manifest still inside that
+      # launcher window has an engine behind it that is committing with its
+      # pid recorded nowhere. Filing its envelope as final is the same defect
+      # as T013's, just one window narrower.
+      #
+      # THREE WAYS NOT TO FILE, and the third is not a wait (attempt-5 rework):
+      #
+      #   running     a stamped, live pid. DEFER: bounded by `jobs check`,
+      #               which kills a job that stalls or times out, after which
+      #               the envelope reconciles on the very next pass.
+      #   starting    the launcher's post-spawn/pre-stamp window. DEFER:
+      #               bounded by `stall_minutes` on the job's own log, and by
+      #               nothing else -- gc_reap_unlaunched deliberately SPARES a
+      #               manifest whose envelope is still spooled, so a hold that
+      #               could only be ended by a reap would have the two holding
+      #               the envelope for each other forever.
+      #   unresolved  no pid was ever stamped and the log has gone quiet, so
+      #               NOTHING HERE CAN DECIDE whether an engine is still
+      #               running (job_exit_recorded's note). Not a wait, because
+      #               waiting is a bet that the answer arrives: it may, if that
+      #               engine exits and the launcher's wrapper records it, and
+      #               then this envelope files itself on the next pass with no
+      #               operator involved. What is refused is the OTHER bet --
+      #               reading silence as an exit and admitting a report from a
+      #               process that could still be committing. Bounded from the
+      #               outside instead: the envelope stays spooled and the
+      #               manifest stays standing, which is precisely the state
+      #               runners/orchid-drive's escalation sweep escalates as
+      #               `untracked` -- one rung, no relaunch over a possibly-live
+      #               engine, and a named operator boundary.
+      m_pid="$(jq -r '.pid // 0' "$manifest" 2>/dev/null || echo 0)"
+      case "$(job_liveness "$manifest" "$(date +%s)" "$reconcile_stall_s")" in
+        running)
+          echo "deferred: $base (job $jid still running, pid $m_pid)"
+          continue ;;
+        starting)
+          echo "deferred: $base (job $jid still starting, no pid stamped yet)"
+          continue ;;
+        unresolved)
+          echo "unresolved: $base (job $jid never stamped a pid and its log has been silent past stall_minutes, with no exit recorded — silence is not an exit, so this is not a completion signal)"
+          continue ;;
+      esac
       m_task="$(jq -r .task "$manifest")"; e_task="$(envelope_field "$f" .task)"
       m_base="$(jq -r .base_sha "$manifest")"; m_cand="$(jq -r .candidate_sha "$manifest")"
       m_op="$(jq -r .operation "$manifest")"
@@ -1795,6 +1945,117 @@ case "$sub" in
       echo "gc-orphan $p"
     done
     ;;
+  record-exit)
+    # THE OPERATOR'S ANSWER TO AN `untracked` JOB, AS A VERB (T031 attempt-6
+    # rework). `job_liveness` returns `unresolved` for a manifest that never
+    # stamped a pid and has gone quiet: nothing on this machine can decide
+    # whether an engine is still running in that worktree, so reconcile holds
+    # the envelope and runners/orchid-drive raises an operator boundary. The
+    # only thing that clears it is the positive record `job_exit_recorded`
+    # reads -- and for this class the launcher's wrapper will never write one,
+    # because nothing ever waited on that process.
+    #
+    # So a human who HAS looked (at the process table, at the log, at the
+    # worktree) records what they found, and this is where they record it.
+    # Before this verb existed the boundary told them to `printf` a number
+    # straight into `.orchid/runtime/exits/<job-id>`, which is the shape this
+    # kernel does not otherwise ask of anybody: an operator hand-editing
+    # runtime state has no gate between a typo and a decision, and every
+    # guarantee below would simply not have been asked.
+    #
+    # WHAT IS GATED, and why each one:
+    #
+    #   the job_id's SHAPE. It builds a write path under $rt/exits, so it is
+    #   held to the exact form `jobs prepare` mints -- the same regex the gc
+    #   and salvage reaps validate before they let a manifest field steer a
+    #   path. A traversal is refused before anything is touched.
+    #
+    #   a MANIFEST must exist. The exit record is a statement about a job, so
+    #   there has to be a job to make it about. Its absence also means the
+    #   ordinary thing already happened (reconcile filed the envelope and
+    #   deleted the manifest), which is worth saying rather than silently
+    #   minting a file nothing will ever read.
+    #
+    #   LIVENESS must be exactly `unresolved`. This verb writes the one fact
+    #   the whole task exists to protect -- "that process has stopped" -- so
+    #   it is admitted only for the state where no other answer is available.
+    #   `running` has the kernel as a witness and needs none of this;
+    #   `starting` is a job whose log moved within `stall_minutes`, so an
+    #   engine is plausibly still producing output; `exited` is already
+    #   answered and reconciles on the next pass. Each of those is refused
+    #   with the thing that DOES answer it, never with a bare no.
+    #
+    #   an existing record is NEVER OVERWRITTEN. `$rt/exits/<job-id>` written
+    #   by the launcher is a process's report about itself; replacing it with
+    #   a human's guess is the same substitution -- one thing certified on the
+    #   strength of another -- that this task is about. (The liveness gate
+    #   above already excludes it, since a recorded exit answers `exited`;
+    #   this is the second lock on the same door, and it names the value on
+    #   file so the refusal is readable.)
+    #
+    # Runtime-only, so -- exactly like `gc`, and for the reason `gc`'s header
+    # gives -- there is no epoch fence here: nothing under .orchid/tasks or
+    # .orchid/reviews is touched, and INV-02 has nothing to protect. There is
+    # no verb lock either: the write is a single atomic rename of a path that
+    # is absent or final, so a concurrent tick either does not see it yet or
+    # sees the whole of it.
+    #
+    # NOT ADMITTED TO runners/orchid-orchestrator-command, and that is the
+    # point of it being an operator verb: the finding it records is made by
+    # LOOKING at the process table, which a woken session cannot do. A broker
+    # that admitted it would let an orchestrator declare an engine dead in
+    # order to unblock itself -- the r-002/T013 substitution again, with the
+    # session standing in for the evidence. The broker's `jobs` default arm
+    # already refuses it; tests/test_orchestrator_command.sh pins that.
+    job_id="${1:-}"; code="${2:-}"
+    [ "$#" -eq 2 ] || orchid_die "usage: orchid jobs record-exit <job-id> <exit-code>"
+    # A HERESTRING, not `echo | grep -q`: this file runs under `set -o pipefail`
+    # and `grep -q` exits at its first match, so a pipeline can report the
+    # producer's SIGPIPE (141) for a pattern that DID match. `<<<` has no pipe
+    # in it and cannot invert that way.
+    grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' <<<"$job_id" \
+      || orchid_die "'$job_id' is not a job id — expected the form 'orchid jobs ls' prints, e.g. j-e12-T031-a4-9c2f"
+    # Length before value, deliberately: `[ "$n" -le 255 ]` on a digit string
+    # too long for a 64-bit integer is a bash arithmetic ERROR, not a false
+    # comparison, so the bound has to be reached through something that cannot
+    # overflow. Three digits is the whole of a wait status's range.
+    case "$code" in ''|*[!0-9]*) orchid_die "exit code must be a whole number 0-255 (got '$code')" ;; esac
+    [ "${#code}" -le 3 ] || orchid_die "exit code must be a whole number 0-255 (got '$code')"
+    [ "$code" -le 255 ] || orchid_die "exit code must be a whole number 0-255 (got '$code')"
+    manifest="$jobs_dir/$job_id.json"
+    [ -f "$manifest" ] \
+      || orchid_die "no outstanding job $job_id — there is no manifest for it, so either it already reconciled and was cleared, or the id is wrong ('orchid jobs ls --all' lists both)"
+    recorded=""; recorded="$(job_exit_code "$job_id" || true)"
+    [ -z "$recorded" ] \
+      || orchid_die "job $job_id already has its exit on record as $recorded, written by the process itself — that record is not replaced; its envelope files on the next 'orchid jobs reconcile'"
+    stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+    case "$(job_liveness "$manifest" "$(date +%s)" "$stall_s")" in
+      running)
+        orchid_die "job $job_id is running (pid $(jq -r '.pid // 0' "$manifest")) — the kernel can see it, so nothing here needs recording; 'orchid jobs check' is what ends a job that has stalled or run past its budget" ;;
+      starting)
+        orchid_die "job $job_id wrote to its log within stall_minutes, so an engine is producing output for it — wait for it to go quiet (or end it with 'orchid jobs check'); recording an exit now would file its report while it is still working" ;;
+      exited)
+        orchid_die "job $job_id is already resolved — its exit is on record or it never started, so its envelope files on the next 'orchid jobs reconcile' with nothing to record here" ;;
+    esac
+    mkdir -p "$rt/exits"
+    # The code on line 1 and nothing else on it: `job_exit_code` reads exactly
+    # `head -n1` and rejects any non-digit, and `job_exit_recorded` asks only
+    # whether the file is there -- so both readers see precisely what the
+    # launcher's own write gives them.
+    #
+    # Line 2 is PROVENANCE, and it is the reason this is not just a `printf`
+    # with a nicer name. A launcher-written record is a process reporting its
+    # own status; this one is a human's finding about a process nobody could
+    # ask. After the write nothing else on disk tells those two apart, and the
+    # difference is exactly the kind an investigation later wants -- so it is
+    # written down, in a line every existing reader already skips.
+    {
+      printf '%s\n' "$code"
+      printf 'recorded-by: operator (orchid jobs record-exit) at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } | atomic_write "$rt/exits/$job_id"
+    echo "recorded-exit $job_id $code"
+    echo "orchid: $job_id is now resolved; its held envelope is admitted by the next 'orchid jobs reconcile'" >&2
+    ;;
   review-plan)
     # The slot table for a task's current attempt. The bare form is tier-1 and
     # read-only -- pure routing diagnostics over durable state + config +
@@ -1863,5 +2124,5 @@ case "$sub" in
     fi
     printf '%s\n' "$plan_after"
     ;;
-  *) orchid_die "usage: orchid jobs ls|prepare|check|reconcile|gc|review-plan" ;;
+  *) orchid_die "usage: orchid jobs ls|prepare|check|reconcile|gc|record-exit|review-plan" ;;
 esac

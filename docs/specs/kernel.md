@@ -342,6 +342,27 @@ buying a fresh implementation pass to reach the same tree.
   its resolution inventory, and stale-pin result captured before the
   candidate-controlled command starts.
   Sole acceptance authority for tests.
+
+  **The tree that runs must be the tree the evidence names (T031).** The verb
+  REFUSES — exit 20, naming both SHAs — when the worktree's HEAD is not the
+  task's recorded `candidate_sha`, and refuses again when HEAD moved while
+  the suite was running (the header carries `sha:` and `head_after:` for
+  exactly that comparison). `sha:` is READ IMMEDIATELY BEFORE the command is
+  executed, with nothing between the read and the run but that comparison: it
+  is the verb's claim about which tree ran, so a HEAD sampled earlier in the
+  verb — before the frontmatter parse, the prestate walk and the temp-file mint
+  — would name a different instant than the one the evidence asserts, which is
+  the same substitution in miniature. Together the two reads bracket the whole
+  execution rather than sampling near it. Refusal is distinct from FAIL: nothing was
+  established about the candidate, so the driver stops at a
+  `worktree-conflict` boundary instead of spending a rework attempt. A
+  refused run's evidence ends in a `refused: ...` line, so INV-11's
+  `tail -n1 == "exit: 0"` gate can never admit it. `candidate: none` (no
+  candidate recorded yet) is not drift and still runs. This closes the hole
+  r-002/T013 walked through: the driver captured `candidate_sha` from a live
+  worktree's HEAD, the implementer job was still running and committed again,
+  and the verification exercised the newer commit while the evidence — and
+  therefore INV-11's gate — named the older one.
 - **merging** = `orchid merge <id>`: serialized, transactional, and — round-4
   determinism fix — NEVER triggers reviews itself. If integration HEAD ≠
   `base_sha`, the verb performs the rebase, then exits
@@ -846,12 +867,11 @@ removes — and re-running entry-to-`testing`'s `.orchid/` scan over
 hit: a hand-off exists to commit work AFTER the candidate was captured, so
 without the advance the record would name a commit that was never the one
 verified — the drift lesson L025 records — and it is the one other path that
-moves `candidate_sha` past INV-04's gate. As this ships, `orchid verify` itself
-does not compare the two before running — it records both into its evidence
-header and runs; the equality the advance leaves behind is what INV-11's
-`testing → reviewing` gate reads out of that header afterwards. (A task
-proposing that verification refuse outright on a mismatch, T031, is unmerged at
-the time of writing; nothing above depends on it.)
+moves `candidate_sha` past INV-04's gate. Since T031 landed, `orchid verify`
+itself compares the two BEFORE running and refuses on a mismatch (exit 20,
+naming both shas), so the equality the advance leaves behind is the
+precondition for the suite running at all — and it is still what INV-11's
+`testing → reviewing` gate reads out of the evidence header afterwards.
 `implement_floor` (v1.1): driver-written, and no part of the schema-1 list
 above — it is absent from a task file until a round is waived, and inert once
 `attempts` moves past the attempt it names. Its value is `a<attempt>:<n>`, the
@@ -1390,6 +1410,7 @@ derived cache, rebuildable from it.
 | Dead | pgid + start-time liveness per `orchid jobs check` |
 | Never started | a launcher that exits before its spawn line (bad pack, missing binary): its non-zero exit is itself a job failure — journaled and escalated by the driver, EXACTLY ONCE, since both the synchronous charge and the ageing sweep deduplicate on the stranded manifest's `job_id` against the journal receipt the charge itself writes (`[ladder job <job_id>]`), so a pass that crashes before charging loses nothing and one that charged is never charged again — and the manifest it stranded is reported `never-started` by `orchid jobs check` |
 | Spawned but never stamped | a launcher killed between the spawn and the pid stamp: an engine may be running with its pid recorded nowhere. Waited on while its log is still being written (never relaunched over — that is two engines in one worktree); reported `unstamped` and escalated once its log has been silent for `stall_minutes`, with the log kept when the manifest is reaped |
+| Spawned, never stamped, and it REPORTED | the same manifest with an envelope in the spool. Silence past `stall_minutes` is not an exit — there is no pid to `kill -0` and none to signal — so `orchid jobs reconcile` refuses to file that report (`unresolved:`) and holds both it and the manifest, since filing it would capture a candidate from a worktree that engine may still be committing to (T031). Bounded by the driver, not by a clock: one rung of the escalation ladder and an `operator-decision` boundary, and it is the one class the ladder never relaunches for. It resolves with no operator the moment the job's exit is recorded in `runtime/exits/<job-id>`, at which point the held envelope files normally. An operator who has looked and found no such process records that with `orchid jobs record-exit <job-id> <exit code>` — the same record, written through a verb that validates the job id's shape before it becomes a path, admits only this unresolved state, and never replaces an exit the process itself reported |
 | Dead having produced nothing reachable | `orchid jobs reconcile` files a DEGRADED `no_envelope` envelope from whatever the log holds, journals the exit code + log tail, and prints a report line — never silence (T040) |
 | Hung | stall: log mtime/size frozen ~10 min → kill, retry |
 | Alive but not working | Opt-in CPU delta across the job's own heartbeat lines: with `cpu_stall_min_s` above zero (default 0: off — F35 retracted CPU as a sole progress signal, a healthy API-bound engine burns almost none), less than the floor across the last `stall_minutes` of heartbeats → `stalled` → kill, retry; a counter that goes backwards (pid reuse) is unknown and never kills. Liveness alone cannot see this; heartbeats keep a hung engine looking healthy (T040) |
@@ -1613,7 +1634,16 @@ semantic correctness beyond declared verification commands.
 - INV-09 repo-local plugins never execute without an out-of-repo trust
   record
 - INV-10 duplicate plugin IDs are an error, never a shadow
-- INV-11 `verify` evidence is the only path to a passing `testing` state
+- INV-11 `verify` evidence is the only path to a passing `testing` state, and
+  it may only ever describe the recorded candidate: verification refuses a
+  tree that is not `candidate_sha` (before OR during the run), and an
+  envelope from a job that has not exited is not a completion signal, so the
+  candidate captured from a worktree's HEAD is always final — where "has
+  exited" is decided for a `pid: 0` manifest only by POSITIVE evidence that it
+  ended (the launcher's recorded exit status, its own pre-spawn failure, or an
+  absent log proving the spawn line was never reached), never by a log that has
+  merely gone quiet, since that pid is the absence of a record rather than an
+  exit and silence over it cannot tell a dead engine from a live, quiet one
 - INV-12 non-truncatable inputs over budget fail with `input_overflow`,
   never silently truncate
 - INV-13 the deterministic driver mutates durable/cross-process state only
@@ -2073,7 +2103,9 @@ Exit-code registry: 2 unknown verb, 3 illegal transition, 5
 `rebase_rereview_required`, 12 `input_overflow`, 13 plugin validation
 failure, 14 no eligible engine, 15 hook handler failure, 16 judgment
 boundary, 17 brokered command refused, 18 slot already holds an unlaunched
-manifest (T027). Every code means ONE condition: 18 is its own entry rather
+manifest (T027), 20 verification refused because its worktree is not the
+recorded candidate or moved during the suite (T031). Every code means ONE
+condition: 18 is its own entry rather
 than a second meaning for 17 precisely because a caller that has to
 distinguish "the broker refused this command" from "wait, this slot has an
 orphan" cannot do it from a number two conditions share; 19 step not routable

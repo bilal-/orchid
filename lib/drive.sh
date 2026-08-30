@@ -46,7 +46,9 @@ drive_finding_rank() {
 # MANIFEST (`orchid jobs prepare`, T027), 19 STEP NOT COVERED BY THE RESOLVED
 # ACTOR'S CAPABILITIES (`orchid jobs prepare`, INV-16 -- distinct from 14
 # because nothing is waiting: no later pass makes the same actor able to do
-# the same work, so the driver hands it to an operator instead of retrying).
+# the same work, so the driver hands it to an operator instead of retrying),
+# 20 VERIFICATION REFUSED BECAUSE ITS
+# WORKTREE IS NOT THE RECORDED CANDIDATE (`orchid verify`, T031).
 
 # drive_threshold_rank <blocking_severity> -- ordinal for the TASK's
 # configured blocking threshold. Deliberately the mirror image of

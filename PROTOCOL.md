@@ -1305,6 +1305,86 @@ ones its archetype never declares.
      after the envelope has reconciled and before anything verifies the
      candidate.
 
+  An envelope only reaches step 2's reconcile once its job has genuinely
+  EXITED — `orchid jobs reconcile` never files a spool envelope whose manifest
+  has not resolved, leaving both the envelope and the manifest in place for a
+  later pass. That is what makes the `git -C <worktree> rev-parse HEAD` above
+  a FINAL answer: an implementer that files its report and keeps working can
+  otherwise commit again after the read, and the candidate recorded here
+  would name a commit nobody ever verified (r-002/T013, lesson L025).
+
+  "Has not resolved" is NOT "names a live pid", because `pid: 0` is not an
+  exit. `orchid jobs prepare` mints every manifest with pid 0 and
+  `runners/orchid-launch` stamps the real pid only AFTER the spawn, so pid 0
+  means *nobody has recorded whether this job began* — an unresolved startup
+  state. Two of the shapes below are a WAIT, and each prints its own line; the
+  third, further down, is not a wait at all:
+
+  - a stamped pid that `kill -0` still answers for → `deferred: <file> (job
+    <id> still running, pid <n>)`;
+  - `pid: 0` whose log exists and has been written to within `stall_minutes`
+    → `deferred: <file> (job <id> still starting, no pid stamped yet)`. That
+    is the launcher's post-spawn/pre-stamp window: the log exists because the
+    launcher created it by redirecting the spawn into it, so an engine is
+    running with its pid recorded nowhere, and it can still commit. It is the
+    same shape `drive_job_outstanding` already counts as a live job, so the
+    driver and reconcile agree about one manifest rather than one waiting on
+    a job the other has already filed as done.
+
+  A `pid: 0` manifest may be reconciled only on POSITIVE evidence that its job
+  ended, never on silence. Two records qualify, and both are written by
+  `runners/orchid-launch`: `runtime/exits/<job-id>`, the engine's own exit
+  status, recorded by a wrapper that outlives it by exactly one write; and
+  `launch_exit` on the manifest, the launcher's own failure from before the
+  spawn line. A third shape needs no record because nothing ever ran — no log
+  at all, which means the spawn line was never reached, since the launcher
+  creates that log by redirecting the spawn into it.
+
+  A LOG THAT HAS SIMPLY GONE QUIET IS NOT ONE OF THEM. Silence past
+  `stall_minutes` is an inference from an absence, and with no pid stamped
+  there is nothing to `kill -0` and nothing to signal — so an engine that is
+  alive and merely quiet (a long model call writes nothing for many minutes) is
+  indistinguishable from one that died. Reading that as an exit files a
+  mid-flight report as final over a process that is still committing, which is
+  the r-002/T013 defect again. reconcile therefore refuses to decide:
+  `unresolved: <file> (job <id> never stamped a pid and its log has been silent
+  past stall_minutes, with no exit recorded …)`, holding both the envelope and
+  the manifest.
+
+  That refusal is bounded from OUTSIDE reconcile, because it must not become
+  the new forever. It resolves by itself if that engine exits — the wrapper
+  records the status and the very next pass files the envelope, with no
+  operator involved. If it does not, `orchid drive`'s escalation sweep meets
+  exactly this state (`pid: 0`, silent log, envelope still spooled, no exit
+  record), spends ONE rung of the `infra_failures` ladder on it and stops the
+  pass at an `operator-decision` boundary. It is the one class the ladder never
+  RELAUNCHES for: a second engine in a worktree the first may still be
+  committing to is the very defect being avoided. The other roads are bounded
+  as before — `jobs check` kills a stamped job that stalls or times out — and
+  none of them needs `jobs gc` to run first, which matters because gc
+  deliberately spares a manifest whose envelope is still spooled. For a job that
+  DID stamp a pid the exclusion stands unchanged — a manifest whose envelope is
+  still spooled is never escalated, which is what keeps that kill from being
+  read as a death. It is only the `pid: 0` half where a spooled envelope stops
+  being proof that the job resolved, because there it is precisely the envelope
+  reconcile is refusing to file.
+
+  THE OPERATOR'S HALF OF THAT BOUNDARY IS A VERB. The boundary asks a human to
+  look — at the process table, at `runtime/logs/<job-id>.log`, at the worktree
+  — and it has exactly two answers. If an engine IS still running, nothing needs
+  doing: it resolves itself when that process exits. If none is, the finding is
+  recorded with `orchid jobs record-exit <job-id> <exit code>`, which writes the
+  same `runtime/exits/<job-id>` record the launcher's wrapper would have written
+  and lets the held envelope file on the next `orchid jobs reconcile`. It is a
+  verb and not a hand-edit because it is the one fact this whole guarantee rests
+  on: it holds the job id to the shape `jobs prepare` mints before that id
+  becomes a write path, requires the job to still be outstanding, requires its
+  liveness to actually BE this unresolved state (a `running` job has the kernel
+  as a witness, a `starting` one is still writing to its log, an already
+  resolved one reconciles on its own), and never replaces an exit record the
+  process itself wrote. Runtime-only and therefore unfenced, exactly like
+  `orchid jobs gc`.
+
   A quarantined envelope, or a `dead`/`stalled`/`timeout` job, follow the
   escalation ladder in step 2 (there is no legal `implementing→rework`, so a
   repeat failure goes to `blocked`, never `rework`) — as does the clean-tree
@@ -1413,11 +1493,13 @@ ones its archetype never declares.
      `candidate_sha` equal to the tree that runs, so `orchid verify`'s two
      header lines — `sha:`, read from the tree it ran in, and `candidate:`,
      read from frontmatter — name the same commit, and the INV-11 gate on
-     `testing → reviewing` accepts the evidence. (As this ships, `orchid
-     verify` itself does not compare the two before running; a task proposing
-     that it refuse outright, T031, is unmerged at the time of writing. If it
-     lands, this equality is the state it would require — the hand-off does
-     not depend on it either way.)
+     `testing → reviewing` accepts the evidence. (T031 has since landed the
+     verify-side half: `orchid verify` now compares the two BEFORE running and
+     refuses outright, exit 20, when they disagree. So this equality is no
+     longer merely what makes the evidence admissible afterwards — it is the
+     precondition for the suite running at all, and a hand-off that committed
+     without advancing `candidate_sha` would now stop the task at a
+     `worktree-conflict` boundary rather than quietly certify the wrong tree.)
 
      **What it will advance TO is itself a gate.** Adopting whatever `HEAD`
      happens to be would trade this drift for a worse mis-binding: a record
@@ -1670,6 +1752,16 @@ ones its archetype never declares.
     kernel's own INV-11 gate independently re-checks that the evidence's
     `candidate:` line matches the task's current `candidate_sha` before
     allowing the transition).
+  - REFUSED (exit 20): the working tree `orchid verify` was asked to run in
+    is not the recorded `candidate_sha` — either it was already at a
+    different HEAD, or it moved while the suite ran. Nothing about the
+    candidate has been established, so this is NOT a FAIL and must never
+    consume a rework attempt: stop at a `worktree-conflict` boundary and
+    report both SHAs (the refusal names them, and so does the evidence log's
+    `sha:`/`head_after:`/`candidate:` header). The evidence written for a
+    refused run always ends in a `refused: ...` line rather than `exit: 0`,
+    so INV-11's gate refuses it on its own even if someone tries the advance
+    anyway.
   - FAIL: if `hook.on_verify_fail` is bound, invoke it first (Preamble
     shape: `runners/orchid-launch <id> hook hook --hook on_verify_fail`,
     then `orchid jobs reconcile`) — an ok envelope's `.artifact.guidance`

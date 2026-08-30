@@ -292,6 +292,15 @@ rc=0; "$ORCHID_BIN" task infra-fail T006 2>/dev/null || rc=$?
 # the same direction every other unreadable-input check in this codebase
 # fails), so a fixture that walked this edge on a non-existent range was
 # proving the guard was vacuous, not that the edge was legal.
+# are both the fixture's own HEAD throughout: the `to=testing` .orchid/-scan
+# runs `git log <base>..<candidate>`, which prints nothing at all for an
+# empty range, so this never trips INV-04's guard; and
+# `verification_commands=true` makes `orchid verify` always PASS.
+#
+# T031: this used to be a fixed placeholder (non-existent) sha, which worked
+# only because nothing ever asked whether the tree matched the claim.
+# `orchid verify` now refuses to run against a worktree that is not the
+# recorded candidate_sha, so the walk uses the sha the checkout is really at.
 # ============================================================================
 "$ORCHID_BIN" task create T007 "archetype edge walk"
 edge_sha="$(git rev-parse HEAD)"
@@ -450,6 +459,8 @@ assert_eq pending "$("$ORCHID_BIN" task show T008 | grep '^status: ' | cut -d' '
 # file with the right name and candidate_sha exists.
 # ============================================================================
 "$ORCHID_BIN" task create T009 "status-ok gate"
+# The fixture's own HEAD, for the same reason edge_sha above is (T031:
+# `orchid verify` refuses a tree that is not the recorded candidate_sha).
 edge_sha2="$(git rev-parse HEAD)"
 "$ORCHID_BIN" task set T009 base_sha "$edge_sha2"
 "$ORCHID_BIN" task set T009 candidate_sha "$edge_sha2"

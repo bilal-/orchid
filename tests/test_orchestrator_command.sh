@@ -23,9 +23,8 @@ export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"
 ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 export ORCHID_EPOCH
 
-# This repo's own HEAD, for both shas: entry to `testing` scans a real, EMPTY
-# range. A placeholder that exists nowhere used to serve here, and T026 made
-# that scan fail CLOSED on a range `git log` cannot answer.
+# The fixture's own HEAD makes a real, empty INV-04 range and honestly
+# satisfies T031's worktree/candidate drift check.
 edge_sha="$(git rev-parse HEAD)"
 "$ORCHID_BIN" task create T001 "brokered subject" >/dev/null
 "$ORCHID_BIN" task set T001 base_sha "$edge_sha" >/dev/null
@@ -139,6 +138,13 @@ refuse "running the verification suite" verify T001
 refuse "preparing a job"                jobs prepare T001 implementer implement
 refuse "reconciling jobs"               jobs reconcile
 refuse "collecting jobs"                jobs gc
+# T031: `jobs record-exit` writes the one fact that admits a HELD envelope --
+# "that process has stopped" -- for a job nothing on this machine can probe.
+# It is an OPERATOR's finding, made by looking at the process table, and an
+# orchestrator has no way to make it: admitting the verb here would let a
+# session declare an engine dead in order to unblock itself, which is the
+# r-002/T013 substitution with the session standing in for the evidence.
+refuse "declaring a job's exit"         jobs record-exit j-e1-T001-a1-abcd0001 0
 # A command that never returns is exactly what this surface exists to bound:
 # admitting the table does not admit polling it forever.
 refuse "watching the job table"         jobs ls --watch

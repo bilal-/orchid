@@ -1588,3 +1588,276 @@ touch -t 202001010000 "$dup_h1"
 [ ! -f "$dup_h1" ] || fail "gc must reap the aged never-launched hook manifest"
 dup_h1b="$("$ORCHID_BIN" jobs prepare TDUP hook hook --hook after_plan_draft)"
 [ -f "$dup_h1b" ] || fail "once the orphan is reaped, the identical prepare succeeds with no operator action"
+# T031 (r-002, lesson L025): AN ENVELOPE IS A COMPLETION REPORT, and a job
+# that has not exited has not completed. Reconciling one early is what let
+# T013 certify the wrong commit: reconcile filed the implement envelope and
+# DELETED the manifest, `runners/orchid-drive` read that as "the implementer
+# is done" and captured candidate_sha from the worktree's HEAD -- while the
+# job was still alive and went on to commit again 19 minutes later. Once the
+# manifest is gone there is nothing left on disk that says a job is running,
+# so this is the only place the truth still exists.
+#
+# A live pid must therefore DEFER: envelope stays in the spool, manifest
+# stays in jobs/, nothing is filed and nothing is quarantined.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create TDEFER "envelope filed by a job that is still running" >/dev/null
+mlive="$("$ORCHID_BIN" jobs prepare TDEFER implementer implement)"
+live_jid="$(jq -r .job_id "$mlive")"
+live_out="$(jq -r .output "$mlive")"
+sleep 30 &
+live_engine_pid=$!
+# started_at deliberately in the past, so the gc assertion below turns on the
+# spool guard rather than on gc's own age bound.
+jq --argjson pid "$live_engine_pid" '.pid=$pid | .pgid=$pid | .started_at=((now|floor) - 600)' \
+  "$mlive" > "$mlive.tmp" && mv "$mlive.tmp" "$mlive"
+printf '{"contract":1,"job_id":"%s","task":"TDEFER","operation":"implement","status":"ok","summary":"filed early"}' \
+  "$live_jid" > "$live_out"
+
+live_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "^deferred: " "$live_line" "T031: reconcile defers an envelope whose job is still running"
+[ -f "$live_out" ] || fail "T031: a deferred envelope must stay in the spool"
+[ -f "$mlive" ] || fail "T031: a deferred envelope's manifest must survive — it is the only record that the job is alive"
+[ ! -f ".orchid/reviews/TDEFER-a1-implementer.json" ] || fail "T031: a live job's envelope must not be filed to reviews/"
+for _q in "$rt/quarantine/$live_jid.json".*; do
+  [ -e "$_q" ] || continue
+  fail "T031: deferring is not quarantining — the envelope is good, just early (found $_q)"
+done
+red_case "reconcile defers a still-running job's envelope instead of filing it as a completion report"
+
+kill "$live_engine_pid" 2>/dev/null || true
+wait "$live_engine_pid" 2>/dev/null || true
+kill -0 "$live_engine_pid" 2>/dev/null && fail "sanity: the fixture engine pid should be gone"
+
+# Deferral makes a dead job's manifest reachable by gc with its envelope still
+# unreconciled (`jobs check` kills a job that stalls AFTER filing its report).
+# gc must spare it, exactly as the orphan sweep already spares pack/request
+# litter with a pending spool file: reaping it here would strand real
+# evidence, and the next reconcile would quarantine it as `unknown-job`.
+"$ORCHID_BIN" jobs gc --older-than-s 0 >/dev/null
+[ -f "$mlive" ] || fail "T031: gc must spare a dead job's manifest while its envelope is still waiting in the spool"
+[ -f "$live_out" ] || fail "T031: gc must not touch the pending spool envelope either"
+
+# ...and now the envelope reconciles normally.
+live_line2="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "TDEFER	ok" "$live_line2" "T031: the deferred envelope reconciles on the pass after the job exits"
+[ -f ".orchid/reviews/TDEFER-a1-implementer.json" ] || fail "T031: the envelope is filed once its job has exited"
+[ ! -f "$mlive" ] || fail "T031: the manifest is deleted once its envelope is genuinely reconciled"
+green_case "the same envelope reconciles normally on the pass after its job exits — deferral delays, never discards"
+
+# ---------------------------------------------------------------------------
+# T031 (attempt-4 rework): THE LAUNCH/RECONCILE RACE. The deferral above asks
+# whether the job has exited. A pid of 0 is not an answer to that question:
+# `jobs prepare` mints every manifest with pid 0 and runners/orchid-launch
+# stamps the real pid only AFTER the spawn, so pid 0 means "nobody has
+# recorded whether this began" -- an UNRESOLVED STARTUP STATE. Reading it as
+# an exit re-opens T013's race one launcher-window narrower: an engine running
+# with its pid recorded nowhere still commits, and its envelope would still be
+# filed as final.
+#
+# Deterministic, and no live process is involved: the whole class is pid 0, so
+# what decides it is the LOG -- exactly the handle `prepare`, `gc`, `check`
+# and the driver's drive_job_outstanding already use for this manifest shape,
+# and exactly the one TDUPLOG above turns on. Fresh log = the post-spawn/
+# pre-stamp window, something is writing right now.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create TSTART "envelope filed inside the launcher window" >/dev/null
+mstart="$("$ORCHID_BIN" jobs prepare TSTART implementer implement)"
+start_jid="$(jq -r .job_id "$mstart")"
+start_out="$(jq -r .output "$mstart")"
+start_log="$(jq -r .log "$mstart")"
+assert_eq 0 "$(jq -r '.pid // 0' "$mstart")" \
+  "sanity: prepare mints a manifest with no pid — the launcher stamps it later"
+mkdir -p "$(dirname "$start_log")"; printf 'engine is running\n' > "$start_log"
+printf '{"contract":1,"job_id":"%s","task":"TSTART","operation":"implement","status":"ok","summary":"filed early"}' \
+  "$start_jid" > "$start_out"
+
+start_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "^deferred: " "$start_line" \
+  "T031: pid 0 with a fresh log is a job that has not resolved, so its envelope is deferred, not filed"
+assert_match "still starting" "$start_line" \
+  "T031: and the line names the startup window rather than claiming a live pid it does not have"
+[ -f "$start_out" ] || fail "T031: the deferred envelope must stay in the spool"
+[ -f "$mstart" ] \
+  || fail "T031: the manifest must survive — inside the launcher window it is the ONLY handle on an engine whose pid is recorded nowhere"
+[ ! -f ".orchid/reviews/TSTART-a1-implementer.json" ] \
+  || fail "T031: an envelope from the launcher window must not be filed as a completion report"
+for _q in "$rt/quarantine/$start_jid.json".*; do
+  [ -e "$_q" ] || continue
+  fail "T031: deferring is not quarantining — the envelope is good, just early (found $_q)"
+done
+red_case "reconcile defers an envelope whose manifest is still inside the launcher's post-spawn/pre-stamp window"
+
+# ---------------------------------------------------------------------------
+# THE TWIN (T031 attempt-5 rework): THE LIVE, SILENT, UNTRACKED PROCESS. Same
+# manifest, one thing changed -- the log has gone quiet past `stall_minutes`.
+#
+# That silence used to end the hold: the envelope reconciled and the manifest
+# was deleted. But NOTHING HERE MEASURED AN EXIT. No pid was ever stamped, so
+# there is nothing to `kill -0` and nothing to signal, and an engine that is
+# alive and merely quiet -- a long model call writes nothing for many minutes
+# -- leaves exactly these bytes on disk. Reading them as "it finished" files a
+# mid-flight report as a completion signal over a process that is still
+# committing, which is T013's defect with a stale log in place of a live pid.
+#
+# The state below is therefore deliberately AMBIGUOUS, and that is the whole
+# assertion: reconcile is not being asked to notice a dead job, it is being
+# asked NOT TO GUESS about one it cannot see. (Spawning a real silent process
+# would add nothing — with its pid recorded nowhere, no reader could tell the
+# difference, which is precisely why the guess is unsafe.)
+#
+# gc runs first, over a manifest that is now genuinely reapable (pid 0, log
+# silent past stall_minutes, and the file itself backdated past the threshold),
+# and must SPARE it anyway because its envelope is still spooled. A hold that
+# could only be ended by a reap, and a reap that waits for the hold, would keep
+# the envelope for each other forever.
+touch -t 202001010000 "$start_log" "$mstart"
+start_gc="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
+assert_match "gc-pending $start_jid" "$start_gc" \
+  "T031: gc names the hold-back rather than reaping a manifest whose envelope has not been filed"
+[ -f "$mstart" ] || fail "T031: gc must spare the manifest while its envelope is still spooled"
+start_line2="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "^unresolved: " "$start_line2" \
+  "T031: a pid-0 job whose log went quiet has not been shown to EXIT, so its envelope is not a completion signal"
+assert_match "silence is not an exit" "$start_line2" \
+  "T031: and the line says why it is refusing rather than reporting a job it watched finish"
+[ ! -f ".orchid/reviews/TSTART-a1-implementer.json" ] \
+  || fail "T031: an envelope from a process nobody can show has stopped must not be filed"
+[ -f "$start_out" ] || fail "T031: HELD, not discarded — the envelope stays spooled for the pass that can admit it"
+[ -f "$mstart" ] \
+  || fail "T031: and the manifest stays standing — it is the only handle on that job, and what the driver escalates over"
+red_case "log staleness is not an exit: a pid-0 job that has gone silent has its envelope held, never filed"
+
+# ...AND THE HOLD ENDS ON THE POSITIVE RECORD, which is what keeps it from
+# being the new forever. runners/orchid-launch wraps the engine in a subshell
+# that outlives it by exactly one write, so `runtime/exits/<job-id>` exists
+# BECAUSE the process ended (T040) -- the one fact about this job that says so.
+# Its arrival needs no operator: if that engine really was alive and quiet, the
+# very next pass after it exits files the report it already wrote.
+mkdir -p "$rt/exits"; printf '0\n' > "$rt/exits/$start_jid"
+start_line3="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "TSTART	ok" "$start_line3" \
+  "T031: with the engine's own exit recorded, the job HAS exited and its envelope reconciles"
+[ -f ".orchid/reviews/TSTART-a1-implementer.json" ] || fail "T031: the held envelope is filed, not lost"
+[ ! -f "$mstart" ] || fail "T031: the manifest is deleted once its envelope is genuinely reconciled"
+green_case "a positive exit record ends the hold — the refusal is about evidence, not about waiting forever"
+
+# The other pid-0 shape: NO log at all. The spawn line was provably never
+# reached, so nothing is starting and nothing ever will. It must reconcile on
+# the FIRST pass — this is the arm that proves the new "pid 0 is unresolved"
+# reading did not turn every unstamped manifest into a permanent hold.
+"$ORCHID_BIN" task create TNOLOG "envelope whose manifest never reached the spawn line" >/dev/null
+mnolog="$("$ORCHID_BIN" jobs prepare TNOLOG implementer implement)"
+nolog_jid="$(jq -r .job_id "$mnolog")"
+[ ! -e "$(jq -r .log "$mnolog")" ] || fail "sanity: prepare must not create the job log — the launcher does, by redirecting the spawn into it"
+printf '{"contract":1,"job_id":"%s","task":"TNOLOG","operation":"implement","status":"ok","summary":"no log ever appeared"}' \
+  "$nolog_jid" > "$(jq -r .output "$mnolog")"
+nolog_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "TNOLOG	ok" "$nolog_line" \
+  "T031: pid 0 with no log is resolved — no engine ran and none will — so its envelope reconciles immediately"
+[ ! -f "$mnolog" ] || fail "T031: and its manifest is deleted, exactly as before"
+green_case "pid 0 with no log still reconciles on the first pass — the startup hold covers the launcher window only"
+
+# ---------------------------------------------------------------------------
+# T031 attempt-6 rework -- `jobs record-exit`: THE OPERATOR'S HALF OF THE HOLD,
+# AS A VERB.
+#
+# The hold above ends by itself if that engine exits, because the launcher's
+# wrapper records the status. For the class the driver escalates as `untracked`
+# it never will: nothing ever waited on that process, so no wrapper is going to
+# write anything about it, and the only remaining witness is a human who looks
+# at the process table. Before this verb existed the boundary asked them to
+# `printf` a number straight into `.orchid/runtime/exits/<job-id>` -- a
+# hand-edit of the single fact this whole task protects, with nothing between a
+# mistyped job id and a filed report.
+#
+# So the write moves behind a verb, and the verb is the checks: the id is held
+# to the shape `jobs prepare` mints BEFORE it becomes a path, the job must still
+# be outstanding, its liveness must actually be the unresolved state the
+# boundary is about, and a record the process itself wrote is never replaced.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create TRECX "an engine nobody can see, and the operator who looked" >/dev/null
+mrecx="$("$ORCHID_BIN" jobs prepare TRECX implementer implement)"
+recx_jid="$(jq -r .job_id "$mrecx")"
+recx_out="$(jq -r .output "$mrecx")"
+recx_log="$(jq -r .log "$mrecx")"
+mkdir -p "$(dirname "$recx_log")"; printf 'engine is talking\n' > "$recx_log"
+printf '{"contract":1,"job_id":"%s","task":"TRECX","operation":"implement","status":"ok","summary":"filed by a job nobody can see"}' \
+  "$recx_jid" > "$recx_out"
+
+# A FRESH LOG IS NOT THIS CLASS. Something is writing right now, so the one
+# thing this verb states -- that the process has stopped -- is the one thing
+# nobody can say. Refused, and refused by naming what does answer it.
+rc=0; recx_err="$("$ORCHID_BIN" jobs record-exit "$recx_jid" 0 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: record-exit must refuse a job whose log is still moving (out: $recx_err)"
+assert_match "stall_minutes" "$recx_err" \
+  "T031: and the refusal names the window it is inside rather than a bare no (got: $recx_err)"
+[ ! -e "$rt/exits/$recx_jid" ] || fail "T031: a refused record-exit must write nothing"
+
+# Now the state the boundary is actually about: silent past `stall_minutes`,
+# envelope spooled, no exit recorded anywhere.
+touch -t 202001010000 "$recx_log" "$mrecx"
+assert_match "^unresolved: " "$("$ORCHID_BIN" jobs reconcile)" \
+  "sanity: this is the held class -- reconcile refuses to read the silence as an exit"
+
+# THE ID BECOMES A PATH, so it is validated as an id first. `..` in a job id is
+# the shape that would put this write anywhere on disk.
+rc=0; recx_err="$("$ORCHID_BIN" jobs record-exit "../../escaped" 0 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: record-exit must refuse a job id that is not one (out: $recx_err)"
+# Where `$rt/exits/../../escaped` would have landed, had the id been allowed to
+# build a path before it was checked.
+[ ! -e "$rt/../escaped" ] || fail "T031: a traversing job id must not reach a write path at all"
+rc=0; recx_err="$("$ORCHID_BIN" jobs record-exit "j-e1-TGHOST-a1-deadbeef" 0 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: record-exit must refuse a job with no manifest (out: $recx_err)"
+assert_match "no outstanding job" "$recx_err" \
+  "T031: and says the job is not outstanding, rather than minting a record nothing will read (got: $recx_err)"
+rc=0; recx_err="$("$ORCHID_BIN" jobs record-exit "$recx_jid" 300 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: record-exit must refuse an exit code outside 0-255 (out: $recx_err)"
+rc=0; recx_err="$("$ORCHID_BIN" jobs record-exit "$recx_jid" "killed" 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: record-exit must refuse an exit code that is not a number (out: $recx_err)"
+[ ! -e "$rt/exits/$recx_jid" ] || fail "T031: none of those refusals may have written a record"
+[ -f "$recx_out" ] || fail "T031: and none of them may have disturbed the held envelope"
+red_case "record-exit refuses a live-looking job, an id that is not one, a job that is not outstanding, and a code that is not an exit status — writing nothing in every case"
+
+# THE HAPPY PATH: an operator who has looked and found no such process.
+# 2>&1, so the advisory is asserted rather than left to leak into the suite's
+# own stderr — a passing fixture that prints to stderr is what a rework brief
+# later scrapes and hands an implementer as a failure to fix.
+recx_ok="$("$ORCHID_BIN" jobs record-exit "$recx_jid" 137 2>&1)"
+assert_match "recorded-exit $recx_jid 137" "$recx_ok" \
+  "T031: the verb reports the record it wrote (got: $recx_ok)"
+assert_match "next .orchid jobs reconcile" "$recx_ok" \
+  "T031: and tells the operator what admits the held report now (got: $recx_ok)"
+[ -f "$rt/exits/$recx_jid" ] || fail "T031: and the record is where every reader of it looks"
+assert_eq 137 "$(head -n1 "$rt/exits/$recx_jid")" \
+  "T031: line 1 is the exit code and nothing else — job_exit_code reads exactly that and rejects any non-digit"
+assert_match "recorded-by: operator" "$(cat "$rt/exits/$recx_jid")" \
+  "T031: and the record says a human wrote it — a launcher-written one is a process reporting its own status, and after the write nothing else on disk tells the two apart"
+
+# NEVER REPLACED. Overwriting a record with a second opinion is the same
+# substitution this task exists to close, one file further down.
+rc=0; recx_err="$("$ORCHID_BIN" jobs record-exit "$recx_jid" 0 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: a second record-exit over an existing record must be refused (out: $recx_err)"
+assert_eq 137 "$(head -n1 "$rt/exits/$recx_jid")" "T031: and the record on file is untouched"
+
+# ...and the hold ends, through exactly the path the launcher's own write uses.
+recx_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "TRECX	ok" "$recx_line" \
+  "T031: with the operator's finding on record the job has resolved, and its held envelope files (got: $recx_line)"
+[ -f ".orchid/reviews/TRECX-a1-implementer.json" ] || fail "T031: the held envelope is filed, not lost"
+[ ! -f "$mrecx" ] || fail "T031: and its manifest is deleted, exactly as any reconciled job's is"
+green_case "record-exit ends the hold through the same record the launcher writes — the envelope files on the next reconcile, with nothing hand-edited"
+
+# The `exited` arm, which is a refusal for the opposite reason: a pid-0 manifest
+# with no log at all never reached the spawn line, so it is already resolved and
+# reconciles on its own. There is nothing for an operator to find, and saying so
+# is better than accepting a record that changes nothing.
+"$ORCHID_BIN" task create TRECY "a job that never reached the spawn line" >/dev/null
+mrecy="$("$ORCHID_BIN" jobs prepare TRECY implementer implement)"
+recy_jid="$(jq -r .job_id "$mrecy")"
+[ ! -e "$(jq -r .log "$mrecy")" ] || fail "sanity: prepare must not create the job log"
+rc=0; recy_err="$("$ORCHID_BIN" jobs record-exit "$recy_jid" 1 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: record-exit must refuse a job that is already resolved (out: $recy_err)"
+assert_match "already resolved" "$recy_err" \
+  "T031: and names that, rather than accepting a finding about a job nothing was ever running for (got: $recy_err)"
+[ ! -e "$rt/exits/$recy_jid" ] || fail "T031: and writes nothing for it"
+red_case "record-exit is admitted only for the unresolved class — an already-resolved job is refused, not overwritten with a finding it does not need"
