@@ -160,7 +160,13 @@ driver_boundary_refs() {
 # said the check had "KEPT" a line, which is the ACCEPTING direction wearing
 # the rejecting name. A proof aimed at the wrong function, or labelled the
 # wrong way round, is indistinguishable in the record from a real one.
-POLICY_IMPURE='fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:space:]]+(add|remove)|(^|[[:space:];|&()])([^[:space:];|&()]*/)?(bash|sh)[[:space:]]+-c([^_[:alnum:]]|$)|^[[:space:]]*(rm|mv|cp)[[:space:]]'
+#
+# A shell may spell its code option alone or inside a short-option bundle, and
+# long/short options may precede it. Match that option grammar after a literal
+# bash/sh path or the command-position "$BASH" variable; otherwise eliding the
+# following string would hide the only spelling of the forbidden operation.
+POLICY_SHELL_CODE='(^|[[:space:];|&()])(([^[:space:];|&()]*/)?(bash|sh)|"?\$BASH"?)[[:space:]]+((--[^[:space:];|&()]+|-[^-[:space:];|&()]+)[[:space:]]+)*-[^-[:space:];|&()]*c[^-[:space:];|&()]*([[:space:];|&()]|$)'
+POLICY_IMPURE="fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:space:]]+(add|remove)|${POLICY_SHELL_CODE}|^[[:space:]]*(rm|mv|cp)[[:space:]]"
 
 # policy_impurity <file> -- the lines of <file> that make it something other
 # than read-only policy: a mutation, or a reach for a verb. Silent for a pure
@@ -168,9 +174,9 @@ POLICY_IMPURE='fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:s
 # exposed to the SIGPIPE race the capture below section 1 exists for.
 #
 # Reads operations_of, not code_of: the operation terms must ignore diagnostic
-# text. The shell-code term is the fail-closed edge -- once `bash -c` or `sh -c`
-# appears as a command, the elided argument is executable code rather than an
-# inert description, so the policy library is rejected without parsing it.
+# text. The shell-code term is the fail-closed edge -- once bash/sh carries a
+# `c` short option, the elided argument is executable code rather than an inert
+# description, so the policy library is rejected without parsing it.
 policy_impurity() { operations_of "$1" | grep -nE "$POLICY_IMPURE" || true; }
 
 # RED: a synthetic policy library containing a real `fm_set` line must be
@@ -234,12 +240,24 @@ shell_code_probe="$WORK/inv13-shell-code-probe.sh"
 printf '%s\n' \
   "bash -c 'git worktree add \"\$1\" \"\$2\"' -- \"\$path\" \"\$branch\"" \
   "sh -c 'git worktree remove \"\$1\"' -- \"\$path\"" \
+  "bash -lc 'git worktree add \"\$1\" \"\$2\"' -- \"\$path\" \"\$branch\"" \
+  "sh -ec 'git worktree remove \"\$1\"' -- \"\$path\"" \
+  "/bin/bash --noprofile -c 'git worktree add \"\$1\" \"\$2\"' -- \"\$path\" \"\$branch\"" \
+  "\"\$BASH\" -c 'git worktree remove \"\$1\"' -- \"\$path\"" \
   > "$shell_code_probe"
 shell_code_probe_out="$(policy_impurity "$shell_code_probe")"
 assert_match 'bash -c' "$shell_code_probe_out" \
   "INV-13 self-check: the production policy scan must FLAG bash -c even when its elided code argument contains the only spelling of a forbidden worktree mutation"
 assert_match 'sh -c' "$shell_code_probe_out" \
   "INV-13 self-check: the production policy scan must FLAG sh -c even when its elided code argument contains the only spelling of a forbidden worktree mutation"
+assert_match 'bash -lc' "$shell_code_probe_out" \
+  "INV-13 self-check: the production policy scan must FLAG bash when c is bundled with another short option"
+assert_match 'sh -ec' "$shell_code_probe_out" \
+  "INV-13 self-check: the production policy scan must FLAG sh when c is bundled with another short option"
+assert_match '/bin/bash --noprofile -c' "$shell_code_probe_out" \
+  "INV-13 self-check: the production policy scan must FLAG a shell code option after preceding shell options"
+assert_match '"\$BASH" -c' "$shell_code_probe_out" \
+  "INV-13 self-check: the production policy scan must FLAG a command-position shell variable followed by a code option"
 red_case "INV-13's production purity scan rejected bash -c and sh -c policy code arguments, so literal elision cannot hide a worktree mutation inside an interpreter"
 
 # RED: boundary.json is DATA, not a command word. A quoted literal path is a

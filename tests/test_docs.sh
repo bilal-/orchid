@@ -636,7 +636,7 @@ grep -qF '`orchid verify` exit 20 is REFUSED, not FAIL' <<<"$drive_help" \
   || fail "orchid drive --help must distinguish verify tree-drift refusal from a charged candidate failure"
 grep -qF 'An approval is also never deterministic while the task carries an unresolved objection from an earlier arbitration.' <<<"$drive_help_one_line" \
   || fail "orchid drive --help must say a later review round cannot erase an unresolved objection"
-grep -qF 'Completing the run does not remove an installed schedule' <<<"$drive_help" \
+grep -qF 'Completing the run does not remove an installed schedule; the operator must uninstall it, or use `orchid service teardown` when the checkout is also being removed.' <<<"$drive_help_one_line" \
   || fail "orchid drive --help must keep the run-complete/service-lifetime boundary visible"
 
 ci_help="$("$BASH" "$REPO_ROOT/scripts/ci-local.sh" --help)" \
