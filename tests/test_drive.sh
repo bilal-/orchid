@@ -8799,6 +8799,20 @@ assert_match "nothing can show it has stopped" "$(cat "$UTR/.orchid/journal.md")
   "T031: and journals WHY, rather than calling it a job that died with nothing to show"
 assert_match "boundary \[operator-decision\] V011" "$UTOUT" \
   "T031: the pass stops for a human instead of parking the task in an active status (out: $UTOUT)"
+# ...AND THE REMEDY IT NAMES IS A VERB (T031 attempt-6 rework). This boundary
+# used to end with a `printf` redirected into `.orchid/runtime/exits/`, asking
+# an operator to hand-write the one fact the whole hold protects. `orchid jobs
+# record-exit` is the same write with the checks the kernel would have made
+# anyway (see tests/test_jobs.sh's TRECX block), so the instruction has to name
+# it and must not offer the redirect beside it as an alternative.
+assert_match "orchid jobs record-exit" "$UTOUT" \
+  "T031: the boundary hands the operator a verb for the finding it asks them to make (out: $UTOUT)"
+# A HERESTRING, and a pattern that fires on the SHAPE rather than one spelling
+# of the path: `grep -q` on the left of a pipe exits at its first match and
+# takes the producer down with it under this suite's pipefail, and a negative
+# assertion that inverts on success is worse than none.
+grep -qE 'printf.*>[^&]*exits/' <<<"$UTOUT" \
+  && fail "T031: the boundary must not also offer a hand-written redirect into runtime/exits — the verb exists because that write has to be checked (out: $UTOUT)"
 # ...WITHOUT A SECOND ENGINE. This is the whole reason the class is separated
 # from `unstamped`: the ladder's ordinary recovery is to dispatch the work
 # again, and dispatching it here puts two engines in one worktree.

@@ -82,7 +82,6 @@ cwd="$repo"; [ -z "$wt" ] || cwd="$wt"
 root="$(orchid_physical_dir "$repo")" || root=""
 [ -n "$root" ] || root="$repo"
 
-sha="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || echo none)"
 # v0b2: sha-binding. Recorded straight from frontmatter at run time so the
 # evidence log carries its own claim about which candidate it verified —
 # `task advance testing->reviewing`'s INV-11 gate cross-checks this against
@@ -131,6 +130,36 @@ log="$state/reviews/$id-verify.log"
 # evidence says so, and INV-11's gate already refuses a vacuous none-to-none
 # match outright — refusing here too would only break `orchid verify` as an
 # ordinary pre-dispatch smoke check.
+#
+# WHERE THE BINDING IS TAKEN IS PART OF THE FIX, not an implementation detail
+# (attempt-6 rework). `sha` is this verb's whole claim about what ran: the
+# header line an INV-11 reader compares, and the left-hand end of the
+# `head_after:` comparison that decides whether the run describes one tree at
+# all. A HEAD read near the top of the file and quoted at the bottom is not
+# that claim — it is a claim about the tree as it stood before the frontmatter
+# was parsed, before `drive_verify_prestate_headers` walked the repository,
+# and before a temp file was minted, all of which take real time in a worktree
+# an implementer may still own. The gate would then be asking its question of
+# a tree nobody is about to run, and the header would name it.
+#
+# So the binding is REBOUND IMMEDIATELY BEFORE THE EXEC and nothing is allowed
+# in between but the comparison itself: read HEAD, compare it to the recorded
+# candidate, run. `tests/inv/test_INV-11_verify_evidence.sh` pins that adjacency
+# on this file's source, because it is an ordering property no fixture can
+# stage. What remains between the read and the `bash -c` is one string compare
+# with no I/O in it, and `head_after:` closes even that: a tree that moved at
+# any point from the bind to the last line of the suite is refused, so the pair
+# of reads brackets the entire execution rather than sampling near it.
+#
+# WHAT THE BRACKET STILL CANNOT SEE, stated so nobody has to rediscover it: a
+# HEAD that moves away and comes BACK inside the bracket reads identically at
+# both ends. Only running against a tree that cannot move at all — a detached
+# checkout of the candidate, rather than the live worktree — would close that,
+# and it is a different and much larger change than this one, with its own cost
+# (a suite that needs the worktree's ignored build state would no longer find
+# it). It is also not the observed defect: T013's implementer committed
+# forward and stayed there, which is what an engine finishing a round does. The
+# bracket covers that shape exactly.
 # ---------------------------------------------------------------------------
 verify_refuse() {
   local why="$1"
@@ -154,10 +183,6 @@ verify_refuse() {
   exit 20
 }
 
-if [ "$cand" != none ] && [ "$sha" != "$cand" ]; then
-  verify_refuse "$cwd is at HEAD $sha, but the task's recorded candidate_sha is $cand — the tree is not the candidate, so nothing was run"
-fi
-
 out_tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-verify.XXXXXX")"
 trap 'rm -f "$out_tmp"' EXIT
 
@@ -176,6 +201,18 @@ trap 'rm -f "$out_tmp"' EXIT
 # reported anywhere. A test suite has no operator to prompt either, so
 # closing stdin costs a correct command nothing.
 rc=0
+
+# THE BINDING (T031). Read here, and nowhere earlier, for the reason the header
+# block above gives at length: `sha` is what the evidence will CLAIM ran, so it
+# is taken at the last instant before anything runs. Everything between this
+# read and the `bash -c` below is the comparison that read exists for — one
+# string test, no I/O — and `head_after:` brackets the far end. Nothing else may
+# be inserted here; tests/inv/test_INV-11_verify_evidence.sh fails if anything
+# is.
+sha="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || echo none)"
+if [ "$cand" != none ] && [ "$sha" != "$cand" ]; then
+  verify_refuse "$cwd is at HEAD $sha, but the task's recorded candidate_sha is $cand — the tree is not the candidate, so nothing was run"
+fi
 ( cd "$cwd" && ORCHID_REPO_ROOT="$root" bash -c "$cmd" ) >"$out_tmp" 2>&1 </dev/null || rc=$?
 
 # The tree that ACTUALLY ran, read back after the suite finished. A worktree

@@ -1756,3 +1756,108 @@ assert_match "TNOLOG	ok" "$nolog_line" \
   "T031: pid 0 with no log is resolved — no engine ran and none will — so its envelope reconciles immediately"
 [ ! -f "$mnolog" ] || fail "T031: and its manifest is deleted, exactly as before"
 green_case "pid 0 with no log still reconciles on the first pass — the startup hold covers the launcher window only"
+
+# ---------------------------------------------------------------------------
+# T031 attempt-6 rework -- `jobs record-exit`: THE OPERATOR'S HALF OF THE HOLD,
+# AS A VERB.
+#
+# The hold above ends by itself if that engine exits, because the launcher's
+# wrapper records the status. For the class the driver escalates as `untracked`
+# it never will: nothing ever waited on that process, so no wrapper is going to
+# write anything about it, and the only remaining witness is a human who looks
+# at the process table. Before this verb existed the boundary asked them to
+# `printf` a number straight into `.orchid/runtime/exits/<job-id>` -- a
+# hand-edit of the single fact this whole task protects, with nothing between a
+# mistyped job id and a filed report.
+#
+# So the write moves behind a verb, and the verb is the checks: the id is held
+# to the shape `jobs prepare` mints BEFORE it becomes a path, the job must still
+# be outstanding, its liveness must actually be the unresolved state the
+# boundary is about, and a record the process itself wrote is never replaced.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create TRECX "an engine nobody can see, and the operator who looked" >/dev/null
+mrecx="$("$ORCHID_BIN" jobs prepare TRECX implementer implement)"
+recx_jid="$(jq -r .job_id "$mrecx")"
+recx_out="$(jq -r .output "$mrecx")"
+recx_log="$(jq -r .log "$mrecx")"
+mkdir -p "$(dirname "$recx_log")"; printf 'engine is talking\n' > "$recx_log"
+printf '{"contract":1,"job_id":"%s","task":"TRECX","operation":"implement","status":"ok","summary":"filed by a job nobody can see"}' \
+  "$recx_jid" > "$recx_out"
+
+# A FRESH LOG IS NOT THIS CLASS. Something is writing right now, so the one
+# thing this verb states -- that the process has stopped -- is the one thing
+# nobody can say. Refused, and refused by naming what does answer it.
+rc=0; recx_err="$("$ORCHID_BIN" jobs record-exit "$recx_jid" 0 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: record-exit must refuse a job whose log is still moving (out: $recx_err)"
+assert_match "stall_minutes" "$recx_err" \
+  "T031: and the refusal names the window it is inside rather than a bare no (got: $recx_err)"
+[ ! -e "$rt/exits/$recx_jid" ] || fail "T031: a refused record-exit must write nothing"
+
+# Now the state the boundary is actually about: silent past `stall_minutes`,
+# envelope spooled, no exit recorded anywhere.
+touch -t 202001010000 "$recx_log" "$mrecx"
+assert_match "^unresolved: " "$("$ORCHID_BIN" jobs reconcile)" \
+  "sanity: this is the held class -- reconcile refuses to read the silence as an exit"
+
+# THE ID BECOMES A PATH, so it is validated as an id first. `..` in a job id is
+# the shape that would put this write anywhere on disk.
+rc=0; recx_err="$("$ORCHID_BIN" jobs record-exit "../../escaped" 0 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: record-exit must refuse a job id that is not one (out: $recx_err)"
+# Where `$rt/exits/../../escaped` would have landed, had the id been allowed to
+# build a path before it was checked.
+[ ! -e "$rt/../escaped" ] || fail "T031: a traversing job id must not reach a write path at all"
+rc=0; recx_err="$("$ORCHID_BIN" jobs record-exit "j-e1-TGHOST-a1-deadbeef" 0 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: record-exit must refuse a job with no manifest (out: $recx_err)"
+assert_match "no outstanding job" "$recx_err" \
+  "T031: and says the job is not outstanding, rather than minting a record nothing will read (got: $recx_err)"
+rc=0; recx_err="$("$ORCHID_BIN" jobs record-exit "$recx_jid" 300 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: record-exit must refuse an exit code outside 0-255 (out: $recx_err)"
+rc=0; recx_err="$("$ORCHID_BIN" jobs record-exit "$recx_jid" "killed" 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: record-exit must refuse an exit code that is not a number (out: $recx_err)"
+[ ! -e "$rt/exits/$recx_jid" ] || fail "T031: none of those refusals may have written a record"
+[ -f "$recx_out" ] || fail "T031: and none of them may have disturbed the held envelope"
+red_case "record-exit refuses a live-looking job, an id that is not one, a job that is not outstanding, and a code that is not an exit status — writing nothing in every case"
+
+# THE HAPPY PATH: an operator who has looked and found no such process.
+# 2>&1, so the advisory is asserted rather than left to leak into the suite's
+# own stderr — a passing fixture that prints to stderr is what a rework brief
+# later scrapes and hands an implementer as a failure to fix.
+recx_ok="$("$ORCHID_BIN" jobs record-exit "$recx_jid" 137 2>&1)"
+assert_match "recorded-exit $recx_jid 137" "$recx_ok" \
+  "T031: the verb reports the record it wrote (got: $recx_ok)"
+assert_match "next .orchid jobs reconcile" "$recx_ok" \
+  "T031: and tells the operator what admits the held report now (got: $recx_ok)"
+[ -f "$rt/exits/$recx_jid" ] || fail "T031: and the record is where every reader of it looks"
+assert_eq 137 "$(head -n1 "$rt/exits/$recx_jid")" \
+  "T031: line 1 is the exit code and nothing else — job_exit_code reads exactly that and rejects any non-digit"
+assert_match "recorded-by: operator" "$(cat "$rt/exits/$recx_jid")" \
+  "T031: and the record says a human wrote it — a launcher-written one is a process reporting its own status, and after the write nothing else on disk tells the two apart"
+
+# NEVER REPLACED. Overwriting a record with a second opinion is the same
+# substitution this task exists to close, one file further down.
+rc=0; recx_err="$("$ORCHID_BIN" jobs record-exit "$recx_jid" 0 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: a second record-exit over an existing record must be refused (out: $recx_err)"
+assert_eq 137 "$(head -n1 "$rt/exits/$recx_jid")" "T031: and the record on file is untouched"
+
+# ...and the hold ends, through exactly the path the launcher's own write uses.
+recx_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "TRECX	ok" "$recx_line" \
+  "T031: with the operator's finding on record the job has resolved, and its held envelope files (got: $recx_line)"
+[ -f ".orchid/reviews/TRECX-a1-implementer.json" ] || fail "T031: the held envelope is filed, not lost"
+[ ! -f "$mrecx" ] || fail "T031: and its manifest is deleted, exactly as any reconciled job's is"
+green_case "record-exit ends the hold through the same record the launcher writes — the envelope files on the next reconcile, with nothing hand-edited"
+
+# The `exited` arm, which is a refusal for the opposite reason: a pid-0 manifest
+# with no log at all never reached the spawn line, so it is already resolved and
+# reconciles on its own. There is nothing for an operator to find, and saying so
+# is better than accepting a record that changes nothing.
+"$ORCHID_BIN" task create TRECY "a job that never reached the spawn line" >/dev/null
+mrecy="$("$ORCHID_BIN" jobs prepare TRECY implementer implement)"
+recy_jid="$(jq -r .job_id "$mrecy")"
+[ ! -e "$(jq -r .log "$mrecy")" ] || fail "sanity: prepare must not create the job log"
+rc=0; recy_err="$("$ORCHID_BIN" jobs record-exit "$recy_jid" 1 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T031: record-exit must refuse a job that is already resolved (out: $recy_err)"
+assert_match "already resolved" "$recy_err" \
+  "T031: and names that, rather than accepting a finding about a job nothing was ever running for (got: $recy_err)"
+[ ! -e "$rt/exits/$recy_jid" ] || fail "T031: and writes nothing for it"
+red_case "record-exit is admitted only for the unresolved class — an already-resolved job is refused, not overwritten with a finding it does not need"

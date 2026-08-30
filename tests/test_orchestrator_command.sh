@@ -138,6 +138,13 @@ refuse "running the verification suite" verify T001
 refuse "preparing a job"                jobs prepare T001 implementer implement
 refuse "reconciling jobs"               jobs reconcile
 refuse "collecting jobs"                jobs gc
+# T031: `jobs record-exit` writes the one fact that admits a HELD envelope --
+# "that process has stopped" -- for a job nothing on this machine can probe.
+# It is an OPERATOR's finding, made by looking at the process table, and an
+# orchestrator has no way to make it: admitting the verb here would let a
+# session declare an engine dead in order to unblock itself, which is the
+# r-002/T013 substitution with the session standing in for the evidence.
+refuse "declaring a job's exit"         jobs record-exit j-e1-T001-a1-abcd0001 0
 # A command that never returns is exactly what this surface exists to bound:
 # admitting the table does not admit polling it forever.
 refuse "watching the job table"         jobs ls --watch

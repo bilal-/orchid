@@ -17,8 +17,10 @@ mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "
 # reviewing/testing/arbitrating — at once by design, unrelated to
 # concurrency itself); raise the cap well above the v1 default (2) so the
 # new dispatch gate never interferes with this file's INV-11 evidence
-# assertions.
-printf 'concurrency=10\n' > orchid.config
+# assertions. Kept comfortably ABOVE the task count rather than level with it
+# (T031): a fixture sitting exactly on its own cap starves the next case added
+# after it, and reports that as a status assertion failing somewhere else.
+printf 'concurrency=16\n' > orchid.config
 ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 export ORCHID_EPOCH
 
@@ -406,3 +408,109 @@ rc=0; err="$("$ORCHID_BIN" task advance T008 reviewing 2>&1 1>/dev/null)" || rc=
 [ "$rc" -ne 0 ] || fail "T031: a PASSING suite that ran against a moving tree must not satisfy the testing -> reviewing gate"
 assert_eq testing "$("$ORCHID_BIN" task show T008 | grep '^status: ' | cut -d' ' -f2)" "T031: refused advance leaves T008 at testing"
 red_case "a suite that PASSed while the worktree moved under it is refused too, and its own exit 0 is not enough to get it past the testing to reviewing gate"
+
+# ---------------------------------------------------------------------------
+# T031 attempt-6 rework -- WHERE THE BINDING IS TAKEN.
+#
+# The two Parts above are about DISAGREEMENT: `sha:` against the recorded
+# candidate before the run, and against `head_after:` after it. Both of them
+# read `sha` from one place, and that place is what this Part is about.
+#
+# An earlier shape of this verb read HEAD near the top of the file and quoted
+# the result at the bottom, with the frontmatter parse, a repository-wide
+# prestate walk and a temp-file mint in between. Every one of those takes real
+# time in a worktree an implementer may still own, so what the header called
+# the tree that ran was in fact the tree as it stood some seconds BEFORE the
+# gate asked its question -- and `sha:` is not a diagnostic here, it is the
+# claim an INV-11 reader compares and the left-hand end of the `head_after:`
+# comparison. A claim about a different instant than the one it names is the
+# exact substitution this whole task exists to close, arrived at from inside
+# the fix for it.
+#
+# So the read is REBOUND immediately before the exec, with nothing between it
+# and the command but the comparison it exists for. That is an ordering
+# property of the source: no fixture can stage a commit landing inside a
+# window measured in milliseconds, and a test that tried would be a coin flip
+# rather than a guard. It is asserted as a shape, in the same spirit as
+# tests/test_drive.sh's verify-refusal-arm tripwire, because the alternative is
+# no guard at all on a regression that consists entirely of moving one line.
+# ---------------------------------------------------------------------------
+vsrc="$REPO_ROOT/libexec/orchid-verify"
+[ -f "$vsrc" ] || fail "T031: cannot read $vsrc -- this tripwire has lost its subject and must be revisited"
+
+# -F, and substrings chosen to be unique: `sha_after="$(git ...` does not
+# contain `sha="$(git`, and the only other mention of `bash -c` in this file is
+# prose that carries no `"$cmd"`.
+bind_hits="$(grep -cF 'sha="$(git -C "$cwd" rev-parse HEAD' "$vsrc" || true)"
+exec_hits="$(grep -cF 'bash -c "$cmd"' "$vsrc" || true)"
+assert_eq 1 "$bind_hits" "T031: libexec/orchid-verify must bind the evidence sha in exactly one place (found $bind_hits)"
+assert_eq 1 "$exec_hits" "T031: libexec/orchid-verify must run the verification command in exactly one place (found $exec_hits)"
+
+bind_ln="$(grep -nF 'sha="$(git -C "$cwd" rev-parse HEAD' "$vsrc" | cut -d: -f1)"
+exec_ln="$(grep -nF 'bash -c "$cmd"' "$vsrc" | cut -d: -f1)"
+[ "$bind_ln" -lt "$exec_ln" ] \
+  || fail "T031: the sha binding (line $bind_ln) must be read BEFORE the verification command runs (line $exec_ln)"
+
+# Everything executable between the two, comments and blank lines removed. One
+# awk program rather than a pipeline of greps: a `grep -v` that filters away
+# every line exits 1, and under this file's `pipefail` that would turn "the gap
+# is empty" into a failed substitution instead of an assertion.
+bind_gap="$(awk -v a="$bind_ln" -v b="$exec_ln" '
+  NR <= a || NR >= b { next }
+  { line = $0; sub(/^[ \t]+/, "", line) }
+  line ~ /^#/ { next }
+  line == "" { next }
+  { print line }
+' "$vsrc")"
+bind_gap_n=0
+[ -z "$bind_gap" ] || bind_gap_n="$(printf '%s\n' "$bind_gap" | wc -l | tr -d ' ')"
+assert_eq 3 "$bind_gap_n" \
+  "T031: nothing but the drift comparison may stand between the sha binding and the command it describes (found $bind_gap_n statement(s): $bind_gap)"
+bind_l1="$(printf '%s\n' "$bind_gap" | awk 'NR==1')"
+bind_l2="$(printf '%s\n' "$bind_gap" | awk 'NR==2')"
+bind_l3="$(printf '%s\n' "$bind_gap" | awk 'NR==3')"
+# `case`, not `assert_match`: these are literal shell fragments full of `$`,
+# `[` and `!`, and pinning them as extended regular expressions would be three
+# layers of escaping over an assertion whose whole point is to be readable.
+# The patterns are single-quoted, which is what makes the `[ ... ]` in them a
+# literal bracket pair rather than a glob character class -- a quoted character
+# in a case pattern matches itself. Only the trailing `*` below is left outside
+# the quotes, because that one IS meant as a glob.
+case "$bind_l1" in
+  'if [ "$cand" != none ] && [ "$sha" != "$cand" ]; then') ;;
+  *) fail "T031: the statement after the sha binding must be the drift comparison (got: $bind_l1)" ;;
+esac
+case "$bind_l2" in
+  'verify_refuse '*) ;;
+  *) fail "T031: the drift comparison must refuse, and refuse nothing else (got: $bind_l2)" ;;
+esac
+assert_eq "fi" "$bind_l3" "T031: the drift comparison must close immediately before the exec (got: $bind_l3)"
+red_case "the evidence sha is bound immediately before the verification command, with nothing between the read and the run but the drift comparison itself"
+
+# ...and the binding it takes really is the tree the command executes in. The
+# suite is one line that reports the HEAD it sees; the header must name that
+# same commit at BOTH ends. This is what stops the tripwire above from being a
+# statement about line numbers: it proves the field those lines position is the
+# field the gate reads, and that it describes the tree the command stood in.
+"$ORCHID_BIN" task create T009 "the recorded sha is the one the command saw"
+"$ORCHID_BIN" task set T009 base_sha "$head_sha"
+cand9="$(git -C "$WORK" commit-tree "$head_sha^{tree}" -p "$head_sha" -m "T009 candidate")"
+[ -n "$cand9" ] || fail "sanity: could not mint T009's candidate commit"
+"$ORCHID_BIN" task set T009 candidate_sha "$cand9"
+"$ORCHID_BIN" task set T009 verification_commands "git rev-parse HEAD > $WORK/t009-seen-head"
+"$ORCHID_BIN" task advance T009 implementing >/dev/null
+"$ORCHID_BIN" task advance T009 testing >/dev/null
+
+rc=0; verify_at "$cand9" T009 || rc=$?
+assert_eq 0 "$rc" "T031: the reporting suite PASSes with its candidate checked out"
+[ -f "$WORK/t009-seen-head" ] || fail "T031: the verification command did not run, so it reported no HEAD"
+seen_head="$(tr -d '[:space:]' < "$WORK/t009-seen-head")"
+assert_eq "$cand9" "$seen_head" "sanity: the command ran in the checkout holding the recorded candidate"
+bind_log=".orchid/reviews/T009-verify.log"
+[ -f "$bind_log" ] || fail "T031: the passing run must leave evidence"
+assert_match "^sha: $seen_head$" "$(cat "$bind_log")" \
+  "T031: the sha the evidence records is the HEAD the command itself observed"
+assert_match "^head_after: $seen_head$" "$(cat "$bind_log")" \
+  "T031: and the far end of the bracket names it too, so the run describes one tree"
+"$ORCHID_BIN" task advance T009 reviewing >/dev/null || fail "T031: a run bound to the tree it executed advances"
+green_case "the recorded sha is the commit the verification command itself reported standing on, at both ends of the run -- so the ordering pinned above positions the field the gate actually reads"

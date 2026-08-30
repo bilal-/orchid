@@ -2711,10 +2711,22 @@ if [ -n "$escalations" ]; then
     # leaving a task parked in an active status with no live job, no acceptable
     # envelope and no boundary, which is the disappearing act the walk below is
     # careful about in its own arms.
+    #
+    # AND THE REMEDY IT NAMES IS A VERB (attempt-6 rework). This boundary used
+    # to end with a `printf` redirected straight into `.orchid/runtime/exits/`,
+    # which asked the operator to hand-write the single fact this whole task
+    # exists to protect -- "that process has stopped" -- with nothing between a
+    # mistyped job id and a filed report. `orchid jobs record-exit` is the same
+    # write with the checks the kernel would have made anyway: the id is held to
+    # the minted shape before it becomes a path, the job must still be
+    # outstanding, its liveness must actually be the unresolved state this
+    # boundary is about, and a record the launcher already wrote is never
+    # replaced. An operator following instructions gets those for free; one
+    # typing a path gets none of them.
     if [ "$_ekind" = untracked ]; then
       drive_escalate "$_etask" "$_erole" "$_eop" "$_epoint" "$_ewhy" "$_ekey" norelaunch
       set_boundary operator-decision "$_etask" \
-        "job $_ekey filed an envelope and cannot be shown to have stopped: it never recorded a pid, so there is nothing to signal and nothing that proves it exited, and its report is being held rather than filed — read $rt/logs/$_ekey.log and check whether an engine is still running against this task's worktree. If one is, nothing needs doing: the envelope reconciles on its own as soon as that process exits and its status is recorded. If none is, record that it ended so the held report can be admitted: printf '<exit code>\\n' > $rt/exits/$_ekey"
+        "job $_ekey filed an envelope and cannot be shown to have stopped: it never recorded a pid, so there is nothing to signal and nothing that proves it exited, and its report is being held rather than filed — read $rt/logs/$_ekey.log and check whether an engine is still running against this task's worktree. If one is, nothing needs doing: the envelope reconciles on its own as soon as that process exits and its status is recorded. If none is, record that it ended so the held report can be admitted: orchid jobs record-exit $_ekey <exit code>"
       continue
     fi
     drive_escalate "$_etask" "$_erole" "$_eop" "$_epoint" "$_ewhy" "$_ekey"

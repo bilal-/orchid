@@ -1369,6 +1369,22 @@ ones its archetype never declares.
   being proof that the job resolved, because there it is precisely the envelope
   reconcile is refusing to file.
 
+  THE OPERATOR'S HALF OF THAT BOUNDARY IS A VERB. The boundary asks a human to
+  look — at the process table, at `runtime/logs/<job-id>.log`, at the worktree
+  — and it has exactly two answers. If an engine IS still running, nothing needs
+  doing: it resolves itself when that process exits. If none is, the finding is
+  recorded with `orchid jobs record-exit <job-id> <exit code>`, which writes the
+  same `runtime/exits/<job-id>` record the launcher's wrapper would have written
+  and lets the held envelope file on the next `orchid jobs reconcile`. It is a
+  verb and not a hand-edit because it is the one fact this whole guarantee rests
+  on: it holds the job id to the shape `jobs prepare` mints before that id
+  becomes a write path, requires the job to still be outstanding, requires its
+  liveness to actually BE this unresolved state (a `running` job has the kernel
+  as a witness, a `starting` one is still writing to its log, an already
+  resolved one reconciles on its own), and never replaces an exit record the
+  process itself wrote. Runtime-only and therefore unfenced, exactly like
+  `orchid jobs gc`.
+
   A quarantined envelope, or a `dead`/`stalled`/`timeout` job, follow the
   escalation ladder in step 2 (there is no legal `implementing→rework`, so a
   repeat failure goes to `blocked`, never `rework`) — as does the clean-tree

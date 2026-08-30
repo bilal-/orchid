@@ -1945,6 +1945,117 @@ case "$sub" in
       echo "gc-orphan $p"
     done
     ;;
+  record-exit)
+    # THE OPERATOR'S ANSWER TO AN `untracked` JOB, AS A VERB (T031 attempt-6
+    # rework). `job_liveness` returns `unresolved` for a manifest that never
+    # stamped a pid and has gone quiet: nothing on this machine can decide
+    # whether an engine is still running in that worktree, so reconcile holds
+    # the envelope and runners/orchid-drive raises an operator boundary. The
+    # only thing that clears it is the positive record `job_exit_recorded`
+    # reads -- and for this class the launcher's wrapper will never write one,
+    # because nothing ever waited on that process.
+    #
+    # So a human who HAS looked (at the process table, at the log, at the
+    # worktree) records what they found, and this is where they record it.
+    # Before this verb existed the boundary told them to `printf` a number
+    # straight into `.orchid/runtime/exits/<job-id>`, which is the shape this
+    # kernel does not otherwise ask of anybody: an operator hand-editing
+    # runtime state has no gate between a typo and a decision, and every
+    # guarantee below would simply not have been asked.
+    #
+    # WHAT IS GATED, and why each one:
+    #
+    #   the job_id's SHAPE. It builds a write path under $rt/exits, so it is
+    #   held to the exact form `jobs prepare` mints -- the same regex the gc
+    #   and salvage reaps validate before they let a manifest field steer a
+    #   path. A traversal is refused before anything is touched.
+    #
+    #   a MANIFEST must exist. The exit record is a statement about a job, so
+    #   there has to be a job to make it about. Its absence also means the
+    #   ordinary thing already happened (reconcile filed the envelope and
+    #   deleted the manifest), which is worth saying rather than silently
+    #   minting a file nothing will ever read.
+    #
+    #   LIVENESS must be exactly `unresolved`. This verb writes the one fact
+    #   the whole task exists to protect -- "that process has stopped" -- so
+    #   it is admitted only for the state where no other answer is available.
+    #   `running` has the kernel as a witness and needs none of this;
+    #   `starting` is a job whose log moved within `stall_minutes`, so an
+    #   engine is plausibly still producing output; `exited` is already
+    #   answered and reconciles on the next pass. Each of those is refused
+    #   with the thing that DOES answer it, never with a bare no.
+    #
+    #   an existing record is NEVER OVERWRITTEN. `$rt/exits/<job-id>` written
+    #   by the launcher is a process's report about itself; replacing it with
+    #   a human's guess is the same substitution -- one thing certified on the
+    #   strength of another -- that this task is about. (The liveness gate
+    #   above already excludes it, since a recorded exit answers `exited`;
+    #   this is the second lock on the same door, and it names the value on
+    #   file so the refusal is readable.)
+    #
+    # Runtime-only, so -- exactly like `gc`, and for the reason `gc`'s header
+    # gives -- there is no epoch fence here: nothing under .orchid/tasks or
+    # .orchid/reviews is touched, and INV-02 has nothing to protect. There is
+    # no verb lock either: the write is a single atomic rename of a path that
+    # is absent or final, so a concurrent tick either does not see it yet or
+    # sees the whole of it.
+    #
+    # NOT ADMITTED TO runners/orchid-orchestrator-command, and that is the
+    # point of it being an operator verb: the finding it records is made by
+    # LOOKING at the process table, which a woken session cannot do. A broker
+    # that admitted it would let an orchestrator declare an engine dead in
+    # order to unblock itself -- the r-002/T013 substitution again, with the
+    # session standing in for the evidence. The broker's `jobs` default arm
+    # already refuses it; tests/test_orchestrator_command.sh pins that.
+    job_id="${1:-}"; code="${2:-}"
+    [ "$#" -eq 2 ] || orchid_die "usage: orchid jobs record-exit <job-id> <exit-code>"
+    # A HERESTRING, not `echo | grep -q`: this file runs under `set -o pipefail`
+    # and `grep -q` exits at its first match, so a pipeline can report the
+    # producer's SIGPIPE (141) for a pattern that DID match. `<<<` has no pipe
+    # in it and cannot invert that way.
+    grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' <<<"$job_id" \
+      || orchid_die "'$job_id' is not a job id — expected the form 'orchid jobs ls' prints, e.g. j-e12-T031-a4-9c2f"
+    # Length before value, deliberately: `[ "$n" -le 255 ]` on a digit string
+    # too long for a 64-bit integer is a bash arithmetic ERROR, not a false
+    # comparison, so the bound has to be reached through something that cannot
+    # overflow. Three digits is the whole of a wait status's range.
+    case "$code" in ''|*[!0-9]*) orchid_die "exit code must be a whole number 0-255 (got '$code')" ;; esac
+    [ "${#code}" -le 3 ] || orchid_die "exit code must be a whole number 0-255 (got '$code')"
+    [ "$code" -le 255 ] || orchid_die "exit code must be a whole number 0-255 (got '$code')"
+    manifest="$jobs_dir/$job_id.json"
+    [ -f "$manifest" ] \
+      || orchid_die "no outstanding job $job_id — there is no manifest for it, so either it already reconciled and was cleared, or the id is wrong ('orchid jobs ls --all' lists both)"
+    recorded=""; recorded="$(job_exit_code "$job_id" || true)"
+    [ -z "$recorded" ] \
+      || orchid_die "job $job_id already has its exit on record as $recorded, written by the process itself — that record is not replaced; its envelope files on the next 'orchid jobs reconcile'"
+    stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+    case "$(job_liveness "$manifest" "$(date +%s)" "$stall_s")" in
+      running)
+        orchid_die "job $job_id is running (pid $(jq -r '.pid // 0' "$manifest")) — the kernel can see it, so nothing here needs recording; 'orchid jobs check' is what ends a job that has stalled or run past its budget" ;;
+      starting)
+        orchid_die "job $job_id wrote to its log within stall_minutes, so an engine is producing output for it — wait for it to go quiet (or end it with 'orchid jobs check'); recording an exit now would file its report while it is still working" ;;
+      exited)
+        orchid_die "job $job_id is already resolved — its exit is on record or it never started, so its envelope files on the next 'orchid jobs reconcile' with nothing to record here" ;;
+    esac
+    mkdir -p "$rt/exits"
+    # The code on line 1 and nothing else on it: `job_exit_code` reads exactly
+    # `head -n1` and rejects any non-digit, and `job_exit_recorded` asks only
+    # whether the file is there -- so both readers see precisely what the
+    # launcher's own write gives them.
+    #
+    # Line 2 is PROVENANCE, and it is the reason this is not just a `printf`
+    # with a nicer name. A launcher-written record is a process reporting its
+    # own status; this one is a human's finding about a process nobody could
+    # ask. After the write nothing else on disk tells those two apart, and the
+    # difference is exactly the kind an investigation later wants -- so it is
+    # written down, in a line every existing reader already skips.
+    {
+      printf '%s\n' "$code"
+      printf 'recorded-by: operator (orchid jobs record-exit) at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } | atomic_write "$rt/exits/$job_id"
+    echo "recorded-exit $job_id $code"
+    echo "orchid: $job_id is now resolved; its held envelope is admitted by the next 'orchid jobs reconcile'" >&2
+    ;;
   review-plan)
     # The slot table for a task's current attempt. The bare form is tier-1 and
     # read-only -- pure routing diagnostics over durable state + config +
@@ -2013,5 +2124,5 @@ case "$sub" in
     fi
     printf '%s\n' "$plan_after"
     ;;
-  *) orchid_die "usage: orchid jobs ls|prepare|check|reconcile|gc|review-plan" ;;
+  *) orchid_die "usage: orchid jobs ls|prepare|check|reconcile|gc|record-exit|review-plan" ;;
 esac
