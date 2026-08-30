@@ -828,11 +828,12 @@ drive_blocking_finding_title() {
 # incomplete review set is never also reported as a conflict (and vice
 # versa). No prose is parsed anywhere: every input to the DECISION is a
 # structured envelope field the kernel already validates. The conflict arm
-# QUOTES engine-written text into its detail (F32, below) -- a rejecting
-# review's `summary`, and the `title` of the finding that tripped the severity
-# gate -- which is the prose firewall observed rather than bent: the text is
-# carried for the human the boundary wakes, and nothing here branches on a
-# byte of it.
+# QUOTES engine-written text into its detail (F32, below) in all three of the
+# entries it can emit -- a rejecting review's `summary`, that same `summary` on
+# a review whose only objection is `scope_complete: false`, and the `title` of
+# the finding that tripped the severity gate -- which is the prose firewall
+# observed rather than bent: the text is carried for the human the boundary
+# wakes, and nothing here branches on a byte of it.
 #
 # THE EVIDENCE SET IS EXACTLY THE ONE THE KERNEL GATE COUNTS, and this
 # function's job is to mirror libexec/orchid-task's reviewing->arbitrating
@@ -972,7 +973,7 @@ drive_blocking_finding_title() {
 drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n depth_n conflicts base verdict scope status ecand eengine pool
-  local plan pin_state entry nfind excerpt ftitle weighed_n weighed_note
+  local plan pin_state entry nfind excerpt ftitle weighed_n weighed_note sum_carried
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
@@ -1035,6 +1036,11 @@ drive_review_decision() {
     nfind="$(envelope_field "$f" '(.findings // []) | length' 2>/dev/null || true)"
     case "$nfind" in ''|*[!0-9]*) nfind=0 ;; esac
     weighed_n=$(( weighed_n + nfind ))
+    # Reset PER ENVELOPE: this envelope's summary has not been carried into the
+    # record yet. Two arms below can carry it and only the first of them may
+    # (see the scope arm's own note), and a flag left set by the previous
+    # envelope in this walk would silence the next one's objection entirely.
+    sum_carried=0
     if [ "$verdict" = approve ]; then
       approve_n=$(( approve_n + 1 ))
     else
@@ -1059,11 +1065,37 @@ drive_review_decision() {
       # evidence that the gate has something to weigh.
       [ "$nfind" != 0 ] || entry="$entry:findings=0"
       excerpt="$(envelope_summary_excerpt "$f")"
-      [ -z "$excerpt" ] || entry="$entry (summary: \"$excerpt\")"
+      if [ -n "$excerpt" ]; then
+        entry="$entry (summary: \"$excerpt\")"
+        sum_carried=1
+      fi
       conflicts="$conflicts $entry"
     fi
     if [ "$scope" != true ]; then
-      conflicts="$conflicts $base:scope_complete=false"
+      # THE THIRD ARM OF THE SAME RECORD, and until now the only one still
+      # bare (dogfood F32; the verdict arm above and the finding arm below are
+      # the other two). `scope_complete: false` is a reviewer saying it did not
+      # cover the whole change -- WHICH part it could not reach, and why, is
+      # free text in the same `summary` the verdict arm lifts, and this arm
+      # fires on its own whenever the review APPROVED what it did read. That is
+      # the same shape as the blocking-finding arm: the entry is then the whole
+      # of what the arbiter is told, and a bare `scope_complete=false` sends
+      # them to `jq` the envelope for the one sentence that says what is
+      # missing. A rule that surfaced prose in two arms of three would just be
+      # the same defect wearing the third arm's name.
+      entry="$base:scope_complete=false"
+      # ONCE PER ENVELOPE, NEVER TWICE IN ONE RECORD. A review that both
+      # withholds approval and reports incomplete scope contributes two
+      # entries, and the verdict arm has already carried this envelope's one
+      # summary into the first of them; repeating it would pad the boundary
+      # reason with a duplicate rather than tell the arbiter anything new. Read
+      # lazily too -- an envelope that reaches neither arm never pays the jq
+      # call, which is every envelope on the approving path.
+      if [ "$sum_carried" -eq 0 ]; then
+        excerpt="$(envelope_summary_excerpt "$f")"
+        [ -z "$excerpt" ] || entry="$entry (summary: \"$excerpt\")"
+      fi
+      conflicts="$conflicts $entry"
     fi
     if drive_envelope_has_blocking_finding "$f" "$blocking"; then
       # The finding that blocked is NAMED, not merely counted

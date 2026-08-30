@@ -828,3 +828,55 @@ assert_eq 1 "$(printf '%s\n' "$decisionP3" | wc -l | tr -d ' ')" \
 assert_eq 2 "$(printf '%s\n' "$decisionP3" | awk -F'\t' '{print NF}')" \
   "and exactly two TAB fields: a finding title's tab must never shift the fields after it"
 red_case "an approving review whose filed finding blocks: the decision record names the worst blocking finding, instead of reporting a bare threshold the arbiter has to jq the envelope to understand"
+
+# THE THIRD ENTRY THIS RECORD CAN EMIT, and the one the two cases above leave
+# bare. `scope_complete: false` is a reviewer reporting it did not cover the
+# whole change; WHICH part it could not reach is free text in the very same
+# `summary` the verdict arm lifts. It fires on its own whenever the review
+# APPROVED what it did read -- so, exactly as with the blocking-finding entry
+# above, that entry is then the whole of what the arbiter is told, and a bare
+# `scope_complete=false` sends them back to `jq` for the one sentence that says
+# what is missing. Same newline-and-tab payload, because this arm shares the
+# TAB-separated record with the other two.
+mk_p_task TP5 high
+scopeP="$(printf 'the generated migration under db/migrate was not read at all:\nit is the only caller of\tprepareBackupAttempt()')"
+jq -n --arg cand "$candP" --arg s "$scopeP" \
+  '{contract:1, job_id:"j-p5", task:"TP5", operation:"review", status:"ok",
+    verdict:"approve", scope_complete:false, summary:$s,
+    candidate_sha:$cand, findings:[]}' \
+  > "$repoP/.orchid/reviews/TP5-a1-reviewer.json"
+
+decisionP5="$(drive_review_decision "$repoP" TP5)"
+assert_eq conflict "$(printf '%s' "$decisionP5" | cut -f1)" \
+  "a review that reports incomplete scope is a conflict even though its verdict approved"
+detailP5="$(printf '%s' "$decisionP5" | cut -f2-)"
+assert_match "scope_complete=false" "$detailP5" "the record still names the structured field that produced the decision"
+# Bracketed parens: assert_match is `grep -Eq`, where a bare `()` is an empty
+# GROUP and would match the name with no parentheses after it at all.
+assert_match "the generated migration under db/migrate was not read at all: it is the only caller of prepareBackupAttempt[(][)]" "$detailP5" \
+  "and carries the reviewer's own account of what it could not reach, folded to one line -- this entry is the whole of what the arbiter is told"
+assert_match "summary:" "$detailP5" "labelled as the reviewer's summary, not as a finding it never filed"
+assert_eq 1 "$(printf '%s\n' "$decisionP5" | wc -l | tr -d ' ')" \
+  "the decision stays ONE line: a summary's newline must never split the record its caller reads with cut"
+assert_eq 2 "$(printf '%s\n' "$decisionP5" | awk -F'\t' '{print NF}')" \
+  "and exactly two TAB fields: a summary's tab must never shift the fields after it"
+red_case "an approving review that reports scope_complete=false: the decision record carries the summary saying WHAT was left uncovered, instead of a bare field name the arbiter has to jq the envelope to understand"
+
+# ...and ONCE, not once per arm. A review that both withholds approval and
+# reports incomplete scope emits two entries; the summary belongs to the
+# envelope, not to either entry, so repeating it would pad the boundary reason
+# with a duplicate rather than tell the arbiter anything new.
+mk_p_task TP6 high
+jq -n --arg cand "$candP" --arg s "$objectionP" \
+  '{contract:1, job_id:"j-p6", task:"TP6", operation:"review", status:"ok",
+    verdict:"request-changes", scope_complete:false, summary:$s,
+    candidate_sha:$cand, findings:[]}' \
+  > "$repoP/.orchid/reviews/TP6-a1-reviewer.json"
+
+decisionP6="$(drive_review_decision "$repoP" TP6)"
+detailP6="$(printf '%s' "$decisionP6" | cut -f2-)"
+assert_match "verdict=request-changes" "$detailP6" "both entries are still emitted: the verdict one..."
+assert_match "scope_complete=false" "$detailP6" "...and the scope one"
+assert_eq 1 "$(grep -o -e '(summary: ' <<<"$detailP6" | wc -l | tr -d ' ')" \
+  "but the envelope's one summary is carried exactly once across them, not repeated per entry"
+green_case "a review that both rejects and reports incomplete scope emits both entries and quotes its summary once"

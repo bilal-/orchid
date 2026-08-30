@@ -472,9 +472,13 @@ incomplete review set is never also reported as a conflict, and vice versa:
    what the reviewer actually said. A blocking finding names itself the same
    way — `<file>:finding>=medium ("…")`, the title of the worst finding at or
    above the threshold — which matters most in the case where every verdict
-   said `approve` and that entry is the whole of what you are told. Read the
-   reason before opening the envelope; two dogfood runs lost the substance
-   because the record named only the verdict.
+   said `approve` and that entry is the whole of what you are told. So does an
+   incomplete-scope report: `<file>:scope_complete=false (summary: "…")`, since
+   which part of the change the reviewer could not reach is in that same prose
+   and this entry too fires on its own behind an approving verdict. The
+   envelope's summary is quoted once across its entries, not once per entry.
+   Read the reason before opening the envelope; two dogfood runs lost the
+   substance because the record named only the verdict.
 
 **`orchid task arbitrate` is the sole explicit judgment-result verb.**
 `orchid task arbitrate <id> --result approve|request-changes --reason "..."
