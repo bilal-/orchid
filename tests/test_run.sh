@@ -425,6 +425,43 @@ if drive_wake_budget_exhausted "" 3 || drive_wake_budget_exhausted 4 "not-a-numb
   fail "a malformed counter must fail OPEN (budget remains) -- it must never be what silently stops a run being driven"
 fi
 
+# -- the counter's identity, and the ranking that reads it -----------------
+# The count is filed per boundary IDENTITY, and the driver's ranking reads
+# those entries back before it chooses which boundary to record. Writer and
+# reader compose that identity through ONE function, so a key built two ways
+# cannot make the ranking look up a boundary that is not the one the record
+# filed.
+# The separator as a literal character rather than as a `tr` escape: `\037` in
+# a SET is read by some `tr` implementations and not others, and this suite has
+# to count the same separators wherever it runs.
+WB_US=$'\037'
+WB_KEY="$(drive_boundary_counter_key review-conflict W001 "a contested review")"
+assert_eq 2 "$(printf '%s' "$WB_KEY" | tr -cd "$WB_US" | wc -c | tr -d ' ')" \
+  "the key is three fields, and a US separator keeps them three"
+assert_eq 2 "$(printf '%s' "$(drive_boundary_counter_key run-complete "" "the run is finished")" \
+  | tr -cd "$WB_US" | wc -c | tr -d ' ')" \
+  "a run-level boundary's EMPTY task stays a field of its own -- collapsed, it would collide with a task-scoped boundary of the same kind"
+
+assert_eq 2 "$(drive_boundary_spent "$(jq -nc --arg k "$WB_KEY" '{($k): 2}')" \
+  review-conflict W001 "a contested review")" \
+  "a boundary's spent wakeups are read out of the record's counters map under its own identity"
+assert_eq 0 "$(drive_boundary_spent "$(jq -nc --arg k "$WB_KEY" '{($k): 2}')" \
+  review-conflict W002 "a contested review")" \
+  "and belong to that boundary alone: another task's entry is not this one's budget"
+assert_eq 0 "$(drive_boundary_spent '{}' review-conflict W001 "a contested review")" \
+  "a boundary with no entry has spent nothing"
+assert_eq 0 "$(drive_boundary_spent 'not json at all' review-conflict W001 "a contested review")" \
+  "and an unreadable counters map reads as budget UNTOUCHED -- fail-open, exactly as the exhaustion predicate does"
+
+assert_eq 1 "$(drive_boundary_rank review-conflict arbitrating brokered 0 3)" \
+  "a boundary an orchestrator can settle, with its budget untouched, ranks above the operator-only tier"
+assert_eq 1 "$(drive_boundary_rank review-conflict arbitrating brokered 3 3)" \
+  "and still ranks there on the pass that spends its last permitted wakeup"
+assert_eq 0 "$(drive_boundary_rank review-conflict arbitrating brokered 4 3)" \
+  "but a boundary whose budget is spent ranks with the operator-only ones -- no wakeup will be spent on it again, so it must not outrank one that still will be"
+assert_eq 0 "$(drive_boundary_rank run-complete "" brokered 0 3)" \
+  "and an operator-only boundary ranks there however untouched its budget is"
+
 # ...and the budget is genuinely READ, not merely defaulted to. `3` is also
 # what a budget whose config lookup does not work at all produces: an empty
 # value lands in the malformed-value arm and falls back to the same number, so
@@ -542,6 +579,63 @@ assert_eq 3 "$(wb_wakes)" "and wakes nobody itself"
 assert_eq "$wb_blocker_lines" "$(wc -l < "$WB_WT/.orchid/BLOCKERS.md")" \
   "and re-pages nobody: an uncharged pass cannot re-announce a budget that ran out once"
 red_case "a hand-run orchid drive spends none of the pump's wake budget"
+
+# -- RED: a spent boundary must not starve a live one ----------------------
+# The budget stops one boundary being polled forever. Ranked as an orchestrator
+# could-settle-this boundary all the same -- which is what it stays, statically,
+# for as long as the task sits at `arbitrating` -- a SPENT boundary goes on
+# winning the pass's single record slot from boundaries that are still live,
+# because equal rank is broken by task-id order and W001 sorts first. The pump
+# reads that spent record, declines at its step 6c, and exits 0; W002's
+# arbitration, which no wakeup has yet been spent on at all, is never recorded,
+# never reaches the pump, and never gets a model. One exhausted task would park
+# every later task's arbitration for the rest of the run -- the same starvation
+# the priority ranking was introduced to end, one tier down.
+#
+# W001 is left exactly as the arms above left it: parked, five passes spent
+# against a budget of three. W002 is given the identical shape one task later.
+WB_CAND2=6666666666666666666666666666666666666666
+WB_W001_REASON="$(wb_field '.reason // ""')"
+[ -n "$WB_W001_REASON" ] || fail "fixture: the spent boundary must still be the recorded one before a live one is raised beside it"
+wb_starve_wakes="$(wb_wakes)"
+wb_starve_spent="$(wb_field '.passes // 0')"
+if ! drive_wake_budget_exhausted "$wb_starve_spent" 3; then
+  fail "fixture: W001's boundary must already be OVER budget here, or this arm proves nothing about a spent one"
+fi
+
+fm_set "$WB_WT/.orchid/tasks/W002.md" status arbitrating
+fm_set "$WB_WT/.orchid/tasks/W002.md" candidate_sha "$WB_CAND2"
+jq -n --arg cand "$WB_CAND2" \
+  '{contract:1, job_id:"j-fixture-W002", task:"W002", operation:"review", status:"ok",
+    verdict:"request-changes", scope_complete:true, summary:"starvation fixture review",
+    candidate_sha:$cand, findings:[]}' > "$WB_WT/.orchid/reviews/W002-a1-reviewer.json"
+
+wb_stale_lease
+wb_starve_out="$(ORCHID_REPO="$WB_WT" "$WB_PUMP" 2>&1)" || true
+assert_match "supersedes \[review-conflict\]: its wake budget is spent" "$wb_starve_out" \
+  "the pass names the mechanism that moved the record -- a SPENT budget, not the older 'no admitted verb resolves that one', which is untrue of a boundary that stayed arbitrable throughout"
+assert_eq W002 "$(wb_field '.task // ""')" \
+  "the live boundary takes the record from the spent one, however far behind it in task-id order"
+assert_eq review-conflict "$(wb_field '.kind // ""')" \
+  "and it is the arbitrable kind: the ranking demoted a SPENT boundary, it did not stop ranking by resolvability"
+assert_eq 1 "$(wb_field '.passes // 0')" \
+  "the live boundary spends the first of its own wakeups -- the budget is per boundary, so W001's spent one is not charged to it"
+assert_eq "$((wb_starve_wakes + 1))" "$(wb_wakes)" \
+  "and a model really is woken for it: a run with one exhausted task is not a run with nothing left to ask"
+assert_eq "$wb_starve_spent" \
+  "$(drive_boundary_spent "$(printf '%s' "$(wb_boundary)" | jq -c '.counters // {}')" \
+     review-conflict W001 "$WB_W001_REASON")" \
+  "and the displaced boundary keeps its own count untouched: demoted is not reset, so it cannot be polled all over again"
+assert_eq "$wb_blocker_lines" "$(wc -l < "$WB_WT/.orchid/BLOCKERS.md")" \
+  "and no second page: a boundary that loses the slot to a live one was already announced on the pass its budget ran out"
+red_case "an exhausted boundary must not starve a live one behind it in task-id order"
+
+# Back to the fixture the arms below expect: W002 finished, its review gone
+# with its status. What was proven here is the RANKING, and leaving a second
+# arbitrating task standing would make the finished-run arm below assert about
+# a run that is not finished.
+rm -f "$WB_WT/.orchid/reviews/W002-a1-reviewer.json"
+fm_set "$WB_WT/.orchid/tasks/W002.md" status "done"
 
 # -- the counter resets when the boundary actually CHANGES -----------------
 # Without this the budget would be a one-way latch: a run that got past the

@@ -207,8 +207,12 @@ case "$sub" in
         # reasons cannot grow this file without limit -- and 32 is far more
         # than the handful of stops a pass can be ranking between, so eviction
         # is a backstop rather than part of the accounting.
-        bsep=$'\037'
-        bkey="$bkind$bsep$btask$bsep$breason"
+        # Composed through lib/drive.sh rather than spelled out here: the
+        # driver's ranking READS these same entries before it chooses which
+        # boundary to hand this verb, and a reader that built the key its own
+        # way would silently look up a boundary that is not the one this line
+        # files. One function, both ends.
+        bkey="$(drive_boundary_counter_key "$bkind" "$btask" "$breason")"
         bprev_kind=""; bprev_task=""; bprev_reason=""; bprev_passes=0
         bprev_counters='{}'; bkey_passes=-1
         if [ -f "$bfile" ]; then

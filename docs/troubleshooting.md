@@ -236,6 +236,16 @@ the counts are kept per boundary (`counters` in the record) rather than in its
 single slot — otherwise two boundaries taking turns would each be woken for
 forever.
 
+**A spent boundary does not park the rest of the run.** Once its budget is
+gone it stops outranking boundaries a wakeup will still be spent on, so the
+next pass records the live one and hands that to the pump instead — even
+though the spent one sorts first by task id. The spent boundary keeps its own
+count and comes back to the record as soon as nothing live outranks it, so it
+is still what `orchid run boundary show` reports on a run with nothing else
+outstanding. If you see the record moving between tasks from pass to pass,
+that is this: one decision is waiting on you while the others are still being
+driven.
+
 A **finished** run never gets this far and has its own line. No command surface
 admits `orchid run accept`, so a `run-complete` boundary is operator-only and
 the pump declines it before the budget applies at all:

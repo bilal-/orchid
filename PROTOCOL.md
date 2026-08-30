@@ -251,6 +251,20 @@ unblock`/`task retry`, would permanently mask a later task's arbitrable one
 and spend an LLM wakeup per pump cycle on a decision the woken model has no
 verb to make.
 
+**A boundary whose wake budget is spent ranks with the operator-only ones.**
+"Could settle" is static, so it goes on being true after `pump_wake_max`
+wakeups have been spent on an unchanged boundary and the pump has stopped
+waking anyone for it (HEADLESS OPERATION below). Ranked on that static answer
+alone, a spent boundary keeps winning the record from boundaries that are
+still live and merely sort later — the pump reads the spent record, declines,
+and the live arbitration behind it is never recorded, never handed over, and
+never spends the wakeups its own budget still holds. One exhausted task would
+park every other task's arbitration for the rest of the run. So the precedence
+asks whether a wakeup will actually be spent on this boundary, not merely
+whether one could settle it. Demoted, not suppressed: with nothing live to
+outrank it, a spent boundary is still the pass's record and still reports
+through exit 16, and its own count is left where it stands rather than reset.
+
 **That precedence chooses the record and nothing else.** Every operator-only
 boundary the pass met is still paged, so a stop that loses the slot loses no
 page: masking a stop for the purpose of the RECORD is a ranking, while masking it
