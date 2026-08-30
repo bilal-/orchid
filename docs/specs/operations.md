@@ -356,7 +356,10 @@ this section false without touching a byte of it.
    artifact and clears the binding only once the scheduler has let the job go:
    a macOS unload that fails while `launchctl list` still reports the label
    removes nothing and refuses, since the artifact and the record are the only
-   things that could name the still-loaded agent afterwards. Doctor is the
+   things that could name the still-loaded agent afterwards. An artifact that
+   is already gone is not the answer to that question either — removing a plist
+   unloads nothing — so that case asks launchd too, and refuses on the same
+   fact, holding the record that is by then the agent's last name. Doctor is the
    surface that reaches an operator here: the pump says the same thing on every
    wake, but it says it before the repo-local service log is opened (nothing
    may open a path inside the target ahead of the unattended trust gate), so a

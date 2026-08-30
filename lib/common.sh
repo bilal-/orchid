@@ -1394,6 +1394,12 @@ orchid_service_binding_remove() {
 # scheduler leaves a record with no artifact. That record makes the removal
 # guard refuse the checkout, so the only verb that can clear it must not itself
 # require the artifact to be there.
+#
+# WHICH IS NOT THE SAME AS CLEARING IT BLIND. A missing artifact is not proof
+# that nothing is loaded -- removing a plist unloads nothing -- so the darwin
+# branch asks the scheduler before removing anything (runners/orchid-service,
+# _svc_orphan_darwin) and holds this record when the answer is "still loaded":
+# with the artifact already gone, it is the only name that agent has left.
 orchid_service_binding_present() {
   local repo="$1" label="$2" mdir
   [ ! -f "$(orchid_service_repo_record "$repo")" ] || return 0

@@ -99,7 +99,10 @@ a crontab line.
                nothing is installed for --repo -- safe to call blind.
                removes nothing, and refuses, when the scheduler could not
                unload an agent it still reports as loaded: the plist and
-               the binding are all that could ever name it again.
+               the binding are all that could ever name it again. same
+               refusal when the plist is ALREADY gone and launchd still
+               reports the job -- removing a plist unloads nothing, so
+               the binding is then the last name that agent has.
                under --dry-run it removes NOTHING and prints what it would
                remove: the schedule is still running, and the records it
                would delete are the only things that name it.
@@ -446,6 +449,61 @@ _svc_print_log_tail() {
 # darwin (launchd)
 # ---------------------------------------------------------------------------
 
+# _svc_launchd_holds <label> -- 0 iff launchd currently reports a job under
+# this label. THE ONLY WITNESS EITHER REFUSAL BELOW IS ALLOWED TO USE: whether
+# an agent is still loaded is a fact about launchd, and every filesystem proxy
+# for it (an unload's exit status, the presence of a plist) answers a different
+# question and answers it wrongly in exactly the state that matters.
+#
+# Routed through _svc_scheduler_exec, not called directly, so the suite's seam
+# can answer it -- a `list` that could only ever succeed would make both
+# refusals unreachable and both clearances untestable.
+_svc_launchd_holds() { _svc_scheduler_exec launchctl list "$1" >/dev/null 2>&1; }
+
+# _svc_refuse_loaded_darwin <repo> <label> <why> <survives> <hand> -- the ONE
+# composer for "launchd still holds this job, so nothing here gets removed".
+# Two arms reach it (a failed unload, and a plist that is already gone), they
+# refuse for the same reason and must be told apart only by <why>/<survives>;
+# written twice they would drift, and an operator comparing two near-identical
+# refusals would have to guess which difference was meaningful.
+_svc_refuse_loaded_darwin() {
+  local repo="$1" label="$2" why="$3" survives="$4" hand="$5"
+  echo "orchid: refusing to remove anything for $repo (label $label): $why" >&2
+  echo "orchid: $survives" >&2
+  orchid_die "unload it by hand, then re-run: $hand && $(orchid_service_uninstall_command "$repo")"
+}
+
+# _svc_orphan_darwin <repo> <label> -- the plist is GONE and the binding record
+# is about to be cleared. Answer whether that clearance may proceed.
+#
+# A MISSING PLIST IS NOT THE SAME FACT AS AN UNLOADED AGENT, and this arm used
+# to treat it as one. Deleting a plist does not unload anything: launchd holds
+# the job it loaded until something unloads it or the machine reboots, so a
+# plist an operator (or a stray cleanup, or a restore) removed by hand leaves a
+# live agent whose only remaining name on this machine is the binding record --
+# the very thing this arm goes on to clear. Cleared blind, this verb
+# reported success while minting precisely the invisible leftover it exists to
+# prevent: an agent still firing on its interval, no plist to unload it by, no
+# record for `orchid doctor` to warn from, and a removal guard that now waves
+# the checkout through.
+#
+# The ordinary reading of a missing plist is still the common one -- install
+# writes the binding BEFORE it renders anything, so a failure in between leaves
+# a record whose artifact was never written, and so was never loaded for a
+# moment -- and that state must stay clearable (K6), or the guard is wedged by a
+# record no verb can remove. The two states are identical on disk and different
+# to launchd, so launchd is the one asked.
+_svc_orphan_darwin() {
+  local repo="$1" label="$2"
+  # Nonzero: launchd holds no job under this label, so the missing plist was
+  # the never-loaded case and clearing the binding leaves nothing behind.
+  _svc_launchd_holds "$label" || return 0
+  _svc_refuse_loaded_darwin "$repo" "$label" \
+    "its plist is already gone and launchd still reports that job as loaded" \
+    "removing a plist does not unload the job it loaded, and the binding record is the only thing left on this machine that names that agent — it is left exactly as it was" \
+    "launchctl remove $(printf '%q' "$label")"
+}
+
 # _svc_unload_darwin <repo> <label> <plist> -- run the unload a real uninstall
 # needs, and answer whether the removals after it may proceed. Returns 0 to
 # proceed; refuses, changing nothing, otherwise.
@@ -478,11 +536,12 @@ _svc_unload_darwin() {
   err="$(_svc_scheduler_exec launchctl unload "$plist" 2>&1)" && return 0
   # `list` nonzero means launchd holds no job under this label, so the failure
   # above was the never-loaded case and the removals after it are safe.
-  _svc_scheduler_exec launchctl list "$label" >/dev/null 2>&1 || return 0
+  _svc_launchd_holds "$label" || return 0
   [ -z "$err" ] || echo "orchid: launchctl: $err" >&2
-  echo "orchid: refusing to remove anything for $repo (label $label): 'launchctl unload' failed and launchd still reports that job as loaded" >&2
-  echo "orchid: the plist is the only path an unload can name that agent by, and the binding record is the only thing that names the schedule at all — both are left exactly as they were" >&2
-  orchid_die "unload it by hand, then re-run: launchctl unload $(printf '%q' "$plist") && $(orchid_service_uninstall_command "$repo")"
+  _svc_refuse_loaded_darwin "$repo" "$label" \
+    "'launchctl unload' failed and launchd still reports that job as loaded" \
+    "the plist is the only path an unload can name that agent by, and the binding record is the only thing that names the schedule at all — both are left exactly as they were" \
+    "launchctl unload $(printf '%q' "$plist")"
 }
 
 _svc_install_darwin() {
@@ -560,13 +619,26 @@ _svc_uninstall_darwin() {
   # checkout, so the verb the guard names has to be able to clear it -- refusing
   # here on the artifact alone would wedge a checkout that has no schedule at
   # all. Nothing is installed only when NEITHER is there.
+  #
+  # This arm asks launchd nothing, deliberately: with no plist AND no binding
+  # there is no removal to guard, so the refusal below is already the whole
+  # truth orchid has -- and the ordinary "nothing installed" call, which an
+  # operator is invited to make blind, would otherwise pay for a system call to
+  # learn something it could not act on either way.
   if [ ! -f "$plist_path" ] && ! orchid_service_binding_present "$repo" "$label"; then
     orchid_die "no service installed for $repo (label $label)"
   fi
   if [ ! -f "$plist_path" ]; then
     if [ "$dry" -eq 1 ]; then
-      echo "orchid: no launchd agent for $repo (label $label) — a real uninstall would clear the binding record it left behind" >&2
+      # Printed, not run, like every other scheduler call under --dry-run: the
+      # preview makes no system call at all, so it can promise the clearance
+      # only conditionally -- a real run asks launchd first. See _svc_orphan_darwin.
+      _svc_dryprint launchctl list "$label"
+      echo "orchid: no launchd agent plist for $repo (label $label) — a real uninstall would ask launchd whether it still holds that job, and would clear the binding record it left behind only if it does not" >&2
     else
+      # Not an unconditional clearance: a plist can be gone while its agent is
+      # still loaded, and this record is then the only thing naming it.
+      _svc_orphan_darwin "$repo" "$label"
       echo "orchid: no launchd agent for $repo (label $label) — clearing the binding record it left behind" >&2
     fi
   elif [ "$dry" -eq 1 ]; then

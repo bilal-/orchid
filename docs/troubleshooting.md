@@ -203,6 +203,27 @@ re-run the uninstall — it is idempotent. A failed unload with **no** job behin
 it (a plist `install` placed but never loaded) is not this case: uninstall
 clears it normally.
 
+**It refuses the same way when the plist is already gone.** Deleting a plist
+unloads nothing — launchd keeps the job it loaded until something unloads it or
+the machine reboots. So if you removed the plist by hand (tidying
+`~/Library/LaunchAgents`, restoring a backup, a cleanup script), `uninstall`
+asks launchd before clearing the binding record, and refuses if the job is
+still there:
+
+```
+orchid: refusing to remove anything for /path/to/repo (label com.orchid.pump.<hash>):
+  its plist is already gone and launchd still reports that job as loaded
+orchid: ... it is left exactly as it was
+orchid: unload it by hand, then re-run: launchctl remove <label> && orchid service uninstall --repo /path/to/repo
+```
+
+`launchctl remove <label>`, not an unload: there is no plist left to name the
+job by path. This is the worse half of the same hazard — with the plist gone,
+the binding record is the *only* thing on the machine that still names that
+agent, so clearing it would leave a schedule still firing that nothing reports
+and nothing can find. Once launchd has let the job go, re-run the same
+uninstall and it clears normally.
+
 ## The pump woke an orchestrator over and over and nothing moved
 
 **Symptom:** `pump.log` shows repeated hand-offs to an orchestrator for the

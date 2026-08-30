@@ -3414,7 +3414,12 @@ Once `orchid status --explain` shows every task `done`:
    agent with no plist to unload it by and no record naming it — the same
    leftover this step exists to prevent, reached from the other end. A failed
    unload with no job behind it (a plist `install` placed but never loaded) is
-   the ordinary case and is cleared normally.
+   the ordinary case and is cleared normally. The same question is asked when
+   there is no unload to try: a plist that is ALREADY gone is not evidence of an
+   unloaded agent — removing a plist unloads nothing — so if launchd still
+   reports the label the binding record is left alone, since with the plist gone
+   it is the last thing that names that agent, and the verb names `launchctl
+   remove <label>` as the hand step instead.
 
 **TEARDOWN ORDERING.** When the run is over and you are removing the
 integration worktree, the order is not interchangeable:
