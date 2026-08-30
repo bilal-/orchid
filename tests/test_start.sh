@@ -758,8 +758,13 @@ assert_match "EACH worktree.s own top level" "$out37_hp" \
   "and names the reason -- git resolves it per checkout, not per repository"
 assert_match "was NOT installed" "$out37_hp" \
   "and says plainly that this repository is unguarded"
-assert_match "config core.hooksPath /absolute/path/to/hooks" "$out37_hp" \
-  "the absolute recovery, as a command"
+# The absolute recovery names a REAL directory inside this repository's git
+# dir, never a `/absolute/path/to/hooks` placeholder: an absolute path outside
+# the git dir is itself unsupported (the shared-hooks case below), so a
+# placeholder would invite the operator to point the key at their ~/.githooks
+# and meet this same refusal a second time.
+assert_match "config core.hooksPath '$r37_hp/.git/hooks'" "$out37_hp" \
+  "the absolute recovery, as a command, naming a directory this repository owns"
 assert_match "config --unset core.hooksPath" "$out37_hp" \
   "and the unset recovery, as a command"
 assert_match "refresh-push-guard" "$out37_hp" \
@@ -799,11 +804,18 @@ grep -q "push blocked" <<<"$push37_hp_wt" \
   && fail "and no hook may have run there -- if one did, this repository would be guardable after all"
 red_case 'a relative core.hooksPath installs nothing and is reported, because one file cannot guard every worktree'
 
-# An ABSOLUTE core.hooksPath, in a directory whose name contains a space --
-# the two spellings git accepts, and the quoting that has to survive both.
-hp_abs="$W/r37 hooks dir"
-mkdir -p "$hp_abs"
+# An ABSOLUTE core.hooksPath INSIDE this repository's own git directory, in a
+# directory whose name contains a space -- the supported relocation, and the
+# quoting that has to survive it.
+#
+# Inside the git dir is the whole condition (T037, after review): a directory
+# under `.git/` belongs to this repository by construction and cannot be the
+# one another repository reads, which is what makes writing a guard there --
+# with THIS repository's integration branch baked in -- a decision about this
+# repository alone. The external spelling is a separate case below.
 r37_hpa="$W/r37-hookspath-abs"; mk_repo "$r37_hpa" 'verify=true'
+hp_abs="$r37_hpa/.git/r37 hooks dir"
+mkdir -p "$hp_abs"
 git -C "$r37_hpa" config core.hooksPath "$hp_abs"
 out37_hpa="$(ORCHID_REPO="$r37_hpa" "$ORCHID_BIN" init 2>&1)" \
   || fail "init must succeed with an absolute core.hooksPath containing a space: $out37_hpa"
@@ -814,7 +826,9 @@ out37_hpa="$(ORCHID_REPO="$r37_hpa" "$ORCHID_BIN" init 2>&1)" \
 assert_match "pre-push guard installed: $hp_abs/pre-push" "$out37_hpa" \
   "the reported path is the configured one"
 grep -q "RELATIVE path" <<<"$out37_hpa" \
-  && fail "an absolute core.hooksPath must keep normal behavior -- no warning, no refusal"
+  && fail "a repo-contained absolute core.hooksPath must keep normal behavior -- no warning, no refusal"
+grep -q "ABSOLUTE path" <<<"$out37_hpa" \
+  && fail "and it is not the shared-directory case either: this one IS inside the repository's git dir"
 
 # And it is genuinely REPOSITORY-WIDE, which is the whole difference: one
 # absolute path is the same file for every checkout, so the linked worktree
@@ -843,12 +857,104 @@ rc=0; push37_hpa_ok="$(git -C "$r37_hpa" push origin hpa-linked 2>&1)" || rc=$?
 # everything. Both guardable spellings are asked: the absolute value here, and
 # the unset default on the r37-hook repository set up earlier in this file.
 doc37_hpa="$(ORCHID_REPO="$r37_hpa" "$ORCHID_BIN" doctor 2>&1 || true)"
-grep -q "RELATIVE path" <<<"$doc37_hpa" \
-  && fail "doctor must not warn about an absolute core.hooksPath -- that layout IS guarded"
+grep -q "WARN: push guard" <<<"$doc37_hpa" \
+  && fail "doctor must not warn about a repo-contained absolute core.hooksPath -- that layout IS guarded"
 doc37_def="$(ORCHID_REPO="$r37_hook" "$ORCHID_BIN" doctor 2>&1 || true)"
-grep -q "RELATIVE path" <<<"$doc37_def" \
+grep -q "WARN: push guard" <<<"$doc37_def" \
   && fail "and must not warn about git's own default, where core.hooksPath is unset entirely"
-green_case 'an absolute core.hooksPath keeps normal behavior and guards every worktree of the repository'
+green_case 'a repo-contained absolute core.hooksPath keeps normal behavior and guards every worktree of the repository'
+
+# ---------------------------------------------------------------------------
+# T037 -- an ABSOLUTE core.hooksPath OUTSIDE the git directory is a hooks
+# directory orchid does not own, and TWO repositories pointing at one is why.
+#
+# An absolute path says nothing about whose directory it is. `~/.githooks`, a
+# team mount, a `git config --global core.hooksPath` set once by a dotfiles
+# repository: every repository on the machine then reads the same files.
+# Installing orchid's guard there is not "guarding this repository", it is
+# writing a hook -- carrying THIS repository's integration branch name, baked
+# in at install time -- in front of every repository that shares it, and
+# overwriting whatever another one had installed for the same reason. The
+# never-overwrite rule cannot save the second repository either: the hook
+# orchid wrote for the first IS orchid's own hook, so it is recognized and
+# replaced rather than left alone.
+#
+# So the supported shape is the containable one, and this case is the twin of
+# the fixture just above: the same absolute spelling, the same quoting, the
+# only difference being which directory it names.
+#
+# RED (before this fix): the first init writes the shared hook and reports it
+# installed; the second init overwrites it with its own integration branch,
+# reports an upgrade, and the first repository's guard is silently gone.
+# ---------------------------------------------------------------------------
+hp_shared="$W/r37 shared hooks"
+mkdir -p "$hp_shared"
+r37_sh1="$W/r37-shared-one"; mk_repo "$r37_sh1" 'verify=true'
+r37_sh2="$W/r37-shared-two"; mk_repo "$r37_sh2" 'verify=true'
+git -C "$r37_sh1" config core.hooksPath "$hp_shared"
+git -C "$r37_sh2" config core.hooksPath "$hp_shared"
+
+rc=0; doc37_sh="$(ORCHID_REPO="$r37_sh1" "$ORCHID_BIN" doctor 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "an unguardable hooks layout must never flip doctor's exit code: $doc37_sh"
+assert_match "WARN: push guard: core.hooksPath is set to the ABSOLUTE path" "$doc37_sh" \
+  "doctor names the condition before any verb has installed anything"
+assert_match "OUTSIDE this repository's git directory" "$doc37_sh" \
+  "and names the reason, which is containment and not absoluteness"
+
+out37_sh1="$(ORCHID_REPO="$r37_sh1" "$ORCHID_BIN" init 2>&1)" \
+  || fail "init must still succeed on a repo whose hooks are shared: $out37_sh1"
+assert_match "core.hooksPath is set to the ABSOLUTE path .$hp_shared." "$out37_sh1" \
+  "init names the setting and its value"
+assert_match "was NOT installed" "$out37_sh1" \
+  "and says plainly that this repository is unguarded"
+assert_match "config core.hooksPath '$r37_sh1/.git/hooks'" "$out37_sh1" \
+  "the recovery names an absolute directory inside THIS repository's git dir"
+assert_match "config --unset core.hooksPath" "$out37_sh1" \
+  "and the unset recovery, as a command"
+assert_match "refresh-push-guard" "$out37_sh1" \
+  "and what to run once it is changed"
+grep -q "guard installed" <<<"$out37_sh1" \
+  && fail "no output may claim an install into a directory orchid does not own"
+grep -q "already current" <<<"$out37_sh1" \
+  && fail "nor that the repository is current"
+[ -e "$hp_shared/pre-push" ] \
+  && fail "and nothing at all is written into the shared directory"
+[ -e "$r37_sh1/.git/hooks/pre-push" ] \
+  && fail "nor to the .git/hooks git is configured not to read"
+assert_eq "$hp_shared" "$(git -C "$r37_sh1" config --get core.hooksPath)" \
+  "orchid never rewrites the operator's own git configuration to make itself installable"
+
+# The second repository is the point: it shares the directory, and neither
+# repository's setup may put anything in front of the other.
+ORCHID_REPO="$r37_sh2" "$ORCHID_BIN" init >/dev/null 2>&1 \
+  || fail "fixture: init must succeed on the second repository too"
+out37_sh2="$(ORCHID_REPO="$r37_sh2" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "a shared hooks directory must not stop a run being set up: $out37_sh2"
+assert_match "orchid: core.hooksPath is set to the ABSOLUTE path" "$out37_sh2" \
+  "start's own install call names it, not just its doctor preflight"
+grep -q "guard upgraded" <<<"$out37_sh2" \
+  && fail "start carries the upgrade, so it is the door that must not write into a shared directory"
+[ -e "$hp_shared/pre-push" ] \
+  && fail "no hook may exist in the shared directory after BOTH repositories have been set up"
+[ -f "$W/r37-shared-two-orchid/.orchid/roadmap.md" ] \
+  || fail "and the run must still have been set up: an unguardable hooks layout is reported, never fatal"
+
+# The explicit route refuses too, and refuses NON-ZERO -- the one command whose
+# whole purpose is to install the guard must not answer "done" with nothing on
+# disk.
+rc=0
+out37_shref="$(ORCHID_REPO="$r37_sh1" "$ORCHID_BIN" start --refresh-push-guard 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "--refresh-push-guard must not report success where it will not install: $out37_shref"
+assert_match "outside this repository's git directory" "$out37_shref" "naming why it refused"
+assert_match "config --unset core.hooksPath" "$out37_shref" "and carrying the recovery"
+grep -q "already current" <<<"$out37_shref" \
+  && fail "a refusal must never also claim the guard is current"
+grep -q "guard installed" <<<"$out37_shref" \
+  && fail "nor claim an install"
+[ -e "$hp_shared/pre-push" ] \
+  && fail "and the shared directory is still untouched"
+red_case 'an absolute core.hooksPath outside the git dir installs nothing, because the directory may be another repository'
 
 # ---------------------------------------------------------------------------
 # T037 -- the THIRD door onto a relative `core.hooksPath`: `orchid start`'s
@@ -1149,6 +1255,75 @@ grep -q "guard repaired" <<<"$out37_x2" \
   && fail "and no repair may be claimed once there is nothing to repair"
 [ -x "$hook37_x" ] || fail "and the bit the previous run restored is still set"
 green_case 'an executable, byte-current guard is reported current and repaired never'
+
+# ---------------------------------------------------------------------------
+# T037 -- a Gerrit review upload is a BRANCH-BOUND push, and the run-state leg
+# must read it as one.
+#
+# The leg refuses a branch whose tip carries `.orchid/`. On a Gerrit-hosted
+# project that leg never sees a branch: nobody pushes `refs/heads/main` at all,
+# the upload IS the push (`git push origin HEAD:refs/for/main`), and the change
+# is submitted onto `main` afterwards on the forge, where no local hook runs.
+# A leg scoped to `refs/heads/*` therefore passes every Gerrit upload straight
+# through -- the whole leak, on an entire class of repository, walking past a
+# guard that reports itself installed.
+#
+# It fails CLOSED, and it has to: `refs/for/...` is magic, never advertised by
+# the remote, so the remote sha git supplies is all zeros and the
+# already-carries-run-state exemption can never apply. The refusal says that
+# rather than offering the push-once-with-the-override recovery, which would
+# leave a Gerrit operator refused identically on their next upload.
+#
+# RED (before this fix): every push below succeeds and run state is uploaded
+# for review, then submitted onto the product's branch.
+# ---------------------------------------------------------------------------
+r37_g="$W/r37-gerrit"; mk_repo "$r37_g" 'verify=true'
+ORCHID_REPO="$r37_g" "$ORCHID_BIN" init >/dev/null \
+  || fail "fixture: orchid init must succeed on r37-gerrit"
+[ -x "$r37_g/.git/hooks/pre-push" ] || fail "fixture: init must have installed the guard"
+g37_branch="$(git -C "$r37_g" rev-parse --abbrev-ref HEAD)"
+remote37_g="$W/r37-gerrit-remote.git"; git init -q --bare "$remote37_g"
+git -C "$r37_g" remote add origin "$remote37_g"
+
+# The realistic shape: an ordinarily-named feature branch that picked up run
+# state by merging the integration branch, uploaded for review.
+git -C "$r37_g" branch feature/gerrit orchid/integration
+[ -n "$(git -C "$r37_g" ls-tree feature/gerrit -- .orchid)" ] \
+  || fail "fixture: the uploaded branch must actually carry .orchid/, or this case proves nothing"
+
+rc=0
+g37_push="$(git -C "$r37_g" push origin "feature/gerrit:refs/for/$g37_branch" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a review upload carrying run state must be refused (got: $g37_push)"
+assert_match "push blocked" "$g37_push" "and it is orchid's own hook speaking"
+assert_match "carries orchid.s own run state" "$g37_push" "which says what is on the tip"
+assert_match "review upload for branch .$g37_branch." "$g37_push" \
+  "naming the branch submitting it would land the state on, which is the ref the operator can act on"
+grep -q "every later push of this ref is exempt" <<<"$g37_push" \
+  && fail "the branch leg's exemption cannot exist for a magic ref the remote never advertises, so it must not be offered"
+# The remote is asked for EVERY ref and the answer filtered here, rather than
+# handed `refs/for/*` as an ls-remote pattern: this has to be able to prove an
+# ABSENCE, and a pattern that silently matched nothing would prove it for free.
+grep -q "refs/for/" <<<"$(git -C "$r37_g" ls-remote "$remote37_g" 2>/dev/null || true)" \
+  && fail "a blocked upload must not have landed on the remote"
+
+# The fully-qualified spelling, and a push-option suffix -- both are ordinary
+# Gerrit, and both are what git hands the hook verbatim.
+rc=0
+g37_push2="$(git -C "$r37_g" push origin "feature/gerrit:refs/for/refs/heads/$g37_branch%topic=leak,r=someone" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "the fully-qualified spelling with push options must be refused too (got: $g37_push2)"
+assert_match "review upload for branch .$g37_branch." "$g37_push2" \
+  "the branch is read out from under both the refs/heads/ spelling and the % push options"
+red_case 'a Gerrit review upload whose tip carries run state is refused, and told it has no exemption'
+
+# The GREEN twin, and the half that keeps the case above from passing because
+# the hook refuses every upload: the SAME magic ref, uploading a branch that
+# carries no run state, goes through -- and actually lands.
+rc=0
+g37_ok="$(git -C "$r37_g" push origin "$g37_branch:refs/for/$g37_branch%topic=clean" 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a clean review upload must push exactly as plain git does (got: $g37_ok)"
+grep -q "refs/for/" <<<"$(git -C "$r37_g" ls-remote "$remote37_g" 2>/dev/null || true)" \
+  || fail "and it must actually have landed on the remote, not merely not-errored"
+green_case 'a review upload carrying no run state is untouched by the leg'
 
 # ===========================================================================
 # 5 -- worktrees: create at an explicit path, reuse only an EXACT integration

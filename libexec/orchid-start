@@ -672,15 +672,22 @@ if [ "$refresh_guard" -eq 1 ]; then
   case "$(orchid_push_guard_action)" in
     installed|upgraded|repaired) exit 0 ;;
     unsupported-hookspath)
-      # A relative `core.hooksPath` is one file PER CHECKOUT, so there is no
-      # repository-wide guard to install and this command cannot do what it
-      # was asked. Non-zero, and deliberately without a resolved path in the
-      # message: naming `<toplevel>/<value>/pre-push` here would answer for
-      # this one worktree and read as an answer for the repository, which is
-      # the exact confusion the classification exists to end. The installer
-      # has already printed the per-worktree explanation and both recoveries
-      # on stderr.
-      orchid_die "the pre-push guard was NOT installed in $repo — core.hooksPath is relative, so no single hook file covers this repository (the message above says what to change). Until it is absolute or unset, pushes of task branches, of $integ, and of run state are NOT guarded here" ;;
+      # `core.hooksPath` names no guardable file for this repository, and this
+      # command cannot do what it was asked. Non-zero, and deliberately
+      # without a resolved path in the message: naming
+      # `<toplevel>/<value>/pre-push` for the relative case would answer for
+      # this one worktree and read as an answer for the repository, and naming
+      # the external directory here would read as a path orchid is about to
+      # install into. That is the exact confusion the classification exists to
+      # end. The installer has already printed the specific explanation and
+      # both recoveries on stderr.
+      case "$(orchid_push_guard_hooks_mode "$repo")" in
+        relative)
+          refresh_why="core.hooksPath is relative, so no single hook file covers this repository" ;;
+        *)
+          refresh_why="core.hooksPath is an absolute path outside this repository's git directory, which orchid cannot tell apart from a hooks directory shared with other repositories" ;;
+      esac
+      orchid_die "the pre-push guard was NOT installed in $repo — $refresh_why (the message above says what to change). Until it names a directory inside this repository's git directory, or is unset, pushes of task branches, of $integ, and of run state are NOT guarded here" ;;
     current)
       # The one outcome the installer reports by staying silent, because for
       # init and for setup that silence is right. Here it is the answer.

@@ -65,18 +65,37 @@
 # copy to exempt, and one whose object is not present locally cannot be read
 # to check: both fail CLOSED, since the cost is a message and a variable.
 #
-# BRANCHES ONLY (`refs/heads/*`), and that bound is part of the design rather
-# than an omission. The leak this leg exists for is a leak along the merge
-# chain: run state rides a branch into a product's `main` and becomes part of
-# its history. A tag is a different object with a different job -- it names a
-# commit that is, by the time anyone tags it, already reachable from a branch
-# that this leg either passed or refused on its own merits -- so refusing
-# `git push origin v1.2.3` blocks nothing that is not decided elsewhere and
-# breaks a release the moment run state is anywhere in the tagged history.
-# The same goes for `refs/notes/*` and for a forge's own `refs/for/*`-style
-# review refs. Every ref that is not a branch pushes exactly as plain git
-# would, run state or no run state. The NAME-BASED leg above is unaffected and
-# runs first: it already keys on `refs/heads/...` destinations of its own.
+# BRANCH-BOUND REFS ONLY, and that bound is part of the design rather than an
+# omission. The leak this leg exists for is a leak along the merge chain: run
+# state rides a branch into a product's `main` and becomes part of its history.
+# A tag is a different object with a different job -- it names a commit that
+# is, by the time anyone tags it, already reachable from a branch that this leg
+# either passed or refused on its own merits -- so refusing `git push origin
+# v1.2.3` blocks nothing that is not decided elsewhere and breaks a release the
+# moment run state is anywhere in the tagged history. The same goes for
+# `refs/notes/*`. Every ref that is not branch-bound pushes exactly as plain
+# git would, run state or no run state. The NAME-BASED leg above is unaffected
+# and runs first: it already keys on `refs/heads/...` destinations of its own.
+#
+# GERRIT'S `refs/for/*` IS BRANCH-BOUND, and it is the one review ref this leg
+# must read as a branch rather than as "some other ref". On a Gerrit-hosted
+# project nobody pushes `refs/heads/main` at all -- the upload IS the push
+# (`git push origin HEAD:refs/for/main`), and the forge submits that change
+# onto `main` afterwards, where no local hook runs. Treating the magic ref as
+# a non-branch would mean the entire leak this leg exists for walks straight
+# past it on every Gerrit repository, which is the same false protection as an
+# inert hook. Both spellings git can be handed are matched -- `refs/for/<branch>`
+# and the fully-qualified `refs/for/refs/heads/<branch>` -- and so is a
+# push-option suffix (`%topic=x,r=someone,wip`), which Gerrit reads off the
+# refname and git carries into this hook verbatim.
+#
+# A REVIEW UPLOAD FAILS CLOSED: `refs/for/...` is Gerrit magic and is never a
+# ref the remote advertises, so the remote sha git hands this hook for it is
+# all zeros by construction and there is no remote copy that could exempt it.
+# The exemption below is therefore not merely absent here, it can never
+# arrive -- which is why the refusal says so instead of offering the
+# push-once-with-the-override recovery that the branch leg offers and that
+# would leave a Gerrit operator refused again on their very next upload.
 [ "${ORCHID_ALLOW_PUSH:-0}" = 1 ] && exit 0
 
 integ="__INTEGRATION_BRANCH__"
@@ -92,26 +111,50 @@ blocked=0
 blocked_ref=""
 leaked=0
 leaked_ref=""
+leaked_review=0
+leaked_target=""
 while read -r _local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
     refs/heads/task/*) blocked=1; blocked_ref="$remote_ref"; continue ;;
     "refs/heads/$integ") blocked=1; blocked_ref="$remote_ref"; continue ;;
   esac
-  # The run-state leg is scoped to branches, and only AFTER the name-based
-  # checks above have had their say -- see the BRANCHES ONLY note in the
-  # header. A tag, a note, a forge review ref: normal git behaviour, whatever
-  # its commit carries.
-  case "$remote_ref" in refs/heads/*) ;; *) continue ;; esac
+  # The run-state leg is scoped to branch-bound refs, and only AFTER the
+  # name-based checks above have had their say -- see the header. A tag, a
+  # note: normal git behaviour, whatever its commit carries.
+  review=0
+  target=""
+  case "$remote_ref" in
+    # A branch is bound to itself.
+    refs/heads/*) target="${remote_ref#refs/heads/}" ;;
+    refs/for/*)
+      # Gerrit, unwrapped in the order git hands it over: the push options
+      # first (everything from the first `%`; `[%]` rather than a bare `%`, so
+      # the pattern cannot be misread as another trim operator), then the magic
+      # prefix, then the optional fully-qualified spelling -- leaving the
+      # branch the change is uploaded FOR, which is where submitting it lands
+      # the tree.
+      review=1
+      target="${remote_ref%%[%]*}"
+      target="${target#refs/for/}"
+      target="${target#refs/heads/}"
+      ;;
+    *) continue ;;
+  esac
   # A deletion (all-zero local sha) pushes no tree and can leak nothing.
   case "$local_sha" in *[!0]*) ;; *) continue ;; esac
   carries_run_state "$local_sha" || continue
-  case "$remote_sha" in
-    *[!0]*)
-      if git cat-file -e "$remote_sha" 2>/dev/null && carries_run_state "$remote_sha"; then
-        continue
-      fi ;;
-  esac
-  leaked=1; leaked_ref="$remote_ref"
+  # A review upload has no remote copy to be exempt by: the remote never
+  # advertises `refs/for/...`, so this fails closed rather than reading the
+  # all-zero sha git supplies as "nothing to compare, carry on".
+  if [ "$review" -eq 0 ]; then
+    case "$remote_sha" in
+      *[!0]*)
+        if git cat-file -e "$remote_sha" 2>/dev/null && carries_run_state "$remote_sha"; then
+          continue
+        fi ;;
+    esac
+  fi
+  leaked=1; leaked_ref="$remote_ref"; leaked_review="$review"; leaked_target="$target"
 done
 
 if [ "$blocked" -eq 1 ]; then
@@ -120,7 +163,18 @@ if [ "$blocked" -eq 1 ]; then
 fi
 
 if [ "$leaked" -eq 1 ]; then
-  echo "orchid: push blocked -- '$leaked_ref' carries orchid's own run state (.orchid/ -- roadmap, journal, BLOCKERS, plugins.lock, review envelopes) and the remote's copy of that ref does not. That state belongs to the run, not to your product: pushed here it becomes part of your project's history and, in a large diff, reads as tooling and is approved as tooling. If it got there by merging the integration branch ('$integ') into this branch, strip .orchid/ from it before pushing. If this repository tracks run state deliberately (orchid's own does), push it once with ORCHID_ALLOW_PUSH=1 and every later push of this ref is exempt automatically. Set ORCHID_ALLOW_PUSH=1 to override." >&2
+  # One composer, two tails. The branch leg's exemption -- push it once with
+  # the override and never be asked again -- simply does not exist for a review
+  # upload, and offering it there would send an operator through the override
+  # only to be refused identically on their next upload.
+  if [ "$leaked_review" -eq 1 ]; then
+    why="and it is a Gerrit review upload for branch '$leaked_target', so submitting it puts that state on '$leaked_target'"
+    tail_msg="A 'refs/for/...' ref is never advertised by the remote, so there is no copy of it to compare against and every upload whose tip carries run state is refused."
+  else
+    why="and the remote's copy of that ref does not"
+    tail_msg="If this repository tracks run state deliberately (orchid's own does), push it once with ORCHID_ALLOW_PUSH=1 and every later push of this ref is exempt automatically."
+  fi
+  echo "orchid: push blocked -- '$leaked_ref' carries orchid's own run state (.orchid/ -- roadmap, journal, BLOCKERS, plugins.lock, review envelopes) $why. That state belongs to the run, not to your product: pushed here it becomes part of your project's history and, in a large diff, reads as tooling and is approved as tooling. If it got there by merging the integration branch ('$integ') into this branch, strip .orchid/ from it before pushing. $tail_msg Set ORCHID_ALLOW_PUSH=1 to override." >&2
   exit 1
 fi
 exit 0

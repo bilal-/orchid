@@ -1953,14 +1953,60 @@ orchid_push_guard_path() {
   printf '%s/%s\n' "${anchor%/}" "$p"
 }
 
-# orchid_push_guard_hooks_mode <repo> -- how `core.hooksPath` is configured for
-# <repo>, as one word: `default` (the key is unset), `absolute`, or `relative`.
-# Never fails; an unreadable repository answers `default`, which is the shape
-# every other caller already handles.
+# orchid_push_guard_git_common_dir <repo> -- <repo>'s git COMMON directory as a
+# canonical absolute path, or `<repo>/.git` when git cannot answer. The common
+# dir, never `--git-dir`: a linked worktree has a `.git` directory of its own
+# and shares the main checkout's hooks, which is the same reason
+# orchid_push_guard_path leans on `--git-path`.
 #
-# THE DISTINCTION EXISTS BECAUSE ONLY ONE OF THE THREE CAN BE GUARDED
-# REPOSITORY-WIDE, and getting that wrong is the failure this whole guard is
-# supposed to prevent -- a file that reads like protection and is not.
+# `git rev-parse --git-common-dir` prints a path relative to the cwd it ran in
+# whenever it can, so it is resolved against the directory this ran from --
+# $repo -- and then canonicalized, because it is about to be compared against
+# another canonical path and macOS reaches $TMPDIR through a symlink.
+orchid_push_guard_git_common_dir() {
+  local repo="$1" common phys
+  common="$(cd "$repo" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null || true)"
+  [ -n "$common" ] || { printf '%s\n' "${repo%/}/.git"; return 0; }
+  case "$common" in /*) ;; *) common="${repo%/}/$common" ;; esac
+  phys="$(orchid_physical_dir "$common" 2>/dev/null || true)"
+  if [ -n "$phys" ]; then common="$phys"; fi
+  printf '%s\n' "${common%/}"
+}
+
+# _orchid_physical_path <absolute-path> -- <path> canonicalized as far as it
+# EXISTS, with whatever is missing appended verbatim.
+#
+# orchid_physical_dir answers nothing at all for a directory that is not there
+# yet, and the directory this is used on -- a configured `core.hooksPath` --
+# routinely is not: git creates nothing for the key, and orchid's own installer
+# `mkdir -p`s it. Classifying an absent hooks directory as "cannot tell" would
+# make the very first `orchid init` on a fresh clone answer differently from
+# the second, so walk up to the first existing ancestor, canonicalize THAT
+# (which is what resolves a symlinked prefix such as macOS's /var), and put the
+# missing tail back on.
+_orchid_physical_path() {
+  local p="$1" tail="" head base
+  while [ ! -d "$p" ]; do
+    head="$(dirname "$p")"
+    [ "$head" != "$p" ] || break
+    base="$(basename "$p")"
+    tail="$base${tail:+/$tail}"
+    p="$head"
+  done
+  p="$(orchid_physical_dir "$p" 2>/dev/null || true)"
+  [ -n "$p" ] || return 1
+  printf '%s\n' "${p%/}${tail:+/$tail}"
+}
+
+# orchid_push_guard_hooks_mode <repo> -- how `core.hooksPath` is configured for
+# <repo>, as one word: `default` (the key is unset), `absolute`, `external`, or
+# `relative`. Never fails; an unreadable repository answers `default`, which is
+# the shape every other caller already handles.
+#
+# THE DISTINCTION EXISTS BECAUSE ONLY TWO OF THE FOUR CAN BE GUARDED
+# REPOSITORY-WIDE -- `default` and a repo-contained `absolute` -- and getting
+# that wrong is the failure this whole guard is supposed to prevent: a file
+# that reads like protection and is not.
 #
 # git's rule for the key, from githooks(5) and config's `core.hooksPath`: a
 # relative value is resolved against the directory hooks are RUN from, which is
@@ -1987,6 +2033,33 @@ orchid_push_guard_path() {
 # guard that covers all-but-one checkout is read as covering the repository.
 # Say "not supported, here is how to make it supportable" instead.
 #
+# AN ABSOLUTE VALUE IS ONLY GUARDABLE WHEN IT IS THIS REPOSITORY'S OWN, and
+# `absolute` alone does not say that. The key relocates hooks to a directory,
+# and a directory named by an absolute path is as easily SHARED as it is
+# private: `~/.githooks`, `/usr/local/share/git-hooks`, a team directory on a
+# network mount, the value a dotfiles repository sets in `--global` config for
+# every repository on the machine at once. Nothing about the string says which,
+# and orchid installing into it gets both readings wrong at the same time:
+#
+#   * it writes a guard carrying THIS repository's integration branch name in
+#     front of every OTHER repository that reads the same directory, refusing
+#     their pushes for a run they have nothing to do with;
+#   * it overwrites -- or is overwritten by -- whatever another repository, or
+#     the operator's own dotfiles, put there for the same reason, and orchid's
+#     own never-overwrite rule cannot help, because a hook orchid wrote for
+#     repository A is recognized as orchid's own in repository B and replaced.
+#
+# So the supported shape is the containable one: an absolute `core.hooksPath`
+# whose directory lies inside this repository's git COMMON directory is this
+# repository's own by construction, cannot be another repository's, and is
+# `absolute`. Any other absolute value is `external`, and is handled exactly
+# like `relative` -- nothing installed, nothing claimed, both recoveries named.
+# That is narrower than "any absolute path git can run", and deliberately: the
+# cost of the narrow rule is an operator with a private-but-outside hooks
+# directory being told to move or unset it, and the cost of the wide one is
+# orchid writing into a directory belonging to repositories it was never
+# pointed at.
+#
 # ORCHID NEVER REWRITES THE KEY. It is the operator's configuration, on the
 # same principle libexec/orchid-start applies to an ignored `orchid.config`:
 # force-overriding a setting its owner chose is not a fix. The warning names
@@ -1994,20 +2067,32 @@ orchid_push_guard_path() {
 #
 # Tilde is expanded through git's own `--path` reader, because git reads this
 # key as a path type -- `~/hooks` IS absolute once git has it, and classifying
-# it `relative` would refuse a repository that is perfectly guardable.
+# it `relative` would refuse a repository on a spelling git itself resolves.
 orchid_push_guard_hooks_mode() {
-  local repo="$1" raw expanded
+  local repo="$1" raw expanded hooks_dir common
   raw="$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)"
   [ -n "$raw" ] || { printf 'default\n'; return 0; }
   expanded="$(git -C "$repo" config --get --path core.hooksPath 2>/dev/null || true)"
   [ -n "$expanded" ] || expanded="$raw"
   case "$expanded" in
-    /*) printf 'absolute\n' ;;
-    *) printf 'relative\n' ;;
+    /*) ;;
+    *) printf 'relative\n'; return 0 ;;
+  esac
+  # Both sides canonicalized, or the comparison answers on spelling: a repo
+  # under macOS's /var reaches its own git dir through a symlink, and
+  # `/var/folders/.../hooks` would then fail to be "inside" the
+  # `/private/var/folders/.../.git` it is literally inside.
+  hooks_dir="$(_orchid_physical_path "$expanded" 2>/dev/null || true)"
+  common="$(orchid_push_guard_git_common_dir "$repo")"
+  { [ -n "$hooks_dir" ] && [ -n "$common" ]; } || { printf 'external\n'; return 0; }
+  hooks_dir="${hooks_dir%/}"; common="${common%/}"
+  case "$hooks_dir" in
+    "$common"|"$common"/*) printf 'absolute\n' ;;
+    *) printf 'external\n' ;;
   esac
 }
 
-# The ONE text for that case, composed here so init, `orchid start` and
+# The ONE text for those cases, composed here so init, `orchid start` and
 # `orchid doctor` cannot drift into saying three different things about the
 # same repository. Prints the body only; each caller adds its own prefix
 # (`orchid: `, `WARN: push guard: `) in its own convention.
@@ -2016,13 +2101,28 @@ orchid_push_guard_hooks_mode() {
 #   * that nothing was installed, said as a negative and never as a claim of
 #     protection -- no caller may print "guard installed" or "already current"
 #     about a repository in this state;
-#   * the per-worktree risk, in the terms an operator can check;
-#   * BOTH recoveries, absolute and unset, as commands;
+#   * WHY this particular value cannot be guarded, in the terms an operator can
+#     check: the per-worktree risk for a relative value, the other repositories
+#     reading the same directory for an external one;
+#   * BOTH recoveries, as commands -- and the absolute one names a REAL
+#     repo-contained directory rather than a `/absolute/path/to/hooks`
+#     placeholder, because a placeholder invites the operator to point the key
+#     at their shared hooks directory and meet this same refusal again;
 #   * the command to run afterwards, so the fix has an end.
+#
+# One tail, two causes. The recovery and the "nothing is guarding this" half
+# are identical for both unsupported shapes, and an operator who fixes one has
+# to be told the same thing either way.
 orchid_push_guard_hookspath_warning() {
-  local repo="$1" raw
+  local repo="$1" raw common cause
   raw="$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)"
-  printf '%s\n' "core.hooksPath is set to the RELATIVE path '$raw', which git resolves against EACH worktree's own top level -- so it names a different file in every checkout of this repository, and orchid's task and integration worktrees would each need their own copy. No single file can guard the repository, so the pre-push guard was NOT installed here and nothing local refuses a push of run state. Fix it by pointing the key at an absolute directory (git -C '$repo' config core.hooksPath /absolute/path/to/hooks) or by dropping it for git's default (git -C '$repo' config --unset core.hooksPath), then run 'orchid start --refresh-push-guard'. orchid does not change this setting for you."
+  common="$(orchid_push_guard_git_common_dir "$repo")"
+  if [ "$(orchid_push_guard_hooks_mode "$repo")" = relative ]; then
+    cause="core.hooksPath is set to the RELATIVE path '$raw', which git resolves against EACH worktree's own top level -- so it names a different file in every checkout of this repository, and orchid's task and integration worktrees would each need their own copy. No single file can guard the repository."
+  else
+    cause="core.hooksPath is set to the ABSOLUTE path '$raw', which is OUTSIDE this repository's git directory ($common) -- so orchid cannot tell it apart from a hooks directory shared with other repositories on this machine (a \$HOME dotfiles directory, a team mount, a --global setting). Installing there would put a guard naming THIS repository's integration branch in front of every repository that reads it, and would overwrite whatever another one had installed for the same reason."
+  fi
+  printf '%s\n' "$cause So the pre-push guard was NOT installed here and nothing local refuses a push of run state. Fix it by pointing the key at an absolute directory inside this repository's own git directory (git -C '$repo' config core.hooksPath '$common/hooks') or by dropping it for git's default (git -C '$repo' config --unset core.hooksPath), then run 'orchid start --refresh-push-guard'. orchid does not change this setting for you."
 }
 
 # What the last orchid_install_push_guard call actually did, for a caller that
@@ -2054,16 +2154,21 @@ orchid_install_push_guard() {
   guard="$(config_get "$repo" push_guard true)"
   case "$guard" in false|0|no) return 0 ;; esac
 
-  # A relative `core.hooksPath` is not one file, it is one per checkout -- see
-  # orchid_push_guard_hooks_mode. Refuse the whole install rather than write a
-  # file that guards the checkout this process happens to be looking at and
-  # call the repository protected. Nothing is written, nothing is reported as
-  # installed or current, and the operator is told exactly what to change.
-  if [ "$(orchid_push_guard_hooks_mode "$repo")" = relative ]; then
-    ORCHID_PUSH_GUARD_ACTION=unsupported-hookspath
-    echo "orchid: $(orchid_push_guard_hookspath_warning "$repo")" >&2
-    return 0
-  fi
+  # Two `core.hooksPath` shapes carry no repository-wide guard -- see
+  # orchid_push_guard_hooks_mode. A relative value is not one file but one per
+  # checkout; an absolute value outside this repository's git dir is a
+  # directory orchid cannot claim as this repository's own. Refuse the whole
+  # install in both, rather than write a file that guards the checkout this
+  # process happens to be looking at, or a file that lands in front of
+  # repositories nobody pointed orchid at, and call either one protection.
+  # Nothing is written, nothing is reported as installed or current, and the
+  # operator is told exactly what to change.
+  case "$(orchid_push_guard_hooks_mode "$repo")" in
+    relative|external)
+      ORCHID_PUSH_GUARD_ACTION=unsupported-hookspath
+      echo "orchid: $(orchid_push_guard_hookspath_warning "$repo")" >&2
+      return 0 ;;
+  esac
 
   # Hooks live under the git dir, never inside a commit -- and at the ONE path
   # git will execute, which orchid_push_guard_path asks git for rather than

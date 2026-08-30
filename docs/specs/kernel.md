@@ -2076,17 +2076,25 @@ branch, writes no run state and takes no lock, and it is a distinct
 invocation rather than a side effect of a setup call that then refuses — a
 mutation nobody can name is a mutation nobody can audit. All three callers
 install, inspect and report the hook at the path **git** resolves (`git
-rev-parse --git-path hooks/pre-push`: an absolute `core.hooksPath`, and a
-linked worktree's shared hooks directory), never at a
+rev-parse --git-path hooks/pre-push`: a repo-contained absolute
+`core.hooksPath`, and a linked worktree's shared hooks directory), never at a
 derived `.git/hooks`, because an inert file at a path git does not read is
-worse than no file — it reads as protection. By the same rule a **relative**
-`core.hooksPath` is UNSUPPORTED for this guard rather than half-installed:
-git resolves a relative value against each worktree's own top level, so one
-setting names a different file in every checkout, and orchid gives the
-integration branch and each task a linked worktree of its own. Installing
-into the one checkout a process can see and reporting it would be the same
-false protection in a new place. All three doors warn (naming the
-per-worktree risk and both recoveries, absolute or unset), the explicit
+worse than no file — it reads as protection. By the same rule two
+`core.hooksPath` shapes are UNSUPPORTED for this guard rather than
+half-installed. A **relative** value: git resolves it against each worktree's
+own top level, so one setting names a different file in every checkout, and
+orchid gives the integration branch and each task a linked worktree of its
+own — installing into the one checkout a process can see and reporting it
+would be the same false protection in a new place. An **absolute** value whose
+directory is not inside this repository's git COMMON directory: an absolute
+path says nothing about whose directory it is, and a shared one (`~/.githooks`,
+a team mount, a `--global` setting) is read by every repository on the machine,
+so a guard written there carries this repository's baked-in integration branch
+into pushes orchid was never pointed at and collides with whatever another
+repository installed — orchid's own never-overwrite rule cannot help, since
+the hook it wrote for one repository is recognized as its own in the next.
+Both doors warn (naming the risk and both recoveries: an absolute directory
+inside this repository's git dir, or unset), the explicit
 refresh exits non-zero, nothing is written, and no output says `installed`
 or `current`. The setting is the operator's and is never rewritten, on the
 same principle that refuses to force-commit an ignored `orchid.config`.
@@ -2108,11 +2116,20 @@ because the kernel never performs the merge that leaks it and never may:
   cherry-pick or a rebase carries the files across without a merge commit,
   and a hosted merge request is merged where no local hook runs at all. A
   branch whose remote copy already tracks run state is exempt, so a
-  deliberately self-hosted repository is asked once and never again. Scoped
-  to branches because the leak is a merge-chain leak: a tag, a note or a
-  forge review ref names a commit whose branch this leg has already judged,
-  so refusing it would decide nothing and break a release tag cut over any
-  history containing run state. Non-branch refs push exactly as plain git.
+  deliberately self-hosted repository is asked once and never again. Gerrit's
+  `refs/for/<branch>` — either spelling, with or without a `%…` push-option
+  suffix — is BRANCH-BOUND and is checked as a branch: on a Gerrit-hosted
+  project the review upload *is* the push, and the change is submitted onto
+  that branch on the forge where no local hook runs, so reading it as "some
+  other ref" would let the whole leak past on that entire class of
+  repository. It fails closed, because the remote never advertises a
+  `refs/for/…` ref and there is therefore no remote copy that could ever
+  exempt it; the refusal says so rather than offering the push-once recovery
+  the branch leg offers. Otherwise scoped to branches, because the leak is a
+  merge-chain leak: a tag or a note names a commit whose branch this leg has
+  already judged, so refusing it would decide nothing and break a release tag
+  cut over any history containing run state. Non-branch, non-review refs push
+  exactly as plain git.
 - `orchid merge` **warns** (stderr, never refuses) when any local branch
   outside the run — not the integration branch, not a branch recorded on a
   task, including an **archived** run's tasks under `runs/<run_id>/tasks/`,

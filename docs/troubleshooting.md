@@ -2262,8 +2262,13 @@ want:
   does not own, and a run frozen behind a report would be worse than a run
   that reports.
 - The `pre-push` hook orchid installs refuses a push that would put run
-  state on a remote **branch** that does not already have it (tags and other
-  non-branch refs push as they always did) — see
+  state on a remote **branch** that does not already have it — and a Gerrit
+  review upload (`refs/for/<branch>`, with or without `%topic=…` push options)
+  counts as one, since the upload *is* the push there and the change is
+  submitted onto that branch afterwards on the forge. A `refs/for/…` ref is
+  never advertised by the remote, so there is no remote copy that could exempt
+  it: it fails closed, and `ORCHID_ALLOW_PUSH=1` is the only way through. Tags
+  and other non-branch refs push as they always did — see
   [configuration.md](./configuration.md) (`push_guard`). `orchid init` installs
   it and `orchid start` upgrades an orchid-installed one, so a repository set
   up before this leg shipped gains it on the next `orchid start`; a hook you
@@ -2293,32 +2298,46 @@ no lock is taken, so it is safe while a run is in flight. It is idempotent —
 run it as often as you like — and it still refuses to overwrite a hook you
 wrote, telling you how to chain to orchid's from your own instead.
 
-If your repository sets `core.hooksPath` to an **absolute** path, that is where
-the guard is installed and where the printed path points: orchid asks git for
-the hook path rather than assuming `.git/hooks`, so the file always lands where
-git will execute it. `.git/hooks/pre-push` is left alone in that case, because
-git does not read it. A hook whose bytes are already current but whose execute
-bit is missing — a `cp` from a template directory, a restore from an archive, a
-tight `umask` — is repaired in place and reported as repaired, because git
-silently runs nothing at all in that state.
+If your repository sets `core.hooksPath` to an **absolute** path *inside its own
+git directory*, that is where the guard is installed and where the printed path
+points: orchid asks git for the hook path rather than assuming `.git/hooks`, so
+the file always lands where git will execute it. `.git/hooks/pre-push` is left
+alone in that case, because git does not read it. A hook whose bytes are already
+current but whose execute bit is missing — a `cp` from a template directory, a
+restore from an archive, a tight `umask` — is repaired in place and reported as
+repaired, because git silently runs nothing at all in that state.
 
-**A relative `core.hooksPath` is not guarded, and you will be told so.** git
-resolves a relative value against *the top level of the working tree the push
-comes from*, and orchid gives the integration branch and every task its own
-linked worktree — so `core.hooksPath = .githooks` means
+**Two `core.hooksPath` layouts are not guarded, and you will be told so.**
+
+*A relative value.* git resolves it against *the top level of the working tree
+the push comes from*, and orchid gives the integration branch and every task its
+own linked worktree — so `core.hooksPath = .githooks` means
 `<main>/.githooks/pre-push` for one checkout and a different, empty directory
-for each of the others. There is no single file to install. Orchid installs
-nothing rather than guard one checkout and let that read as guarding the
-repository: `orchid init`, `orchid start` and `orchid doctor` warn,
-`orchid start --refresh-push-guard` exits non-zero, and no output says
-`installed` or `already current`. Two ways to become guardable, both yours to
-choose — orchid will not rewrite the setting:
+for each of the others. There is no single file to install.
+
+*An absolute value outside this repository's git directory* — `~/.githooks`, a
+team hooks mount, anything a dotfiles repository set in `--global` config. Any
+number of repositories may read that directory, and orchid's guard has *this*
+repository's integration branch baked into it, so installing there would refuse
+pushes in repositories orchid was never pointed at and would overwrite whatever
+another one had installed for the same reason. Orchid cannot tell a shared
+directory from a private one, so it treats "inside this repository's git
+directory" as the whole test.
+
+In both, orchid installs nothing rather than let a partial or borrowed guard
+read as guarding the repository: `orchid init`, `orchid start` and `orchid
+doctor` warn, `orchid start --refresh-push-guard` exits non-zero, and no output
+says `installed` or `already current`. Two ways to become guardable, both yours
+to choose — orchid will not rewrite the setting:
 
 ```
-git -C <repo> config core.hooksPath /absolute/path/to/hooks   # or
-git -C <repo> config --unset core.hooksPath                   # git's default
+git -C <repo> config core.hooksPath <repo>/.git/hooks   # or
+git -C <repo> config --unset core.hooksPath             # git's default
 orchid start --refresh-push-guard
 ```
+
+The warning prints both commands with your own repository's path already filled
+in.
 
 Until then, the `orchid merge` warning above is the only local signal you have,
 and a push of run state is refused by nothing on this machine.

@@ -463,10 +463,11 @@ rc=0; del_push_out="$(git -C "$pg" push origin :feature/carries-run-state 2>&1)"
 [ "$rc" -eq 0 ] || fail "the run-state leg must never block a ref DELETION (got: $del_push_out)"
 
 # ---------------------------------------------------------------------------
-# BRANCHES ONLY. The run-state leg is scoped to `refs/heads/*` and is reached
-# only after the name-based checks above, so a tag -- or a note, or a forge's
-# `refs/for/*` review ref -- pushes exactly as plain git would, whatever its
-# commit carries.
+# BRANCH-BOUND REFS ONLY. The run-state leg is scoped to branches -- plus
+# Gerrit's `refs/for/*`, which is a branch-bound review upload and is covered
+# by its own cases in tests/test_start.sh -- and is reached only after the
+# name-based checks above, so a tag, or a note, pushes exactly as plain git
+# would, whatever its commit carries.
 #
 # The bound is the design, not an omission. The leak this leg exists for is a
 # merge-chain leak: run state rides a BRANCH into a product's `main` and
