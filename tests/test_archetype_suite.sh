@@ -175,7 +175,13 @@ walk_full_archetype() {  # id archetype
   # edge: arbitrating:rework (--waive-attempt keeps attempts at 1, so the
   # already-planted reviewer envelope stays valid for every reviewing-
   # >arbitrating below without replanting)
-  "$ORCHID_BIN" task advance "$id" rework --waive-attempt --reason "sent back for rework"
+  #
+  # Taken through `task arbitrate`, which is the only public verb that reaches
+  # an arbitration OUTCOME edge out of `arbitrating` since T032: the destination is
+  # still derived from THIS archetype's declared transitions, so the edge under
+  # test is the same one, and the assertion below still fails if the archetype
+  # stops declaring it.
+  "$ORCHID_BIN" task arbitrate "$id" --result request-changes --waive-attempt --reason "sent back for rework"
   assert_eq rework "$(st)" "$arch edge arbitrating:rework"
 
   "$ORCHID_BIN" task advance "$id" implementing
@@ -184,8 +190,8 @@ walk_full_archetype() {  # id archetype
   "$ORCHID_BIN" task advance "$id" reviewing
   "$ORCHID_BIN" task advance "$id" arbitrating --reason "re-reviewed, approved"
 
-  # edge: arbitrating:merging
-  "$ORCHID_BIN" task advance "$id" merging --reason "approved for merge"
+  # edge: arbitrating:merging (through `task arbitrate`, per the note above)
+  "$ORCHID_BIN" task arbitrate "$id" --result approve --reason "approved for merge"
   assert_eq merging "$(st)" "$arch edge arbitrating:merging"
 
   # edge: merging:testing (does not invalidate verify evidence)
@@ -194,7 +200,7 @@ walk_full_archetype() {  # id archetype
 
   "$ORCHID_BIN" task advance "$id" reviewing
   "$ORCHID_BIN" task advance "$id" arbitrating --reason "re-reviewed after merging:testing, approved"
-  "$ORCHID_BIN" task advance "$id" merging --reason "approved for merge"
+  "$ORCHID_BIN" task arbitrate "$id" --result approve --reason "approved for merge"
 
   # edge: merging:rework
   "$ORCHID_BIN" task advance "$id" rework --reason "validation_failed: see reviews/$id-merge.log"
@@ -206,7 +212,7 @@ walk_full_archetype() {  # id archetype
   "$ORCHID_BIN" verify "$id" >/dev/null
   "$ORCHID_BIN" task advance "$id" reviewing
   "$ORCHID_BIN" task advance "$id" arbitrating --reason "re-reviewed, approved"
-  "$ORCHID_BIN" task advance "$id" merging --reason "approved for merge"
+  "$ORCHID_BIN" task arbitrate "$id" --result approve --reason "approved for merge"
 
   # edge: merging:done
   "$ORCHID_BIN" task advance "$id" "done"

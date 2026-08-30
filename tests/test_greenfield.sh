@@ -228,7 +228,10 @@ run_ok "advance T001 reviewing" "$ORCHID_BIN" task advance T001 reviewing \
 plant_reviewer_envelope T001
 run_ok "advance T001 arbitrating" "$ORCHID_BIN" task advance T001 arbitrating \
   --reason "review reconciled: approve" >/dev/null
-run_ok "advance T001 merging" "$ORCHID_BIN" task advance T001 merging \
+# `task arbitrate`, not `task advance T001 merging`: since T032 the edges an
+# arbitration RESULT takes out of `arbitrating` are refused by that verb, and
+# only this one records a result. The destination is derived from the archetype.
+run_ok "arbitrate T001 approve" "$ORCHID_BIN" task arbitrate T001 --result approve \
   --reason "approved for merge" >/dev/null
 
 pre_integ="$(git rev-parse "$integ")"
@@ -277,7 +280,7 @@ run_ok "advance T002 reviewing" "$ORCHID_BIN" task advance T002 reviewing \
 plant_reviewer_envelope T002
 run_ok "advance T002 arbitrating" "$ORCHID_BIN" task advance T002 arbitrating \
   --reason "review reconciled: approve" >/dev/null
-run_ok "advance T002 merging" "$ORCHID_BIN" task advance T002 merging \
+run_ok "arbitrate T002 approve" "$ORCHID_BIN" task arbitrate T002 --result approve \
   --reason "approved for merge" >/dev/null
 
 rc=0; merge2_out="$("$ORCHID_BIN" merge T002 2>&1)" || rc=$?

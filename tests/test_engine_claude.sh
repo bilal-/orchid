@@ -193,6 +193,61 @@ envelope_validate "$d/out/envelope.json" || fail "review no-reason stub: envelop
 assert_eq "false" "$(jq -r 'has("summary")' "$d/out/envelope.json")" \
   "review no-reason stub: a reply with no REASON line leaves summary absent rather than blank or placeholder"
 
+# --- 1f. T032 (dogfood F33): AN ARBITER'S STANDING OBJECTION REACHES THE
+# REVIEWER. A reviewer is handed a diff and no memory, so on F33's third round
+# both reviewers -- the same ones that had returned `request-changes` twice --
+# returned `approve` with the objected-to defect untouched, and the
+# deterministic path merged it. The arbitration is the one input a reviewer
+# cannot re-derive from the pack, and `unresolved_objection` is where the
+# kernel keeps it; lib/pack.sh copies task.md whole, so it arrives here with no
+# new pack item and this adapter's job is to put it in front of the model.
+#
+# The rest of tests/test_drive.sh's Part AF sweeps every shipped review adapter
+# for the same thing statically; this is the behavioural half, read off the
+# prompt the adapter actually composed.
+d="$(build_request reviewobjection review '#!/usr/bin/env bash
+cat > "'"$WORK"'/objection.stdin"
+echo "VERDICT: approve"')"
+printf -- '---\nschema: 1\nid: T001\nacceptance_criteria: does the thing\nstop_condition: one pass only\nunresolved_objection: a2: the write at lib/foo.sh:120 still races the reader\n---\nDo the thing.\n' \
+  > "$d/pack/task.md"
+run_adapter "$d" || fail "objection stub: adapter should exit 0"
+obj_stdin="$(cat "$WORK/objection.stdin")"
+assert_match "AN ARBITER REJECTED AN EARLIER ROUND OF THIS TASK" "$obj_stdin" \
+  "objection stub: the prompt tells the reviewer an arbiter already rejected an earlier round"
+assert_match "the write at lib/foo.sh:120 still races the reader" "$obj_stdin" \
+  "objection stub: ...and carries the arbiter's own words, which is the input a reviewer cannot re-derive from the diff"
+assert_match "whether that objection was addressed" "$obj_stdin" \
+  "objection stub: ...and narrows this round's question to it rather than inviting a fresh opinion"
+# T032 convergence: WHO raised it. The same field is written by an operator and
+# by this run's own orchestrator (`task arbitrate` is the one judgment write the
+# brokered surface admits), and those are worth different things to a reviewer:
+# one is a human who read the merged source, the other a model that read this
+# diff. The fixture above records no class at all -- every task written before
+# the field existed -- so the prompt must take the fail-closed reading rather
+# than say nothing.
+assert_match "raised by: operator" "$obj_stdin" \
+  "objection stub: the prompt names the class of arbiter, defaulting an absent one to the operator's"
+
+# The twin, on the fixture that carries no objection: case 1's own captured
+# prompt. A paragraph that appears on every review is a paragraph that means
+# nothing on any of them -- and this is the shape almost every review has.
+grep -q "AN ARBITER REJECTED AN EARLIER ROUND" <<<"$(cat "$WORK/approve.stdin")" \
+  && fail "objection stub: a task carrying no unresolved_objection must get no such paragraph at all"
+
+# And an objection the run's own orchestrator raised is not described as a
+# human's. Same fixture, one field added.
+d="$(build_request reviewobjectionby review '#!/usr/bin/env bash
+cat > "'"$WORK"'/objectionby.stdin"
+echo "VERDICT: approve"')"
+printf -- '---\nschema: 1\nid: T001\nacceptance_criteria: does the thing\nstop_condition: one pass only\nunresolved_objection: a2: the write at lib/foo.sh:120 still races the reader\nunresolved_objection_by: orchestrator\n---\nDo the thing.\n' \
+  > "$d/pack/task.md"
+run_adapter "$d" || fail "objection-by stub: adapter should exit 0"
+objby_stdin="$(cat "$WORK/objectionby.stdin")"
+assert_match "raised by: orchestrator" "$objby_stdin" \
+  "objection-by stub: an objection this run's own orchestrator raised is named as such, not as a human's"
+grep -q "raised by: operator" <<<"$objby_stdin" \
+  && fail "objection-by stub: the prompt must not also call it the operator's — a reviewer weighs a human's objection differently from a model's"
+
 # --- 2. failing stub: rate limit on stderr ----------------------------------
 d="$(build_request ratelimit review '#!/usr/bin/env bash
 echo "429 usage limit exceeded" >&2

@@ -37,7 +37,11 @@ walk_to_merging() {
   "$ORCHID_BIN" task advance "$id" reviewing
   plant_reviewer_envelope "$id"
   "$ORCHID_BIN" task advance "$id" arbitrating --reason "single reviewer approved"
-  "$ORCHID_BIN" task advance "$id" merging --reason "approved for merge"
+  # `task arbitrate`, not `task advance <id> merging`: `arbitrating:merging` is
+  # an arbitration RESULT, and since T032 the only
+  # public verb that records one is this (libexec/orchid-task's `advance` arm
+  # refuses the rest).
+  "$ORCHID_BIN" task arbitrate "$id" --result approve --reason "approved for merge"
 }
 
 # ---------------------------------------------------------------------------
@@ -223,7 +227,7 @@ git worktree add -q "$wt5" task/T005
 "$ORCHID_BIN" task advance T005 reviewing
 plant_reviewer_envelope T005
 "$ORCHID_BIN" task advance T005 arbitrating --reason "single reviewer approved"
-"$ORCHID_BIN" task advance T005 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T005 --result approve --reason "approved for merge"
 
 # Parallel commit lands on integration BEFORE T005 merges -> stale base.
 echo other5 > parallel5.txt && git add parallel5.txt && git commit -q -m "parallel task landed first (T005)"
@@ -273,7 +277,7 @@ assert_eq 0 "$rc" "re-verify passes on the rebased candidate (recorded worktree)
 "$ORCHID_BIN" task advance T005 reviewing
 plant_reviewer_envelope T005
 "$ORCHID_BIN" task advance T005 arbitrating --reason "re-reviewed after rebase, approved"
-"$ORCHID_BIN" task advance T005 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T005 --result approve --reason "approved for merge"
 rc=0; out5b="$WORK/merge5b.out"
 "$ORCHID_BIN" merge T005 >"$out5b" 2>&1 || rc=$?
 assert_eq 0 "$rc" "merge succeeds on the new base (recorded worktree)"
@@ -404,7 +408,7 @@ assert_eq 0 "$rc" "the rebased candidate re-verifies with no operator step in be
 "$ORCHID_BIN" task advance T008 reviewing
 plant_reviewer_envelope T008
 "$ORCHID_BIN" task advance T008 arbitrating --reason "re-reviewed after rebase, approved"
-"$ORCHID_BIN" task advance T008 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T008 --result approve --reason "approved for merge"
 rc=0
 "$ORCHID_BIN" merge T008 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "the second candidate merges on its new base"
@@ -452,7 +456,7 @@ git checkout -q "$integ"
 "$ORCHID_BIN" task advance T040 reviewing
 plant_reviewer_envelope T040
 "$ORCHID_BIN" task advance T040 arbitrating --reason "single reviewer approved"
-"$ORCHID_BIN" task advance T040 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T040 --result approve --reason "approved for merge"
 
 # A parallel task lands on integration first -> stale base -> rebase-reset.
 echo other7 > parallel7.txt && git add parallel7.txt && git commit -q -m "parallel task landed first (T040)"
@@ -492,7 +496,7 @@ git checkout -q "$integ"
 "$ORCHID_BIN" task advance T040 reviewing
 plant_reviewer_envelope T040
 "$ORCHID_BIN" task advance T040 arbitrating --reason "re-reviewed after rebase, approved"
-"$ORCHID_BIN" task advance T040 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T040 --result approve --reason "approved for merge"
 rc=0; "$ORCHID_BIN" merge T040 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "merge succeeds on the rebased candidate"
 assert_eq "done" "$("$ORCHID_BIN" task show T040 | grep '^status: ' | cut -d' ' -f2)" \
@@ -547,7 +551,7 @@ rm -f "$sentinel8"
 "$ORCHID_BIN" task advance T041 reviewing
 plant_reviewer_envelope T041
 "$ORCHID_BIN" task advance T041 arbitrating --reason "single reviewer approved"
-"$ORCHID_BIN" task advance T041 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T041 --result approve --reason "approved for merge"
 
 # The step is reworded -- a different migration, not vouched for by anybody.
 "$ORCHID_BIN" task set T041 operator_prerequisite "apply db/migrate/0009_isolation.sql to the test database"

@@ -1179,6 +1179,155 @@ moving, `while orchid drive; do ...` stops at the first decision. A pump that
 stops at the first arbitrable disagreement is attended operation wearing an
 unattended label.
 
+## `operator-decision`, and every review on the task says `approve`
+
+**Symptom:** the boundary is `operator-decision` on a task in `arbitrating`,
+`orchid jobs ls` shows a complete, unanimous, scope-complete review set with no
+findings, and nothing in the envelopes disagrees with anything. The reason text
+quotes a sentence you wrote yourself, some rounds ago.
+
+That is arm 0 of the arbitration truth table, and the sentence is your own
+`orchid task arbitrate --result request-changes --reason "..."`. A rejection is
+recorded on the task as `unresolved_objection` and stands until an arbitration
+approves — deliberately outliving the round it was raised in, because the round
+after it is judged on its own reviews and nothing else in the run would ever ask
+whether your objection was met. Dogfood F33 is the run where nothing did: the
+same concurrency hole was rejected twice, round 3's reviewers returned
+`approve`, and the deterministic path merged it.
+
+```sh
+orchid task show <id> | grep -E 'unresolved_objection|objection_seq'   # the objection, who raised it, which instance
+orchid journal show --task <id>                     # every arbitration, in full
+git diff <base_sha>..<candidate_sha>                # what this round actually changed
+```
+
+That `grep` prints the objection and, beside it, `unresolved_objection_by` —
+who raised it, which is what decided that this stop reached you rather than a
+woken model. `operator` is the case this section is about.
+`unresolved_objection_by: orchestrator` means the run's own orchestrator
+recorded the rejection, and that one is filed as `review-conflict` instead: it
+still refuses the deterministic approval, but the pump wakes the surface that
+raised it, so you would not normally be reading this page for one. A task
+carrying an objection but no `_by` line at all was rejected before the field
+existed, and is read as yours.
+
+Then settle it, whichever way the diff says:
+
+```sh
+orchid task arbitrate <id> --result approve --reason "the raced write is now behind the lock at lib/foo.sh:120"
+orchid task arbitrate <id> --result request-changes --reason "still unguarded on the retry path — same two constants"
+```
+
+An approval clears the field and journals the clear; anything else leaves it
+standing. There is no other door — `unblock`, `retry` and `reverify` do not
+clear it, and `orchid task set` refuses the key by name (and `objection_seq`
+with it, since rewinding that counter would bring an already-answered page's
+authority back to life), because none of them is an answer to "was this defect
+fixed". Nor is there a way around it: `orchid
+task advance <id> merging` is refused out of `arbitrating` (as are the other
+two destinations an arbitration result derives — `done` and `rework`), because
+it records no arbitration result and would carry the objection into the merge
+queue with nothing having answered it. `orchid task advance <id> blocked
+--reason "..."` is still there if what you want is to stop the task rather than
+decide it, and so is any edge out of `arbitrating` that decides nothing about
+the candidate (an archetype's own `arbitrating:reviewing`, say).
+
+**It is filed as `operator-decision` rather than `review-conflict` so that it
+reaches you.** A `review-conflict` on an `arbitrating` task is arbitrable: the
+pump wakes the orchestrator instead of paging a human, and `orchid task
+arbitrate` is a write the brokered surface admits — so the model would clear
+your objection from the same diff that produced it, and you would find out the
+way F33's operator did, by reading the merged source. `operator-decision` names
+no settling verb, so it is operator-only on every surface. The run stops here
+until you decide, which is the point.
+
+That is enforced at the verb as well as in the routing: `orchid task arbitrate`
+refuses a non-operator arbitration of either result on a task carrying your
+standing objection, so a model woken for some other boundary cannot reach this
+one by naming its id. If you see that refusal in a tick's output, the model did
+the right thing next — its move there is `orchid notify`, which is how this page
+got to you.
+
+**You can decide it from the page.** Answering it *is* the decision, and the
+next actor to reach the repository will carry it out for you. The page says so
+itself — the detail an operator's objection composes names this answer beside
+the verb, because `operator-decision` declares no choice set, so there is no
+menu of permitted answers printed under it and the word has to come from the
+sentence:
+
+```sh
+orchid answer <qid> approve      # the qid on the page, from BLOCKERS.md or your channel
+```
+
+The relay is deliberately narrow, and what it reads is **not the page's words**.
+When the driver raises this stop it writes a small record beside the question —
+`runtime/answers/<qid>.objection`, naming this task, this objection instance, the
+objection's stored line, the candidate it was raised about and a digest of the
+review evidence the page put in front of you — and
+that record is the evidence. `orchid task
+arbitrate --result approve` run by a woken orchestrator is credited as *yours*
+only when such a record matches the objection standing right now and its page has
+an answer recording exactly `approve`. Two verbs are what make that state yours:
+`orchid answer`, which no orchestrator may run on any surface, and `orchid
+notify --objection`, the only form that writes the record — and the brokered
+command surface refuses that flag outright. A model **can** raise a page (`orchid
+notify` is admitted to it); what it cannot do is raise one that lends its own
+arbitration your authority, however exactly it quotes you.
+
+An answer of anything else, an answer about another task, an answer about an
+objection you have since superseded — including one you re-raised *in the same
+words*, since the instance rotates even when `--waive-attempt` leaves the round
+number alone — none of them carries. The refusal you would then see names the
+page to answer. Nothing about the model's own reasoning is an input: not its
+`--reason` prose, not a flag, not an environment variable.
+
+Nor does an answer about a round that has **moved since you read it**. You are
+answering one question — was the objection met by *this* diff and *these*
+reviews? — and the candidate, the round's pinned review plan and the reviews
+filed against it can all change without touching a character of the objection or
+a digit of its instance: a rebase, a relaunched reviewer slot, a replaced
+verdict. The record states a digest of all of that, recomputed when your answer
+would be spent, so any of it moving invalidates the answer and you are paged
+again for the round that actually exists. If you would rather not wait for the
+new page, the arbitration is yours to run from your own shell.
+
+The record is **spent** by the arbitration it authorises, so one answer settles
+one decision. If a pass is killed mid-arbitration you may find the objection
+still standing with its page already answered; that is the fail-closed direction,
+and the way through it is to run the arbitration yourself:
+
+```sh
+orchid task arbitrate <id> --result approve --reason "..."   # from your own shell
+```
+
+Every page's id is **claimed before anything is filed under it**, and never
+released — not by your answer, not by a spent authority. `orchid notify` used to
+draw a question id as sixteen bits of randomness and use it unguarded, so a page
+raised later could land on the id of one raised earlier and rename its
+`.question` and authority record away, leaving the earlier page's `.answer`
+sitting beside a record for the objection standing *now*. That is the same relay
+above clearing an objection nobody answered, assembled out of a collision. If
+you ever see
+
+```
+orchid: could not claim an unused question id in epoch <n> after 64 draws
+```
+
+the page was **not** raised, nothing was journaled and nothing was written under
+a reused id. Either this epoch's id space is genuinely exhausted (that is 65536
+pages inside one run) or `.orchid/runtime/answers` cannot be written to; check
+the directory's permissions and free space before anything else.
+
+If the objection is genuinely obsolete
+(the task was re-scoped, the code it named is gone), that is still an
+arbitration: approve it and say so in the reason, so the record shows a decision
+rather than a field that quietly disappeared.
+
+The reviewers see it too. Every shipped `review` adapter appends the objection
+to the next round's prompt, so a reviewer that flips to `approve` with the
+defect untouched is doing it having been shown your words — which is worth
+knowing before you take its verdict as a second opinion.
+
 ## Answers sent on a channel never arrive
 
 **Symptom:** blockers reach your phone, you answer them there, and the run

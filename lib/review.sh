@@ -11,7 +11,11 @@
 # lib/common.sh, lib/frontmatter.sh, lib/manifest.sh, lib/roles.sh, lib/
 # resolver.sh, lib/envelope.sh, lib/capsuite.sh, lib/ledger.sh, then this
 # file — exactly the order libexec/orchid-jobs already sources everything
-# else in.
+# else in. The two objection readers below (review_operator_relay,
+# review_objection_page_authority) additionally need lib/objection.sh, which
+# libexec/orchid-task and runners/orchid-drive source ahead of this file; the
+# callers that do not (libexec/orchid-status, libexec/orchid-jobs) never reach
+# either, and this file is sourced for the routing table they do use.
 #
 # INV-05: every decision below is config-shaped (`role.reviewer`'s chain,
 # the `review.<tier>` chain) or capability-shaped (manifest capabilities,
@@ -56,6 +60,366 @@ review_depth_required() {
     low) return 1 ;;
     *) return 0 ;;
   esac
+}
+
+# ---------------------------------------------------------------------------
+# THE ARBITER'S STANDING OBJECTION (T032, dogfood F33).
+#
+# An operator who arbitrates `request-changes` sends the task back to `rework`
+# and the decision is journaled -- and NOTHING else about the run remembers it.
+# The next attempt is judged entirely on its own reviews, so the round after
+# that can approve deterministically with the objected-to defect untouched, and
+# every record along the way reads like a clean pass. F33 is that exact run:
+# two operator rejections naming the same concurrency hole, a third round where
+# both reviewers flipped to `approve`, and a deterministic merge whose detail
+# said "unanimous scope-complete approval from 2 review(s), no finding at or
+# above medium". The hole shipped to the integration branch.
+#
+# So the objection becomes DURABLE STATE on the task -- `unresolved_objection`,
+# written by `orchid task arbitrate --result request-changes` and cleared ONLY
+# by an explicit `orchid task arbitrate --result approve`. Two readers act on
+# it: lib/drive.sh's `drive_review_decision` refuses to make a deterministic
+# approval while one stands, and every shipped `review` adapter puts it in the
+# reviewer's prompt so the next round is judged on "was the arbiter's objection
+# met" rather than re-formed from scratch.
+#
+# ONE COMPOSER FOR BOTH ENDS. The value is stored in frontmatter, which is
+# strictly one `key: value` per line (lib/frontmatter.sh's fm_set refuses a
+# newline outright), and it is read back into lib/drive.sh's TAB-separated
+# decision record, where a raw tab would shift every field after it. Folding at
+# the write end alone would leave the reader trusting a rule enforced somewhere
+# else; capping at each end with its own literal would let the two disagree the
+# day one of them is edited. So both call this, and the cap is a single
+# constant.
+#
+# 400, not ENVELOPE_EXCERPT_MAX's 160: an excerpt is a pointer to an envelope
+# the reader can go open, and this is the whole of what the arbiter said --
+# F33's second rejection named the exact constants, the exact line range, the
+# response shape to reuse and the test to add, and an objection truncated
+# before the specifics is the bare `request-changes` this field exists to
+# replace.
+REVIEW_OBJECTION_MAX=400
+
+# review_objection_line <text> -- <text> folded to the single line the
+# `unresolved_objection` field stores and every reader quotes back. Empty in,
+# empty out (envelope_fold_line's own contract), so a caller can test the
+# result for emptiness without a second rule about what "no objection" is.
+review_objection_line() {
+  envelope_fold_line "$1" "$REVIEW_OBJECTION_MAX"
+}
+
+# review_objection_record <attempt> <reason> -- the CANONICAL stored line: what
+# `unresolved_objection` holds, what the page quotes, and what the authority
+# record beside that page is compared against, byte for byte.
+#
+# `a<attempt>:` says which round was rejected, which is what makes a standing
+# objection legible three rounds later. It is not a binding -- a rework round
+# moves `attempts` and `candidate_sha`, and an objection that expired on either
+# would expire on precisely the event it exists to survive. The binding is
+# `objection_seq` (lib/objection.sh); this prefix is legibility.
+#
+# THE BUDGET IS THE WHOLE LINE'S, NOT THE REASON'S, and that is what makes this
+# a function rather than a `printf` at the one write. The stored value has to be
+# a FIXPOINT of review_objection_line, because readers fold what they are given
+# before putting it in a TAB-separated record: fold the reason to
+# REVIEW_OBJECTION_MAX and the line with its prefix comes out LONGER than the
+# cap, so every reader truncates it again -- a second `...` in the page, a
+# quoted objection that is not the stored one, and (before the authority record
+# below existed) an objection past the cap that could never be relayed at all,
+# because the page and the field it was compared against disagreed by the
+# handful of characters the prefix cost. Budgeting `- 3` as well leaves room for
+# the ellipsis envelope_fold_line appends when it truncates, so the composed
+# line is at most REVIEW_OBJECTION_MAX characters and folding it again is a
+# no-op at every length.
+review_objection_record() {
+  local prefix="a${1}: " budget
+  budget=$(( REVIEW_OBJECTION_MAX - ${#prefix} - 3 ))
+  [ "$budget" -gt 0 ] || budget=1
+  printf '%s%s\n' "$prefix" "$(envelope_fold_line "$2" "$budget")"
+}
+
+# review_objection_remedy <task> -- the clause naming the verb that settles
+# THIS task's standing objection. lib/drive.sh composes it into the detail every
+# objection boundary carries, and therefore into the page an operator is sent:
+# it is what tells them, in the kernel's own words, that `approve` is the answer
+# that settles this and `orchid task arbitrate <this id>` is the verb that
+# records it. TASK-BOUND, so a page never points at another task's verb.
+#
+# It is prose FOR THE OPERATOR and no longer evidence about them. The relay used
+# to require this clause back out of the question file before crediting an
+# answer, which made a sentence a security boundary -- and a weak one, since
+# `notify` is brokered and a model could compose it. The authority record beside
+# the page carries that weight now (lib/objection.sh), so this clause may be
+# reworded for a human without any answer becoming uncreditable.
+review_objection_remedy() {
+  printf 'orchid task arbitrate %s --result approve|request-changes\n' "${1:-}"
+}
+
+# ---------------------------------------------------------------------------
+# WHO RAISED IT, AND WHY THE FIELD ABOVE IS NOT ENOUGH ON ITS OWN.
+#
+# `orchid task arbitrate` has two callers that are not the same actor. An
+# OPERATOR runs it from their own shell. A BROKERED ORCHESTRATOR runs it
+# through runners/orchid-orchestrator-command after the pump woke it for a
+# `review-conflict` -- that is the whole point of that surface, and
+# `task-arbitrate` is the one judgment write `_DRIVE_BROKERED_WRITE_VERBS`
+# admits. Both write `unresolved_objection`, and until this pair of helpers the
+# two were indistinguishable afterwards.
+#
+# That mattered in one direction each way. Treating every objection as the
+# operator's turns a woken model's own `request-changes` into a stop only a
+# human may clear -- so an unattended run that arbitrates its way through a
+# disagreement, which is exactly what the brokered surface exists to do, parks
+# on a human page it never needed and no later pass can move. Treating every
+# objection as the orchestrator's gives F33 back: a woken model clears the
+# operator's twice-stated objection from the same diff that produced it.
+#
+# So the class of the actor is recorded at the WRITE, durably, beside the text
+# -- and the rule it buys is one sentence: AN OBJECTION IS SETTLED BY AN
+# ARBITER OF AT LEAST THE AUTHORITY THAT RAISED IT. An operator's objection is
+# the operator's to clear; an orchestrator's may be cleared by the orchestrator
+# that raised it, or by the operator above it. Neither reading is the run's
+# default posture: both are read off a field the arbitration itself wrote.
+#
+# ORCHID_ACTOR IS THE PROVENANCE, and it is not a new one. It is the same
+# kernel-set variable libexec/orchid-journal has always derived its actor
+# string from, under the identical rule: runners/orchid-tick exports
+# `<engine>/orchestrator tick-e<epoch>` before spawning the orchestrator,
+# lib/spawn.sh's ORCHID_* allowlist carries it into the child, the broker
+# `exec`s `bin/orchid` with that environment intact, and an operator's own
+# shell has none of it -- which is why an unset variable has always read as
+# `operator` in the journal. Reusing it means the class recorded on the task
+# and the actor recorded in the journal entry for the same arbitration can
+# never disagree, and it is trusted-within-machine for exactly the reasons
+# documented there. runners/orchid-drive's `ORCHID_ACTOR="${ORCHID_ACTOR:-drive}"`
+# puts the deterministic driver on the non-operator side of this line too,
+# which is correct: an unattended approval is machine judgment, whoever started
+# the pass.
+
+# review_arbiter_class -- the class of the actor recording an arbitration RIGHT
+# NOW: `orchestrator` when the kernel set an actor identity for this process,
+# `operator` when nothing did. Never empty.
+review_arbiter_class() {
+  if [ -n "${ORCHID_ACTOR:-}" ]; then printf 'orchestrator\n'; else printf 'operator\n'; fi
+}
+
+# review_objection_arbiter <objection> <recorded-class> -- the class of arbiter
+# whose objection is standing. Empty when none stands, so a caller can test the
+# result for emptiness exactly as it does review_objection_line's.
+#
+# FAIL-CLOSED, and this is the half worth stating: `orchestrator` is returned
+# for that one token and nothing else. Absent, empty, unrecognised, or a task
+# written before the class was recorded at all: every one reads as `operator` -- the
+# stricter stop, the one a woken model may not settle. A provenance field that
+# cannot be read is not evidence that a machine raised the objection, and the
+# expensive direction of that doubt is the one F33 already paid for.
+review_objection_arbiter() {
+  # `${1:-}`/`${2:-}`: every caller reads both out of frontmatter, where an
+  # absent key is a missing ARGUMENT and not an empty one, and this file is
+  # sourced by verbs running under `set -u`.
+  [ -n "${1:-}" ] || return 0
+  case "${2:-}" in
+    orchestrator) printf 'orchestrator\n' ;;
+    *) printf 'operator\n' ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# THE OPERATOR'S OWN DECISION, RELAYED (T032 convergence, after the attempt-4
+# arbitration).
+#
+# `review_arbiter_class` above answers "who is running this verb", and an
+# operator's standing objection may only be settled by an operator. Those two
+# facts together close a door the operator has to be able to walk through: an
+# operator's stop is paged with `orchid notify`, the operator answers it with
+# `orchid answer`, and NOTHING CONSUMES AN ANSWER FILE (docs/specs/operations.md
+# -- a page records what was decided, and the verb is still run by hand). When
+# the actor who next reaches this repository is a woken orchestrator relaying
+# that answer, `review_arbiter_class` sees the kernel's actor identity, calls it
+# the model's own judgment, and refuses -- so the operator's decision, already
+# made and already durable, cannot be carried out by the actor holding the
+# terminal. The stop stands until the operator opens a shell of their own.
+#
+# So the class of an arbitration is the actor's UNLESS a durable operator
+# decision authorises it, and this is the reader of that state.
+#
+# WHO DOES THE RELAYING, since the objection's own boundary still wakes nobody
+# and that is deliberate (lib/drive.sh's `objection` arm -- routing it to a kind
+# a model may settle is F33 with an extra actor in it). This never HANDS a model
+# the task. It admits the arbitration when a model that is already at the
+# repository -- woken for another boundary, or an orchestrator session the
+# operator is working through -- records the decision the operator has already
+# made. The distinction that matters is not which actor typed the verb; it is
+# whether a JUDGMENT was made by a model or merely carried by one.
+#
+# WHAT MAKES IT THE OPERATOR'S, on five axes, none of which the relaying model
+# supplies:
+#
+#   * THE PAGE IS THE KERNEL'S. The evidence is not the question's prose -- it is
+#     the AUTHORITY RECORD written beside it, `runtime/answers/<qid>.objection`
+#     (lib/objection.sh, whose header argues the format). Only `orchid notify
+#     --objection` writes one, and runners/orchid-orchestrator-command refuses
+#     an unrecognised flag to `notify` structurally, so the surface a woken
+#     model reaches cannot mint one. This is the axis that used to be missing:
+#     the reader matched the objection's text INSIDE a question file, and
+#     `notify` is on the brokered write table, so a model could mint a page
+#     quoting the objection and the remedy clause and then be credited with the
+#     operator's answer to it. Text a model can compose is not provenance. (A
+#     `soft` surface enforces nothing, being an adapter bounded only by its
+#     prompt; that is the same trust boundary ORCHID_ACTOR itself rests on, and
+#     this reader adds no authority there that unsetting that variable would not
+#     already give.)
+#   * THE ANSWER IS THE OPERATOR'S. `runtime/answers/<qid>.answer` is written by
+#     ONE verb, `orchid answer`, which is not on `_DRIVE_BROKERED_WRITE_VERBS`
+#     (lib/drive.sh) and is named in the broker's own REFUSED list: it `exec`s a
+#     validated argv and there is no seam that reaches it.
+#   * THE TASK AND THE INSTANCE. The record states the task and the
+#     `objection_seq` that stood when the page was raised, and both are compared
+#     as whole lines against the task's state NOW. The seq is what stops an
+#     answer from becoming a reusable token: it is bumped by every
+#     `request-changes` and never reset, so an answer given about the objection
+#     that stood then -- one already cleared, one this arbitration is
+#     superseding, or the SAME words re-raised across a `--waive-attempt` round
+#     that left `attempts` untouched -- authorises nothing about the objection
+#     standing now.
+#   * THE ROUND (T032 convergence, after the attempt-7 arbitration). The record
+#     states the `candidate_sha` the page was raised about, plainly, and
+#     `objection_evidence` -- one digest over that candidate, the round
+#     (`attempts` + 1), the pinned review plan and the accepted review envelopes
+#     filed against it -- and this reader RE-READS both and compares them as
+#     whole lines. The three axes above bind an answer to a task, an instance
+#     and a text; none of them binds it to what the operator was LOOKING AT. A
+#     rebase re-points the candidate, a relaunched slot files a second envelope,
+#     reconcile replaces a verdict at the same path, a repin rewrites the plan --
+#     and the objection line, which is `a<attempt>: <reason>` over a counter
+#     `--waive-attempt` deliberately does not move, says nothing about any of it.
+#     Relayed past that, the operator's "yes, that is fixed" settles a round they
+#     never saw, which is F33 with their own answer as the instrument.
+#     lib/objection.sh's section 3 is the argument in full.
+#   * THE DECISION. The answer must be the arbitration result, spelled exactly:
+#     `approve` and nothing else clears. Not a paraphrase, not a prefix, not
+#     "yes, approve" -- and never anything the arbitration's own `--reason`
+#     says, which is the relaying model's prose.
+#
+# THE OBJECTION TEXT IS COMPARED EXACTLY, AS A WHOLE LINE, against the canonical
+# stored value -- never as a substring of anything. `review_objection_record`
+# makes that value a fixpoint of the fold every reader applies, so the
+# comparison holds at any length, including an objection longer than
+# REVIEW_OBJECTION_MAX: the record carries the stored bytes and the reader
+# compares the stored bytes, so a long objection relays exactly as a short one
+# does. It is the substring match this replaces that could not -- the page
+# quoted a re-folded, shorter line than the field held.
+#
+# CLEARING ONLY, and that asymmetry is deliberate. `--result request-changes`
+# relayed the same way would replace the operator's recorded words with the
+# model's paraphrase of them and re-raise the stop under the operator's
+# authority -- while REFUSING it costs the operator nothing at all, since their
+# objection is already standing and refusing leaves it standing. Only the
+# clearing direction is blocked by the refusal, so only the clearing direction
+# needs a way through.
+#
+# EVERY FAILURE IS A REFUSAL, including the ones that are nobody's fault: the
+# answers directory is runtime state, gitignored and sweepable, so a wiped
+# runtime reads exactly like an operator who never answered. That costs them a
+# shell of their own and costs the guarantee nothing, which is the correct
+# direction for a reader whose yes lets a model act with a human's authority.
+#
+# Returns the qid that authorised the arbitration -- which the caller must then
+# CONSUME (objection_authority_consume) before it clears anything, so the record
+# is spent once and a crash or a replay finds nothing left to spend. Prints
+# nothing when no authority stands. Never nonzero on "no": callers test the
+# output for emptiness, the same contract review_objection_line and
+# review_objection_arbiter have.
+review_operator_relay() {
+  local repo="${1:-}" task="${2:-}" result="${3:-}" objection="${4:-}" seq="${5:-}"
+  local answers qid subject ans candidate evidence
+  [ -n "$repo" ] && [ -n "$task" ] && [ -n "$objection" ] || return 0
+  case "$seq" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$result" = approve ] || return 0
+  # THE ROUND, RE-READ NOW. Neither of these is taken off the record and neither
+  # is carried down from the caller: the record states what the round looked like
+  # when the operator was paged, and these are what it looks like at the moment
+  # their answer would be spent. Either failing to read at all is no authority
+  # (the `|| return 0`s below), which is the same direction every other failure
+  # here takes.
+  candidate="$(objection_candidate "$repo" "$task")" || return 0
+  [ -n "$candidate" ] || return 0
+  evidence="$(objection_evidence "$repo" "$task")" || return 0
+  [ -n "$evidence" ] || return 0
+  # Composed rather than taken from lib/common.sh's `orchid_runtime`, which
+  # mkdir -p's what it returns: this is a read, and lib/drive.sh's
+  # drive_page_on_record reads the same directory the same way for the same
+  # reason.
+  answers="$repo/.orchid/runtime/answers"
+  [ -d "$answers" ] || return 0
+  # The AUTHORITY records are what is walked, not the questions (see
+  # objection_authority_qids), so a page with no record beside it never enters
+  # this loop at all.
+  while IFS= read -r qid; do
+    [ -n "$qid" ] || continue
+    objection_authority_matches "$(objection_authority_file "$repo" "$qid")" \
+      "$task" "$seq" "$objection" "$candidate" "$evidence" || continue
+    # The record points at a page, and the page must still be the one it was
+    # written for: same qid, same subject line. A record whose question has been
+    # swept away authorises nothing, because the thing the operator answered is
+    # gone.
+    [ -f "$answers/$qid.question" ] || continue
+    subject=""
+    IFS= read -r subject < "$answers/$qid.question" || true
+    [ "$subject" = "task: $task" ] || continue
+    [ -f "$answers/$qid.answer" ] || continue
+    ans=""
+    IFS= read -r ans < "$answers/$qid.answer" || true
+    # `continue`, never `return`: another page may carry a record for this same
+    # instance and hold the operator's actual decision, and a page they answered
+    # `defer` must not hide the one they answered.
+    [ "$ans" = "$result" ] || continue
+    printf '%s\n' "$qid"
+    return 0
+  done < <(objection_authority_qids "$repo")
+  return 0
+}
+
+# review_objection_page_authority <repo> <task> <page-text> -- exit 0 iff this
+# operator page is the one an authority record belongs beside: the task carries
+# a standing OPERATOR objection and the page really quotes it.
+#
+# The driver's single page site asks this and passes `--objection` on the answer
+# (runners/orchid-drive). Three halves are load bearing. The class, because an
+# objection the run's own orchestrator raised is settled by that orchestrator
+# and never needs a human's authority relayed -- minting one would be handing
+# out a record for a stop that has no operator behind it. The TEXT, because
+# `operator-decision` is a catch-all kind: a refused advance, an archetype with
+# no edge and an unresolved objection all reach the page loop under it, and only
+# the last is a page about settling an objection. Matched with `grep -qF -e`
+# against the canonical stored line -- a fixed string, and `-e` because an
+# objection is prose an operator typed and one starting with `-` must not become
+# a grep option.
+#
+# And, since the record gained its round fields (T032 convergence, after the
+# attempt-7 arbitration), THE ROUND HAS TO BE READABLE. `orchid notify
+# --objection` refuses outright when it cannot read the candidate or compute the
+# evidence digest -- correctly, since a record naming neither binds an answer to
+# nothing -- and that refusal is a non-zero exit inside a driver running under
+# `set -e`, which would cost the whole pass rather than one flag. Asking here
+# instead means the page is still RAISED, just without an authority beside it:
+# the operator is told about the stop and settles it from their own shell, which
+# is where the guarantee already stands whenever a relay is unavailable. The hard
+# refusal stays where it belongs, on a hand-typed `notify --objection` that
+# states in its argv that it wants a record.
+review_objection_page_authority() {
+  local repo="${1:-}" task="${2:-}" text="${3:-}" tf objection
+  [ -n "$repo" ] && [ -n "$task" ] || return 1
+  tf="$(orchid_state "$repo")/tasks/$task.md"
+  [ -f "$tf" ] || return 1
+  objection="$(fm_get "$tf" unresolved_objection 2>/dev/null || true)"
+  [ -n "$objection" ] || return 1
+  [ "$(review_objection_arbiter "$objection" \
+        "$(fm_get "$tf" unresolved_objection_by 2>/dev/null || true)")" = operator ] || return 1
+  grep -qF -e "$objection" <<<"$text" 2>/dev/null || return 1
+  objection_candidate "$repo" "$task" >/dev/null 2>&1 || return 1
+  objection_evidence "$repo" "$task" >/dev/null 2>&1 || return 1
+  return 0
 }
 
 # review_implementer_engine <repo> <task> -- the task's recorded

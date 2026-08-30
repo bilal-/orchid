@@ -3563,6 +3563,19 @@ export ORCHID_EPOCH
 # passing `orchid verify` (INV-11's gate) and a reconciled reviewer envelope.
 # A hand-set status would prove nothing about a verb that reads the status it
 # was handed.
+#
+# THE LAST STEP IS `task arbitrate`, NOT `task advance <id> merging` (T032,
+# dogfood F33). That edge used to be walkable by hand and is now refused: it
+# records no arbitration result, so it neither raises an arbiter's objection nor
+# clears one, and a task carrying a live `unresolved_objection` could be typed
+# straight into the merge queue past it. `task arbitrate --result approve`
+# DERIVES `merging` from the archetype's own declared transitions and takes the
+# same edge through the same `task advance` machinery, so this fixture still
+# reaches `merging` the way the kernel does — and it is the only public door
+# there is. The transition is asserted rather than assumed: this walk exists to
+# put a task in front of `orchid merge`, and a refused final step would leave one
+# in `arbitrating`, where `merge` refuses for a reason that has nothing to do
+# with the repo-wide gate this section is about.
 mg_walk_to_merging() {  # <id> <branch> <base> <cand> <verification_commands>
   "$ORCHID_BIN" task set "$1" base_sha "$3"
   "$ORCHID_BIN" task set "$1" candidate_sha "$4"
@@ -3575,7 +3588,10 @@ mg_walk_to_merging() {  # <id> <branch> <base> <cand> <verification_commands>
   "$ORCHID_BIN" task advance "$1" reviewing >/dev/null
   plant_reviewer_envelope "$1"
   "$ORCHID_BIN" task advance "$1" arbitrating --reason "single reviewer approved" >/dev/null
-  "$ORCHID_BIN" task advance "$1" merging --reason "approved for merge" >/dev/null
+  "$ORCHID_BIN" task arbitrate "$1" --result approve --reason "approved for merge" >/dev/null \
+    || fail "INV-15: the walk into merging must reach it through the one public door onto that edge, orchid task arbitrate --result approve ($1)"
+  assert_eq merging "$("$ORCHID_BIN" task show "$1" | grep '^status: ' | cut -d' ' -f2)" \
+    "INV-15: ...and land in merging, or the merge below is refused by the task's status rather than by the repo-wide gate this section exists to prove ($1)"
 }
 
 "$ORCHID_BIN" task create T101 "gated without opting in" >/dev/null

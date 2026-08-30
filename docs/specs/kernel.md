@@ -202,6 +202,15 @@ exits/<job_id>              # the engine's own exit status, written by the
                             #   returns at spawn, so an envelope-less job's
                             #   exit code would otherwise be unrecoverable
 engines.json                # availability ledger (per-machine quota state)
+answers/<qid>.reserved      # the qid CLAIM (T032): created with an exclusive
+                            #   `mkdir` BEFORE any journal, BLOCKERS.md,
+                            #   .question, .choices, .answer, .objection or
+                            #   outbox write names that id, and never released
+                            #   — not by an answer, not by a consumed
+                            #   authority. `orchid notify` redraws until a free
+                            #   id comes up and refuses to publish if none
+                            #   does, so a page can never rename an earlier
+                            #   page's question or authority record away
 answers/  logs/
 ```
 
@@ -282,8 +291,8 @@ across prose sections is normative HERE):**
 | testing | `verify` PASS → `task advance` | evidence recorded | evidence log, frontmatter | reviewing |
 | testing | `verify` FAIL → `task advance` | failure classified first: candidate → attempts++; handoff/environment/flaky → `task infra-fail` + `--waive-attempt --reason`. If a candidate failure cannot take `testing → rework` because the archetype omits that edge or the edge is refused before charging, `task advance blocked --charge-attempt --reason` preserves the strict charge in one locked transition while stopping for an operator. | frontmatter, journal | rework, or blocked on the charge fallback |
 | reviewing | all required review envelopes reconciled → `task advance` | fail-closed envelope checks | frontmatter | arbitrating |
-| arbitrating | `task advance --reason` (approve) | findings ≥ blocking_severity resolved | frontmatter, journal | merging |
-| arbitrating | `task advance --reason` (reject) | attempts++ unless waived | frontmatter, journal | rework |
+| arbitrating | `task arbitrate --result approve --reason` | findings ≥ blocking_severity resolved; no `unresolved_objection` this arbiter lacks the authority to settle | frontmatter (clears `unresolved_objection`), journal | merging (or `done` on an outcome=report archetype) |
+| arbitrating | `task arbitrate --result request-changes --reason` | attempts++ unless waived | frontmatter (bumps `objection_seq`, then writes `unresolved_objection_by`, `unresolved_objection`), journal | rework |
 | merging | `merge` exit 0 → `task advance` | serialized; base current; temp-worktree suite AND `merge_gate` green | integration ref, evidence, frontmatter | done |
 | merging | `merge` exit 1 (`validation_failed`) → `task advance` | — | evidence, frontmatter | rework |
 | merging | `merge` exit 1 (`gate_failed`) → `task advance --charge-attempt` | repo-wide `merge_gate` red; integration ref untouched; attempts++ (the ONE merge failure that charges — a red repo-wide gate repeats identically, so an uncharged edge never terminates) | evidence, frontmatter, journal | rework |
@@ -1178,6 +1187,133 @@ falling back to the role's first-of-chain baseline and to a withheld reroute.
 A task hand-walked with NO envelope at all keeps whatever it recorded; the
 clear is about an envelope that is present and silent, not about an absent
 one. The drop is journalled.
+`unresolved_objection` (v1.1, T032 — dogfood F33): kernel-owned and no part of
+the schema-1 list above — absent from a task file until an arbiter rejects a
+round, and present until one explicitly approves. `orchid task arbitrate <id>
+--result request-changes` writes `a<attempt>: <reason>` (the round that was
+rejected, then the `--reason` folded to one line, capped at
+`REVIEW_OBJECTION_MAX`); `orchid task arbitrate <id> --result approve` is the
+ONLY thing that clears it, and journals the clear under the `arbitration` kind.
+`orchid task set` refuses the key by name. It is deliberately bound to neither
+the attempt nor the candidate: a rework round moves both, and an objection that
+expired on either would expire on precisely the event it exists to survive — so
+`unblock`, `retry` and `reverify` all leave it standing, none of them being an
+answer to "was this defect fixed". Two readers act on it. The deterministic
+driver refuses to make an approval while one stands: `drive_review_decision`
+answers ahead of all three arms of the arbitration truth table, and the
+driver takes no transition on the word it returns — the driver's one call to
+`task arbitrate --result approve` sits behind that return, which is what makes
+it structurally unable to clear its own path. It outranks those arms without
+skipping them: the round's own envelopes are still read, and a rejection among
+them is COMPOSED into the objection's detail rather than discarded, so the
+arbiter is told both what stands against the task and what the reviewers in
+front of them said. WHICH stop it raises is
+`unresolved_objection_by`'s answer, below. The verb surface is closed the same
+way: the three destinations an arbitration result derives — `merging`, `done`
+and `rework` — are refused by `orchid task advance` (which records no
+arbitration result), so `orchid task arbitrate` is the only public route past a
+standing objection and not merely the driver's one. The refusal is scoped to
+those three and not to the status: `blocked` is the universal escape hatch, and
+a non-outcome edge an archetype declares (`arbitrating:reviewing`) is one no
+`--result` derives, so refusing it would delete a transition rather than close
+a bypass. And every shipped `review` adapter
+appends the objection to the
+reviewer's prompt (the pack copies `task.md` whole, so no new pack item is
+needed), narrowing the next round's question to "was the arbiter's objection
+addressed" rather than leaving the reviewer to re-form an opinion from the diff
+alone. F33 is why both halves exist: an operator rejected the same concurrency
+hole twice, naming the constants and the line range the second time; round 3's
+reviewers, judging the diff cold, both returned `approve`; and the
+deterministic path merged it as "unanimous scope-complete approval from 2
+review(s), no finding at or above medium".
+`unresolved_objection_by` (v1.1, T032 convergence): kernel-owned, written and
+cleared by the same arbitrations that write and clear `unresolved_objection`,
+never alone; `orchid task set` refuses it by name too. It holds the CLASS of
+the arbiter who raised the standing objection — `operator` when nothing set an
+actor identity for the process running the verb, `orchestrator` when the kernel
+did (`runners/orchid-tick` exports `ORCHID_ACTOR` before spawning the
+orchestrator, `lib/spawn.sh`'s `ORCHID_*` allowlist carries it into the child,
+and the brokered command surface `exec`s `bin/orchid` with that environment
+intact). It is the same provenance `orchid journal add` has always derived its
+actor string from, deliberately: the class recorded on the task and the actor
+recorded on that arbitration's journal entry cannot disagree. It exists because
+`orchid task arbitrate` has two callers who are not the same actor — the
+operator, and a woken orchestrator for which `task-arbitrate` is the one
+judgment write the brokered surface admits — and reading a model's own
+`request-changes` back as an operator's would raise a stop that wakes nobody,
+which no later pass can move, on the exact disagreement the brokered surface
+exists to arbitrate. The rule it encodes: **an objection is settled by an
+arbiter of at least the authority that raised it.** An operator's is raised as
+`operator-decision` (`drive_review_decision`'s `objection` word), operator-only
+on every surface, for the reason `operator-handoff` and `task-prerequisite` are
+— naming a settling verb would hand the clearing decision to a woken model
+reading the same diff that produced the objection. The orchestrator's own is
+raised as `review-conflict` (the `conflict` word): still no deterministic
+approval, still quoted into the boundary and into the next round's reviewer
+prompt, but settleable by the actor that raised it. Fail-closed at every read:
+absent, empty or anything but the exact token `orchestrator` reads as the
+operator's, so a task carrying an objection written before this field existed
+keeps the stricter stop. And the routing is not the whole guarantee —
+`orchid task arbitrate` refuses a non-operator arbitration of EITHER result on
+a task carrying an operator's standing objection, since `task arbitrate <id>`
+takes an id and a model woken for another task's boundary could otherwise name
+this one; `--result approve` would clear their objection and
+`--result request-changes` would supersede their words with its own.
+THE OPERATOR'S OWN DECISION IS STILL RELAYABLE (T032 convergence): that stop is
+paged with `orchid notify` and answered with `orchid answer`, and no verb
+consumes an answer file — so an operator who has decided still needs an actor
+to record the arbitration, and in an unattended run that actor is a woken
+orchestrator. `review_operator_relay` (lib/review.sh) is the reader that credits
+one, and what it reads is an AUTHORITY RECORD, never a page's prose:
+`runtime/answers/<qid>.objection`, five lines (`task:`, `seq:`, `objection:`,
+`candidate:`, `evidence:`),
+written by `orchid notify --objection` and defined in lib/objection.sh. A
+`--result approve` recorded by a non-operator counts as the operator's iff such a
+record names this task, names the objection instance standing now, carries the
+canonical stored objection line byte for byte, names the candidate and the review
+evidence standing now, and its `<qid>.question` (same
+`task:` header) has an `.answer` recording exactly `approve`. Every field is
+compared as a whole line; nothing is matched as a substring, and a sixth line is
+refused rather than ignored (so a record minted before `candidate:`/`evidence:`
+existed matches nothing). `candidate:` is the task's `candidate_sha`, stored
+plainly because it is the term a human reading `runtime/answers/` has to be able
+to see; `evidence:` is `objection_evidence` — one digest over that candidate, the
+round (`attempts` + 1), the pinned review plan for that round and every accepted
+review envelope of it, by name and by content. Both are re-read at the relay and
+compared like the rest. The first three bind an
+answer to a task, an instance and a text; none of them binds it to what the
+operator was looking at, and a rebase, a relaunched slot, a replaced verdict or a
+repin moves the round without moving the objection line (which is
+`a<attempt>: <reason>` over a counter `--waive-attempt` deliberately leaves
+alone). Any of them moving invalidates the answer, and the operator is paged
+again for the round that exists. `orchid answer` is
+on no surface's admitted verb list, and `runners/orchid-orchestrator-command`
+refuses an unrecognised flag to `notify` — so a woken model can raise a page
+(`notify` IS admitted) but cannot raise one that mints an authority, which is
+what makes the record rather than the page the evidence. The record is CONSUMED
+before anything is cleared, so it is spent once and a crash or a replay finds
+nothing left to spend. The qid all three files are keyed by is CLAIMED before
+any of them is written (`runtime/answers/<qid>.reserved`, above) and never
+released: a reused id renames an earlier page's question and authority record
+away while leaving that page's `.answer` beside a record naming the instance
+standing NOW, which is this relay clearing an objection nobody answered —
+assembled out of a collision rather than a forgery. Only the clearing direction is relayed: refusing a relayed
+`request-changes` leaves the operator's objection standing, which is what they
+asked for, while admitting one would record a model's paraphrase under their
+authority. The clear's journal entry names the relaying actor, the qid and the
+instance beside the authority, since the entry's own actor is the model that ran
+the verb.
+`objection_seq` (v1.1, T032 convergence): kernel-owned, refused by `task set`,
+bumped by every `task arbitrate --result request-changes` and NEVER reset — the
+identity of the objection instance an operator's answer is bound to. The stored
+text cannot be that identity: `--waive-attempt` leaves `attempts` untouched, so
+the same defect rejected twice across a waived round composes a byte-identical
+`a<attempt>: <reason>` line, and a cleared objection re-raised in the same words
+composes one too. The counter rotates where the text does not and never rewinds,
+so an authority minted for an earlier instance can never be spent on the one
+standing now. Written BEFORE the class and the text, so a crash between the
+writes leaves the older objection standing under an instance nothing is bound
+to — nothing relayable, rather than an answer spent on words nobody read.
 `hook_guidance` (v1-m3):
 written by the orchestrator from a bound `hook.on_verify_fail` handler's
 `.artifact.guidance` string, via `orchid task set <id> hook_guidance
@@ -1586,7 +1722,7 @@ sequenceDiagram
   O->>K: jobs reconcile (bind manifest<->envelope)
   O->>K: task advance testing
   O->>K: verify (evidence)
-  O->>K: task advance reviewing ... arbitrating --reason ... merging
+  O->>K: task advance reviewing ... arbitrating; task arbitrate --result approve --reason
   O->>K: merge (temp worktree, suite, ref advance)
   O->>K: task advance done
 ```
@@ -1654,8 +1790,11 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
   text would hand that satisfaction back through any admitted kind.
 - **Enforcement is a complete decision matrix, kernel-level:** every
   judgment-bearing verb refuses to run without `--reason`, which it journals
-  BEFORE writing the state change — `task advance` to `merging`, `blocked`,
-  and `rework`-from-`arbitrating` (both arbitration outcomes recorded);
+  BEFORE writing the state change — `task advance` to `blocked`, and `task
+  arbitrate` on either result (both arbitration outcomes recorded; `task
+  advance` refuses the three destinations an arbitration result derives —
+  `merging`, `done`, `rework` — out of `arbitrating` outright, since a result
+  recorded by no verb is a decision nobody signed);
   `task set risk_tier` (monotonicity enforced separately from prose);
   `--waive-attempt`; `task unblock/retry/reverify`; `run accept`;
   `lessons retire`. Sequential atomic writes (journal first, state second) mean

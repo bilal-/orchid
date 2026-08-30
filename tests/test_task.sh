@@ -347,7 +347,14 @@ assert_eq arbitrating "$(t007_status)" "archetype edge reviewing:arbitrating"
 # edge: arbitrating:rework (--waive-attempt: attempts stays at 1, so the
 # reviewer envelope already planted -- bound to attempts+1 -- stays valid
 # for every subsequent reviewing:arbitrating below without replanting)
-"$ORCHID_BIN" task advance T007 rework --waive-attempt --reason "sent back for rework"
+#
+# Taken through `orchid task arbitrate`, which since T032 is the only public
+# verb that reaches an arbitration OUTCOME edge out of `arbitrating` (the refusal, and
+# the RED case for it, are further down this file). The destination is derived
+# from this archetype's declared transitions and the move still goes through
+# `task advance`, so the edge, the waived accounting and the evidence
+# invalidation asserted here are all unchanged.
+"$ORCHID_BIN" task arbitrate T007 --result request-changes --waive-attempt --reason "sent back for rework"
 assert_eq rework "$(t007_status)" "archetype edge arbitrating:rework"
 assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep '^attempts: ' | cut -d' ' -f2)" "--waive-attempt left attempts at 1"
 
@@ -359,8 +366,8 @@ assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep '^attempts: ' | cut -d' ' -f2
 "$ORCHID_BIN" task advance T007 reviewing
 "$ORCHID_BIN" task advance T007 arbitrating --reason "re-reviewed, approved"
 
-# edge: arbitrating:merging
-"$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
+# edge: arbitrating:merging (through `task arbitrate`, per the note above)
+"$ORCHID_BIN" task arbitrate T007 --result approve --reason "approved for merge"
 assert_eq merging "$(t007_status)" "archetype edge arbitrating:merging"
 
 # edge: merging:testing (does NOT invalidate verify evidence -- only a
@@ -373,7 +380,7 @@ assert_eq testing "$(t007_status)" "archetype edge merging:testing"
 # still-bound reviewer envelope) -> reviewing:arbitrating -> arbitrating:merging
 "$ORCHID_BIN" task advance T007 reviewing
 "$ORCHID_BIN" task advance T007 arbitrating --reason "re-reviewed after merging:testing, approved"
-"$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T007 --result approve --reason "approved for merge"
 
 # edge: merging:rework
 #
@@ -433,7 +440,7 @@ assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep -c 'lib/merged\.sh:11: SC2115
 "$ORCHID_BIN" verify T007 >/dev/null
 "$ORCHID_BIN" task advance T007 reviewing
 "$ORCHID_BIN" task advance T007 arbitrating --reason "re-reviewed, approved"
-"$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T007 --result approve --reason "approved for merge"
 
 # edge: merging:done
 "$ORCHID_BIN" task advance T007 "done"
@@ -1674,3 +1681,1196 @@ green_case 'task show against an intact task file: printed in full, exit 0'
 cp "$T034_KEEP/T011.before" ".orchid/tasks/T011.md"
 "$ORCHID_BIN" task show T011 >/dev/null \
   || fail "the fixture teardown must leave T011 readable again"
+
+# ============================================================================
+# AN ARBITRATION IS DURABLE STATE, NOT JUST A JOURNAL ENTRY (T032, dogfood
+# F33).
+#
+# F33 was the most serious finding of its run and was confirmed live on r-002:
+# a defect the operator rejected TWICE was merged, and nothing in the run state
+# recorded that the concern was never addressed. `orchid task arbitrate
+# --result request-changes` moved the task to `rework` and journaled the
+# decision -- and that was all. The next attempt was judged entirely on its own
+# reviews, no verb ever asked whether the arbiter's objection had been met, and
+# round 3's deterministic approval merged the hole the task existed to close.
+#
+# So a rejection now writes `unresolved_objection` onto the task, and ONLY
+# `--result approve` clears it. This block walks the F33 sequence through the
+# real verbs: reject, rework, reject again, and finally approve -- asserting at
+# each step that the objection is still there, because "still there three
+# rounds later" is the entire property. The policy half (a standing objection
+# refusing deterministic approval, and the reviewer being shown it) is
+# tests/test_drive.sh's Part AF.
+#
+# A FRESH id, and a CHECKED create, for the reason the T034 block above gives:
+# this file runs under `set -uo pipefail` with no `-e`, so a create against a
+# taken id neither aborts nor reports and every assertion below would silently
+# read some earlier case's task.
+#
+# RED: a `request-changes` arbitration that leaves no durable marker on the
+#      task; a marker that does not survive the rework round it was raised
+#      before; and a marker `orchid task set` can quietly write away.
+# GREEN: `--result approve` clears it, journals the clear, and a task nobody
+#      has ever rejected carries no such field at all -- otherwise this would
+#      be a field that appears on everything and means nothing.
+# ============================================================================
+t32_sha="$(git rev-parse HEAD)"
+"$ORCHID_BIN" task create T040 "an arbitration that has to outlive its round" \
+  || fail "fixture: task create T040 must succeed (a taken id would make every assertion below read another case's task)"
+"$ORCHID_BIN" task set T040 base_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set T040 candidate_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set T040 verification_commands true >/dev/null
+
+t40_status()    { "$ORCHID_BIN" task show T040 | grep '^status: ' | cut -d' ' -f2; }
+t40_attempts()  { "$ORCHID_BIN" task show T040 | grep '^attempts: ' | cut -d' ' -f2; }
+# `cut -f2-`, so a value containing spaces (which every objection does) comes
+# back whole. Empty when the key is absent AND when it is present-but-empty --
+# both are "no objection standing", which is the only distinction any reader
+# makes.
+t40_objection() { "$ORCHID_BIN" task show T040 | grep '^unresolved_objection: ' | cut -d' ' -f2-; }
+
+# The light-weight walk tests/test_task_arbitrate.sh uses: base and candidate
+# both pinned to the fixture's own HEAD (an empty `base..candidate` range, so
+# INV-04's .orchid/ scan never trips), `verification_commands=true` so `orchid
+# verify` always PASSes, and a planted reviewer envelope for the kernel's own
+# reviewing->arbitrating count gate. plant_reviewer_envelope derives the
+# attempt from the task itself, so it plants against whichever round is
+# current -- which is what lets this walk run twice with an attempt consumed
+# in between.
+t40_to_arbitrating() {
+  "$ORCHID_BIN" task advance T040 implementing --reason "dispatch" >/dev/null
+  "$ORCHID_BIN" task advance T040 testing --reason "implemented" >/dev/null
+  "$ORCHID_BIN" verify T040 >/dev/null
+  "$ORCHID_BIN" task advance T040 reviewing --reason "verify passed" >/dev/null
+  plant_reviewer_envelope T040
+  "$ORCHID_BIN" task advance T040 arbitrating --reason "reviews reconciled" >/dev/null
+}
+
+t40_to_arbitrating
+assert_eq arbitrating "$(t40_status)" "fixture: T040 reaches arbitrating for its first round"
+
+# THE GREEN TWIN COMES FIRST, and it is about ABSENCE. `fm_set` on a key a file
+# does not carry APPENDS it, so a clear written unconditionally would give an
+# `unresolved_objection:` line to every task in every repository that never
+# carried one -- a field on everything, meaning nothing. A task nobody has
+# rejected must not have the key at all.
+grep -q '^unresolved_objection' <<<"$("$ORCHID_BIN" task show T040)" \
+  && fail "T032: a task no arbiter has rejected must not carry an unresolved_objection line at all"
+green_case 'a task nobody has ever arbitrated request-changes on: no unresolved_objection field is written'
+
+# --- round 1: the rejection is recorded ON THE TASK ------------------------
+T40_OBJ1='the write at lib/foo.sh:120 races the reader; guard it and add a concurrent-writer test'
+"$ORCHID_BIN" task arbitrate T040 --result request-changes --reason "$T40_OBJ1" >/dev/null \
+  || fail "fixture: the first request-changes arbitration must succeed"
+assert_eq rework "$(t40_status)" "a request-changes arbitration still lands in rework"
+assert_eq 1 "$(t40_attempts)" "...and still consumes an attempt, exactly as it did before"
+assert_eq "a1: $T40_OBJ1" "$(t40_objection)" \
+  "T032: the arbitration is recorded on the task, naming the round it rejected and quoting the reason — not journaled and forgotten"
+red_case 'an operator request-changes: the objection is written onto the task, not left as a journal entry nobody rereads'
+
+# --- it survives the rework round ------------------------------------------
+# The whole property. A new attempt, a fresh verify, a fresh reviewer envelope
+# -- everything about the round is new, and the objection is not part of the
+# round. It names a defect, not a commit.
+t40_to_arbitrating
+assert_eq arbitrating "$(t40_status)" "fixture: T040 reaches arbitrating again for its second round"
+assert_eq 1 "$(t40_attempts)" \
+  "fixture: exactly one attempt was consumed getting here, so this round really is a second one"
+assert_eq "a1: $T40_OBJ1" "$(t40_objection)" \
+  "T032: the objection survives the rework round it was raised before — nothing about a fresh attempt answers it"
+red_case 'an objection across a full rework round (new attempt, new verify, new review): still standing'
+
+# --- a second rejection supersedes it, and says so -------------------------
+# F33's actual sequence: the operator rejected twice, the second time naming
+# the exact constants and line range. One frontmatter line cannot hold a list,
+# so the arbiter's latest word replaces the earlier one -- and a value replaced
+# in silence reads as an objection nobody withdrew and nobody kept, which is
+# why the supersession is journaled before it happens.
+#
+# `--waive-attempt` here so `attempts` holds at 1 and the reviewer envelope
+# planted for this round stays valid for the next reviewing->arbitrating,
+# exactly as the archetype-edge walk earlier in this file does it. It also
+# keeps this fixture clear of `rework_max` (default 3), which would otherwise
+# block the task and turn a decided assertion into a mystery.
+T40_OBJ2='still unguarded on the retry path: RETRY_MAX and BACKOFF_MS at lib/foo.sh:118-140, reuse the response shape from bar()'
+"$ORCHID_BIN" task arbitrate T040 --result request-changes --waive-attempt --reason "$T40_OBJ2" >/dev/null \
+  || fail "fixture: the second request-changes arbitration must succeed"
+assert_eq "a2: $T40_OBJ2" "$(t40_objection)" \
+  "T032: a second rejection replaces the first — the arbiter's latest word is the operative statement of what is unresolved"
+# One PATTERN across both facts, not two assertions that could be satisfied by
+# two unrelated lines: the entry must name the supersession AND carry the text
+# it superseded. `assert_match` is line-oriented, and the journal already
+# contains T40_OBJ1 in the round-1 arbitration entry — so a second assertion
+# looking for that text alone would pass with no supersession entry at all.
+assert_match 'objection superseded by this arbitration.*concurrent-writer test' "$(cat .orchid/journal.md)" \
+  "...and the replacement is journaled with the text it replaced, so an objection is never silently dropped"
+
+# --- `task set` cannot write it away ---------------------------------------
+# The field exists to stop an APPROVAL, and the actor most able to reach `task
+# set` is the deterministic driver, which acts only through verbs (INV-13).
+# A verb that deletes the one thing standing between it and a merge is not a
+# gate. Asserted from `rework`, where the driver would meet it.
+rc=0; t40_set_out="$("$ORCHID_BIN" task set T040 unresolved_objection "" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T032: task set unresolved_objection must be refused (kernel-owned)"
+assert_match "kernel-owned" "$t40_set_out" "the refusal says the key is kernel-owned"
+assert_match "task arbitrate" "$t40_set_out" "...and names the verb that does clear it"
+assert_eq "a2: $T40_OBJ2" "$(t40_objection)" "and the refused write left the objection exactly as it was"
+red_case 'task set on unresolved_objection: refused, and the objection still stands afterwards'
+
+# --- and an explicit approval clears it ------------------------------------
+t40_to_arbitrating
+assert_eq "a2: $T40_OBJ2" "$(t40_objection)" "fixture: the objection is still standing on entry to the third round"
+"$ORCHID_BIN" task arbitrate T040 --result approve --reason "the retry path is guarded and the concurrent-writer test is in" >/dev/null \
+  || fail "fixture: the approving arbitration must succeed"
+assert_eq merging "$(t40_status)" "an approving arbitration still derives merging on an outcome=code archetype"
+assert_eq "" "$(t40_objection)" \
+  "T032: an explicit arbitration approval — and nothing else — clears the objection"
+# Both facts on ONE line, for the reason the supersession assertion above
+# gives: T40_OBJ2 is already in the journal from the arbitration that raised
+# it, so a bare search for that text proves nothing about the clear.
+assert_match 'objection cleared by an explicit arbitration approval.*RETRY_MAX and BACKOFF_MS' "$(cat .orchid/journal.md)" \
+  "...and journals the clear, naming what was cleared — the field does not simply disappear from the record"
+green_case 'orchid task arbitrate --result approve: the standing objection is cleared, and the clear is journaled'
+
+# ============================================================================
+# AN OBJECTION IS SETTLED BY AN ARBITER OF AT LEAST THE AUTHORITY THAT RAISED
+# IT (T032 convergence, after the attempt-2 arbitration).
+#
+# `orchid task arbitrate` has two callers who are not the same actor. An
+# OPERATOR runs it from their own shell. A BROKERED ORCHESTRATOR runs it
+# through runners/orchid-orchestrator-command after the pump woke it for a
+# `review-conflict` — `task-arbitrate` is the single judgment write that
+# surface admits, so a model reaching the verb is the broker working as
+# designed. The block above records an objection for both of them and does not
+# distinguish them, which is wrong in one direction each way:
+#
+#   * read as the operator's, a woken model's own `request-changes` becomes a
+#     stop only a human may clear. The boundary it raises wakes nobody, so no
+#     later pass can move it: the very disagreement the brokered surface exists
+#     to arbitrate becomes the thing that parks an unattended run forever.
+#   * read as the orchestrator's, F33 comes back — a woken model clears the
+#     operator's twice-stated objection from the same diff that produced it.
+#
+# So the arbitration records the CLASS of arbiter beside the text, from the
+# same `ORCHID_ACTOR` provenance libexec/orchid-journal has always derived its
+# own actor string from (kernel-set by runners/orchid-tick, carried into the
+# spawned adapter by lib/spawn.sh's ORCHID_* allowlist, absent in an operator's
+# shell). Refusing the DETERMINISTIC approval is owed to every objection;
+# requiring a HUMAN is owed only to a human's.
+#
+# RED: a brokered arbitration that clears — or silently supersedes — an
+#      OPERATOR's standing objection; and a `task set` that relabels one.
+# GREEN: the orchestrator's own objection is recorded as its own and settled by
+#      the same surface that raised it, so an unattended run still converges;
+#      and the operator's is settled by the operator.
+# ============================================================================
+# The brokered surface `exec`s `bin/orchid` with the tick's environment intact,
+# so this prefix is exactly what the verb sees when a woken model runs it. The
+# epoch-marked shape is runners/orchid-tick's own (`<engine>/orchestrator
+# tick-e<epoch>`), which libexec/orchid-journal passes through verbatim.
+T4X_BROKER_ACTOR="claude/orchestrator tick-e$ORCHID_EPOCH"
+
+t4x_status()       { "$ORCHID_BIN" task show "$1" | grep '^status: ' | cut -d' ' -f2; }
+t4x_objection()    { "$ORCHID_BIN" task show "$1" | grep '^unresolved_objection: ' | cut -d' ' -f2-; }
+t4x_objection_by() { "$ORCHID_BIN" task show "$1" | grep '^unresolved_objection_by: ' | cut -d' ' -f2-; }
+
+# The same light-weight walk the T040 block uses, taking its id: base and
+# candidate both pinned to the fixture's own HEAD, `verification_commands=true`,
+# and a planted reviewer envelope for the kernel's reviewing->arbitrating count
+# gate. plant_reviewer_envelope derives the attempt from the task itself, so it
+# plants against whichever round is current.
+t4x_new_task() {
+  "$ORCHID_BIN" task create "$1" "$2" \
+    || fail "fixture: task create $1 must succeed (a taken id would make every assertion below read another case's task)"
+  "$ORCHID_BIN" task set "$1" base_sha "$t32_sha" >/dev/null
+  "$ORCHID_BIN" task set "$1" candidate_sha "$t32_sha" >/dev/null
+  "$ORCHID_BIN" task set "$1" verification_commands true >/dev/null
+}
+t4x_to_arbitrating() {
+  "$ORCHID_BIN" task advance "$1" implementing --reason "dispatch" >/dev/null
+  "$ORCHID_BIN" task advance "$1" testing --reason "implemented" >/dev/null
+  "$ORCHID_BIN" verify "$1" >/dev/null
+  "$ORCHID_BIN" task advance "$1" reviewing --reason "verify passed" >/dev/null
+  plant_reviewer_envelope "$1"
+  "$ORCHID_BIN" task advance "$1" arbitrating --reason "reviews reconciled" >/dev/null
+}
+
+# --- the run's own orchestrator objects, and can answer its own objection ---
+t4x_new_task T041 "an objection the brokered surface raised itself"
+t4x_to_arbitrating T041
+assert_eq arbitrating "$(t4x_status T041)" "fixture: T041 reaches arbitrating"
+
+T41_OBJ='the retry path drops the error; return it rather than logging it'
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T041 \
+  --result request-changes --reason "$T41_OBJ" >/dev/null \
+  || fail "fixture: a brokered request-changes arbitration must still succeed"
+assert_eq rework "$(t4x_status T041)" "a brokered request-changes lands in rework exactly as an operator's does"
+assert_eq "a1: $T41_OBJ" "$(t4x_objection T041)" \
+  "T032: the objection is recorded whoever raised it — the persistence is not the operator's alone"
+assert_eq orchestrator "$(t4x_objection_by T041)" \
+  "T032: ...and it is recorded as the ORCHESTRATOR's, from the actor identity the kernel set for that wakeup"
+red_case "an objection with no recorded provenance: the arbiter's class is written on the task beside the text"
+
+t4x_to_arbitrating T041
+assert_eq "a1: $T41_OBJ" "$(t4x_objection T041)" \
+  "fixture: the brokered objection survives its rework round, exactly as an operator's does"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T041 \
+  --result approve --reason "the error is returned now" >/dev/null \
+  || fail "T032: the surface that raised an objection must be able to answer it — a brokered stop only a human can clear parks an unattended run forever"
+assert_eq merging "$(t4x_status T041)" "and the approving arbitration derives merging as usual"
+assert_eq "" "$(t4x_objection T041)" "the orchestrator's own objection is cleared by its own explicit approval"
+assert_eq "" "$(t4x_objection_by T041)" \
+  "...and the class is cleared with it, so a later rejection cannot inherit an authority nobody granted it"
+# One PATTERN across all three facts, for the reason the T040 block's own
+# journal assertions give: this file's earlier walk already wrote a "cleared by
+# an explicit arbitration approval" line, so a search for that phrase alone
+# would pass with nothing here at all. The objection's own words pin WHICH
+# clear, and the two actors pin what this case is actually about.
+assert_match 'objection cleared by an explicit arbitration approval.*retry path drops the error.*raised by: orchestrator, cleared by: orchestrator' "$(cat .orchid/journal.md)" \
+  "...and the journal names both actors, so a machine settling its own objection is legible as exactly that"
+green_case "the run orchestrator's own objection: recorded, survived a rework round, and settled by the same surface"
+
+# --- an OPERATOR's objection is not the brokered surface's to settle --------
+# The routing half of this (an operator's objection raises `operator-decision`,
+# which wakes nobody) is tests/test_drive.sh's Part AF. This is the verb half,
+# and it is not redundant: `task arbitrate <id>` takes an ID, so a model woken
+# for some OTHER task's boundary can name this one, and a guarantee that rests
+# only on which boundary got recorded is a guarantee one stray argument walks
+# past.
+t4x_new_task T042 "an objection only its author may settle"
+t4x_to_arbitrating T042
+T42_OBJ='the lock is still taken after the early return at lib/foo.sh:140'
+"$ORCHID_BIN" task arbitrate T042 --result request-changes --reason "$T42_OBJ" >/dev/null \
+  || fail "fixture: the operator's request-changes arbitration must succeed"
+assert_eq operator "$(t4x_objection_by T042)" \
+  "an arbitration run with no kernel-set actor identity is the operator's, which is the rule the journal has always used"
+t4x_to_arbitrating T042
+
+for _res in approve request-changes; do
+  rc=0
+  t42_out="$(ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T042 \
+    --result "$_res" --reason "reads fine to me" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "T032: a brokered --result $_res on an OPERATOR's standing objection must be refused — approve clears it from the same diff that produced it, and request-changes replaces their words with the model's own"
+  assert_match "not the operator" "$t42_out" \
+    "the refusal says whose objection it is and that this actor is not them (--result $_res)"
+  assert_match "orchid notify --task T042" "$t42_out" \
+    "...and names the move that IS available to a woken model: raise it to the operator (--result $_res)"
+  assert_eq "a1: $T42_OBJ" "$(t4x_objection T042)" "and the refused arbitration left the objection exactly as it was (--result $_res)"
+  assert_eq operator "$(t4x_objection_by T042)" "...including its class (--result $_res)"
+  assert_eq arbitrating "$(t4x_status T042)" "...and took no transition at all (--result $_res)"
+done
+red_case "a brokered arbitration over an operator's standing objection: refused at the verb, both results, nothing written"
+
+# --- and the class cannot be written away either ----------------------------
+# The objection's own key is already on `task set`'s deny-list. Without its
+# class beside it, an operator-only stop could be relabelled as a model's
+# without touching a character of the text an operator would reread — the same
+# bypass by a quieter door.
+rc=0; t42_set_out="$("$ORCHID_BIN" task set T042 unresolved_objection_by orchestrator 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T032: task set unresolved_objection_by must be refused (kernel-owned) — it decides who may clear the objection"
+assert_match "kernel-owned" "$t42_set_out" "the refusal says the key is kernel-owned"
+assert_match "task arbitrate" "$t42_set_out" "...and names the verb that does write it"
+assert_eq operator "$(t4x_objection_by T042)" "and the refused write left the arbiter class exactly as it was"
+red_case 'task set on unresolved_objection_by: refused, so an operator-only stop cannot be relabelled as a model-settleable one'
+
+"$ORCHID_BIN" task arbitrate T042 --result approve --reason "the early return releases the lock now" >/dev/null \
+  || fail "fixture: the operator's own approving arbitration must succeed"
+assert_eq merging "$(t4x_status T042)" "the operator settles their own objection, and the task moves"
+assert_eq "" "$(t4x_objection T042)" "...clearing it"
+assert_eq "" "$(t4x_objection_by T042)" "...and its class with it"
+assert_match 'objection cleared by an explicit arbitration approval.*early return at lib/foo.sh:140.*raised by: operator, cleared by: operator' "$(cat .orchid/journal.md)" \
+  "...and the journal records both actors, so who overrode whom is answerable from the record alone"
+green_case "an operator's own objection: settled by the operator, cleared, and both arbiters named in the journal"
+
+# ============================================================================
+# `orchid task arbitrate` IS THE ONLY PUBLIC ARBITRATING OUTCOME VERB (T032
+# convergence, after the attempt-3 arbitration).
+#
+# Everything above guards the verb that RECORDS an arbitration. None of it
+# guards the other door. Three edges out of `arbitrating` ARE the arbitration's
+# result — approve is `arbitrating:merging` (or `arbitrating:done` on an
+# outcome=report archetype), request-changes is `arbitrating:rework` — and
+# `orchid task advance` could take any of them by hand while recording none of
+# it: no result, no journal entry saying who decided, no objection raised, and,
+# on `arbitrating:merging`, a live `unresolved_objection` walked straight into
+# the merge queue. That is F33's outcome reached by typing the other command,
+# and every guarantee the blocks above assert is only as good as this door
+# being shut.
+#
+# So `task advance` refuses those three unless `task arbitrate` is the caller.
+# `arbitrating:blocked` is untouched, because stopping a task is not deciding
+# it — and that twin is asserted here rather than assumed, since a refusal that
+# also killed the escape hatch would leave an operator with no move at all. The
+# other twin, an archetype's own non-outcome edge, is the block below.
+#
+# RED: a hand-walked `arbitrating` outcome of any shape — merging, rework, and
+#      the report archetype's `done` — and, the F33 case itself, one taken
+#      while an operator's objection is standing.
+# GREEN: `task arbitrate` still takes every one of those edges, and `task
+#      advance <id> blocked --reason` still stops the task.
+# ============================================================================
+# This file parks tasks in ACTIVE statuses as it goes and raised the cap once
+# already for exactly that reason (see its note beside `ORCHID_CONCURRENCY=8`
+# above); the three blocks between there and here leave three more sitting in
+# `merging`. Raised again rather than counted, since a starved dispatch here
+# would surface as this block's own fixture assertion failing for a reason that
+# has nothing to do with what it tests.
+export ORCHID_CONCURRENCY=16
+
+t4x_new_task T043 "an arbitration outcome nobody may take by hand"
+t4x_to_arbitrating T043
+assert_eq arbitrating "$(t4x_status T043)" "fixture: T043 reaches arbitrating"
+
+# `--reason` supplied throughout, so a refusal can never be INV-08's rather
+# than this one's: these calls are complete and would have been taken.
+for _dest in merging rework; do
+  rc=0
+  t43_out="$("$ORCHID_BIN" task advance T043 "$_dest" --reason "hand-walked, deciding nothing" 2>&1)" || rc=$?
+  assert_eq 3 "$rc" \
+    "T032: task advance T043 $_dest out of arbitrating must be refused — it is an arbitration RESULT and this verb records none"
+  assert_match "arbitration RESULT" "$t43_out" "the refusal says what the edge is (dest: $_dest)"
+  # Single-quoted: the `\|` is a LITERAL pipe for `grep -E`, and the pattern
+  # needs no interpolation of its own.
+  assert_match 'orchid task arbitrate T043 --result approve\|request-changes' "$t43_out" \
+    "...and names the verb that records one, on this task (dest: $_dest)"
+  assert_match "task advance T043 blocked" "$t43_out" \
+    "...and names the move that IS still available: stopping the task (dest: $_dest)"
+  assert_eq arbitrating "$(t4x_status T043)" "and the task did not move (dest: $_dest)"
+done
+grep -q "hand-walked, deciding nothing" .orchid/journal.md \
+  && fail "T032: a refused arbitrating advance must journal nothing — the refusal is ahead of the journal-first write, so a reason on record for a transition that never happened is a decision nobody made"
+red_case 'a hand-walked arbitration outcome (task advance out of arbitrating): refused, nothing moved, nothing journaled'
+
+# The same edge through the verb that DOES record a result: still legal, and it
+# is what raises the objection the next case is about.
+T43_OBJ='the two writes at lib/foo.sh:118-140 are still not ordered'
+"$ORCHID_BIN" task arbitrate T043 --result request-changes --reason "$T43_OBJ" >/dev/null \
+  || fail "T032: the refusal must be scoped to the verb, not to the edge — task arbitrate still takes arbitrating:rework"
+assert_eq rework "$(t4x_status T043)" "and it lands exactly where the hand-walk was trying to go"
+green_case 'the same arbitrating:rework edge through task arbitrate: taken, and the result recorded'
+
+# THE F33 SHAPE, at this door. An objection is standing; a hand-walk to
+# `merging` would carry it into the merge queue with nothing having answered
+# it, which is precisely what the driver-side gate exists to prevent and
+# precisely what it cannot see.
+t4x_to_arbitrating T043
+assert_eq "a1: $T43_OBJ" "$(t4x_objection T043)" "fixture: the objection is standing on entry to the second round"
+rc=0
+t43_obj_out="$("$ORCHID_BIN" task advance T043 merging --reason "looks fine to me" 2>&1)" || rc=$?
+assert_eq 3 "$rc" \
+  "T032: a task carrying a standing objection cannot be hand-walked into merging — the gate that refuses the deterministic approval is worth nothing if the other verb walks past it"
+assert_match 'orchid task arbitrate T043 --result approve\|request-changes' "$t43_obj_out" \
+  "...naming the verb that would have had to decide whether the objection was met"
+assert_eq arbitrating "$(t4x_status T043)" "the task did not move"
+assert_eq "a1: $T43_OBJ" "$(t4x_objection T043)" "...and the objection is exactly where it was"
+red_case 'a hand-walked merging on a task carrying an uncleared objection: refused, and the objection still stands'
+
+# ...and the escape hatch is untouched, which is what keeps the refusal from
+# being a task nobody can move. Left idle deliberately: a task parked in an
+# ACTIVE status eats a concurrency slot every later case has to dispatch
+# against.
+"$ORCHID_BIN" task advance T043 blocked --reason "stopping it, not deciding it" >/dev/null \
+  || fail "T032: arbitrating -> blocked is the universal escape hatch and must stay open — an operator whose only move is refused has no move"
+assert_eq blocked "$(t4x_status T043)" "arbitrating -> blocked still works by hand"
+green_case 'task advance blocked out of arbitrating: still legal, because stopping a task is not deciding it'
+
+# --- and the report archetype's own outcome edge -----------------------------
+# `arbitrating:done` is the outcome=report archetype's approval, and it is a
+# DIFFERENT destination string. A refusal written as a list of the two edges a
+# feature task has would let this one through, and nothing above would notice.
+"$ORCHID_BIN" task create R040 "a report outcome nobody may take by hand" --archetype review \
+  || fail "fixture: task create R040 must succeed (a taken id would make every assertion below read another case's task)"
+# base_sha/candidate_sha by plain `task set`, the way tests/test_archetype.sh's
+# own review walk does it: a review-archetype task never traverses `testing`,
+# and the reviewing->arbitrating envelope gate is sha-bound, so the candidate
+# has to be set before a planted envelope can satisfy it.
+"$ORCHID_BIN" task set R040 base_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set R040 candidate_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task advance R040 reviewing --reason "report dispatch" >/dev/null
+plant_reviewer_envelope R040
+"$ORCHID_BIN" task advance R040 arbitrating --reason "reviews reconciled" >/dev/null
+assert_eq arbitrating "$(t4x_status R040)" "fixture: R040 reaches arbitrating on the review archetype"
+
+rc=0; r40_out="$("$ORCHID_BIN" task advance R040 "done" --reason "accepted by hand" 2>&1)" || rc=$?
+assert_eq 3 "$rc" \
+  "T032: arbitrating -> done is the report archetype's approval and is refused by task advance for the same reason arbitrating -> merging is"
+assert_match "orchid task arbitrate R040 --result approve" "$r40_out" "...naming the verb that records it"
+assert_eq arbitrating "$(t4x_status R040)" "and R040 did not move"
+red_case "a hand-walked arbitrating:done on an outcome=report archetype: refused too, not just the feature archetype's two edges"
+
+"$ORCHID_BIN" task arbitrate R040 --result approve --reason "the report is accepted" >/dev/null \
+  || fail "fixture: the report archetype's approving arbitration must succeed"
+assert_eq "done" "$(t4x_status R040)" \
+  "and task arbitrate derives done from the archetype that declares no arbitrating:merging"
+green_case 'the report archetype: task arbitrate --result approve still reaches done, deriving it from the declared transitions'
+
+# ============================================================================
+# ...AND ONLY ONTO THE OUTCOME EDGES (T032 convergence, after the attempt-4
+# arbitration).
+#
+# The block above shuts a door. Its first cut shut a wider one than its own
+# argument: it refused EVERY destination out of `arbitrating` but `blocked`.
+# What the rule protects is the merge queue and the attempt counter, and only
+# three destinations touch either — `merging` and `done` (an approval,
+# whichever the archetype declares) and `rework` (a request-changes). Those
+# three are exactly the ones `task arbitrate` derives, which is what makes them
+# arbitration RESULTS rather than merely edges leaving a status.
+#
+# An archetype may declare an `arbitrating` edge that decides nothing about the
+# candidate, and `arbitrating:reviewing` — sending a round back for another
+# reviewer instead of judging it — is the obvious one. No `--result` derives
+# that edge, so `task arbitrate` cannot take it and `task advance` is the only
+# door there is: refusing it deleted a transition rather than closing a bypass,
+# in the one verb whose refusal names an alternative that cannot reach it.
+#
+# RED: the outcome edges, refused on this SAME archetype and this SAME task, so
+#      the pass below is not an archetype-shaped escape from the rule.
+# GREEN: the non-outcome edge, walked by `task advance` exactly as the
+#      archetype declares it — and `task arbitrate` still reaching the outcome
+#      edge the hand-walk was refused.
+# ============================================================================
+# The resolver-only archetype hook (ORCHID_ARCHETYPES_DIR — real plugin
+# discovery never walks it), planted under $HOME rather than at the repo root
+# so this fixture leaves no untracked directory in the tree this suite's own
+# candidates are cut from. Exported for the rest of the file: it is the
+# highest-precedence root and `recheck` is a name no shipped archetype uses, so
+# every other task here still resolves exactly as it did.
+T44_ARCH="$HOME/arch-recheck"
+mkdir -p "$T44_ARCH/recheck"
+printf 'manifest_version=1\nid=test/recheck\nversion=0.1.0\nkind=archetype\napi_version=1\noutcome=code\ntransitions=pending:implementing,implementing:testing,testing:reviewing,reviewing:arbitrating,arbitrating:reviewing,arbitrating:merging,arbitrating:rework,rework:implementing,merging:done\n' \
+  > "$T44_ARCH/recheck/plugin.conf"
+export ORCHID_ARCHETYPES_DIR="$T44_ARCH"
+# Raised again, for the reason the block above raised it to 16: this file parks
+# tasks in ACTIVE statuses as it goes, and the three blocks between there and
+# the end of this file leave three more sitting in `merging`. A starved dispatch
+# here surfaces as a fixture assertion failing for a reason that has nothing to
+# do with what these cases test.
+export ORCHID_CONCURRENCY=24
+
+"$ORCHID_BIN" task create T044 "an arbitrating edge that decides nothing" --archetype recheck \
+  || fail "fixture: task create T044 must succeed (a taken id, or an archetype the meta-contract rejects, would make every assertion below read another case's task)"
+"$ORCHID_BIN" task set T044 base_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set T044 candidate_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set T044 verification_commands true >/dev/null
+t4x_to_arbitrating T044
+assert_eq arbitrating "$(t4x_status T044)" \
+  "fixture: T044 reaches arbitrating on an archetype that declares arbitrating:reviewing as well as the outcome edges"
+
+for _dest in merging rework; do
+  rc=0
+  t44_out="$("$ORCHID_BIN" task advance T044 "$_dest" --reason "hand-walked, deciding nothing" 2>&1)" || rc=$?
+  assert_eq 3 "$rc" \
+    "T032: the refusal is the DESTINATION, not the archetype — an outcome edge is still refused on one that declares a non-outcome edge too (dest: $_dest)"
+  assert_match "arbitration RESULT" "$t44_out" "the refusal says what the edge is (dest: $_dest)"
+  assert_eq arbitrating "$(t4x_status T044)" "and the task did not move (dest: $_dest)"
+done
+red_case 'an outcome edge out of arbitrating on a custom archetype: refused there too, so the rule is not a property of the shipped transitions'
+
+"$ORCHID_BIN" task advance T044 reviewing --reason "the round needs another reviewer, not a verdict" >/dev/null \
+  || fail "T032: arbitrating -> reviewing records no arbitration result, so task arbitrate cannot derive it and this verb is the only door onto it — refusing it deletes the archetype's transition instead of closing a bypass"
+assert_eq reviewing "$(t4x_status T044)" \
+  "T032: a non-outcome edge out of arbitrating is walked, exactly as the archetype declares it"
+green_case 'a declared arbitrating:reviewing edge: still walkable by task advance, because it decides nothing about the candidate'
+
+# And the outcome edge the hand-walk was refused is still reachable through the
+# verb that records a result — the refusal is scoped to the door, not the edge.
+plant_reviewer_envelope T044
+"$ORCHID_BIN" task advance T044 arbitrating --reason "the second reviewer is in" >/dev/null \
+  || fail "fixture: T044 must be able to return to arbitrating after the non-outcome edge"
+"$ORCHID_BIN" task arbitrate T044 --result approve --reason "the second look is clean" >/dev/null \
+  || fail "fixture: the approving arbitration must still succeed on this archetype"
+assert_eq merging "$(t4x_status T044)" \
+  "and task arbitrate still takes the very edge the hand-walk was refused"
+green_case 'task arbitrate on the custom archetype: still reaches merging, so the narrowed refusal closed nothing it was closing before'
+
+# ============================================================================
+# THE OPERATOR'S OWN DECISION, RELAYED — AND THE AUTHORITY IT IS RELAYED ON
+# (T032 convergence, after the attempt-5 arbitration).
+#
+# The T042 block refuses a non-operator arbitration on an operator's standing
+# objection. That refusal has a cost the OPERATOR pays. Their stop is paged with
+# `orchid notify`; they answer it with `orchid answer`; and no verb consumes an
+# answer file — a page RECORDS what was decided, and the verb is still run by
+# hand. So when the actor at this repository's keyboard is the woken
+# orchestrator, refusing it refuses to carry out a decision its owner has
+# already made and already made durable, and the run parks on a question that
+# has been answered.
+#
+# The class of an arbitration is therefore the ACTOR's unless durable operator
+# state authorises it — and WHAT THAT STATE IS is what this block is about.
+# It was, first, the page's own prose: a question naming this task, quoting the
+# standing objection and carrying the kernel's remedy clause was read as a page
+# about settling that objection. `notify` is on the brokered write table, so
+# every word of that was text the relaying model could compose for itself; the
+# operator's `approve` was real, but what it was an answer TO was the model's.
+#
+# So the evidence is a structured record the kernel writes beside the page —
+# `runtime/answers/<qid>.objection`, minted only by `orchid notify --objection`,
+# a flag runners/orchid-orchestrator-command refuses outright — and the identity
+# it is bound to is `objection_seq`, an instance counter rather than the text.
+# The text cannot be the identity: `--waive-attempt` leaves `attempts` where it
+# was, so an operator rejecting the same defect twice across a waived round
+# writes a BYTE-IDENTICAL objection line, and an answer to the first would
+# otherwise settle the second.
+#
+# RED: every near miss — nothing on record; an unanswered page; a page answered
+#      something else; a page about another task, authority record and all; a
+#      page the model minted itself carrying the objection AND the remedy clause
+#      word for word; the answered page for an objection since re-raised in the
+#      same words across a waived round; and a page whose authority a relay has
+#      already spent.
+# GREEN: the operator's answer to the page the kernel raised for the objection
+#      standing NOW, relayed by the orchestrator, clearing it and spending the
+#      record — including for an objection longer than REVIEW_OBJECTION_MAX,
+#      which the substring reading this replaces could never have carried.
+# ============================================================================
+# The page the driver really composes for this stop, in miniature:
+# runners/orchid-drive prefixes `judgment boundary [<kind>] needs an operator:`
+# to lib/drive.sh's detail and hands the result to `orchid notify` verbatim.
+#
+# THE PAGE'S PROSE IS NO LONGER EVIDENCE, and this fixture is written so that
+# nothing here can quietly become evidence again: every page below carries the
+# objection and the remedy clause, so the only thing separating a page that
+# authorises from a page that does not is the `--objection` flag that mints the
+# record. A reading that went back to matching text would make the model-minted
+# case pass, which is the case it exists to fail.
+#
+# The clause is still pinned against its own producer, because it is still what
+# tells the operator which verb settles this — a page whose remedy names
+# something the kernel does not compose is a page nobody can act on, and this
+# fixture writing it out by hand is how that drift would otherwise go unseen.
+grep -qF -e 'orchid task arbitrate %s --result approve|request-changes' "$REPO_ROOT/lib/review.sh" \
+  || fail "T032: lib/review.sh no longer composes the remedy clause this fixture writes into its pages — review_objection_remedy is the one producer, and the page an operator reads is pinned to it"
+# ...and so is the cap the long-objection case below turns on. This fixture
+# cannot source lib/review.sh (it drives the verbs, nothing else), so the
+# constant it reasons about is witnessed against the file that defines it.
+grep -qE '^REVIEW_OBJECTION_MAX=400$' "$REPO_ROOT/lib/review.sh" \
+  || fail "T032: REVIEW_OBJECTION_MAX is no longer 400 in lib/review.sh — the long-objection case below builds its fixture around that number and would silently stop exercising the truncation path"
+T4X_OBJ_MAX=400
+t4x_page() {   # <task> <objection-line>
+  printf 'judgment boundary [operator-decision] needs an operator: an objection recorded by an operator in a previous arbitration of this task is still uncleared: "%s" — this pass may not approve on the reviews alone. Expected: the operator who raised it reads the diff, decides whether the objection was met, and settles it with orchid task arbitrate %s --result approve|request-changes --reason "..." — an explicit arbitration approval is the only thing that clears it\n' \
+    "$2" "$1"
+}
+t4x_seq()       { "$ORCHID_BIN" task show "$1" | grep '^objection_seq: ' | cut -d' ' -f2-; }
+t4x_authority() { printf '%s\n' ".orchid/runtime/answers/$1.objection"; }
+
+t4x_new_task T045 "an objection the operator has already decided"
+t4x_to_arbitrating T045
+T45_OBJ='the two writes at lib/foo.sh:118-140 are still not ordered'
+"$ORCHID_BIN" task arbitrate T045 --result request-changes --reason "$T45_OBJ" >/dev/null \
+  || fail "fixture: the operator's request-changes arbitration must succeed"
+assert_eq operator "$(t4x_objection_by T045)" "fixture: the objection is recorded as the operator's"
+assert_eq 1 "$(t4x_seq T045)" \
+  "T032: the first rejection mints objection instance 1 — the identity an operator's answer is bound to, written by the arbitration and not derived from the text"
+# The counter is as kernel-owned as the two fields beside it, and for the
+# sharpest reason of the three: rewinding it by one would make an already
+# answered page's authority live again against whatever is standing now.
+rc=0; t45_set_out="$("$ORCHID_BIN" task set T045 objection_seq 0 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T032: task set objection_seq must be refused — a writable instance counter is a replay of every answered page"
+assert_match "kernel-owned" "$t45_set_out" "...and it is refused as kernel-owned rather than failing for some other reason"
+assert_eq 1 "$(t4x_seq T045)" "and the refused write left the instance exactly where it was"
+t4x_to_arbitrating T045
+assert_eq "a1: $T45_OBJ" "$(t4x_objection T045)" \
+  "fixture: the objection is standing on entry to the second round"
+
+# Every case below makes this one call. Written as a function so the six of
+# them cannot differ in the argument that matters (`--result approve`) or in
+# the actor identity, and so a case can never accidentally test the operator's
+# own arbitration while claiming to test a relay.
+t45_relay() {
+  ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T045 \
+    --result approve --reason "the writes are ordered now" 2>&1
+}
+# ...and every refusal below is asserted twice over: that it happened, and that
+# it is THIS refusal. A brokered arbitration that failed for some other reason
+# — a usage error, a status gate — satisfies a bare nonzero check and proves
+# nothing at all about the relay.
+t45_refused() {   # <what must not have been credited>
+  local rc=0
+  local out
+  out="$(t45_relay)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "T032: $1"
+  assert_match "not the operator" "$out" \
+    "...and it is the operator-authority refusal rather than another failure passing for one ($1)"
+  assert_match "orchid answer" "$out" \
+    "...and it names the route that WOULD carry the operator's decision, instead of only saying no — L028 ($1)"
+}
+
+# --- nothing on record ------------------------------------------------------
+t45_refused "with no operator answer on record a brokered approve must be refused — an actor cannot lend itself the authority it lacks"
+
+# --- a page nobody has answered --------------------------------------------
+q45_open="$("$ORCHID_BIN" notify --task T045 --objection "$(t4x_page T045 "a1: $T45_OBJ")")" \
+  || fail "fixture: the operator page for this objection must be raisable"
+[ -f ".orchid/runtime/answers/$q45_open.question" ] \
+  || fail "fixture: notify must have minted the question file the relay reads ($q45_open)"
+[ -f "$(t4x_authority "$q45_open")" ] \
+  || fail "T032: notify --objection must mint the authority record beside the question — without it no answer to this page can ever be relayed, and the operator's stop is a wall rather than a door"
+t45_refused "an unanswered page is a question, not a decision — a woken model may raise one and must not be able to credit itself with it"
+
+# --- a page answered something else -----------------------------------------
+"$ORCHID_BIN" answer "$q45_open" defer >/dev/null \
+  || fail "fixture: the operator must be able to answer their own page"
+t45_refused "an answer that is not the arbitration result settles nothing — the decision is the word the operator typed, never a reading of it"
+
+# --- a page about another task, authority record and all ---------------------
+# Same objection text, same remedy clause, a real kernel-minted authority — and
+# a different subject. `task arbitrate <id>` takes an id, so an answer that
+# travelled between tasks would be exactly the bypass the verb-level guard
+# exists to close. Given its own objection rather than paged bare, so what is
+# being refused here is a GENUINE authority for the wrong task, not the absence
+# of one.
+t4x_new_task T046 "another task, with an objection and a page of its own"
+t4x_to_arbitrating T046
+"$ORCHID_BIN" task arbitrate T046 --result request-changes --reason "$T45_OBJ" >/dev/null \
+  || fail "fixture: T046's own request-changes must succeed"
+t4x_to_arbitrating T046
+assert_eq "a1: $T45_OBJ" "$(t4x_objection T046)" \
+  "fixture: T046's objection is the same text as T045's, so only the subject can be what refuses the relay"
+q45_foreign="$("$ORCHID_BIN" notify --task T046 --objection "$(t4x_page T046 "a1: $T45_OBJ")")" \
+  || fail "fixture: the foreign page must be raisable"
+"$ORCHID_BIN" answer "$q45_foreign" approve >/dev/null \
+  || fail "fixture: the foreign page must be answerable"
+t45_refused "an answer about another task must not settle this one, however exactly its objection and its instance match"
+
+# --- the page a model minted for itself -------------------------------------
+# THE CASE THE PROSE READING COULD NOT FAIL. `notify` is on the brokered write
+# table, so a woken orchestrator can raise this page: same subject, the standing
+# objection quoted verbatim, the kernel's own remedy clause naming this task's
+# verb. Every word the old reader looked for is here. What it cannot pass
+# through the broker is `--objection`, so no authority record is minted and the
+# answer is an answer to a page the kernel never raised.
+q45_minted="$("$ORCHID_BIN" notify --task T045 "$(t4x_page T045 "a1: $T45_OBJ")")" \
+  || fail 'fixture: the model-minted page must be raisable — `notify` is admitted, and that is the premise of this case'
+[ ! -f "$(t4x_authority "$q45_minted")" ] \
+  || fail "T032: a notify without --objection must mint no authority record — if it does, the brokered surface can manufacture the evidence for its own arbitration"
+"$ORCHID_BIN" answer "$q45_minted" approve >/dev/null \
+  || fail "fixture: the model-minted page must be answerable"
+t45_refused "a page the relaying model raised itself is not the kernel's page, however exactly it quotes the objection and the remedy clause"
+assert_eq "a1: $T45_OBJ" "$(t4x_objection T045)" "and after all five refusals the objection is exactly where it was"
+assert_eq operator "$(t4x_objection_by T045)" "...including its class"
+assert_eq 1 "$(t4x_seq T045)" "...and its instance"
+assert_eq arbitrating "$(t4x_status T045)" "...and the task never moved"
+red_case 'a brokered approve backed by no answer, an unanswered page, another answer, another task, or a page the model minted itself: refused every time'
+
+# --- and the operator's actual answer, relayed ------------------------------
+q45="$("$ORCHID_BIN" notify --task T045 --objection "$(t4x_page T045 "a1: $T45_OBJ")")" \
+  || fail "fixture: the operator page must be raisable"
+"$ORCHID_BIN" answer "$q45" approve >/dev/null \
+  || fail "fixture: the operator must be able to answer it"
+t45_out="$(t45_relay)" \
+  || fail "T032: the operator has decided, durably, on this task and this objection — refusing the relay parks the run on a question its owner already answered: $t45_out"
+assert_eq merging "$(t4x_status T045)" "the relayed approval takes the edge an approval takes"
+assert_eq "" "$(t4x_objection T045)" "...and clears the objection the operator said was met"
+assert_eq "" "$(t4x_objection_by T045)" "...and its class with it"
+# SPENT, not merely checked. The record is gone, so the identical answer sitting
+# beside it can never authorise a second arbitration — and a crash anywhere
+# after this point leaves an objection standing with nothing left to settle it,
+# which is the direction this has to fail in.
+[ ! -f "$(t4x_authority "$q45")" ] \
+  || fail "T032: the authority record must be consumed by the arbitration it authorised — one left on disk is an answer a replay spends again"
+[ -f ".orchid/runtime/answers/$q45.answer" ] \
+  || fail "fixture: the operator's answer itself is untouched — it is the authority that is spent, not their decision"
+# One PATTERN across all four facts: the authority the arbitration acted with,
+# the actor that actually ran it, the answer joining them and the instance it
+# was bound to. This file has written "cleared by an explicit arbitration
+# approval" lines before, so any two of these would pass against an earlier
+# case's entry.
+assert_match "objection cleared by an explicit arbitration approval.*cleared by: operator.*relayed by claude/orchestrator.*$q45.*instance 1" \
+  "$(cat .orchid/journal.md)" \
+  "T032: the record names the authority, the actor that relayed it, the answer it acted on and the instance it was bound to — an operator-cleared objection with a model's actor on the entry is unreconcilable otherwise"
+green_case 'a brokered approve backed by the operator answer to this objection page: relayed, the objection cleared, the authority spent and the relay named in the journal'
+
+# --- an answer is not a token that outlives the objection it answered --------
+# The replay this binding exists to refuse. The operator answers the page for
+# the objection standing THEN, and before anything relays it they change their
+# mind about what is unresolved. A later orchestrator holding that answer must
+# not be able to spend it on the objection standing NOW.
+t4x_new_task T047 "an answer that must not outlive its objection"
+t4x_to_arbitrating T047
+T47_OBJ1='the lock is still held on the early return at lib/bar.sh:40'
+"$ORCHID_BIN" task arbitrate T047 --result request-changes --reason "$T47_OBJ1" >/dev/null \
+  || fail "fixture: the operator's first request-changes must succeed"
+t4x_to_arbitrating T047
+q47="$("$ORCHID_BIN" notify --task T047 --objection "$(t4x_page T047 "a1: $T47_OBJ1")")" \
+  || fail "fixture: the page for the first objection must be raisable"
+"$ORCHID_BIN" answer "$q47" approve >/dev/null \
+  || fail "fixture: the operator must be able to answer it"
+
+T47_OBJ2='and the new guard swallows the error at lib/bar.sh:52'
+"$ORCHID_BIN" task arbitrate T047 --result request-changes --waive-attempt --reason "$T47_OBJ2" >/dev/null \
+  || fail "fixture: the operator's superseding request-changes must succeed"
+assert_eq "a2: $T47_OBJ2" "$(t4x_objection T047)" \
+  "fixture: the operator's latest word is what is standing, and the answered page is about the earlier one"
+assert_eq 2 "$(t4x_seq T047)" "fixture: superseding an objection rotates the instance the answered page was bound to"
+t4x_to_arbitrating T047
+rc=0
+t47_out="$(ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T047 \
+  --result approve --reason "both of those are handled" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "T032: an answer given about the objection that stood then must not settle the one standing now — otherwise a single approve becomes a token a later orchestrator spends on an objection the operator never saw"
+assert_match "not the operator" "$t47_out" \
+  "and the refusal is the operator-authority one, not some other failure that would make this case pass for the wrong reason"
+assert_eq "a2: $T47_OBJ2" "$(t4x_objection T047)" "and the standing objection is untouched"
+assert_eq arbitrating "$(t4x_status T047)" "...and the task took no transition"
+red_case 'a stale operator answer against a superseded objection: refused, so an answer is bound to the objection it was given about'
+
+q47b="$("$ORCHID_BIN" notify --task T047 --objection "$(t4x_page T047 "a2: $T47_OBJ2")")" \
+  || fail "fixture: the page for the standing objection must be raisable"
+"$ORCHID_BIN" answer "$q47b" approve >/dev/null \
+  || fail "fixture: the operator must be able to answer it"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T047 \
+  --result approve --reason "both of those are handled" >/dev/null \
+  || fail "T032: the refusal must be a door and not a wall — the operator answering the page for the objection that IS standing converges the round"
+assert_eq merging "$(t4x_status T047)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T047)" "...and the objection the operator answered about is the one cleared"
+green_case 'the operator answering the page for the objection that IS standing: relayed, so the binding refuses a replay without stranding the round'
+
+# ============================================================================
+# THE SAME OBJECTION, RAISED AGAIN, IS A DIFFERENT OBJECTION (T032 convergence,
+# after the attempt-5 arbitration).
+#
+# The T047 case above is refused by text as much as by instance: `a1: ...` and
+# `a2: ...` are different strings, so a reader that compared only the words would
+# have passed it too. THIS is the case that separates them, and it is the one
+# the kernel's own documented workflow produces.
+#
+# `--waive-attempt` is how an operator rejects a round without charging the
+# implementer for it, and it leaves `attempts` exactly where it was. So an
+# operator who raises the same objection across two waived rounds writes the
+# SAME LINE, character for character: same round prefix, same words. Everything
+# else on the task agrees that nothing changed. If the answer to the first were
+# spendable on the second, the operator's "I have re-read the diff and it is
+# still wrong" would be settled by the "yes, that is fixed" they gave about a
+# round that came before it — F33's failure with the operator's own answer as
+# the instrument.
+#
+# RED: the answered page for the earlier of two byte-identical objections.
+# GREEN: the page for the one standing now, once it is raised.
+# ============================================================================
+t4x_new_task T048 "the same objection, raised again across a waived round"
+t4x_to_arbitrating T048
+T48_OBJ='RETRY_MAX and BACKOFF_MS at lib/net.sh:88-104 are still read outside the lock'
+"$ORCHID_BIN" task arbitrate T048 --result request-changes --reason "$T48_OBJ" >/dev/null \
+  || fail "fixture: T048's first request-changes must succeed"
+t4x_to_arbitrating T048
+"$ORCHID_BIN" task arbitrate T048 --result request-changes --waive-attempt --reason "$T48_OBJ" >/dev/null \
+  || fail "fixture: T048's second (waived) request-changes must succeed"
+t4x_to_arbitrating T048
+T48_LINE="$(t4x_objection T048)"
+assert_eq 2 "$(t4x_seq T048)" "fixture: the second rejection is instance 2"
+q48="$("$ORCHID_BIN" notify --task T048 --objection "$(t4x_page T048 "$T48_LINE")")" \
+  || fail "fixture: the page for instance 2 must be raisable"
+"$ORCHID_BIN" answer "$q48" approve >/dev/null \
+  || fail "fixture: the operator answers the page for instance 2"
+# ...and then, before anything relays it, they reject the round again in exactly
+# the same words. The attempt is waived, so the composed line cannot differ.
+"$ORCHID_BIN" task arbitrate T048 --result request-changes --waive-attempt --reason "$T48_OBJ" >/dev/null \
+  || fail "fixture: T048's third (waived) request-changes must succeed"
+t4x_to_arbitrating T048
+assert_eq "$T48_LINE" "$(t4x_objection T048)" \
+  "fixture: the recreated objection is BYTE-IDENTICAL to the answered one — a waived round leaves attempts alone, so the round prefix does not move either. Without this the case below would be refused by the text and prove nothing about the instance"
+assert_eq 3 "$(t4x_seq T048)" \
+  "T032: ...and the instance rotated anyway — it is a counter, not a reading of the text, which is the whole reason it can tell these two objections apart"
+# The answered page's record still names the objection standing now, word for
+# word, so the ONLY thing left to refuse on is the instance.
+grep -qxF -e "objection: $T48_LINE" "$(t4x_authority "$q48")" \
+  || fail "fixture: the stale authority record must still carry the current objection line verbatim, or this case is refused by the text and says nothing about the instance"
+rc=0
+t48_out="$(ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T048 \
+  --result approve --reason "the lock covers both now" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "T032: an answer about the objection that stood before a waived round must not settle the identical one standing after it — the operator re-raised it precisely because they did not consider it met"
+assert_match "not the operator" "$t48_out" \
+  "and it is the operator-authority refusal, not another failure passing for one"
+assert_eq "$T48_LINE" "$(t4x_objection T048)" "and the re-raised objection is untouched"
+assert_eq arbitrating "$(t4x_status T048)" "...and the task took no transition"
+red_case 'a byte-identical objection re-raised across a waived round: the earlier answer is refused, because the instance rotated where the text could not'
+
+q48b="$("$ORCHID_BIN" notify --task T048 --objection "$(t4x_page T048 "$T48_LINE")")" \
+  || fail "fixture: the page for instance 3 must be raisable"
+"$ORCHID_BIN" answer "$q48b" approve >/dev/null \
+  || fail "fixture: the operator answers the page for instance 3"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T048 \
+  --result approve --reason "the lock covers both now" >/dev/null \
+  || fail "T032: the operator answering the page for the instance standing now must converge the round — a rotation that could not be answered would be a wall"
+assert_eq merging "$(t4x_status T048)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T048)" "...and the re-raised objection is cleared"
+assert_eq 3 "$(t4x_seq T048)" \
+  "...while the instance counter does NOT rewind on a clear — a counter that reset would make the pages answered under instance 1 live again the next time an objection is raised"
+[ ! -f "$(t4x_authority "$q48b")" ] \
+  || fail "T032: the authority for instance 3 must be spent by the arbitration it authorised"
+green_case 'the operator answering the page for the re-raised objection: relayed, cleared, spent — and the instance counter never rewinds'
+
+# ============================================================================
+# AN OBJECTION LONGER THAN THE CAP STILL RELAYS (T032 convergence, after the
+# attempt-5 arbitration).
+#
+# The operator's second F33 rejection named the exact constants, the exact line
+# range, the response shape to reuse and the test to add. That is the objection
+# this feature exists to carry, and it is long. The reader this replaces matched
+# the objection as a SUBSTRING of the page — and the page quoted a value that had
+# been folded a second time, because the stored line carries an `a<attempt>: `
+# prefix that pushed it past the cap. So the specific objection, the one most
+# worth remembering, was the one whose answer could never be relayed: the
+# operator would answer their page and the verb would refuse, blaming their
+# answer for prose that had been truncated somewhere else.
+#
+# Two things fix it, and both are asserted here: the stored line is composed
+# WITHIN the cap so folding it again is a no-op, and the authority record carries
+# those stored bytes rather than any rendering of them.
+#
+# RED before: an objection past REVIEW_OBJECTION_MAX could not be relayed at all.
+# GREEN: it relays exactly as a short one does.
+# ============================================================================
+t4x_new_task T049 "an objection too specific to fit in the cap"
+t4x_to_arbitrating T049
+T49_OBJ=""
+t49_i=1
+while [ "$t49_i" -le 12 ]; do
+  T49_OBJ="$T49_OBJ RETRY_MAX and BACKOFF_MS at lib/net.sh:$((80 + t49_i))-$((104 + t49_i)) must be read under the same lock the writer takes, reusing the {ok,err} response shape, with a test for the interleaving;"
+  t49_i=$(( t49_i + 1 ))
+done
+[ "${#T49_OBJ}" -gt "$T4X_OBJ_MAX" ] \
+  || fail "fixture: this objection (${#T49_OBJ} chars) must exceed REVIEW_OBJECTION_MAX ($T4X_OBJ_MAX) or the case exercises nothing"
+"$ORCHID_BIN" task arbitrate T049 --result request-changes --reason "$T49_OBJ" >/dev/null \
+  || fail "fixture: the long request-changes must succeed"
+t4x_to_arbitrating T049
+T49_LINE="$(t4x_objection T049)"
+[ "${#T49_LINE}" -le "$T4X_OBJ_MAX" ] \
+  || fail "T032: the stored objection line (${#T49_LINE} chars) must fit within REVIEW_OBJECTION_MAX including its round prefix — a line over the cap is one every reader folds a second time, so no page can quote what the field holds"
+case "$T49_LINE" in
+  *...) ;;
+  *) fail "fixture: this objection must really have been truncated, or the fixpoint above is asserted against a line that never met the cap" ;;
+esac
+q49="$("$ORCHID_BIN" notify --task T049 --objection "$(t4x_page T049 "$T49_LINE")")" \
+  || fail "fixture: the page for the long objection must be raisable"
+grep -qxF -e "objection: $T49_LINE" "$(t4x_authority "$q49")" \
+  || fail "T032: the authority record must carry the STORED objection line, byte for byte — a record holding a rendering of it is one the arbitration's own read of the field can never match"
+"$ORCHID_BIN" answer "$q49" approve >/dev/null \
+  || fail "fixture: the operator must be able to answer it"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T049 \
+  --result approve --reason "all four are addressed" >/dev/null \
+  || fail "T032: an objection longer than the cap must relay exactly as a short one does — the specific objection is the one worth carrying, and it was the one that could not be"
+assert_eq merging "$(t4x_status T049)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T049)" "...and the long objection is cleared"
+green_case 'an objection longer than REVIEW_OBJECTION_MAX: stored within the cap, carried verbatim into the authority, and relayed'
+
+# ============================================================================
+# A QUESTION ID HANDED OUT TWICE IS AN ANSWER SPENT TWICE (T032 convergence,
+# after the attempt-6 arbitration).
+#
+# Everything the blocks above rest on is FILED UNDER THE QID: the `.question`
+# whose subject the relay checks, the `.answer` recording what the operator
+# typed, and the `.objection` authority record naming the instance that answer
+# was given about. `orchid notify` drew that id as sixteen bits of urandom and
+# used it unguarded, and every write under it is an `atomic_write` — a rename
+# over whatever was there. So a page raised later that happened to draw the same
+# suffix REPLACED the question and minted a fresh authority record for the
+# instance standing now, right beside an older `.answer` that nothing rewrote.
+#
+# That composes the exact defect this task exists to close, out of its own
+# machinery: the operator's `approve` about instance 1 sits under a record
+# naming instance 2, every field of `objection_authority_matches` agrees, and
+# `review_operator_relay` clears an objection the operator answered nothing
+# about. The instance counter cannot save it — the collision rewrote the file
+# the instance is stored in.
+#
+# So an id is CLAIMED before anything is filed under it, and never released. The
+# case below forces the collision rather than waiting for the birthday bound:
+# `orchid notify` draws its suffix through `xxd`, so a shim on PATH makes the
+# draw a fixture input. Nothing in the kernel reads the shim's variable; the
+# only thing being replaced is the entropy source, which is exactly the input a
+# real collision varies.
+#
+# RED: a page whose first draw names an id already carrying a question, an
+#      answer and an authority record — the earlier page must come through
+#      byte-identical, and the stale `approve` must authorise nothing.
+# GREEN: the operator answers the page that WAS raised, and it relays; and a
+#      draw that names a free id is claimed as drawn, not skipped.
+# ============================================================================
+make_scratch T50_SHIM
+mkdir -p "$T50_SHIM/bin"
+T50_SEQ="$T50_SHIM/suffixes"
+# A DETERMINISTIC STAND-IN for /dev/urandom, and only for the four hex
+# characters `orchid notify` composes a qid from. `-l2` is the qid draw and
+# `-l8` is the nonce (libexec/orchid-notify mints both through `xxd`); the qid
+# draw pops the next line of the sequence file this fixture writes, and the
+# nonce is a constant because no assertion here turns on it. An exhausted
+# sequence exits non-zero, which is what a machine without `xxd` looks like, so
+# the kernel falls back to its own source and the exact-id assertions below
+# fail loudly rather than passing on a lucky draw.
+cat > "$T50_SHIM/bin/xxd" <<'T50_SHIM_XXD'
+#!/usr/bin/env bash
+set -u
+t50_want=""
+for t50_a in "$@"; do
+  case "$t50_a" in
+    -l2) t50_want=qid ;;
+    -l8) t50_want=nonce ;;
+  esac
+done
+if [ "$t50_want" = qid ] && [ -n "${ORCHID_TEST_QID_SUFFIXES:-}" ] \
+   && [ -s "${ORCHID_TEST_QID_SUFFIXES}" ]; then
+  head -n 1 "$ORCHID_TEST_QID_SUFFIXES"
+  tail -n +2 "$ORCHID_TEST_QID_SUFFIXES" > "$ORCHID_TEST_QID_SUFFIXES.rest"
+  mv "$ORCHID_TEST_QID_SUFFIXES.rest" "$ORCHID_TEST_QID_SUFFIXES"
+  exit 0
+fi
+[ "$t50_want" = nonce ] || exit 1
+printf '%s\n' 'a1b2c3d4e5f60718'
+T50_SHIM_XXD
+chmod +x "$T50_SHIM/bin/xxd"
+
+# `orchid notify` through the shim, with a chosen sequence of draws. The PATH
+# override is scoped to this one call: every other verb in this block draws its
+# entropy the way it always does.
+t50_notify() {   # <task> <suffix>... <page-text> -- draws in the order given
+  local task="$1" page
+  shift
+  : > "$T50_SEQ"
+  while [ $# -gt 1 ]; do
+    printf '%s\n' "$1" >> "$T50_SEQ"
+    shift
+  done
+  page="$1"
+  PATH="$T50_SHIM/bin:$PATH" ORCHID_TEST_QID_SUFFIXES="$T50_SEQ" \
+    "$ORCHID_BIN" notify --task "$task" --objection "$page"
+}
+# A chosen suffix that an earlier page in this file already drew at random would
+# make the exact-id assertions below fail for a reason that is not the feature.
+# One in 65536 per page raised, so it has never happened — but a suite that
+# blamed the kernel for it would send somebody a long way in the wrong
+# direction.
+t50_free() {   # <suffix>
+  local f
+  for f in ".orchid/runtime/answers/q-$ORCHID_EPOCH-$1".*; do
+    [ -e "$f" ] || continue
+    fail "fixture: suffix $1 is already in use in epoch $ORCHID_EPOCH — an earlier page in this file drew it at random (1 in 65536). Nothing about the kernel changed; re-run"
+    return 0
+  done
+}
+
+t4x_new_task T050 "a question id that would be handed out twice"
+t4x_to_arbitrating T050
+T50_OBJ='the two writes at lib/pump.sh:40-72 are still not ordered'
+"$ORCHID_BIN" task arbitrate T050 --result request-changes --reason "$T50_OBJ" >/dev/null \
+  || fail "fixture: T050's first request-changes must succeed"
+t4x_to_arbitrating T050
+# The second rejection is WAIVED, and so is the third below, for the reason the
+# T048 block establishes: `review_objection_record` composes `a<attempts + 1>:`,
+# so only two consecutive waived rounds produce a byte-identical line. That is
+# the sharpest form of this case — with the text identical and the instance the
+# only thing that moved, nothing but the counter can refuse the stale answer,
+# and a collision that rewrites the record the counter lives in erases the one
+# difference there was.
+"$ORCHID_BIN" task arbitrate T050 --result request-changes --waive-attempt --reason "$T50_OBJ" >/dev/null \
+  || fail "fixture: T050's second (waived) request-changes must succeed"
+t4x_to_arbitrating T050
+T50_LINE="$(t4x_objection T050)"
+assert_eq 2 "$(t4x_seq T050)" "fixture: the waived rejection is instance 2"
+
+# The page for instance 2, at an id this fixture picks, answered `approve` and
+# then left alone: the operator decided, and nothing has relayed it yet.
+t50_free c011
+q50_old="$(t50_notify T050 c011 "$(t4x_page T050 "$T50_LINE")")" \
+  || fail "fixture: the page for instance 2 must be raisable"
+assert_eq "q-$ORCHID_EPOCH-c011" "$q50_old" \
+  "fixture: the shim must really be deciding the qid — if the kernel drew this suffix some other way, every collision below is imaginary"
+"$ORCHID_BIN" answer "$q50_old" approve >/dev/null \
+  || fail "fixture: the operator answers the page for instance 2"
+t50_old_question="$(cat ".orchid/runtime/answers/$q50_old.question")"
+t50_old_authority="$(cat "$(t4x_authority "$q50_old")")"
+
+# ...and then, before anything relays it, the objection is re-raised in exactly
+# the same words across another waived round.
+"$ORCHID_BIN" task arbitrate T050 --result request-changes --waive-attempt --reason "$T50_OBJ" >/dev/null \
+  || fail "fixture: T050's third (waived) request-changes must succeed"
+t4x_to_arbitrating T050
+assert_eq "$T50_LINE" "$(t4x_objection T050)" \
+  "fixture: the re-raised objection is byte-identical, so nothing but the instance separates it from the answered one"
+assert_eq 3 "$(t4x_seq T050)" "fixture: ...and the instance rotated to 3"
+
+# THE FORCED COLLISION. The first draw names the id the answered page is filed
+# under; the second names a free one.
+t50_free d0d0
+q50_new="$(t50_notify T050 c011 d0d0 "$(t4x_page T050 "$T50_LINE")")" \
+  || fail "T032: a drawn id that is already in use must cost a redraw, never the page — notify refused to raise this stop at all"
+assert_eq "q-$ORCHID_EPOCH-d0d0" "$q50_new" \
+  "T032: the first draw named an id already carrying a question, an answer and an authority record, so the page must be filed under the next one — an id is claimed before anything is written under it, and a claim is never released"
+assert_eq "$t50_old_question" "$(cat ".orchid/runtime/answers/$q50_old.question")" \
+  "T032: the earlier page's question must be byte-identical afterwards — atomic_write renames over whatever was there, so a reused id destroys the page an operator answered"
+assert_eq "$t50_old_authority" "$(cat "$(t4x_authority "$q50_old")")" \
+  "T032: ...and so must its authority record. Rewritten to the instance standing now, it would turn the operator's answer about instance 2 into an authority for instance 3"
+grep -qxF -e "seq: 2" "$(t4x_authority "$q50_old")" \
+  || fail "T032: the earlier record must still name instance 2 — this is the field a collision silently advances, and the one review_operator_relay matches on"
+assert_eq approve "$(cat ".orchid/runtime/answers/$q50_old.answer")" \
+  "T032: the operator's earlier answer is still exactly the word they typed"
+[ ! -f ".orchid/runtime/answers/$q50_new.answer" ] \
+  || fail "fixture: the page just raised must be unanswered, or the refusal below proves nothing"
+
+# ...so the stale `approve` authorises nothing for the objection standing now.
+rc=0
+t50_out="$(ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T050 \
+  --result approve --reason "both writes are ordered now" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "T032: an answer given about the objection of an earlier instance must not settle the one standing now, however the two pages' ids were drawn"
+assert_match "not the operator" "$t50_out" \
+  "...and it is the operator-authority refusal, not another failure passing for one"
+assert_eq "$T50_LINE" "$(t4x_objection T050)" "and the objection is untouched"
+assert_eq 3 "$(t4x_seq T050)" "...and so is its instance"
+assert_eq arbitrating "$(t4x_status T050)" "...and the task took no transition"
+red_case 'a question id drawn onto an answered page: redrawn, the earlier page untouched, and its approve authorising nothing for the objection standing now'
+
+# --- and the page that WAS raised still opens the door ----------------------
+"$ORCHID_BIN" answer "$q50_new" approve >/dev/null \
+  || fail "fixture: the operator answers the page raised for instance 3"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T050 \
+  --result approve --reason "both writes are ordered now" >/dev/null \
+  || fail "T032: the redraw must leave a page that relays exactly as an uncontended one does — a guard that cost the operator their route would be a wall"
+assert_eq merging "$(t4x_status T050)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T050)" "...and the objection is cleared"
+[ ! -f "$(t4x_authority "$q50_new")" ] \
+  || fail "T032: the authority for instance 3 must be spent by the arbitration it authorised"
+# Spending an authority frees nothing: the id stays claimed, and the answered
+# page beside it stays exactly where it was.
+assert_eq approve "$(cat ".orchid/runtime/answers/$q50_old.answer")" \
+  "T032: consuming one page's authority must not disturb another page's answer"
+[ -e ".orchid/runtime/answers/$q50_old.reserved" ] \
+  || fail "T032: an id must stay claimed after the artifacts under it are consumed — 'nothing is filed here any more' and 'this id was never used' are different facts, and only the claim keeps them apart"
+[ -e ".orchid/runtime/answers/$q50_new.reserved" ] \
+  || fail "T032: ...including the id whose authority was just spent"
+green_case 'the redrawn page: answered and relayed like any other, its authority spent, and both claims outliving the artifacts filed under them'
+
+# --- the twin: a free draw is used as it is drawn ---------------------------
+# The redraw above is only worth anything if the guard is not simply redrawing
+# every time. A guard that answered "taken" to everything would pass the case
+# above and quietly cost a draw on every page ever raised.
+t4x_new_task T051 "a free id is claimed as it is drawn"
+t4x_to_arbitrating T051
+"$ORCHID_BIN" task arbitrate T051 --result request-changes --reason 'the lock is still dropped before the retry at lib/pump.sh:88' >/dev/null \
+  || fail "fixture: T051's request-changes must succeed"
+t4x_to_arbitrating T051
+T51_LINE="$(t4x_objection T051)"
+t50_free e11e
+q51="$(t50_notify T051 e11e "$(t4x_page T051 "$T51_LINE")")" \
+  || fail "fixture: the page for T051's objection must be raisable"
+assert_eq "q-$ORCHID_EPOCH-e11e" "$q51" \
+  "T032: a drawn id nothing has ever been filed under must be claimed as drawn — a guard that redrew regardless would pass the collision case above while telling nobody it had stopped distinguishing anything"
+"$ORCHID_BIN" answer "$q51" approve >/dev/null \
+  || fail "fixture: the operator answers T051's page"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T051 \
+  --result approve --reason "the lock spans the retry now" >/dev/null \
+  || fail "T032: the uncontended page relays exactly as it always did"
+assert_eq merging "$(t4x_status T051)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T051)" "...and T051's objection is cleared"
+green_case 'a free question id: claimed on the first draw, and the page it names relays unchanged'
+
+# ============================================================================
+# AN ANSWER IS ABOUT A ROUND, NOT ONLY ABOUT AN OBJECTION (T032 convergence,
+# after the attempt-7 arbitration).
+#
+# Every case above binds the operator's answer to a TASK, an INSTANCE and a
+# TEXT. None of them binds it to what the operator was actually looking at. The
+# question an objection page asks is "given this round's diff and this round's
+# reviews, was my objection met?" — and every term of that can move while the
+# objection line and its instance sit perfectly still:
+#
+#   * a rebase or a hand-fix re-points `candidate_sha`;
+#   * a relaunched reviewer slot files a second accepted envelope;
+#   * `jobs reconcile` replaces a filed verdict at the same path;
+#   * a repin rewrites the review plan the round is judged under.
+#
+# The stored objection is `a<attempt>: <reason>`, so it only moves when
+# `attempts` does — and `--waive-attempt` is the documented way to reject a
+# round without moving it. So an answer given about the round the operator was
+# shown could be relayed against a round that had changed underneath it, and
+# their "yes, that is fixed" would settle a diff and a review set they never
+# saw. That is F33's outcome again, with the operator's own approve as the
+# instrument.
+#
+# So the authority record states the round's EVIDENCE — one digest over the
+# candidate, the attempt, the pinned plan and the accepted review envelopes
+# (lib/objection.sh's objection_evidence) — and the relay recomputes it and
+# compares it as a whole line, like the other three fields. tests/test_drive.sh
+# Part AJ pins each term of that digest moving on its own; what is driven here,
+# through the verbs, is what it costs and what it restores.
+#
+# RED: the objection, its instance and its text all unchanged, a second accepted
+#      review landing after the operator answered — the answer authorises
+#      nothing, and is not spent.
+# GREEN: the page raised for the round as it stands now relays exactly as an
+#      undisturbed one does.
+# ============================================================================
+t4x_new_task T052 "an answer bound to the round the operator was shown"
+t4x_to_arbitrating T052
+T52_OBJ='the second write at lib/queue.sh:61 still runs outside the lock'
+"$ORCHID_BIN" task arbitrate T052 --result request-changes --reason "$T52_OBJ" >/dev/null \
+  || fail "fixture: T052's request-changes must succeed"
+t4x_to_arbitrating T052
+T52_LINE="$(t4x_objection T052)"
+assert_eq 1 "$(t4x_seq T052)" "fixture: T052's objection is instance 1"
+
+q52="$("$ORCHID_BIN" notify --task T052 --objection "$(t4x_page T052 "$T52_LINE")")" \
+  || fail "fixture: the page for T052's objection must be raisable"
+grep -qxF -e "candidate: $t32_sha" "$(t4x_authority "$q52")" \
+  || fail "T032: the authority record must name the candidate the page was raised about, plainly — that line is what a human reading runtime/answers/ afterwards can line up against the diff the operator was shown"
+T52_EV="$(grep '^evidence: ' "$(t4x_authority "$q52")" | cut -d' ' -f2-)"
+[ -n "$T52_EV" ] \
+  || fail "T032: the authority record must state the review evidence the page presented — without it an answer is bound to a task, an instance and some words, and to nothing about the round it was given about"
+"$ORCHID_BIN" answer "$q52" approve >/dev/null \
+  || fail "fixture: the operator answers the page for T052's objection"
+
+# THE ROUND MOVES, AND NOTHING ELSE DOES. A second accepted reviewer envelope —
+# reconcile's own `<base>.2.json` shape, what a relaunched slot lands — arrives
+# after the answer. The objection, its class and its instance are untouched by
+# it, which is the whole point: every field the record carried before this
+# convergence still agrees.
+T52_ENV=".orchid/reviews/T052-a2-reviewer.json"
+[ -f "$T52_ENV" ] \
+  || fail "fixture: T052's round must have a filed reviewer envelope to duplicate, or the change below moves nothing"
+cp "$T52_ENV" ".orchid/reviews/T052-a2-reviewer.2.json" \
+  || fail "fixture: the second accepted envelope must be plantable"
+assert_eq "$T52_LINE" "$(t4x_objection T052)" \
+  "fixture: the objection text is untouched by a review landing, so nothing but the evidence can refuse the relay below"
+assert_eq 1 "$(t4x_seq T052)" "fixture: ...and so is its instance"
+assert_eq operator "$(t4x_objection_by T052)" "fixture: ...and its class"
+
+rc=0
+t52_out="$(ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T052 \
+  --result approve --reason "the second write is inside the lock now" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "T032: an answer given about the round the operator was shown must not settle a round whose reviews have changed since — they answered a question about evidence, and the evidence is not the evidence they read"
+assert_match "not the operator" "$t52_out" \
+  "...and it is the operator-authority refusal, not another failure passing for one"
+assert_eq "$T52_LINE" "$(t4x_objection T052)" "and the objection is untouched"
+assert_eq 1 "$(t4x_seq T052)" "...and so is its instance"
+assert_eq arbitrating "$(t4x_status T052)" "...and the task took no transition"
+[ -f "$(t4x_authority "$q52")" ] \
+  || fail "T032: a REFUSED relay must spend nothing — the consume is what an authority it acted on pays, and an authority that authorised nothing has paid nothing"
+red_case 'a second accepted review landing after the operator answered: the same objection, the same instance, the same words, and an answer that authorises nothing'
+
+# --- and the page for the round as it stands now still opens the door -------
+q52b="$("$ORCHID_BIN" notify --task T052 --objection "$(t4x_page T052 "$T52_LINE")")" \
+  || fail "fixture: the page for the round as it stands now must be raisable"
+T52_EV2="$(grep '^evidence: ' "$(t4x_authority "$q52b")" | cut -d' ' -f2-)"
+[ -n "$T52_EV2" ] \
+  || fail "fixture: the fresh record must state its own evidence"
+[ "$T52_EV2" != "$T52_EV" ] \
+  || fail "T032: the fresh page must present DIFFERENT evidence from the answered one — if the digest did not move, the refusal above happened for some other reason and this feature binds nothing"
+"$ORCHID_BIN" answer "$q52b" approve >/dev/null \
+  || fail "fixture: the operator answers the page for the round as it stands"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T052 \
+  --result approve --reason "the second write is inside the lock now" >/dev/null \
+  || fail "T032: the binding must be a door and not a wall — the operator answering the page for the round that EXISTS converges it exactly as an undisturbed one does"
+assert_eq merging "$(t4x_status T052)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T052)" "...and the objection is cleared"
+[ ! -f "$(t4x_authority "$q52b")" ] \
+  || fail "T032: the fresh authority must be spent by the arbitration it authorised"
+# ...and the stale one is still sitting there, unspent, because it authorised
+# nothing. A consume that swept it would be the kernel deciding an answer it
+# refused to act on had been used up.
+[ -f "$(t4x_authority "$q52")" ] \
+  || fail "T032: the record for the round the operator was shown must survive an arbitration it did not authorise — spending it would let a later sweep read 'that answer was used' about an answer nothing ever acted on"
+green_case 'the page raised for the round as it stands: a different evidence digest, answered, relayed, spent — while the record it superseded is left exactly where it was'

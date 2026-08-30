@@ -230,11 +230,17 @@ assert_eq arbitrating "$("$ORCHID_BIN" task show R001 | grep '^status: ' | cut -
 
 # -- review task: arbitrating -> done requires --reason and journals kind
 # arbitration (the report-accept edge is an arbitration outcome) -----------
-rc=0; "$ORCHID_BIN" task advance R001 "done" 2>/dev/null || rc=$?
+#
+# Asked of `orchid task arbitrate`, which since T032 is the only public verb
+# that reaches this edge: `task advance R001 done` is refused now for being an
+# arbitration result taken by a verb that records none, which would leave the
+# reason-less probe below passing for a reason that has nothing to do with
+# INV-08. The verb carries the same requirement.
+rc=0; "$ORCHID_BIN" task arbitrate R001 --result approve 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "review archetype: arbitrating -> done without --reason must fail (INV-08)"
 assert_eq arbitrating "$("$ORCHID_BIN" task show R001 | grep '^status: ' | cut -d' ' -f2)" "R001 stays in arbitrating after the refused reason-less done"
 
-"$ORCHID_BIN" task advance R001 "done" --reason "accepted: findings addressed upstream"
+"$ORCHID_BIN" task arbitrate R001 --result approve --reason "accepted: findings addressed upstream"
 assert_eq "done" "$("$ORCHID_BIN" task show R001 | grep '^status: ' | cut -d' ' -f2)" "review archetype: arbitrating -> done with --reason succeeds"
 assert_match "arbitration" "$(cat .orchid/journal.md)" "arbitrating -> done journals kind=arbitration"
 assert_match "accepted: findings addressed upstream" "$(cat .orchid/journal.md)" "arbitrating -> done journals the supplied reason"
@@ -275,8 +281,14 @@ plant_reviewer_envelope R003 1
 assert_eq arbitrating "$(r003_status)" "R003 rework cycle: reviewing -> arbitrating (round 1)"
 
 # arbitrating -> rework (needs --reason; bumps attempts 0 -> 1; journals
-# kind=arbitration since from=arbitrating)
-"$ORCHID_BIN" task advance R003 rework --reason "arbiter sent back for rework"
+# kind=arbitration since from=arbitrating).
+#
+# Taken through `orchid task arbitrate`, which since T032 is the only public
+# verb that reaches an arbitration OUTCOME edge out of `arbitrating`: it derives the
+# destination from THIS archetype's declared transitions and still takes it
+# through `task advance`, so the edge, the attempt charge and the journal kind
+# asserted here are all the same ones.
+"$ORCHID_BIN" task arbitrate R003 --result request-changes --reason "arbiter sent back for rework"
 assert_eq rework "$(r003_status)" "R003 rework cycle: arbitrating -> rework"
 assert_eq 1 "$(r003_attempts)" "R003 rework cycle: arbitrating -> rework bumped attempts to 1"
 
@@ -302,14 +314,25 @@ plant_reviewer_envelope R003 2
 "$ORCHID_BIN" task advance R003 arbitrating --reason "second review round, approved"
 assert_eq arbitrating "$(r003_status)" "R003 rework cycle: reviewing -> arbitrating (round 2, attempt-2 envelope present)"
 
-# arbitrating -> done (needs --reason; journals kind=arbitration)
-"$ORCHID_BIN" task advance R003 "done" --reason "accepted after rework"
+# arbitrating -> done (needs --reason; journals kind=arbitration). `--result
+# approve` on an outcome=report archetype derives `done`, since the archetype
+# declares no `arbitrating:merging`.
+"$ORCHID_BIN" task arbitrate R003 --result approve --reason "accepted after rework"
 assert_eq "done" "$(r003_status)" "R003 rework cycle: arbitrating -> done"
 
 # Both arbitration OUTCOMES (the rework decision and the final done
 # acceptance) journaled with kind=arbitration, each with its own reason.
 r003_journal="$(cat .orchid/journal.md)"
 r003_arb_count="$(grep -c 'R003 arbitration' .orchid/journal.md)"
-assert_eq 2 "$r003_arb_count" "R003 rework cycle: both arbitration outcomes (rework and done) journaled with kind=arbitration"
-assert_match "arbitrating -> rework: arbiter sent back for rework" "$r003_journal" "R003 rework cycle: arbitrating -> rework reason journaled"
-assert_match "arbitrating -> done: accepted after rework" "$r003_journal" "R003 rework cycle: arbitrating -> done reason journaled"
+# THREE, not two: the two edge entries, plus the clear of the objection the
+# first outcome raised. `task arbitrate --result request-changes` records the
+# rejection as durable state on the task (T032, dogfood F33) and `--result
+# approve` clears it, journaling that clear under the same `arbitration` kind.
+# Counted rather than left to `assert_match` alone because a rejection that
+# stopped writing the objection, or an approval that stopped clearing it, would
+# leave every pattern below matching and the property gone.
+assert_eq 3 "$r003_arb_count" "R003 rework cycle: both arbitration outcomes (rework and done) journaled with kind=arbitration, plus the clear of the objection the first one raised"
+assert_match 'arbitrating -> rework: arbitrate\(request-changes\): arbiter sent back for rework' "$r003_journal" "R003 rework cycle: arbitrating -> rework reason journaled"
+assert_match 'arbitrating -> done: arbitrate\(approve\): accepted after rework' "$r003_journal" "R003 rework cycle: arbitrating -> done reason journaled"
+assert_match 'objection cleared by an explicit arbitration approval.*arbiter sent back for rework' "$r003_journal" \
+  "R003 rework cycle: the objection the rework outcome raised is cleared by the accepting one, naming what it cleared"

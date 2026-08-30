@@ -163,6 +163,25 @@ live for it. A finding at or above that threshold on a review whose verdict is
 `approve` is therefore not an approval with a note: it is a `review-conflict`
 boundary that halts the run until an arbiter settles it.
 
+**And it hands over the arbiter's standing objection, when there is one**
+(T032, dogfood F33). If the pack's `task.md` carries an `unresolved_objection`
+— a `request-changes` an arbiter recorded on an earlier round and no
+arbitration has cleared — the adapter appends it to the prompt, after the reply
+contract, and asks this round to answer it first: was it addressed, said in the
+`REASON:` line, with a `FINDING:` filed if it was not. The paragraph names WHO
+raised it, from the task's `unresolved_objection_by`: `operator` is the human
+running the repository, `orchestrator` is the run's own arbiter, and a prompt
+that described either as the other would be telling the reviewer something the
+task file does not say. An absent class reads as `operator`, the same
+fail-closed default the kernel's own gate takes. This is the one input a
+reviewer cannot re-derive from the pack, and on the run this comes from a
+reviewer that had itself withheld approval twice returned `approve` on the
+third round with the defect untouched — which is what a reviewer handed the
+same diff and no memory of its own objection will do. Every shipped `review`
+adapter carries the same paragraph; on the overwhelming majority of reviews the
+field is empty and the paragraph is omitted entirely, because a warning printed
+on every review is a warning on none.
+
 **The prompt states the task's own threshold, never a hardcoded default.**
 The adapter reads `blocking_severity` from the pack's `task.md` and names that
 value in the prompt, falling back to `medium` only when the field is absent —

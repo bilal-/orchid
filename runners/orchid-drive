@@ -46,6 +46,10 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
+# lib/objection.sh before lib/review.sh, as libexec/orchid-task sources them:
+# review_objection_page_authority decides whether this pass's page is one an
+# objection authority belongs beside.
+source "$ORCHID_ROOT/lib/objection.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/hooks.sh"
 source "$ORCHID_ROOT/lib/drive.sh"; source "$ORCHID_ROOT/lib/capability.sh"
@@ -475,6 +479,19 @@ set_boundary() {
 # count of drive_notify sites sitting at one, and is a page nothing compares all
 # the same. A fifth arm in either spelling fails a test rather than a human's
 # evening.
+#
+# AND IT IS WHERE `--objection` IS PASSED, for the same one-site reason. An
+# operator's standing objection stops on a boundary only they may settle, and
+# their answer to THIS page is what lets a later woken orchestrator carry the
+# decision they already made (lib/objection.sh, lib/review.sh's
+# review_operator_relay). That flag is what mints the durable authority record
+# beside the question, and the brokered surface refuses it -- so this call site,
+# inside the deterministic driver, is the only producer of one in the system. It
+# is decided HERE from the task's own state rather than passed down through the
+# boundary row: the predicate reads the objection and its recorded arbiter class
+# off the task file, so a page for some other `operator-decision` stop -- a
+# refused advance, an archetype with no edge -- cannot pick up an authority it
+# was never about.
 drive_notify() {
   local kind="$1" task="$2" tstatus="$3" text="$4" choice
   local -a nargs
@@ -484,6 +501,10 @@ drive_notify() {
     [ -n "$choice" ] || continue
     nargs+=(--choice "$choice")
   done <<< "$(drive_boundary_choices "$kind" "$tstatus")"
+  if [ "$kind" = operator-decision ] && [ -n "$task" ] \
+     && review_objection_page_authority "$repo" "$task" "$text"; then
+    nargs+=(--objection)
+  fi
   nargs+=("$text")
   "$ORCHID_BIN" "${nargs[@]}" >/dev/null
 }
@@ -2823,6 +2844,31 @@ drive_arbitrating() {
       ;;
     conflict)
       set_boundary review-conflict "$id" "$detail"
+      ;;
+    objection)
+      # T032, dogfood F33. A DIFFERENT KIND FROM `conflict`, and that is the
+      # whole of what this arm adds. `review-conflict` on an `arbitrating` task
+      # is arbitrable: the pump wakes the brokered orchestrator, the notify path
+      # is suppressed for exactly those, and the woken model may run `orchid
+      # task arbitrate --result approve` -- clearing an objection its author
+      # raised twice, from the same diff and the same unanimous, finding-free
+      # review set that shipped F33, with the operator never told.
+      #
+      # `operator-decision` names no settling verb, so it is operator-only on
+      # every surface and takes the notify path to a human. Same policy as
+      # `operator-handoff` and `task-prerequisite`, same reason: the verb exists,
+      # and what it records is something no woken model is in a position to
+      # assert. The detail still names `orchid task arbitrate`, because that IS
+      # the remedy -- run by the operator whose objection it is.
+      #
+      # ONLY AN OPERATOR'S REACHES THIS ARM. An objection this run's own
+      # orchestrator recorded comes back from the policy as `conflict` and takes
+      # the arm above -- still refused a deterministic approval, but routed to
+      # the actor that raised it rather than parked on a human page nothing can
+      # move. The policy decides which, from the arbiter class the arbitration
+      # wrote onto the task; this file never re-derives it, so the two cannot
+      # disagree about who a given objection belongs to.
+      set_boundary operator-decision "$id" "$detail"
       ;;
     *)
       set_boundary operator-decision "$id" "the review policy returned an unrecognized decision '$verdict'"

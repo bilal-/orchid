@@ -45,7 +45,7 @@ git checkout -q "$integ"
 "$ORCHID_BIN" task advance T001 reviewing
 plant_reviewer_envelope T001
 "$ORCHID_BIN" task advance T001 arbitrating --reason "single reviewer approved"
-"$ORCHID_BIN" task advance T001 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T001 --result approve --reason "approved for merge"
 
 old_verify_log=".orchid/reviews/T001-verify.log"
 old_verify_sha="$(grep '^sha: ' "$old_verify_log" | cut -d' ' -f2)"
@@ -115,7 +115,7 @@ git checkout -q "$integ"
 "$ORCHID_BIN" task advance T001 reviewing
 plant_reviewer_envelope T001
 "$ORCHID_BIN" task advance T001 arbitrating --reason "re-reviewed after rebase, approved"
-"$ORCHID_BIN" task advance T001 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T001 --result approve --reason "approved for merge"
 
 rc=0; out2="$WORK/merge2.out"
 "$ORCHID_BIN" merge T001 >"$out2" 2>&1 || rc=$?

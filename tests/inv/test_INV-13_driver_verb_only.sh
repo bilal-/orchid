@@ -233,24 +233,33 @@ case "$drv_code" in
   *) fail "INV-13: the driver must route arbitration through the structured policy function" ;;
 esac
 
-# Each of the three arms names its decision LITERALLY. A `printf '%s\t...'`
-# fed from a variable would let a computed word -- one an envelope's own text
-# could reach -- stand where `approve` stands today. Matched against the
-# comment-stripped capture, per this file's own rule: a decision word quoted
-# in a doc-comment must not be able to satisfy the pin for a code path that
-# no longer prints it.
+# Each arm names its decision LITERALLY. A `printf '%s\t...'` fed from a
+# variable would let a computed word -- one an envelope's own text could reach
+# -- stand where `approve` stands today. Matched against the comment-stripped
+# capture, per this file's own rule: a decision word quoted in a doc-comment
+# must not be able to satisfy the pin for a code path that no longer prints it.
+#
+# `objection` (T032) is in this loop for a reason the other three do not carry
+# on their own: it is the arm whose word decides WHICH BOUNDARY KIND the driver
+# raises, and the two kinds differ by whether a woken model may settle the stop.
+# A computed word there does not merely mislabel a decision, it re-routes an
+# operator-only one to an orchestrator.
 pol_code="$(code_of "$POLICY")"
-for arm in approve evidence conflict; do
+for arm in approve evidence conflict objection; do
   grep -qE "printf '$arm"'\\t' <<<"$pol_code" \
     || fail "INV-13: the arbitration policy's '$arm' decision is no longer a literal in its own printf format — a computed decision word can be reached by prose"
 done
 
 # And every carried string stays a DISPLAY string: nothing in the policy may
-# branch on what it says. Both of them, not just the first one added -- the
-# rejecting review's summary excerpt AND the title of the finding that tripped
-# the severity gate are engine-written free text that reaches the record, and a
-# rule policing only one of them is a rule the other walks past.
-for carried in excerpt ftitle; do
+# branch on what it says. All three, not just the first one added -- the
+# rejecting review's summary excerpt, the title of the finding that tripped the
+# severity gate, and (T032) the arbiter's own standing objection are free text
+# that reaches the record, and a rule policing only one of them is a rule the
+# others walk past. The objection is HUMAN-written rather than engine-written,
+# which changes nothing about the rule: the policy's whole contract is that it
+# decides on structured fields, and prose it merely quotes is prose from
+# whoever wrote it.
+for carried in excerpt ftitle objection; do
   # Braced expansions throughout: a bare `$carried[` reads as an array index to
   # ShellCheck (SC1087) and this suite is linted at warning severity.
   if code_of "$POLICY" | grep -nE "case[[:space:]]+\"?\\\$${carried}|\\\$${carried}[[:space:]]*=~|grep[^|]*\\\$${carried}"; then

@@ -4,6 +4,9 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
+# lib/objection.sh before lib/review.sh: review_operator_relay reads the
+# authority records that file defines, and `task arbitrate` spends one.
+source "$ORCHID_ROOT/lib/objection.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/findings.sh"
 source "$ORCHID_ROOT/lib/capability.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
@@ -870,6 +873,31 @@ case "$sub" in
       # these fields.
       rework_rounds|rework_signature|rework_signature_repeats)
         orchid_die "'$key' is kernel-owned — it records captured rework evidence (task advance <id> rework, task unblock, task retry)" ;;
+      # T032 (dogfood F33). This one is on the deny-list for a reason none of
+      # the others share: the field exists to stop an APPROVAL, and the actor
+      # most able to reach `task set` is the deterministic driver, which acts
+      # only through verbs (INV-13) and would otherwise have a verb that
+      # deletes the one thing standing between it and a merge. Deciding that an
+      # objection has been answered is the judgment `task arbitrate` records;
+      # a bare frontmatter write records nothing, and a cleared objection with
+      # no journal entry behind it is indistinguishable from one that was met.
+      #
+      # `unresolved_objection_by` is on it for a sharper reason still: it is
+      # the field that decides WHO may clear the objection. Left writable, the
+      # stop an operator raised could be relabelled as an orchestrator's by
+      # anything holding the verb -- downgrading an operator-only boundary to
+      # one a woken model settles, without touching a character of the
+      # objection an operator would reread. The two fields are written by one
+      # arbitration and refused by one arm, so neither can drift from the other.
+      #
+      # `objection_seq` is the third, and it is the one that makes an operator's
+      # ANSWER unspendable twice: it is the instance the authority record beside
+      # their page is bound to (lib/objection.sh). Left writable, rewinding it by
+      # one would make a page they answered rounds ago authorise the objection
+      # standing now -- the replay this counter exists to refuse, reachable by a
+      # verb rather than by a forgery.
+      unresolved_objection|unresolved_objection_by|objection_seq)
+        orchid_die "'$key' is kernel-owned — 'task arbitrate <id> --result request-changes' writes it (recording the arbiter's own class alongside, which is what decides whether a woken orchestrator may settle the stop or only an operator may, and rotating the objection instance an operator's answer is bound to) and 'task arbitrate <id> --result approve --reason \"...\"' is the ONLY thing that clears it. It is what keeps a deterministic approval from firing on a defect an arbiter already rejected, so it is cleared by a recorded judgment or not at all." ;;
     esac
     # depends_on ids are checked HERE, at write time (dogfood F30). The
     # scheduler can only ever report an id it cannot satisfy as
@@ -964,6 +992,64 @@ case "$sub" in
       exit 13
     fi
     legal "$from" "$to" "$arch" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
+    # AN ARBITRATION OUTCOME IS RECORDED BY ONE VERB (T032, dogfood F33).
+    #
+    # Three edges out of `arbitrating` ARE the arbitration's result: approve is
+    # `arbitrating:merging` (or `arbitrating:done` on an outcome=report
+    # archetype), request-changes is `arbitrating:rework`. `task arbitrate`
+    # derives which of them from the archetype, journals the result, and --
+    # since T032 -- raises and clears the standing
+    # objection that keeps a later round from being approved past a defect an
+    # arbiter already rejected. `task advance` does NONE of that. Taken by hand
+    # it settles the round with nothing in the state saying who decided it, what
+    # they decided, or whether the objection standing on the task was ever
+    # answered -- and on `arbitrating:merging` it walks a live
+    # `unresolved_objection` straight to the merge queue, which is F33's exact
+    # outcome through the one door the gate was not on.
+    #
+    # So the edges are refused HERE rather than removed from the archetypes:
+    # they are real transitions, `task arbitrate` takes them a few lines below
+    # through this same verb, and every gate on this path (the reason
+    # requirement, attempt accounting, evidence invalidation, the `arbitration`
+    # journal kind) has to keep applying to them exactly as it did.
+    #
+    # THE MARKER CARRIES THE ID, not a bare flag. It is set as a prefix on that
+    # one child invocation, so it exists for the length of a single `task
+    # advance` and for no other process; binding it to the id means a value that
+    # somehow outlived its call cannot admit a hand-typed advance on a DIFFERENT
+    # task. It is a private kernel handshake, not an option: nothing documents
+    # it, and an operator reaching for it has the verb the refusal names.
+    #
+    # THE OUTCOME DESTINATIONS, AND ONLY THOSE. The three below are exactly the
+    # ones `task arbitrate` derives a few hundred lines down -- `merging` and
+    # `done` for an approval (whichever the archetype declares), `rework` for a
+    # request-changes -- which is what makes them arbitration RESULTS rather
+    # than merely edges leaving `arbitrating`. The list is written out here so
+    # it can be read against that derivation, and both twins are pinned in
+    # tests/test_task.sh.
+    #
+    # This used to read `arbitrating:*`, refusing everything but `blocked`, and
+    # that was wider than the argument for it (T032 convergence, after the
+    # attempt-4 arbitration). An archetype is free to declare an `arbitrating`
+    # edge that decides nothing about the candidate -- `arbitrating:reviewing`,
+    # sending a round back for more review, is the obvious one -- and such an
+    # edge records no result, so `task arbitrate` cannot take it and this verb
+    # is the only door there is. Refusing it did not close a bypass; it deleted
+    # a transition, in the one verb whose refusal names an alternative that
+    # cannot reach it. What the rule protects is the merge queue and the
+    # attempt counter, and a destination outside these three touches neither.
+    #
+    # `arbitrating:blocked` is outside the list for the same reason and one
+    # more: it is the universal escape hatch every status has, and it is the
+    # move this refusal itself sends an operator to.
+    case "$from:$to" in
+      arbitrating:merging|arbitrating:done|arbitrating:rework)
+        if [ "${ORCHID_ARBITRATION_ID:-}" != "$id" ]; then
+          echo "orchid: $from -> $to is an arbitration RESULT, and 'orchid task advance' records none — refused" >&2
+          echo "orchid: use 'orchid task arbitrate $id --result approve|request-changes --reason \"...\"', which derives this destination from the archetype, journals the decision, and is the only thing that raises or clears the standing objection a later round is judged against (T032, dogfood F33). To stop the task instead of deciding it: 'orchid task advance $id blocked --reason \"...\"'." >&2
+          exit 3
+        fi ;;
+    esac
     # A candidate failure normally charges through `testing -> rework`, whose
     # existing accounting below increments `attempts`. Some valid code
     # archetypes deliberately have no such edge, however, and a verb can also
@@ -1566,8 +1652,22 @@ case "$sub" in
     # existing gate (reason requirement, attempt accounting, evidence
     # invalidation, the arbitration journal kind) applies unchanged -- this
     # verb adds a judgment vocabulary on top of that machinery, it does not
-    # fork it. `task advance` remains available for operators and for the
-    # pre-existing documented walk; backward compatibility is untouched.
+    # fork it.
+    #
+    # AND IT IS THE ONLY PUBLIC DOOR ONTO THOSE EDGES (T032, dogfood F33). It
+    # used to be one of two: `task advance <id> merging` out of `arbitrating`
+    # was legal for an operator and for the hand-executed walk, which meant the
+    # objection this verb raises and clears could be walked past by typing the
+    # other command -- an approval with nothing recording who made it and a live
+    # `unresolved_objection` riding into the merge queue underneath it. That
+    # edge, and the two other destinations an arbitration RESULT derives
+    # (`arbitrating:done`, `arbitrating:rework`), are now refused unless this
+    # verb is the caller (see the refusal's own note in the `advance` arm
+    # above). Edges out of `arbitrating` that decide nothing about the
+    # candidate are untouched -- `blocked`, because stopping a task is not
+    # deciding it, and any non-outcome edge an archetype declares, because this
+    # verb cannot derive it and refusing it would delete a transition rather
+    # than close a bypass.
     verb_lock_guard "$repo"
     epoch_require "$repo"; export ORCHID_EPOCH
     id="${1:-}"; shift || true
@@ -1616,9 +1716,212 @@ case "$sub" in
       echo "orchid: archetype '$arch' declares no arbitrating edge for result '$result'" >&2
       exit 3
     fi
+    # THE OBJECTION OUTLIVES THE ROUND IT WAS RAISED IN (T032, dogfood F33).
+    #
+    # Before this, a `request-changes` arbitration left the run state saying
+    # nothing at all: the task moved to `rework`, the journal recorded the
+    # decision, and the NEXT attempt was judged entirely on its own reviews.
+    # Nothing ever asked whether the arbiter's objection had been met. F33 is
+    # what that costs -- the operator rejected the same concurrency hole
+    # twice, naming the constants and the line range the second time; round 3's
+    # reviewers, judging the diff cold, both returned `approve`; and the
+    # deterministic path merged it with "unanimous scope-complete approval from
+    # 2 review(s), no finding at or above medium". The defect shipped, and the
+    # operator found it by reading the merged source after `status` said done.
+    #
+    # So a rejection writes the objection down, on the task, where the two
+    # actors who need it can read it: lib/drive.sh's `drive_review_decision`
+    # refuses a deterministic approval while the field stands, and every
+    # shipped `review` adapter carries it into the next round's prompt (the
+    # pack copies task.md whole, frontmatter included).
+    #
+    # WRITTEN BEFORE THE ADVANCE, CLEARED AFTER IT, and the asymmetry is the
+    # whole safety argument. A write that failed here dies under `set -e` with
+    # the task still `arbitrating` -- nothing moved, nothing recorded. A clear
+    # placed before the advance would delete the objection and then leave it
+    # deleted if the advance were refused, handing the very next `orchid drive`
+    # pass a task it may now approve deterministically. Each half fails in the
+    # direction that keeps the objection standing.
+    #
+    # THE ROUND IS NAMED, and the field is not bound to it. `a<attempt>` says
+    # which round was rejected, which is what makes a standing objection legible
+    # three rounds later; it is not a binding, because a rework round moves
+    # `attempts` and `candidate_sha` and an objection that expired on either
+    # would expire on precisely the event it exists to survive. Only an explicit
+    # `--result approve` clears it -- not `unblock`, not `retry`, not
+    # `reverify`, none of which is an answer to "was this defect fixed".
+    #
+    # AND IT RECORDS WHO RAISED IT. `orchid task arbitrate` has two callers who
+    # are not the same actor: an operator at their own shell, and a brokered
+    # orchestrator the pump woke for a `review-conflict` -- `task-arbitrate` is
+    # the one judgment write that surface admits, so a model reaching this line
+    # is the surface working as designed, not a leak. Recording the class of
+    # the arbiter beside the text is what lets one field serve both without
+    # either reading collapsing into the other: an orchestrator's own objection
+    # is not a human page nobody can answer, and an operator's is not something
+    # the next wakeup may clear. See lib/review.sh for the rule -- an objection
+    # is settled by an arbiter of at least the authority that raised it -- and
+    # for why ORCHID_ACTOR is the provenance rather than a new one.
+    #
+    # THE GUARD IS AT THE VERB, not only in the routing. lib/drive.sh raises an
+    # operator's standing objection as `operator-decision`, which names no
+    # settling verb and so wakes nobody; that keeps a model from being HANDED
+    # this task. It does not keep a model woken for some OTHER boundary from
+    # naming this id -- `task arbitrate <id>` takes an id, and any task sitting
+    # in `arbitrating` is reachable by one. Both results are refused, because
+    # `request-changes` would supersede the operator's words with the model's
+    # own and leave a stop the model may then clear, which reaches F33's
+    # outcome by a longer road than `approve` does. The one thing that gets a
+    # model past this guard is the operator's own answer, read off durable
+    # notify/answer state rather than asserted by the caller -- see the relay
+    # note below.
+    obj_prev="$(fm_get "$f" unresolved_objection)"
+    obj_prev_by_raw="$(fm_get "$f" unresolved_objection_by)"
+    obj_prev_by="$(review_objection_arbiter "$obj_prev" "$obj_prev_by_raw")"
+    obj_prev_seq="$(objection_seq "$repo" "$id")"
+    arb_by="$(review_arbiter_class)"
+    # ...AND THE OPERATOR MAY HAVE ALREADY DECIDED THIS (T032 convergence,
+    # after the attempt-4 arbitration). The stop an operator's objection raises
+    # is paged with `orchid notify`, the operator answers it with `orchid
+    # answer`, and no verb consumes an answer file -- so an operator who has
+    # decided still needs an actor to run the arbitration, and the actor at the
+    # keyboard for an unattended run is a woken orchestrator. Refusing THAT is
+    # refusing to carry out the operator's own recorded decision, which leaves
+    # the run parked on a question its owner has already answered.
+    #
+    # So the class of this arbitration is the actor's UNLESS a durable operator
+    # answer authorises it, bound to this task, THIS OBJECTION INSTANCE, THE
+    # REVIEW EVIDENCE THE PAGE PRESENTED and this result -- lib/review.sh's
+    # review_operator_relay is the whole of that reading, and its header is where
+    # the axes are argued. Nothing the relaying
+    # model supplies is an input: not `--reason` (its own prose), not a flag
+    # (there is none), not an environment variable (the one read here can only
+    # ever make the arbitration a MODEL's). The authority is a record the
+    # brokered surface has no argv form to write, beside an answer only `orchid
+    # answer` -- off that surface entirely -- can produce.
+    #
+    # The qid is kept, not just the verdict, for two jobs. An arbitration
+    # recorded with an authority its actor did not have on its own must say,
+    # durably, WHICH answer lent it -- the clear below journals it, so a reader
+    # of the record can go and open the operator's page. And the record has to be
+    # SPENT: the consume below deletes it before anything is cleared, so the same
+    # answer cannot authorise a second arbitration, and a crash between the two
+    # leaves the objection standing with no authority left -- the operator pays a
+    # shell of their own and the guarantee pays nothing.
+    #
+    # READ ONLY WHEN IT IS NEEDED, which is also what keeps it honest in the
+    # record: an OPERATOR arbitrating at their own shell needs no relay, and
+    # crediting one anyway would put "relayed by ..." on the clear of an
+    # arbitration nobody relayed -- and would spend an authority record the
+    # operator may still need. The condition is the refusal's own, so the only
+    # arbitration this state can speak for is the one it would otherwise have
+    # refused.
+    relay_qid=""
+    if [ "$obj_prev_by" = operator ] && [ "$arb_by" != operator ]; then
+      relay_qid="$(review_operator_relay "$repo" "$id" "$result" "$obj_prev" "$obj_prev_seq")"
+      if [ -n "$relay_qid" ]; then
+        # SPENT BEFORE IT IS ACTED ON, and here rather than beside the clear a
+        # few dozen lines down. Everything after this point can still fail --
+        # the advance can be refused, the process can be killed -- and every one
+        # of those outcomes leaves the objection STANDING. An authority consumed
+        # ahead of them means the replay of a killed arbitration finds nothing to
+        # spend, so a crash costs the operator one more page and costs the
+        # guarantee nothing. Consuming after the clear would invert that: the
+        # window would hold a cleared objection whose authority was still on
+        # disk, spendable against whatever is raised next.
+        objection_authority_consume "$repo" "$relay_qid" \
+          || orchid_die "$id: the operator's answer to $relay_qid authorises this arbitration, but the authority record could not be spent — refusing rather than acting on a record a replay could spend again. Remove $(objection_authority_file "$repo" "$relay_qid") or arbitrate from the operator's own shell."
+        arb_by=operator
+      fi
+    fi
+    if [ "$obj_prev_by" = operator ] && [ "$arb_by" != operator ]; then
+      orchid_die "$id carries an OPERATOR's unresolved objection, and this arbitration is not the operator's (actor: ${ORCHID_ACTOR:-unset}) — refused, and nothing was written. The standing objection is: \"$obj_prev\" (instance $obj_prev_seq). Whether it was answered is the call of the arbiter who raised it, who saw twice what a review of this diff did not; a --result approve here would clear it from the same diff that produced it, and a --result request-changes would replace their words with these. Raise it to the operator instead: orchid notify --task $id \"<what they must decide>\". If they have already decided, they answer the page the driver raised for THIS objection ('orchid answer <qid> approve') and this verb will then relay THAT decision — an answer to some other page, to an earlier objection, to a round whose candidate, review plan or reviews have moved since they were paged, or in any other words, is not one."
+    fi
+    if [ "$result" = request-changes ]; then
+      # SUPERSEDED, NOT ACCUMULATED: the arbiter's latest word is the operative
+      # statement of what is still unresolved, and one frontmatter line cannot
+      # grow a list. The journal keeps every rejection in full, so the history
+      # is not lost -- but a value silently replaced is the shape that reads as
+      # an objection nobody withdrew and nobody kept, so the replacement says
+      # so before it happens.
+      if [ -n "$obj_prev" ]; then
+        journal --task "$id" --kind arbitration \
+          "objection superseded by this arbitration — previous: \"$obj_prev\" (raised by: $obj_prev_by)"
+      fi
+      # THE INSTANCE ROTATES FIRST, then the class, and the text goes first when
+      # they are cleared below -- one asymmetry, the same one the advance is
+      # bracketed by, for the same reason: each half fails in the direction that
+      # leaves the stop no weaker than it already was.
+      #
+      # `objection_seq` leads because it is what an operator's answer is bound
+      # to. A text written under a seq that has not moved yet is an objection an
+      # answer to the PREVIOUS one already authorises -- which is the replay the
+      # counter exists to refuse, reachable through a crash. Bumped first, a
+      # failure between the writes leaves the older text standing under a seq
+      # nothing is bound to: nothing can be relayed, the operator settles it from
+      # their own shell, and no answer is spent on words they never read. It is
+      # never reset, in either direction, because a counter that rewound would
+      # make an old page's authority live again.
+      #
+      # Then the class, because a class written with no text yet behind it is
+      # inert (review_objection_arbiter answers "none standing" on an empty
+      # objection, whatever the class says), while a text written under a class
+      # that has not caught up yet reads as the operator's -- the stricter of
+      # the two. The reachable case that matters is an operator superseding an
+      # orchestrator's objection: with the class first, a failure between the
+      # two leaves the older text standing as operator-only rather than leaving
+      # the operator's own words labelled as a model's.
+      #
+      # AND IT ROTATES WHEN NOTHING ELSE DOES. `--waive-attempt` leaves
+      # `attempts` exactly where it was, so an operator rejecting the same defect
+      # in the same words across a waived round composes a BYTE-IDENTICAL
+      # `a<attempt>: <reason>` line. Every other field on this task would say the
+      # objection had never changed; the seq is the one that says it is a new
+      # one, and an answered page for the old one is refused because of it.
+      fm_set "$f" objection_seq "$(( obj_prev_seq + 1 ))"
+      fm_set "$f" unresolved_objection_by "$arb_by"
+      fm_set "$f" unresolved_objection \
+        "$(review_objection_record "$(( $(fm_get "$f" attempts) + 1 ))" "$reason")"
+    fi
     adv_args=("$id" "$to" --reason "arbitrate($result): $reason")
     [ "$waive" -eq 0 ] || adv_args+=(--waive-attempt)
-    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" task advance "${adv_args[@]}" >/dev/null
+    # `ORCHID_ARBITRATION_ID` is the private handshake `task advance`'s
+    # arbitrating-edge refusal reads (see its note there). A prefix assignment,
+    # so it is set for this one child and for nothing else in this process --
+    # and carrying the id, so it can only ever admit the edge this arbitration
+    # is actually taking.
+    ORCHID_ARBITRATION_ID="$id" ORCHID_REPO="$repo" \
+      "$ORCHID_ROOT/bin/orchid" task advance "${adv_args[@]}" >/dev/null
+    if [ "$result" = approve ] && [ -n "$obj_prev" ]; then
+      # Journal-first (INV-08), and guarded on a NON-EMPTY previous value for
+      # the reason the `operator_prerequisite` clear a few hundred lines up is:
+      # `fm_set` on an absent key APPENDS it, so an unguarded clear would give
+      # an `unresolved_objection:` line to every task in every repository that
+      # never carried one. An approval that clears nothing has nothing to say.
+      #
+      # THE RELAY IS NAMED IN THE RECORD, and this is the only place it can be:
+      # the entry's own actor string is the process's (a model's, when one
+      # relayed), and `cleared by:` is the AUTHORITY the arbitration acted with.
+      # Those are two different facts on a relayed clear, so the entry carries
+      # both and the qid that joins them -- otherwise the record says an
+      # operator cleared it while every other trace of the pass says a model
+      # ran the verb, and there is nothing to reconcile the two.
+      obj_relay_note=""
+      [ -z "$relay_qid" ] || obj_relay_note=" — relayed by ${ORCHID_ACTOR:-unset} from the operator's own answer to $relay_qid, whose authority for objection instance $obj_prev_seq was spent to do it"
+      journal --task "$id" --kind arbitration \
+        "objection cleared by an explicit arbitration approval — was: \"$obj_prev\" (raised by: $obj_prev_by, cleared by: $arb_by)$obj_relay_note"
+      fm_set "$f" unresolved_objection ""
+      # Both halves, so a later `request-changes` cannot inherit a class from an
+      # objection that is no longer standing -- and the text first, per the note
+      # above: a failure between the two leaves an unread class behind an empty
+      # objection, which is inert, rather than the operator-only label behind a
+      # live one that nobody now needs to answer. Guarded on the RAW value for
+      # the reason the enclosing `-n "$obj_prev"` is guarded: `fm_set` on an
+      # absent key APPENDS it, and a task carrying an objection written before
+      # the class was recorded at all must not come out of this the owner of an
+      # empty `unresolved_objection_by:` line it never had.
+      [ -z "$obj_prev_by_raw" ] || fm_set "$f" unresolved_objection_by ""
+    fi
     echo "arbitrated $id: result=$result from=$from to=$to" ;;
   handoff)
     # T010: the verb that ACKNOWLEDGES a hand-off, and the only place a

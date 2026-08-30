@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
 # RED: every reason-bearing verb is invoked below with the reason MISSING --
-#      `task advance ... merging` with no `--reason` at all, and `--reason`
+#      `task arbitrate ... --result approve` (the arbitration outcome verb, and
+#      since T032 the only public route onto `arbitrating:merging`) with no
+#      `--reason` at all, and `--reason`
 #      as a trailing flag with no value on advance/unblock/retry/set -- and
 #      each must be refused with a message naming the missing value rather
 #      than crashing on an unbound variable. Kernel-owned keys (`status`,
@@ -37,9 +39,15 @@ for s in implementing testing; do "$ORCHID_BIN" task advance T001 "$s" >/dev/nul
 "$ORCHID_BIN" task advance T001 reviewing >/dev/null
 plant_reviewer_envelope T001
 "$ORCHID_BIN" task advance T001 arbitrating >/dev/null
-rc=0; "$ORCHID_BIN" task advance T001 merging 2>/dev/null || rc=$?
+# Asked of `orchid task arbitrate`, which since T032 is the only public verb
+# that reaches an arbitration OUTCOME edge out of `arbitrating` — `task advance T001
+# merging` is now refused for being an arbitration result taken by a verb that
+# records none, which would make the reason-less probe below pass for a reason
+# that has nothing to do with INV-08. The requirement itself is unchanged and
+# the edge taken is the same one.
+rc=0; "$ORCHID_BIN" task arbitrate T001 --result approve 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "INV-08: merging without --reason"
-"$ORCHID_BIN" task advance T001 merging --reason "both reviewers approve"
+"$ORCHID_BIN" task arbitrate T001 --result approve --reason "both reviewers approve"
 grep -q "arbitration" .orchid/journal.md || fail "INV-08: arbitration kind journaled"
 grep -q '"by": *"operator' .orchid/journal.md 2>/dev/null || grep -q "(operator" .orchid/journal.md || fail "INV-08: actor kernel-derived"
 green_case "the SAME advance WITH a reason succeeded and journalled an arbitration entry with a kernel-derived actor, so the refusal above is the reason guard discriminating rather than the verb being dead"

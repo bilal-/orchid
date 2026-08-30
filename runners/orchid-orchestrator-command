@@ -340,6 +340,14 @@ case "$verb" in
           [ "$#" -ge 2 ] || refuse "--choice requires a value"
           is_id "$2" || refuse "'$2' is not a valid choice value (one [A-Za-z0-9_-] word)"
           shift 2 ;;
+        # `--objection` is the one this refusal is now load bearing for (T032,
+        # dogfood F33): that flag makes `orchid notify` mint the durable
+        # authority record beside the question, and that record is what lets a
+        # later arbitration credit an operator's answer as the operator's own
+        # decision. A woken model may raise a page about anything -- that is what
+        # `notify` is admitted for -- but it may not raise one that lends its own
+        # arbitration a human's authority. The generic arm below is what refuses
+        # it, structurally, along with every other flag nobody enumerated here.
         --*) refuse "unexpected flag '$1' to notify" ;;
         *)
           [ "$#" -eq 1 ] || refuse "notify takes exactly one text argument, last"
