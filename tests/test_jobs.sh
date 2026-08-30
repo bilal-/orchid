@@ -1120,6 +1120,19 @@ ls_bad_rc=0
 [ "$ls_bad_rc" -ne 0 ] || fail "jobs ls must refuse an unknown flag rather than ignore it"
 
 kill "$ls_live_pid" 2>/dev/null || true
+# REAPED HERE, into a discarded stderr, exactly as the --watch job fourteen
+# lines above and the live-engine fixture at the end of this file already are.
+# The kill is this fixture working -- the job had to be alive for the `running`
+# row to mean anything -- but bash announces the reap on stderr, and it does so
+# at whatever command is current when it notices, not at the `kill`. Left
+# unwaited, that lands as `tests/test_jobs.sh: line N: <pid> Terminated: 15
+# sleep 100` pointing at the `rm` below: the exact `file: line N:` shape
+# lib/findings.sh scrapes into a rework brief, so a PASSING suite hands the
+# next implementer a fabricated location (it did exactly that to this task,
+# twice). Waiting makes the reap happen inside a builtin whose stderr is
+# /dev/null, and `|| true` absorbs the signal-encoded status. Nothing this
+# fixture asserts runs after this point, so nothing here is made fail-open.
+wait "$ls_live_pid" 2>/dev/null || true
 rm -f "$rt/jobs/j-ls-live.json" "$rt/jobs/j-ls-dead.json" "$rt/jobs/j-ls-prep.json"
 
 # ===========================================================================
