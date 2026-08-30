@@ -659,11 +659,86 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   invoking the vendor CLI at all (they have no worktree-read fallback) —
   see [docs/engines/agy.md](./engines/agy.md) and
   [docs/engines/hermes.md](./engines/hermes.md).
-- **`push_guard`** governs whether `orchid init` installs a `.git/hooks/pre-push`
-  guard that refuses pushing `task/*` branches or the integration branch
+- **`push_guard`** governs whether orchid installs a `pre-push` guard — in
+  `.git/hooks/`, or wherever `core.hooksPath` points if you set it —
+  that refuses pushing `task/*` branches or the integration branch
   (defense-in-depth; PROTOCOL.md instructs the model not to push, but that
   prompt policy is not OS/network containment).
   `ORCHID_ALLOW_PUSH=1` overrides it for one push.
+  The same hook also refuses a push of *any other branch* that would publish
+  orchid's own run state (`.orchid/`) where the remote does not already have
+  it — the leak that reaches a product's `main` by riding
+  the merge chain rather than by anyone pushing an orchid-named branch. Both
+  the branch's **tip** and every commit the push makes **newly reachable** are
+  checked, because a push sends commits rather than a tree: `git rm -r .orchid
+  && git commit` leaves a clean tip over a history that still carries every
+  file, and that is the shape a tip-only check would wave straight through. A
+  branch whose remote copy already tracks run state is exempt automatically, so
+  a repository that carries its own run state on purpose (orchid's own does)
+  pushes it once with `ORCHID_ALLOW_PUSH=1` and is never asked again — the
+  commits are on the remote from then on, so the same exemption covers the
+  history check too. A
+  **Gerrit review upload counts as a branch** — `refs/for/<branch>`,
+  `refs/for/refs/heads/<branch>`, with or without a `%topic=…` push-option
+  suffix — because on a Gerrit-hosted project the upload *is* the push and the
+  change is submitted onto that branch afterwards, on the forge, where no local
+  hook runs. It fails closed: the remote never advertises a `refs/for/…` ref,
+  so there is no remote copy that could exempt it, and `ORCHID_ALLOW_PUSH=1` is
+  the only way through. Everything else is checked by name only: pushing a tag,
+  a note, or any other non-branch ref behaves exactly as plain git does,
+  whatever its commit carries, so tagging a release is never blocked by this.
+  See
+  [troubleshooting.md](./troubleshooting.md) — "Run state in your product's
+  history". `orchid init` installs the hook, and `orchid start` upgrades it on
+  an already-initialized repository: init runs exactly once in a repository's
+  life (it refuses once the integration branch exists), so a repository set up
+  before a newer hook shipped picks it up on the next `orchid start` rather
+  than keeping the old one forever. Once a run has left `planning`, `orchid
+  start` refuses as the setup command it is, so ask for the guard explicitly
+  instead: `orchid start --refresh-push-guard` re-installs it from the current
+  template at any `run_status`, takes no other argument, moves no branch,
+  writes no run state and takes no lock, and is idempotent. Wherever it is
+  installed from, the hook goes at the path **git** will run it from — an
+  absolute `core.hooksPath` *inside this repository's git directory* is
+  honored, and a linked worktree gets the main checkout's shared hooks
+  directory — so it is never written to a `.git/hooks/` git has been configured
+  to ignore. Two `core.hooksPath` layouts orchid does not guard, and it says so
+  instead of pretending otherwise:
+  - a **relative** value (`.githooks`, `hooks/`, anything not starting with
+    `/`), because git resolves it against *each worktree's own top level*, so
+    one setting names a different file in the main checkout, in the integration
+    worktree and in every task worktree, and no single file installed by orchid
+    covers the repository;
+  - an **absolute** value pointing *outside* this repository's git directory
+    (`~/.githooks`, a team mount, anything set in `--global` config), because
+    any number of repositories may read that same directory. Orchid's guard
+    carries *this* repository's integration branch baked in, so installing it
+    there would refuse pushes in repositories orchid was never pointed at, and
+    would overwrite — or be overwritten by — whatever another one installed for
+    the same reason.
+
+  In both, `orchid init`, `orchid start` and `orchid doctor` warn, naming the
+  risk; `orchid start --refresh-push-guard` exits non-zero; nothing is written
+  and nothing is reported as installed or current. Point the key at an absolute
+  directory inside this repository's git directory (`git config core.hooksPath
+  /path/to/repo/.git/hooks`) or drop it (`git config --unset core.hooksPath`)
+  and re-run the refresh — the messages name both, with your repository's own
+  path filled in. Orchid never edits that setting for
+  you — it is yours, like `orchid.config`. A hook orchid did not write is never
+  overwritten by either verb — it is left alone and reported — and one that
+  already matches the current template *and is executable* is left
+  byte-for-byte alone and reported not at all. Executability is not a detail:
+  git silently runs nothing when a hook is not executable, so a byte-current
+  guard with the execute bit missing is `chmod +x`'d in place and reported as
+  repaired (its contents untouched), and a `chmod` that fails is reported as a
+  failure rather than as a guard. Changing `integration_branch` is picked up the same
+  way, since the branch name is baked into the hook at install time. Orchid
+  recognizes its own hook only by the file's **second line starting with**
+  `# orchid pre-push guard`, so if you have edited that file in place, your
+  edit is what the upgrade replaces — keep your version in a hook of your own
+  instead. Any other file is never touched, including one that mentions
+  `orchid pre-push guard` somewhere else in its body: a hook of yours that
+  talks about orchid, or chains to it, is still yours.
 - **`status_page`** is where `orchid status --html` writes its
   self-contained static page — never served, open the file directly.
 - **`notify.plugin`** (default `openclaw`) selects WHICH `kind=notify`

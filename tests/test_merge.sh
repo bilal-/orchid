@@ -1861,3 +1861,336 @@ assert_eq "done" "$("$ORCHID_BIN" task show T111 | grep '^status: ' | cut -d' ' 
   "reading EOF is not a failure -- the task still reaches done"
 assert_eq "" "$(cat "$stdin_probe")" \
   "the validation suite reads EOF in the temp worktree, never the caller's stdin"
+
+# T037 -- run-state containment. This verb grows the integration branch, and
+# the integration branch carries `.orchid/`: roadmap, journal, BLOCKERS,
+# plugins.lock, every review envelope. On a real product repository 14 of
+# those files reached `main`, integration branch -> feature branch -> MR,
+# approved because the diff was large and the paths look like tooling.
+#
+# The kernel never runs that merge and never may (PROTOCOL.md's Preamble), so
+# what it owes the operator is to SEE the shape and say so: run state sitting
+# on a branch that is neither the integration branch nor any task's recorded
+# branch means the route out of the run is already open, and every further
+# merge queues more state behind it.
+#
+# A WARNING, not a refusal -- the condition predates this merge, this verb
+# cannot undo it, and refusing would freeze the task in `merging` over work
+# that has to happen on branches orchid does not own. The refusal ships where
+# it is safe and reversible: templates/pre-push.sh, at the boundary where the
+# state would leave the machine (tests/test_launch.sh).
+#
+# RED (before this fix): no warning at all -- merge is silent while run state
+# is already on its way into the product's history.
+# ---------------------------------------------------------------------------
+# T007's preceding scenarios deliberately finish with a red repository gate
+# configured. Containment is the only variable in the two cases below, so
+# restore the no-gate baseline before creating either candidate.
+set_gate ""
+
+"$ORCHID_BIN" task create T042 "containment green twin"
+git checkout -q -b task/T042 "$integ"
+echo green > containment-green.txt && git add containment-green.txt && git commit -q -m "containment green candidate"
+cand7="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base7="$(git rev-parse "$integ")"
+walk_to_merging T042 task/T042 "$base7" "$cand7" "test -f containment-green.txt"
+
+out7="$WORK/merge7.out"; rc=0
+"$ORCHID_BIN" merge T042 >"$out7" 2>&1 || rc=$?
+assert_eq 0 "$rc" "containment: an ordinary repo still merges clean (exit 0)"
+grep -q "run state" "$out7" \
+  && fail "no branch outside the run carries run state -> merge must say nothing about containment"
+green_case 'no branch outside the run carries .orchid/ -> merge warns about nothing'
+
+# Now the leak, built the way it actually happens: the operator takes the
+# integration branch onto a branch of their own. Built in a THROWAWAY
+# worktree so the fixture's own checkout is never switched onto a branch that
+# tracks .orchid/ (checking back out would delete the live run state under
+# the suite's feet).
+leak_wt="$WORK/leak-wt"
+git worktree add -q -b product/main "$leak_wt" "$integ"
+mkdir -p "$leak_wt/.orchid"
+printf -- '---\nrun_status: running\nrun_id: r-001\n---\n# Roadmap\n' > "$leak_wt/.orchid/roadmap.md"
+printf '# Journal\n' > "$leak_wt/.orchid/journal.md"
+git -C "$leak_wt" add -f .orchid
+git -C "$leak_wt" commit -q -m "operator: merged the integration branch into their own branch"
+git worktree remove --force "$leak_wt"
+[ -n "$(git ls-tree product/main -- .orchid)" ] \
+  || fail "fixture: product/main must actually carry run state for the RED case to mean anything"
+
+"$ORCHID_BIN" task create T043 "containment red case"
+git checkout -q -b task/T043 "$integ"
+echo red > containment-red.txt && git add containment-red.txt && git commit -q -m "containment red candidate"
+cand8="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base8="$(git rev-parse "$integ")"
+walk_to_merging T043 task/T043 "$base8" "$cand8" "test -f containment-red.txt"
+
+# stdout and stderr captured SEPARATELY, in the one run this task has: the
+# warning belongs on stderr, so a caller parsing merge's result line never has
+# to filter advisory prose out of it. (Re-running the verb to check the other
+# stream would prove nothing -- T043 is `done` by then and merge dies at its
+# status gate, above this warning, leaving both files empty and both
+# assertions passing vacuously.)
+out8="$WORK/merge8.out"; err8="$WORK/merge8.err"; rc=0
+"$ORCHID_BIN" merge T043 >"$out8" 2>"$err8" || rc=$?
+assert_eq 0 "$rc" "containment: the warning is advisory -- the merge still completes (exit 0)"
+assert_eq "done" "$("$ORCHID_BIN" task show T043 | grep '^status: ' | cut -d' ' -f2)" \
+  "containment: a warned merge still reaches done, never deadlocks the task"
+assert_match "^merged T043: $integ -> " "$(cat "$out8")" "containment: stdout still carries only the result line"
+assert_match "run state" "$(cat "$err8")" "containment: the warning names what is leaking"
+assert_match "product/main" "$(cat "$err8")" "containment: and names the branch outside the run that carries it"
+assert_match "docs/troubleshooting.md" "$(cat "$err8")" "containment: and points at what to do about it"
+grep -q "run state" "$out8" \
+  && fail "the containment warning must go to stderr, never stdout"
+grep -q "task/T00" "$err8" \
+  && fail "a task's own branch is inside the run and must never be reported as a leak"
+red_case 'a branch outside the run carrying .orchid/ is named by orchid merge'
+
+# The twin that keeps that report worth reading: an ARCHIVED run's task branch
+# is still orchid's own, not a product leak.
+#
+# `orchid run new` moves tasks/ wholesale to runs/<old_run_id>/tasks/ and
+# starts a fresh, empty tasks/ -- but nothing in the kernel ever deletes a
+# branch. So a repository on its second run still has every previous run's
+# task branch sitting there, each carrying .orchid/ because it was cut from
+# the integration branch. Asking only the LIVE tasks/ makes every one of them
+# "outside the run", and a warning that recites orchid's own history on every
+# merge is a warning an operator stops reading -- which is how the real leak,
+# named in the same breath, goes past.
+#
+# The branch is deliberately NOT named `task/*`: the exemption must come from
+# the archived RECORD, exactly as it does for a live task, never from the
+# shape of the name.
+#
+# RED (before this fix): the warning names retired/T900-work as well.
+mkdir -p .orchid/runs/r-000/tasks
+printf -- '---\nid: T900\nbranch: retired/T900-work\n---\n# T900\n' \
+  > .orchid/runs/r-000/tasks/T900.md
+#
+# Cutting the branch from "$integ" is NOT enough to build it: this fixture
+# repository creates `.orchid/` on disk but never commits it, so a branch cut
+# from the integration branch here carries an EMPTY `.orchid/` tree and the
+# containment scan skips it before the exemption is ever consulted -- the case
+# would pass without testing anything. Run state is put on the branch the same
+# way the leak twin above does it, and in a throwaway worktree for the same
+# reason: the suite's own checkout must never be switched onto a branch that
+# tracks `.orchid/`, because checking back out would delete the live run state
+# under it.
+arch_wt="$WORK/archived-wt"
+git worktree add -q -b retired/T900-work "$arch_wt" "$integ"
+mkdir -p "$arch_wt/.orchid"
+printf -- '---\nrun_status: archived\nrun_id: r-000\n---\n# Roadmap\n' > "$arch_wt/.orchid/roadmap.md"
+git -C "$arch_wt" add -f .orchid
+git -C "$arch_wt" commit -q -m "archived run: task branch carrying the run state it was cut with"
+git worktree remove --force "$arch_wt"
+[ -n "$(git ls-tree retired/T900-work -- .orchid)" ] \
+  || fail "fixture: the archived run's branch must carry .orchid/ for this case to mean anything"
+
+"$ORCHID_BIN" task create T044 "archived-run containment"
+git checkout -q -b task/T044 "$integ"
+echo archived > containment-archived.txt && git add containment-archived.txt \
+  && git commit -q -m "containment archived-run candidate"
+cand9="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base9="$(git rev-parse "$integ")"
+walk_to_merging T044 task/T044 "$base9" "$cand9" "test -f containment-archived.txt"
+
+err9="$WORK/merge9.err"; rc=0
+"$ORCHID_BIN" merge T044 >/dev/null 2>"$err9" || rc=$?
+assert_eq 0 "$rc" "containment: the archived-run case still merges clean (exit 0)"
+grep -q "retired/T900-work" "$err9" \
+  && fail "a branch recorded by an ARCHIVED run's task is inside the run, not a product leak"
+# Non-vacuous: the very same merge must still name the branch that IS a leak,
+# so this case cannot pass by the containment check having silently stopped
+# running at all.
+assert_match "product/main" "$(cat "$err9")" \
+  "containment: and the real leak is still named in the same warning"
+green_case 'an archived run task branch carrying .orchid/ is not reported as a leak'
+
+# The LIVE half of the same exemption, built the way the archived one is.
+#
+# It was asserted before this block, and asserted VACUOUSLY: `grep -q task/T00`
+# over the warning passed because no task branch in this fixture carries
+# `.orchid/` at all (this repository creates run state on disk and never
+# commits it), so the scan skipped every one of them on the tree test and the
+# exemption was never consulted. An exemption that is never reached is not
+# tested by an assertion that it did not fire. Here the branch really does
+# carry run state, so the scan reaches the record lookup and the record is what
+# has to answer.
+#
+# The branch is deliberately not named `task/*`, and the task that OWNS it is
+# not the task being merged: "inside the run" is a fact about the run's
+# records, not about a name or about which task happens to be in flight.
+"$ORCHID_BIN" task create T045 "live task whose branch carries run state"
+"$ORCHID_BIN" task set T045 branch live/T045-work
+live_wt="$WORK/live-wt"
+git worktree add -q -b live/T045-work "$live_wt" "$integ"
+mkdir -p "$live_wt/.orchid"
+printf -- '---\nrun_status: running\nrun_id: r-001\n---\n# Roadmap\n' > "$live_wt/.orchid/roadmap.md"
+git -C "$live_wt" add -f .orchid
+git -C "$live_wt" commit -q -m "live task: work on a branch cut from the integration branch"
+git worktree remove --force "$live_wt"
+[ -n "$(git ls-tree live/T045-work -- .orchid)" ] \
+  || fail "fixture: the live task's branch must carry .orchid/ for this case to mean anything"
+
+"$ORCHID_BIN" task create T046 "live-task containment"
+git checkout -q -b task/T046 "$integ"
+echo live > containment-live.txt && git add containment-live.txt \
+  && git commit -q -m "containment live-task candidate"
+cand10="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base10="$(git rev-parse "$integ")"
+walk_to_merging T046 task/T046 "$base10" "$cand10" "test -f containment-live.txt"
+
+err10="$WORK/merge10.err"; rc=0
+"$ORCHID_BIN" merge T046 >/dev/null 2>"$err10" || rc=$?
+assert_eq 0 "$rc" "containment: the live-task case still merges clean (exit 0)"
+grep -q "live/T045-work" "$err10" \
+  && fail "a branch a LIVE task's record names is inside the run, not a product leak"
+assert_match "product/main" "$(cat "$err10")" \
+  "containment: and the real leak is still named in the same warning"
+green_case 'a live task branch carrying .orchid/ is not reported as a leak'
+
+# ---------------------------------------------------------------------------
+# The INTEGRATION branch's own exemption -- the arm that decides whether this
+# warning is worth reading at all, since in every real repository that branch
+# is the one place run state is SUPPOSED to be, and a warning that names it on
+# every merge names it forever.
+#
+# Asked of the predicate directly, in a repository built for the question,
+# because it cannot honestly be asked of the fixture above: making THAT
+# integration branch carry `.orchid/` means committing the suite's own live run
+# state, and from that moment every `git checkout` between the integration
+# branch and a task branch cut before it either fails on untracked files or
+# deletes the state the rest of the suite is reading. The predicate is the
+# whole of the decision (libexec/orchid-merge only formats what it returns),
+# and the verb cases above already pin that the merge path reaches it.
+#
+# Every branch here carries run state, so NONE of them is skipped on the tree
+# test and all four reach the exemption: the assertion is the exact, whole
+# output, which is what makes each exemption non-vacuous -- a broken one shows
+# up as an extra line, and a scan that stopped working shows up as a missing
+# `product/main`.
+scan_repo="$WORK/containment-scan"
+mkdir -p "$scan_repo"
+git -C "$scan_repo" init -q
+git -C "$scan_repo" commit -q --allow-empty -m "the operator's own history"
+git -C "$scan_repo" checkout -q -b orchid/integration
+mkdir -p "$scan_repo/.orchid/tasks" "$scan_repo/.orchid/runs/r-000/tasks"
+printf -- '---\nrun_status: running\nrun_id: r-001\n---\n# Roadmap\n' > "$scan_repo/.orchid/roadmap.md"
+printf -- '---\nid: T801\nbranch: live/T801-work\n---\n# T801\n' \
+  > "$scan_repo/.orchid/tasks/T801.md"
+printf -- '---\nid: T802\nbranch: retired/T802-work\n---\n# T802\n' \
+  > "$scan_repo/.orchid/runs/r-000/tasks/T802.md"
+git -C "$scan_repo" add -f .orchid
+git -C "$scan_repo" commit -q -m "orchid: run state on the integration branch, as every real run has it"
+for scan_b in live/T801-work retired/T802-work product/main; do
+  git -C "$scan_repo" branch "$scan_b" orchid/integration
+  [ -n "$(git -C "$scan_repo" ls-tree "$scan_b" -- .orchid)" ] \
+    || fail "fixture: $scan_b must carry .orchid/ or its exemption is never reached"
+done
+[ -n "$(git -C "$scan_repo" ls-tree orchid/integration -- .orchid)" ] \
+  || fail "fixture: the integration branch must carry .orchid/ -- that is the whole case"
+
+# A subshell, so the library sourced for this one call cannot alter the suite
+# that runs after it.
+scan_out="$( (
+  ORCHID_ROOT="$REPO_ROOT"; export ORCHID_ROOT
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_leaked_run_state_branches "$scan_repo" orchid/integration
+) )"
+assert_eq "product/main" "$scan_out" \
+  "only the branch outside the run is named: not the integration branch, not a live task's branch, not an archived one's"
+green_case 'the integration branch carrying its own run state is never a leak'
+
+# ---------------------------------------------------------------------------
+# T037 -- ADD THEN DELETE, on the advisory's side of the fence.
+#
+# The scan above asks each branch's TREE, and the operator response that shape
+# invites is the one that does not work: notice the `.orchid/` paths, `git rm -r
+# .orchid && git commit`, and the tree test says clean from that moment on --
+# while every one of those files is still in the branch's history, still
+# published by every push and clone of it, and still riding into whatever the
+# branch is merged into. A deletion is an append, not a removal.
+#
+# Both new branches are cut from the SAME `scan_repo` the block above uses, so
+# the exact-output assertion below is the same assertion widened by exactly the
+# two branches this case adds -- an over-firing scan shows up as an extra name,
+# an under-firing one as a missing one.
+#
+# RED (before this fix): `product/stripped` is absent from the output and merge
+# reports the repository as containing exactly one leak when it contains two.
+strip_scan_wt="$WORK/containment-scan-strip"
+git -C "$scan_repo" worktree add -q -b product/stripped "$strip_scan_wt" orchid/integration
+git -C "$strip_scan_wt" rm -rq .orchid
+git -C "$strip_scan_wt" commit -q -m "operator: deleted the .orchid/ paths they noticed in the diff"
+git -C "$scan_repo" worktree remove --force "$strip_scan_wt"
+[ -z "$(git -C "$scan_repo" ls-tree product/stripped -- .orchid)" ] \
+  || fail "fixture: product/stripped's TIP must be clean, or this is the tree case wearing another name"
+[ -n "$(git -C "$scan_repo" rev-list --full-history --max-count=1 product/stripped -- .orchid)" ] \
+  || fail "fixture: product/stripped's HISTORY must still carry .orchid/, or there is nothing to detect"
+
+# The truly-clean twin, cut from the operator's own root commit -- the one
+# commit in this repository that never saw run state. It keeps the case above
+# from passing for a scan that simply names every branch.
+git -C "$scan_repo" branch product/clean "$(git -C "$scan_repo" rev-parse orchid/integration^)"
+[ -z "$(git -C "$scan_repo" rev-list --full-history --max-count=1 product/clean -- .orchid)" ] \
+  || fail "fixture: product/clean must have no .orchid/ anywhere in its history"
+
+scan_out2="$( (
+  ORCHID_ROOT="$REPO_ROOT"; export ORCHID_ROOT
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_leaked_run_state_branches "$scan_repo" orchid/integration
+) )"
+assert_eq "$(printf 'product/main\nproduct/stripped')" "$scan_out2" \
+  "a branch whose tip was cleaned but whose history still carries run state is named, and a branch that never carried it is not"
+red_case 'a branch whose tip is clean but whose history adds .orchid/ is reported as a leak'
+
+# ---------------------------------------------------------------------------
+# T037 -- the SELF-HOSTED exemption, and the product repository it must not be
+# confused with.
+#
+# orchid's own repository carries `.orchid/` on `main` deliberately: that is
+# what makes its own dogfood run durable. Scanning it finds a "leak" on every
+# merge, forever, and a warning that fires every time is a warning an operator
+# scrolls past -- which is exactly how the real leak this whole advisory exists
+# to catch would go unread.
+#
+# The two runs below are over the SAME repository, with the same branches, the
+# same names and the same `.orchid/` on `product/main`. The ONLY difference is
+# ORCHID_ROOT: whether the tree this process is executing from is that very
+# checkout. That is what makes this a test of physical identity rather than of
+# any of the things that must not answer the question --
+#
+#   * not the NAME. `scan_repo` is not called `orchid` in either run, and a
+#     product repository is free to be.
+#   * not `.orchid/` ALREADY being on a product branch. It is, in both runs.
+#     Reading that as consent would switch the advisory off precisely when the
+#     thing it reports has happened.
+#
+# RED (before this fix): the self-hosted run names product/main too, and
+# orchid's own run warns about orchid's own repository on every merge.
+selfhost_out="$( (
+  ORCHID_ROOT="$scan_repo"; export ORCHID_ROOT
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_leaked_run_state_branches "$scan_repo" orchid/integration
+) )"
+assert_eq "" "$selfhost_out" \
+  "a repository orchid is itself running out of has no product to leak into -- the advisory says nothing"
+green_case 'the self-hosted checkout is exempt from the containment advisory'
+
+# The exemption is the checkout, not somewhere inside it. An orchid VENDORED
+# into a product repository (`<product>/tools/orchid`) shares that repository's
+# top level, and everything committed there is the product's -- so it is not
+# self-hosted, and the identical scan must still report.
+mkdir -p "$scan_repo/tools/orchid"
+vendored_out="$( (
+  ORCHID_ROOT="$scan_repo/tools/orchid"; export ORCHID_ROOT
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_leaked_run_state_branches "$scan_repo" orchid/integration
+) )"
+assert_eq "$(printf 'product/main\nproduct/stripped')" "$vendored_out" \
+  "an orchid vendored INSIDE a product repository is not that repository, and the advisory still reports"
+red_case 'only the checkout itself is self-hosted, never a directory within it'

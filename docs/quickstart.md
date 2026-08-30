@@ -385,6 +385,16 @@ supported verbs do not push; see the
 [threat model](./specs/plugins.md#threat-model-consolidated) before treating
 that prompt policy as containment.
 
+It also holds the run's own bookkeeping. `.orchid/` — roadmap, journal,
+blockers, `plugins.lock`, every review envelope — is committed on that branch
+by design, because that is what makes a run survive a fresh checkout. If you
+merge the integration branch into a branch bound for your `main`, those files
+go with it, and in a large merge request they look like tooling and are
+approved as tooling. Decide which you want before you take the work across:
+[troubleshooting.md](./troubleshooting.md) — "Run state in your product's
+history" — has both answers, and describes the two guards that will tell you
+when it is happening (a warning from `orchid merge`, and a refused `git push`).
+
 ## Before you hand this to someone else
 
 If you are about to point Orchid at a repository you do not already know it can

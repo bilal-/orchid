@@ -41,12 +41,22 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 # --greenfield` plus docs/quickstart-greenfield.md own that path, which has a
 # scaffold task and a deferred verify command this verb's rule 1 would have
 # to special-case.
+#
+# ONE EXCEPTION to "this verb is setup", and it is a whole second form rather
+# than a mode of the first: `orchid start --refresh-push-guard` (T037), the
+# maintenance route that re-installs the pre-push guard on an
+# already-initialized repository at any run_status. It lives here because
+# setup already installs that guard and this verb is already the supported
+# door back into an initialized repo -- and it is a separate invocation,
+# argued for at the block that implements it, precisely so that rule 3 above
+# keeps meaning what it says for every OTHER way of typing this verb.
 
 _start_usage() {
   cat <<'EOF'
 usage:
   orchid start <requirements-file> [--verify <command>] [--worktree <path>]
                                    [--ack-unattended --reason <text>]
+  orchid start --refresh-push-guard
 
 One-command setup for an EXISTING repository: full preflight, repo-config
 validation, safe initialization, integration-worktree creation/reuse, epoch
@@ -70,6 +80,23 @@ setup, requirements import, and a handoff into PLANNING.
                        Requires --reason. Without both flags trust stays off
                        and headless ticks stay gated.
   --reason <text>      non-empty operator reason for that acknowledgement.
+
+The SECOND form is maintenance, not setup, and is the only one that takes no
+requirements file:
+
+  --refresh-push-guard re-install this repository's `pre-push` guard from the
+                       current template, at the path git itself will run it
+                       from (an absolute `core.hooksPath` included), and do
+                       nothing else: no branch moves, no commit, no run state
+                       written, no lock taken. Supported at ANY run_status,
+                       which is the point -- setup refuses a run that has left
+                       planning, so without this an already-running repository
+                       could never pick up a newer guard. Idempotent, and a
+                       hook orchid did not write is still never overwritten. A
+                       repository whose `core.hooksPath` is RELATIVE cannot be
+                       guarded repository-wide -- git resolves that value per
+                       worktree -- so this refuses, installs nothing, and says
+                       what to change. Takes no other option.
 
 Every step is a lower-level verb; none of them is replaced. Repositories with
 no commits yet are out of scope: use `orchid init --greenfield` and
@@ -554,7 +581,7 @@ _start_require_planning() {
 # -- arguments --------------------------------------------------------------
 
 req=""; verify_opt=""; worktree_opt=""; ack_unattended=0; reason=""
-have_verify_opt=0; have_worktree_opt=0
+have_verify_opt=0; have_worktree_opt=0; refresh_guard=0
 # The bare-word `help` alias, and ONLY as the first argument: matched anywhere
 # in argv (as it was) it also swallows a requirements FILE named `help`,
 # printing usage instead of the setup that was asked for. `-h`/`--help` stay
@@ -570,6 +597,7 @@ while [ $# -gt 0 ]; do
     --worktree)
       [ -n "${2:-}" ] || orchid_die "--worktree requires a path"
       worktree_opt="$2"; have_worktree_opt=1; shift 2 ;;
+    --refresh-push-guard) refresh_guard=1; shift ;;
     --ack-unattended) ack_unattended=1; shift ;;
     --reason)
       [ -n "${2:-}" ] || orchid_die "--reason requires a non-empty value"
@@ -580,6 +608,105 @@ while [ $# -gt 0 ]; do
       req="$1"; shift ;;
   esac
 done
+
+# -- the explicit push-guard refresh route (T037) ---------------------------
+#
+# Everything below this block is SETUP: it demands a requirements file, it
+# refuses a run that has left `planning` (rule 3 at the top of this file), and
+# it holds the verb lock across a durable commit. A repository whose run is
+# already `running` therefore cannot reach the push guard through it AT ALL --
+# and that is exactly the repository the reported leak came from: initialized
+# by an older orchid, months into a run, carrying a hook with no run-state leg
+# and, until this route existed, no supported way to gain one. `orchid init`
+# is no help either; it dies on `branch $integ exists`. Documenting a hand-run
+# `sed` over templates/pre-push.sh, which is what the first cut of this task
+# did, is not a route: it makes every operator re-derive the escaping, the
+# hooks path and the never-overwrite rule that the two verbs already
+# implement, and it gets the `core.hooksPath` case wrong by construction.
+#
+# So the refresh is its OWN invocation rather than a side effect of setup.
+# Not because a side effect would be hard -- `orchid_install_push_guard` could
+# simply be called above `_start_require_planning`, and it would work. It
+# would also mean a command that refuses, loudly and with a recovery, on the
+# very next line had quietly rewritten a file under `.git/` first. An operator
+# reads "run r-001 has already left planning" as "nothing happened", and a
+# mutation nobody can name is a mutation nobody can audit. Making that reading
+# false to save a flag is not a trade worth taking.
+#
+# This route mutates nothing else. Hooks live under the git dir, outside every
+# tree orchid commits, so no branch moves, no commit is made, no `.orchid/`
+# path is written, no epoch is minted and no lock is taken -- which is why it
+# is safe against a run that is mid-flight, and why it neither resumes nor
+# steals a session (rule 3 holds; there is nothing here to take over). It
+# obeys every rule the other two callers obey, the never-overwrite rule first
+# among them, and it is idempotent by construction: the installer rewrites
+# nothing that already matches the template.
+if [ "$refresh_guard" -eq 1 ]; then
+  [ -z "$req" ] \
+    || orchid_die "orchid start --refresh-push-guard takes no requirements file (got '$req') — it refreshes this repository's pre-push guard and performs no setup. Run it on its own"
+  { [ "$have_verify_opt" -eq 0 ] && [ "$have_worktree_opt" -eq 0 ] \
+      && [ "$ack_unattended" -eq 0 ] && [ -z "$reason" ]; } \
+    || orchid_die "orchid start --refresh-push-guard takes no other option — it performs no setup, so --verify/--worktree/--ack-unattended/--reason have nothing to act on"
+
+  repo="${ORCHID_REPO:-$PWD}"
+  [ -d "$repo" ] || orchid_die "no such directory: $repo"
+  repo="$(cd "$repo" && pwd -P)"
+  git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || orchid_die "not a git repository: $repo"
+  integ="$(config_get "$repo" integration_branch orchid/integration)"
+  # ALREADY-INITIALIZED is the whole scope of this route. Without $integ there
+  # is no run whose branch name could be baked into the hook, and setup is the
+  # thing that is actually wanted -- which installs the guard itself.
+  git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
+    || orchid_die "$repo has no $integ branch, so there is no run here to guard — --refresh-push-guard maintains an ALREADY-INITIALIZED repository. Set this one up first with 'orchid start <requirements-file>', which installs the guard as part of setup"
+  # An opted-out repository is told, never silently left unguarded: the
+  # operator ran a command whose entire purpose is to put the guard in place,
+  # and "did nothing, said nothing" is the failure mode this whole guard
+  # exists to end.
+  case "$(config_get "$repo" push_guard true)" in
+    false|0|no)
+      orchid_die "push_guard is off in this repository's orchid.config, so nothing was installed — set push_guard=true (or drop the line; the default is true) and re-run. See docs/configuration.md" ;;
+  esac
+
+  guard_path="$(orchid_push_guard_path "$repo" 2>/dev/null || true)"
+  orchid_install_push_guard "$repo" "$integ"
+  case "$(orchid_push_guard_action)" in
+    installed|upgraded|repaired) exit 0 ;;
+    unsupported-hookspath)
+      # `core.hooksPath` names no guardable file for this repository, and this
+      # command cannot do what it was asked. Non-zero, and deliberately
+      # without a resolved path in the message: naming
+      # `<toplevel>/<value>/pre-push` for the relative case would answer for
+      # this one worktree and read as an answer for the repository, and naming
+      # the external directory here would read as a path orchid is about to
+      # install into. That is the exact confusion the classification exists to
+      # end. The installer has already printed the specific explanation and
+      # both recoveries on stderr.
+      case "$(orchid_push_guard_hooks_mode "$repo")" in
+        relative)
+          refresh_why="core.hooksPath is relative, so no single hook file covers this repository" ;;
+        *)
+          refresh_why="core.hooksPath is an absolute path outside this repository's git directory, which orchid cannot tell apart from a hooks directory shared with other repositories" ;;
+      esac
+      orchid_die "the pre-push guard was NOT installed in $repo — $refresh_why (the message above says what to change). Until it names a directory inside this repository's git directory, or is unset, pushes of task branches, of $integ, and of run state are NOT guarded here" ;;
+    current)
+      # The one outcome the installer reports by staying silent, because for
+      # init and for setup that silence is right. Here it is the answer.
+      echo "pre-push guard already current: ${guard_path:-unresolved} (integration branch: $integ)"
+      exit 0 ;;
+    foreign)
+      # The installer has already named the file and said it was left alone;
+      # this adds what an operator who asked for the guard now needs, which is
+      # how to have both. Non-zero because the end state asked for -- a guard
+      # git will run -- is not the one on disk.
+      orchid_die "the pre-push hook at ${guard_path:-that path} is yours, not orchid's, so the guard was NOT refreshed — orchid never overwrites a hook you wrote. To have both, render orchid's guard beside your own and chain to it: sed 's|__INTEGRATION_BRANCH__|$integ|g' '$ORCHID_ROOT/templates/pre-push.sh' > '${guard_path:-<your-hook>}.orchid' && chmod +x '${guard_path:-<your-hook>}.orchid' — then exec that file at the end of your hook. Or move your hook aside and re-run this command" ;;
+    *)
+      # unresolved / no-template / failed: the installer printed the specific
+      # diagnostic on stderr. Exiting non-zero is what keeps a failed refresh
+      # from reading, to a script or to a person, like a completed one.
+      orchid_die "the pre-push guard is not in place in $repo (the message above says why) — pushes of task branches, of $integ, and of run state are NOT guarded here" ;;
+  esac
+fi
+
 [ -n "$req" ] || { _start_usage >&2; exit 1; }
 
 # The unattended acknowledgement is a SEPARATE, two-part opt-in, never a side
@@ -875,6 +1002,24 @@ if [ "$mode" = new ]; then
   ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" init >/dev/null \
     || orchid_die "orchid init failed — nothing else was done; the messages above say why"
   echo "initialized: $integ"
+else
+  # The EXISTING-repository half of the push guard (T037). `orchid init`
+  # installs `.git/hooks/pre-push` and is the only thing that ever did -- and
+  # it runs exactly once per repository, dying with `branch $integ exists` on
+  # every later run. So a repository initialized by an older orchid keeps that
+  # day's hook forever, however many times it is upgraded afterwards: the
+  # run-state leg this task adds (templates/pre-push.sh), which is the one
+  # refusal standing between a run's bookkeeping and a product's remote, would
+  # have reached no existing repository at all. The reported leak was found on
+  # exactly such a repository.
+  #
+  # This verb is the supported door back into an initialized repo, so it is
+  # where the upgrade lands. It is the same function init calls, and it is
+  # conservative in the two directions that matter: a hook orchid did not write
+  # is left untouched and reported, and a hook already matching the template is
+  # rewritten never and reported never -- so a repeat `orchid start` prints
+  # this line only when it actually changed something.
+  orchid_install_push_guard "$repo" "$integ"
 fi
 
 if [ "$wt_action" = created ]; then

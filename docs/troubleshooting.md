@@ -2231,6 +2231,179 @@ filesystem helpers resolve only from fixed system, Homebrew/Linuxbrew, or
 MacPorts directories. The captured operator path becomes active only after
 trust succeeds, in time for engine/plugin discovery and execution.
 
+## Run state in your product's history
+
+**Symptom:** `.orchid/` files — `roadmap.md`, `journal.md`, `BLOCKERS.md`,
+`plugins.lock`, review envelopes under `.orchid/reviews/` — are tracked on
+your project's `main`, or on a feature branch headed there. Nobody added them
+deliberately. Or: `orchid merge` prints a warning naming a branch outside the
+run that carries run state; or a `git push` is refused with "carries orchid's
+own run state".
+
+Orchid commits its run state, on purpose: a roadmap that exists only in one
+checkout's working tree is gone at the next task worktree, the next machine,
+the next headless pump. That state lives on the integration branch. What it
+must not do is keep going: integration branch → your feature branch → `main`
+is an ordinary merge chain, and once run state is *tracked* it rides that
+chain like any other file. In a large merge request the paths look like
+tooling and get approved as tooling. That is exactly how it has happened.
+
+Two things ship against it, and neither is a substitute for deciding what you
+want:
+
+- `orchid merge` warns — to stderr, never refusing — when any local branch
+  outside the run (not the integration branch, not a branch recorded on a
+  task, and an *archived* run's tasks count: `orchid run new` retires the
+  record but never deletes the branch) carries `.orchid/`. Membership comes
+  from those records, not from the branch's name, so renaming a task branch
+  does not turn it into a leak and naming your own branch `task/…` does not
+  hide one. A branch is named whether the files are on its tip **or only in
+  its history**, and the warning is silent in exactly one repository: the
+  checkout orchid is itself running out of, where its own run state on its own
+  branches is the point. That is decided by comparing `ORCHID_ROOT` with the
+  repository's top level — not by the repository's name, and not by `.orchid/`
+  already being on a product branch, which is the leak rather than consent. It
+  names the branch. It prescribes nothing and
+  undoes nothing: the merge that put it there is yours, on branches orchid
+  does not own, and a run frozen behind a report would be worse than a run
+  that reports.
+- The `pre-push` hook orchid installs refuses a push that would put run
+  state on a remote **branch** that does not already have it — and a Gerrit
+  review upload (`refs/for/<branch>`, with or without `%topic=…` push options)
+  counts as one, since the upload *is* the push there and the change is
+  submitted onto that branch afterwards on the forge. A `refs/for/…` ref is
+  never advertised by the remote, so there is no remote copy that could exempt
+  it: it fails closed, and `ORCHID_ALLOW_PUSH=1` is the only way through. Tags
+  and other non-branch refs push as they always did — see
+  [configuration.md](./configuration.md) (`push_guard`). `orchid init` installs
+  it and `orchid start` upgrades an orchid-installed one, so a repository set
+  up before this leg shipped gains it on the next `orchid start`; a hook you
+  wrote yourself is never touched by either — including one that mentions
+  orchid or chains to its guard, since only a file whose *second line* starts
+  with `# orchid pre-push guard` is treated as orchid's own. It is the last
+  local gate that sees *every* route, including a squash, a cherry-pick or a
+  rebase that carries the files across without ever making a merge commit, and
+  a hosted MR that is merged where no local hook runs at all.
+
+**`git rm -r .orchid` is not the fix, and both checks know it.** A push
+publishes commits, not a tip. Deleting the paths appends a commit with a
+smaller tree; every file is still in the commits being sent, in every clone
+made of the branch afterwards, and in whatever the branch is merged into. So
+both the merge warning and the hook look at the whole history — for the hook,
+at every commit the push would make newly reachable, measured against what the
+remote already holds — and a branch whose tip looks clean is still named. To
+actually remove it, rebuild the branch without those commits: an interactive
+rebase dropping them, a fresh branch cherry-picking only your own commits, or
+
+```
+git filter-repo --path .orchid --invert-paths
+```
+
+If your repository tracks run state on purpose, `ORCHID_ALLOW_PUSH=1` once is
+still the answer — after that push the remote holds those commits and every
+later push of that ref goes through untouched.
+
+**Stopping there, on a ref that already carries it, is not refused.** What the
+hook asks of each newly reachable commit is whether that commit's own *tree*
+carries `.orchid/`, not whether it touched the path — so on a branch the remote
+already tracks run state on, a single `git rm -r .orchid && git commit` pushes
+normally: nothing in it is new to that destination. What stays refused is
+adding those files back and deleting them again before pushing, because a
+commit being sent carries them whatever the commit after it does.
+
+**Your repository is already past `planning` and you want the current guard.**
+`orchid start` refuses a run that has left planning — it is a setup command,
+not a resume — so the upgrade above cannot reach a repository mid-run, which
+is precisely the shape the reported leak came from. Ask for it explicitly, in
+the repository itself, at any `run_status`:
+
+```
+orchid start --refresh-push-guard
+```
+
+That form takes no requirements file and no other option. It re-installs the
+guard from the current template at the path git will actually run it from,
+prints what it did (`installed`, `upgraded`, `repaired`, or `already
+current`), and does
+nothing else: no branch moves, no commit is made, no run state is written and
+no lock is taken, so it is safe while a run is in flight. It is idempotent —
+run it as often as you like — and it still refuses to overwrite a hook you
+wrote, telling you how to chain to orchid's from your own instead.
+
+If your repository sets `core.hooksPath` to an **absolute** path *inside its own
+git directory*, that is where the guard is installed and where the printed path
+points: orchid asks git for the hook path rather than assuming `.git/hooks`, so
+the file always lands where git will execute it. `.git/hooks/pre-push` is left
+alone in that case, because git does not read it. A hook whose bytes are already
+current but whose execute bit is missing — a `cp` from a template directory, a
+restore from an archive, a tight `umask` — is repaired in place and reported as
+repaired, because git silently runs nothing at all in that state.
+
+**Two `core.hooksPath` layouts are not guarded, and you will be told so.**
+
+*A relative value.* git resolves it against *the top level of the working tree
+the push comes from*, and orchid gives the integration branch and every task its
+own linked worktree — so `core.hooksPath = .githooks` means
+`<main>/.githooks/pre-push` for one checkout and a different, empty directory
+for each of the others. There is no single file to install.
+
+*An absolute value outside this repository's git directory* — `~/.githooks`, a
+team hooks mount, anything a dotfiles repository set in `--global` config. Any
+number of repositories may read that directory, and orchid's guard has *this*
+repository's integration branch baked into it, so installing there would refuse
+pushes in repositories orchid was never pointed at and would overwrite whatever
+another one had installed for the same reason. Orchid cannot tell a shared
+directory from a private one, so it treats "inside this repository's git
+directory" as the whole test.
+
+In both, orchid installs nothing rather than let a partial or borrowed guard
+read as guarding the repository: `orchid init`, `orchid start` and `orchid
+doctor` warn, `orchid start --refresh-push-guard` exits non-zero, and no output
+says `installed` or `already current`. Two ways to become guardable, both yours
+to choose — orchid will not rewrite the setting:
+
+```
+git -C <repo> config core.hooksPath <repo>/.git/hooks   # or
+git -C <repo> config --unset core.hooksPath             # git's default
+orchid start --refresh-push-guard
+```
+
+The warning prints both commands with your own repository's path already filled
+in.
+
+Until then, in a product repository the `orchid merge` warning above is the
+only local signal you have, and a push of run state is refused by nothing on
+this machine. Orchid's physical self-host checkout is deliberately exempt from
+that warning: there is no separate product repository for its run state to
+leak into.
+
+**If your product should not carry run state,** keep the integration branch
+out of the merge chain: take the product changes across on their own (rebase,
+cherry-pick, or a merge followed by `git rm -r --cached .orchid`), rather than
+merging the integration branch itself into a branch bound for `main`. To clean
+up after a leak that already landed, strip the paths from the offending
+branches — `git rm -r --cached .orchid` and commit — before pushing them
+anywhere further; history already on a remote is a separate decision, and a
+rewrite of a shared branch is not something to do on a tool's advice.
+
+**If it should** — orchid's own repository is self-hosted and its run state
+*is* part of its history — then nothing here is a defect. The local merge
+warning is deliberately suppressed when Orchid and the managed repository are
+the same physical checkout. Push the ref once with `ORCHID_ALLOW_PUSH=1`;
+every later push of that ref is exempt automatically, because the remote's
+copy already carries run state.
+
+**What you must not do** is un-ignore or delete `.orchid/` from `.gitignore`
+to get a verb working again. Excluding `.orchid/` is a supported thing to
+want: `orchid init`, `orchid plan apply` and `orchid run new` force-stage run
+state precisely so that an operator who ignores it still gets a working run.
+If a verb fails with git's "paths are ignored by one of your .gitignore
+files", that is a bug in the verb — report it — not an instruction to change
+your `.gitignore`. (`orchid.config` is the deliberate exception, and is
+refused rather than force-committed: it is *your* file, and whether repository
+configuration belongs in history is your call. `orchid start` says so, and
+names the one-line fix, when it hits that case.)
+
 ## See also
 
 - [docs/configuration.md](./configuration.md) — every config key named

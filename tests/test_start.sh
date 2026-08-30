@@ -453,6 +453,1219 @@ out22b="$(ORCHID_REPO="$r22" "$ORCHID_BIN" start "$REQ" 2>&1)" \
 assert_match '^verify=true$' "$(git -C "$r22" show orchid/integration:orchid.config)" \
   "and the run's verification command lands on the branch"
 
+# `.orchid/` is the OTHER half of that asymmetry, and it is answered the
+# opposite way on purpose (T037, dogfood finding F21).
+#
+# An operator who does not want orchid's bookkeeping in their product writes
+# `.orchid/` into .gitignore -- a reasonable thing to want, and the reported
+# incident is exactly what happens when they do not. Before this fix that line
+# broke the run outright: `orchid init` stages the skeleton with a plain `git
+# add`, git refuses an ignored pathspec, and init died on git's own error; the
+# operator's only way forward was to un-ignore `.orchid/`, which is precisely
+# what made the state merge-able into their product in the first place. Same
+# failure again, later, at `orchid plan apply` (lib/common.sh's
+# orchid_commit_durable), which is the first durable verb a planning
+# orchestrator reaches.
+#
+# So run state is force-staged and orchid.config is not. The distinction is
+# ownership: `.orchid/` is orchid's own, was already tracked before any ignore
+# rule existed, and a run whose state is not committed does not survive a
+# fresh checkout -- whereas orchid.config is the operator's file and whether
+# it belongs in history is their call (r22 above). The want behind the ignore
+# line is answered where it actually lives: orchid-merge's containment warning
+# and the pre-push run-state guard, not by leaving init broken.
+#
+# RED (before this fix): `orchid start` exits non-zero here with "The
+# following paths are ignored by one of your .gitignore files: .orchid".
+r37_ignored="$W/r37-ignored"; mkdir -p "$r37_ignored"; git -C "$r37_ignored" init -q
+printf '.orchid/\n' > "$r37_ignored/.gitignore"
+{
+  printf 'verify=true\nrole.orchestrator=fake\nrole.implementer=fake\n'
+  printf 'role.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n'
+} > "$r37_ignored/orchid.config"
+printf 'print("hello")\n' > "$r37_ignored/app.py"
+git -C "$r37_ignored" add -A
+git -C "$r37_ignored" commit -q -m "fixture: project that ignores .orchid/"
+
+out37_ignored="$(ORCHID_REPO="$r37_ignored" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must succeed on a repo whose .gitignore excludes .orchid/: $out37_ignored"
+wt37_ignored="$W/r37-ignored-orchid"
+git -C "$r37_ignored" cat-file -e "orchid/integration:.orchid/roadmap.md" 2>/dev/null \
+  || fail "the run's own state must be COMMITTED on the integration branch even when .orchid/ is ignored"
+assert_eq "$(cat "$REQ")" "$(cat "$wt37_ignored/.orchid/requirements.md")" \
+  "and the imported requirements are there to read in the integration checkout"
+
+# The durable-commit path itself, which is where F21 was actually reported:
+# `orchid plan apply` commits `.orchid/` onto the integration branch through
+# orchid_commit_durable's temp worktree, and that worktree inherits the same
+# .gitignore.
+apply37_ignored="$(ORCHID_REPO="$wt37_ignored" ORCHID_EPOCH=0 "$ORCHID_BIN" plan apply --reason "first plan" 2>&1)" \
+  || fail "plan apply must succeed with .orchid/ ignored: $apply37_ignored"
+assert_match "^applied: orchid/integration -> " "$apply37_ignored" "plan apply reports the commit it landed"
+assert_match "^run_status: running$" "$(git -C "$r37_ignored" show 'orchid/integration:.orchid/roadmap.md')" \
+  "and the planning->running transition it owns landed ON THE BRANCH, not just on disk"
+assert_match "first plan" "$(git -C "$r37_ignored" show 'orchid/integration:.orchid/journal.md')" \
+  "the plan-apply journal entry is committed on the branch, not left in one checkout"
+
+# The price of `-f`, held to: forcing past .gitignore also forces past the
+# `.orchid/runtime/` line, so `runtime/` is excluded by an explicit pathspec at
+# every staging site instead of being left to an ignore rule that `-f` has
+# switched off. lease.json, the epoch and the lock are local-only and must
+# never be committed -- least of all here, where the operator ignored the
+# whole directory.
+[ -f "$wt37_ignored/.orchid/runtime/epoch" ] \
+  || fail "fixture: runtime/ must exist on disk for this exclusion to be worth asserting"
+assert_eq "" "$(git -C "$r37_ignored" ls-tree -r --name-only orchid/integration -- .orchid/runtime)" \
+  "no .orchid/runtime/ path is ever committed, even when -f overrides the ignore rule that used to stop it"
+
+# The GREEN twin: the identical sequence on a repo that does NOT ignore
+# `.orchid/` behaves exactly as it always did -- the force-stage is not doing
+# the work here, so a regression that broke the ordinary path would show up
+# as this block failing rather than as silence.
+r37_green="$W/r37-green"; mk_repo "$r37_green" 'verify=true'
+out37_green="$(ORCHID_REPO="$r37_green" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must still succeed on a repo that does not ignore .orchid/: $out37_green"
+apply37_green="$(ORCHID_REPO="$W/r37-green-orchid" ORCHID_EPOCH=0 "$ORCHID_BIN" plan apply --reason "first plan" 2>&1)" \
+  || fail "plan apply must still succeed with .orchid/ un-ignored: $apply37_green"
+assert_match "^applied: orchid/integration -> " "$apply37_green" "the un-ignored path reports the same commit line"
+
+# And the deliberate stance on orchid.config is NOT reversed by any of this:
+# the same repo, with orchid.config ALSO ignored and untracked, is still
+# refused with the actionable message rather than force-committed.
+r37_config="$W/r37-config"; mkdir -p "$r37_config"; git -C "$r37_config" init -q
+printf '.orchid/\norchid.config\n' > "$r37_config/.gitignore"
+{
+  printf 'verify=true\nrole.orchestrator=fake\nrole.implementer=fake\n'
+  printf 'role.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n'
+} > "$r37_config/orchid.config"
+printf 'print("hello")\n' > "$r37_config/app.py"
+git -C "$r37_config" add -A
+git -C "$r37_config" commit -q -m "fixture: project that ignores both"
+rc=0; out37_config="$(ORCHID_REPO="$r37_config" "$ORCHID_BIN" start "$REQ" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "ignoring .orchid/ must not have made an ignored orchid.config force-committable"
+assert_match "excluded by .gitignore" "$out37_config" "the orchid.config refusal is unchanged"
+git -C "$r37_config" rev-parse --verify -q orchid/integration >/dev/null 2>&1 \
+  && fail "and it still lands above the mutation boundary"
+
+# ---------------------------------------------------------------------------
+# T037 -- the push guard an ALREADY-INITIALIZED repository can actually reach.
+#
+# `orchid init` installs .git/hooks/pre-push and, until now, was the only
+# thing that ever did -- and init runs exactly once in a repository's life
+# (every later run dies with `branch orchid/integration exists`). So a
+# repository initialized by an older orchid keeps that day's hook forever, no
+# matter how many times orchid itself is upgraded: the run-state leg added by
+# this task, the one refusal standing between a run's bookkeeping and a
+# product's remote, would have reached exactly zero existing repositories. The
+# leak this task exists for was reported from one of them.
+#
+# `orchid start` is the supported door back into an initialized repo, so it is
+# where the upgrade lands (lib/common.sh's orchid_install_push_guard, the same
+# function init calls).
+#
+# RED (before this fix): start touches no hook at all, so the stale one below
+# survives the run and never grows the run-state leg.
+# ---------------------------------------------------------------------------
+r37_hook="$W/r37-hook"; mk_repo "$r37_hook" 'verify=true'
+ORCHID_REPO="$r37_hook" "$ORCHID_BIN" init >/dev/null \
+  || fail "fixture: orchid init must succeed on r37-hook"
+hook37="$r37_hook/.git/hooks/pre-push"
+[ -f "$hook37" ] || fail "fixture: init must have installed a push guard to go stale"
+
+# Stand in for the hook a repository initialized by an older orchid carries:
+# orchid's own, with the name-based leg only and no run-state leg.
+#
+# Line 2 is what identifies it, and it is deliberately NOT byte-identical to
+# the template's own line 2 -- it STARTS with `# orchid pre-push guard` and
+# then says something else. That is the GREEN half of the recognizer's second
+# twin: the header is a prefix contract, so prose that has been reworded since
+# a legacy hook was written still recognizes it, which is the only reason the
+# upgrade reaches the repositories it exists for. The RED half -- a hook that
+# mentions the same words somewhere OTHER than the start of line 2 -- is
+# below, after the user-hook case.
+cat > "$hook37" <<'STALE_HOOK'
+#!/usr/bin/env bash
+# orchid pre-push guard -- installed by `orchid init` (v1-m4 vintage: this is
+# the whole hook a repository initialized before T037 carries).
+[ "${ORCHID_ALLOW_PUSH:-0}" = 1 ] && exit 0
+integ="orchid/integration"
+exit 0
+STALE_HOOK
+chmod +x "$hook37"
+grep -q "run state" "$hook37" \
+  && fail "fixture: the stale hook must NOT already carry the run-state leg, or this case proves nothing"
+
+out37_hook="$(ORCHID_REPO="$r37_hook" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must succeed on an already-initialized repo: $out37_hook"
+assert_match "pre-push guard upgraded" "$out37_hook" \
+  "start says it replaced the stale guard, rather than upgrading it silently"
+assert_match "carries orchid.s own run state" "$(cat "$hook37")" \
+  "an existing repository's stale hook GAINS the run-state leg -- the whole point of the upgrade"
+assert_match "^integ=.orchid/integration.$" "$(cat "$hook37")" \
+  "and the integration branch is still baked in, resolved at install time as ever"
+[ -x "$hook37" ] || fail "an upgraded hook that is not executable is not a hook"
+green_case 'a legacy hook whose line 2 STARTS with the header is recognized and upgraded'
+
+# Idempotent, and quiet about it: the same start again must not report an
+# upgrade it did not perform, or the line stops meaning anything. Re-run under
+# the epoch the first one minted (INV-02: start never mints a fresh epoch over
+# an existing one).
+epoch37="$(cat "$W/r37-hook-orchid/.orchid/runtime/epoch" 2>/dev/null)"
+[ -n "$epoch37" ] || epoch37=0
+hook37_sum="$(cat "$hook37")"
+out37_hook2="$(ORCHID_REPO="$r37_hook" ORCHID_EPOCH="$epoch37" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "a repeat start on the same repo must still succeed: $out37_hook2"
+assert_eq "$hook37_sum" "$(cat "$hook37")" "a hook already current is left byte-for-byte alone"
+grep -q "pre-push guard upgraded" <<<"$out37_hook2" \
+  && fail "a repeat start must not claim an upgrade it did not make"
+
+# The never-overwrite rule is NOT relaxed by any of this: a hook orchid did
+# not write is the operator's, is authoritative whatever it does, and survives
+# start untouched -- said out loud rather than skipped in silence.
+r37_user="$W/r37-userhook"; mk_repo "$r37_user" 'verify=true'
+mkdir -p "$r37_user/.git/hooks"
+user_hook37="$r37_user/.git/hooks/pre-push"
+printf '#!/bin/sh\n# my own pre-push hook\nexit 0\n' > "$user_hook37"
+chmod +x "$user_hook37"
+user_hook37_body="$(cat "$user_hook37")"
+ORCHID_REPO="$r37_user" "$ORCHID_BIN" init >/dev/null \
+  || fail "fixture: orchid init must succeed on r37-userhook"
+out37_user="$(ORCHID_REPO="$r37_user" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must succeed on a repo carrying the operator's own pre-push hook: $out37_user"
+assert_eq "$user_hook37_body" "$(cat "$user_hook37")" \
+  "start never overwrites a pre-push hook orchid did not write"
+assert_match "leaving it untouched" "$out37_user" \
+  "and says so, so the operator knows the guard is not installed"
+
+# ---------------------------------------------------------------------------
+# The hook that MENTIONS orchid without being orchid's. This is the shape the
+# never-overwrite rule is actually load-bearing for, and the one that used to
+# lose: recognition was `grep -F` over the whole file, which asks "does this
+# file contain the phrase anywhere" -- and the operator most likely to have
+# written a deliberate pre-push hook is exactly the operator most likely to
+# name orchid in it, in a comment or in a chain to orchid's own guard. Theirs
+# was overwritten.
+#
+# Recognition is now POSITION plus ANCHOR: the second line, starting with the
+# header. Both halves are exercised by the one fixture below --
+#
+#   line 2 contains the phrase, but not at the start   -> the ANCHOR half
+#   line 3 starts with the phrase, but is not line 2   -> the POSITION half
+#
+# -- and either half failing overwrites a file the operator wrote by hand,
+# which is the one outcome this function must never produce.
+#
+# Both verbs are asked, because both install the guard: init on the way in,
+# start on every existing-repository pass afterwards.
+#
+# RED (before this fix): the hook below is replaced by orchid's template, its
+# `exec` chain lost silently, and start reports an upgrade of a file it had no
+# business touching.
+# ---------------------------------------------------------------------------
+r37_mention="$W/r37-mentionhook"; mk_repo "$r37_mention" 'verify=true'
+mkdir -p "$r37_mention/.git/hooks"
+mention_hook37="$r37_mention/.git/hooks/pre-push"
+cat > "$mention_hook37" <<'MENTION_HOOK'
+#!/bin/sh
+# pre-push: my own checks run first, then the orchid pre-push guard.
+# orchid pre-push guard -- chained below, if this checkout has one installed.
+./scripts/my-own-checks.sh || exit 1
+exec "$(dirname "$0")/pre-push.orchid" "$@"
+MENTION_HOOK
+chmod +x "$mention_hook37"
+mention_hook37_body="$(cat "$mention_hook37")"
+grep -Fq "orchid pre-push guard" "$mention_hook37" \
+  || fail "fixture: the operator's hook must MENTION the phrase, or it tests nothing"
+ORCHID_REPO="$r37_mention" "$ORCHID_BIN" init >/dev/null \
+  || fail "fixture: orchid init must succeed on r37-mentionhook"
+assert_eq "$mention_hook37_body" "$(cat "$mention_hook37")" \
+  "init leaves a hook that merely MENTIONS orchid byte-for-byte alone"
+out37_mention="$(ORCHID_REPO="$r37_mention" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must succeed on a repo carrying such a hook: $out37_mention"
+assert_eq "$mention_hook37_body" "$(cat "$mention_hook37")" \
+  "and so does start -- a mention of the marker is not the marker"
+assert_match "leaving it untouched" "$out37_mention" \
+  "and start says the guard is not installed rather than claiming an upgrade"
+grep -q "pre-push guard upgraded" <<<"$out37_mention" \
+  && fail "orchid must never report upgrading a hook the operator wrote"
+red_case 'a user hook that MENTIONS the marker off line 2 is left byte-for-byte alone'
+
+# `push_guard=false` still opts out of the whole thing, upgrade included.
+r37_off="$W/r37-guardoff"; mk_repo "$r37_off" 'verify=true' 'push_guard=false'
+ORCHID_REPO="$r37_off" "$ORCHID_BIN" init >/dev/null \
+  || fail "fixture: orchid init must succeed on r37-guardoff"
+[ -e "$r37_off/.git/hooks/pre-push" ] && fail "fixture: push_guard=false must install no hook"
+out37_off="$(ORCHID_REPO="$r37_off" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must succeed with push_guard=false: $out37_off"
+[ -e "$r37_off/.git/hooks/pre-push" ] \
+  && fail "push_guard=false must opt out of the existing-repository upgrade too"
+
+# ---------------------------------------------------------------------------
+# T037 -- a RELATIVE `core.hooksPath` is not one hook file, it is one PER
+# WORKTREE, so orchid installs nothing and says so.
+#
+# `core.hooksPath` relocates every hook in a repository, and plenty of real
+# projects set it: a shared team hooks directory, a `.githooks/` tracked in
+# the tree, anything Husky-shaped. Orchid used to derive
+# `<git-common-dir>/hooks` by hand and write there regardless -- so on such a
+# repository the guard landed in `.git/hooks/`, which git no longer reads, and
+# orchid REPORTED it as installed. That is worse than installing nothing: an
+# inert file at a path nothing executes reads, to an operator and to `ls`,
+# exactly like protection.
+#
+# Asking git for the path fixes the ABSOLUTE spelling (below) and does NOT fix
+# the relative one, which is a different defect wearing the same clothes.
+# git's rule for a relative value (githooks(5), `core.hooksPath`) is that it
+# resolves against the directory hooks are RUN from -- the top level of the
+# working tree the push comes from. The key lives in the shared config, so
+# every checkout reads the same string and resolves it somewhere else, and
+# orchid gives the integration branch and every task a linked worktree of its
+# own. Installing into the one checkout the process can see and reporting
+# `installed` would be the same false protection at a new address.
+#
+# THE PREMISE IS PROVED HERE, NOT ASSERTED: the guard is installed by hand into
+# the main checkout's copy, a linked worktree is added, and the same managed
+# push is refused from one and allowed from the other.
+#
+# RED (before this fix): init writes `ci-hooks/pre-push` and prints
+# "pre-push guard installed", claiming a repository-wide guard from a file that
+# covers exactly one of this repository's checkouts.
+# ---------------------------------------------------------------------------
+r37_hp="$W/r37-hookspath"; mk_repo "$r37_hp" 'verify=true'
+git -C "$r37_hp" config core.hooksPath ci-hooks
+
+# `orchid doctor` first, on the bare fixture: this is where an operator meets
+# the condition without having run a verb that installs hooks, and it is the
+# same preflight `orchid start` runs. It WARNS and never fails -- an
+# unguardable hooks layout is a risk, not a broken repository, and failing here
+# would take start's own preflight down with it.
+rc=0; doc37_hp="$(ORCHID_REPO="$r37_hp" "$ORCHID_BIN" doctor 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "the hooks-path warning must never flip doctor's exit code: $doc37_hp"
+assert_match "WARN: push guard: core.hooksPath is set to the RELATIVE path" "$doc37_hp" \
+  "doctor names the condition in the same words the installer uses"
+assert_match "config --unset core.hooksPath" "$doc37_hp" \
+  "and carries the recovery with it, rather than only the diagnosis"
+
+out37_hp="$(ORCHID_REPO="$r37_hp" "$ORCHID_BIN" init 2>&1)" \
+  || fail "init must still succeed on a repo that configures core.hooksPath: $out37_hp"
+[ -e "$r37_hp/ci-hooks/pre-push" ] \
+  && fail "a relative core.hooksPath must install NOTHING -- one checkout's hook is not a repository's guard"
+[ -e "$r37_hp/.git/hooks/pre-push" ] \
+  && fail "and .git/hooks is not a fallback: git does not read it once core.hooksPath is set"
+assert_match "core.hooksPath is set to the RELATIVE path .ci-hooks." "$out37_hp" \
+  "init names the setting and its value"
+assert_match "EACH worktree.s own top level" "$out37_hp" \
+  "and names the reason -- git resolves it per checkout, not per repository"
+assert_match "was NOT installed" "$out37_hp" \
+  "and says plainly that this repository is unguarded"
+# The absolute recovery names a REAL directory inside this repository's git
+# dir, never a `/absolute/path/to/hooks` placeholder: an absolute path outside
+# the git dir is itself unsupported (the shared-hooks case below), so a
+# placeholder would invite the operator to point the key at their ~/.githooks
+# and meet this same refusal a second time.
+assert_match "config core.hooksPath '$r37_hp/.git/hooks'" "$out37_hp" \
+  "the absolute recovery, as a command, naming a directory this repository owns"
+assert_match "config --unset core.hooksPath" "$out37_hp" \
+  "and the unset recovery, as a command"
+assert_match "refresh-push-guard" "$out37_hp" \
+  "and what to run once it is changed, so the fix has an end"
+grep -q "guard installed" <<<"$out37_hp" \
+  && fail "no output may claim an install that did not happen"
+grep -q "already current" <<<"$out37_hp" \
+  && fail "and none may claim the repository is current"
+assert_eq "ci-hooks" "$(git -C "$r37_hp" config --get core.hooksPath)" \
+  "orchid never rewrites the operator's own git configuration to make itself installable"
+
+# The premise, proved. Install orchid's guard BY HAND at the path the main
+# checkout resolves -- so the only thing under test is git's resolution rule,
+# not orchid's refusal -- then ask for the same managed push from two
+# checkouts of the same repository.
+mkdir -p "$r37_hp/ci-hooks"
+sed 's|__INTEGRATION_BRANCH__|orchid/integration|g' "$REPO_ROOT/templates/pre-push.sh" \
+  > "$r37_hp/ci-hooks/pre-push"
+chmod +x "$r37_hp/ci-hooks/pre-push"
+remote37_hp="$W/r37-hookspath-remote.git"
+git init -q --bare "$remote37_hp"
+git -C "$r37_hp" remote add origin "$remote37_hp"
+rc=0; push37_hp="$(git -C "$r37_hp" push origin orchid/integration 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "fixture: a hand-installed guard at the MAIN checkout's resolved path must refuse a managed push, or this case proves nothing"
+assert_match "push blocked" "$push37_hp" \
+  "fixture: and the refusal is orchid's own hook speaking"
+
+git -C "$r37_hp" worktree add -q "$W/r37-hookspath-wt" -b hp-linked \
+  || fail "fixture: a linked worktree must be addable"
+[ -e "$W/r37-hookspath-wt/ci-hooks/pre-push" ] \
+  && fail "fixture: the linked worktree must NOT have its own copy, which is the whole point"
+rc=0; push37_hp_wt="$(git -C "$W/r37-hookspath-wt" push origin orchid/integration 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] \
+  || fail "the SAME push from a linked worktree must go through unguarded, since git resolves 'ci-hooks' against that worktree's own top level (got: $push37_hp_wt)"
+grep -q "push blocked" <<<"$push37_hp_wt" \
+  && fail "and no hook may have run there -- if one did, this repository would be guardable after all"
+red_case 'a relative core.hooksPath installs nothing and is reported, because one file cannot guard every worktree'
+
+# An ABSOLUTE core.hooksPath INSIDE this repository's own git directory, in a
+# directory whose name contains a space -- the supported relocation, and the
+# quoting that has to survive it.
+#
+# Inside the git dir is the whole condition (T037, after review): a directory
+# under `.git/` belongs to this repository by construction and cannot be the
+# one another repository reads, which is what makes writing a guard there --
+# with THIS repository's integration branch baked in -- a decision about this
+# repository alone. The external spelling is a separate case below.
+r37_hpa="$W/r37-hookspath-abs"; mk_repo "$r37_hpa" 'verify=true'
+hp_abs="$r37_hpa/.git/r37 hooks dir"
+mkdir -p "$hp_abs"
+git -C "$r37_hpa" config core.hooksPath "$hp_abs"
+out37_hpa="$(ORCHID_REPO="$r37_hpa" "$ORCHID_BIN" init 2>&1)" \
+  || fail "init must succeed with an absolute core.hooksPath containing a space: $out37_hpa"
+[ -x "$hp_abs/pre-push" ] \
+  || fail "an absolute core.hooksPath is honored too, spaces and all"
+[ -e "$r37_hpa/.git/hooks/pre-push" ] \
+  && fail "and again nothing is written to the .git/hooks git is configured not to read"
+assert_match "pre-push guard installed: $hp_abs/pre-push" "$out37_hpa" \
+  "the reported path is the configured one"
+grep -q "RELATIVE path" <<<"$out37_hpa" \
+  && fail "a repo-contained absolute core.hooksPath must keep normal behavior -- no warning, no refusal"
+grep -q "ABSOLUTE path" <<<"$out37_hpa" \
+  && fail "and it is not the shared-directory case either: this one IS inside the repository's git dir"
+
+# And it is genuinely REPOSITORY-WIDE, which is the whole difference: one
+# absolute path is the same file for every checkout, so the linked worktree
+# that walked straight past the relative spelling above is guarded here.
+remote37_hpa="$W/r37-hookspath-abs-remote.git"
+git init -q --bare "$remote37_hpa"
+git -C "$r37_hpa" remote add origin "$remote37_hpa"
+git -C "$r37_hpa" worktree add -q "$W/r37-hookspath-abs-wt" -b hpa-linked \
+  || fail "fixture: a linked worktree must be addable"
+rc=0
+push37_hpa="$(git -C "$W/r37-hookspath-abs-wt" push origin orchid/integration 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "an absolute core.hooksPath must guard EVERY checkout, linked worktrees included (got: $push37_hpa)"
+assert_match "push blocked" "$push37_hpa" \
+  "and the refusal is orchid's own hook, running from a worktree it was never installed into"
+
+# The GREEN control, so the case above cannot pass because the hook refuses
+# everything: an ordinary branch carrying no run state still pushes.
+rc=0; push37_hpa_ok="$(git -C "$r37_hpa" push origin hpa-linked 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] \
+  || fail "the relocated guard must still let an unmanaged branch through (got: $push37_hpa_ok)"
+
+# And doctor is SILENT about a repository it can guard -- the twin of the WARN
+# asserted on the relative fixture above, and the half that makes that WARN
+# evidence of detection rather than of a classifier that answers `relative` for
+# everything. Both guardable spellings are asked: the absolute value here, and
+# the unset default on the r37-hook repository set up earlier in this file.
+doc37_hpa="$(ORCHID_REPO="$r37_hpa" "$ORCHID_BIN" doctor 2>&1 || true)"
+grep -q "WARN: push guard" <<<"$doc37_hpa" \
+  && fail "doctor must not warn about a repo-contained absolute core.hooksPath -- that layout IS guarded"
+doc37_def="$(ORCHID_REPO="$r37_hook" "$ORCHID_BIN" doctor 2>&1 || true)"
+grep -q "WARN: push guard" <<<"$doc37_def" \
+  && fail "and must not warn about git's own default, where core.hooksPath is unset entirely"
+green_case 'a repo-contained absolute core.hooksPath keeps normal behavior and guards every worktree of the repository'
+
+# ---------------------------------------------------------------------------
+# T037 -- an ABSOLUTE core.hooksPath OUTSIDE the git directory is a hooks
+# directory orchid does not own, and TWO repositories pointing at one is why.
+#
+# An absolute path says nothing about whose directory it is. `~/.githooks`, a
+# team mount, a `git config --global core.hooksPath` set once by a dotfiles
+# repository: every repository on the machine then reads the same files.
+# Installing orchid's guard there is not "guarding this repository", it is
+# writing a hook -- carrying THIS repository's integration branch name, baked
+# in at install time -- in front of every repository that shares it, and
+# overwriting whatever another one had installed for the same reason. The
+# never-overwrite rule cannot save the second repository either: the hook
+# orchid wrote for the first IS orchid's own hook, so it is recognized and
+# replaced rather than left alone.
+#
+# So the supported shape is the containable one, and this case is the twin of
+# the fixture just above: the same absolute spelling, the same quoting, the
+# only difference being which directory it names.
+#
+# RED (before this fix): the first init writes the shared hook and reports it
+# installed; the second init overwrites it with its own integration branch,
+# reports an upgrade, and the first repository's guard is silently gone.
+# ---------------------------------------------------------------------------
+hp_shared="$W/r37 shared hooks"
+mkdir -p "$hp_shared"
+r37_sh1="$W/r37-shared-one"; mk_repo "$r37_sh1" 'verify=true'
+r37_sh2="$W/r37-shared-two"; mk_repo "$r37_sh2" 'verify=true'
+git -C "$r37_sh1" config core.hooksPath "$hp_shared"
+git -C "$r37_sh2" config core.hooksPath "$hp_shared"
+
+rc=0; doc37_sh="$(ORCHID_REPO="$r37_sh1" "$ORCHID_BIN" doctor 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "an unguardable hooks layout must never flip doctor's exit code: $doc37_sh"
+assert_match "WARN: push guard: core.hooksPath is set to the ABSOLUTE path" "$doc37_sh" \
+  "doctor names the condition before any verb has installed anything"
+assert_match "OUTSIDE this repository's git directory" "$doc37_sh" \
+  "and names the reason, which is containment and not absoluteness"
+
+out37_sh1="$(ORCHID_REPO="$r37_sh1" "$ORCHID_BIN" init 2>&1)" \
+  || fail "init must still succeed on a repo whose hooks are shared: $out37_sh1"
+assert_match "core.hooksPath is set to the ABSOLUTE path .$hp_shared." "$out37_sh1" \
+  "init names the setting and its value"
+assert_match "was NOT installed" "$out37_sh1" \
+  "and says plainly that this repository is unguarded"
+assert_match "config core.hooksPath '$r37_sh1/.git/hooks'" "$out37_sh1" \
+  "the recovery names an absolute directory inside THIS repository's git dir"
+assert_match "config --unset core.hooksPath" "$out37_sh1" \
+  "and the unset recovery, as a command"
+assert_match "refresh-push-guard" "$out37_sh1" \
+  "and what to run once it is changed"
+grep -q "guard installed" <<<"$out37_sh1" \
+  && fail "no output may claim an install into a directory orchid does not own"
+grep -q "already current" <<<"$out37_sh1" \
+  && fail "nor that the repository is current"
+[ -e "$hp_shared/pre-push" ] \
+  && fail "and nothing at all is written into the shared directory"
+[ -e "$r37_sh1/.git/hooks/pre-push" ] \
+  && fail "nor to the .git/hooks git is configured not to read"
+assert_eq "$hp_shared" "$(git -C "$r37_sh1" config --get core.hooksPath)" \
+  "orchid never rewrites the operator's own git configuration to make itself installable"
+
+# The second repository is the point: it shares the directory, and neither
+# repository's setup may put anything in front of the other.
+ORCHID_REPO="$r37_sh2" "$ORCHID_BIN" init >/dev/null 2>&1 \
+  || fail "fixture: init must succeed on the second repository too"
+out37_sh2="$(ORCHID_REPO="$r37_sh2" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "a shared hooks directory must not stop a run being set up: $out37_sh2"
+assert_match "orchid: core.hooksPath is set to the ABSOLUTE path" "$out37_sh2" \
+  "start's own install call names it, not just its doctor preflight"
+grep -q "guard upgraded" <<<"$out37_sh2" \
+  && fail "start carries the upgrade, so it is the door that must not write into a shared directory"
+[ -e "$hp_shared/pre-push" ] \
+  && fail "no hook may exist in the shared directory after BOTH repositories have been set up"
+[ -f "$W/r37-shared-two-orchid/.orchid/roadmap.md" ] \
+  || fail "and the run must still have been set up: an unguardable hooks layout is reported, never fatal"
+
+# The explicit route refuses too, and refuses NON-ZERO -- the one command whose
+# whole purpose is to install the guard must not answer "done" with nothing on
+# disk.
+rc=0
+out37_shref="$(ORCHID_REPO="$r37_sh1" "$ORCHID_BIN" start --refresh-push-guard 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "--refresh-push-guard must not report success where it will not install: $out37_shref"
+assert_match "outside this repository's git directory" "$out37_shref" "naming why it refused"
+assert_match "config --unset core.hooksPath" "$out37_shref" "and carrying the recovery"
+grep -q "already current" <<<"$out37_shref" \
+  && fail "a refusal must never also claim the guard is current"
+grep -q "guard installed" <<<"$out37_shref" \
+  && fail "nor claim an install"
+[ -e "$hp_shared/pre-push" ] \
+  && fail "and the shared directory is still untouched"
+red_case 'an absolute core.hooksPath outside the git dir installs nothing, because the directory may be another repository'
+
+# ---------------------------------------------------------------------------
+# T037 -- the THIRD door onto a relative `core.hooksPath`: `orchid start`'s
+# existing-repository path.
+#
+# `orchid init` is covered above and `--refresh-push-guard` below, but the door
+# an operator actually walks through on a repository that is already
+# initialized and still in `planning` is a plain `orchid start` -- and it is
+# the door that carries the hook UPGRADE, so it is the one most likely to write
+# a per-worktree file and call the repository protected.
+#
+# It must warn, install nothing, claim nothing, and STILL SET THE RUN UP: a
+# hooks layout orchid cannot guard is a risk to report, never a reason to
+# refuse a run. Both prefixes are pinned because both legs have to be there --
+# `WARN: push guard:` is the doctor preflight, `orchid:` is start's own install
+# call further down, and a fix that only reached one of them would leave the
+# other silently claiming or silently skipping.
+#
+# RED (before this fix): start writes `ci-hooks/pre-push` in the main checkout
+# and prints "pre-push guard upgraded", which is a repository-wide claim made
+# from a file that covers exactly one of this repository's checkouts.
+# ---------------------------------------------------------------------------
+r37_hps="$W/r37-hookspath-start"; mk_repo "$r37_hps" 'verify=true'
+git -C "$r37_hps" config core.hooksPath ci-hooks
+ORCHID_REPO="$r37_hps" "$ORCHID_BIN" init >/dev/null 2>&1 \
+  || fail "fixture: init must succeed under a relative core.hooksPath"
+out37_hps="$(ORCHID_REPO="$r37_hps" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "a hooks layout orchid cannot guard must not stop a run being set up: $out37_hps"
+assert_match "orchid: core.hooksPath is set to the RELATIVE path .ci-hooks." "$out37_hps" \
+  "start's own install call names the condition, not just its doctor preflight"
+assert_match "WARN: push guard: core.hooksPath is set to the RELATIVE path" "$out37_hps" \
+  "and the preflight names it too -- every door, or an operator meets it at none"
+# Both recoveries, in the same spelling the init door pins further up: the
+# absolute one names a REAL directory inside this repository's git dir rather
+# than a placeholder, because an absolute path OUTSIDE it is unsupported too
+# and a placeholder would send the operator from this refusal straight into
+# that one. Pinned at this door as well as at init's, or the two doors can
+# drift back apart -- which is exactly what they had done.
+assert_match "config core.hooksPath '$r37_hps/.git/hooks'" "$out37_hps" \
+  "with the absolute recovery, naming a directory this repository owns"
+assert_match "config --unset core.hooksPath" "$out37_hps" \
+  "and the unset recovery, as commands"
+grep -q "guard installed" <<<"$out37_hps" \
+  && fail "start may not claim an install it did not perform"
+grep -q "guard upgraded" <<<"$out37_hps" \
+  && fail "nor an upgrade -- this is the door that carries the upgrade, so it is the one that must not"
+grep -q "already current" <<<"$out37_hps" \
+  && fail "nor that a repository nothing guards is current"
+[ -e "$r37_hps/ci-hooks/pre-push" ] \
+  && fail "and nothing is written to the one checkout this process happens to see"
+[ -e "$r37_hps/.git/hooks/pre-push" ] \
+  && fail "nor to the .git/hooks git is configured not to read"
+assert_eq "ci-hooks" "$(git -C "$r37_hps" config --get core.hooksPath)" \
+  "start never rewrites the operator's git configuration to make orchid installable"
+# Non-vacuity: the run really was set up, so the assertions above are about a
+# start that RAN rather than one that died early for some unrelated reason.
+[ -f "$W/r37-hookspath-start-orchid/.orchid/roadmap.md" ] \
+  || fail "the run must still have been set up: an unguardable hooks layout is reported, never fatal"
+red_case 'orchid start warns and installs nothing under a relative core.hooksPath, and still sets the run up'
+
+# ---------------------------------------------------------------------------
+# T037 -- `orchid start --refresh-push-guard`: the route into a repository
+# whose run has already left planning.
+#
+# The upgrade above rides `orchid start`, and start is a SETUP command: rule 3
+# at the top of libexec/orchid-start refuses a run past `planning` outright.
+# So every repository that is actually running -- which is every repository
+# the reported leak could come from, including the one it did come from --
+# could not reach a newer guard at all. `orchid init` is no help either; it
+# dies on `branch orchid/integration exists`.
+#
+# The answer is an explicit invocation, not a side effect: calling the
+# installer above the planning check would work, and would also mean a command
+# that refuses on the very next line had quietly rewritten a file under
+# `.git/` first. "run r-001 has already left planning" reads as "nothing
+# happened", and a mutation nobody can name is a mutation nobody can audit.
+#
+# RED (before this fix): there is no such form -- start exits with "unknown
+# option '--refresh-push-guard'" -- and the stale hook below survives the run
+# forever.
+# ---------------------------------------------------------------------------
+r37_pp="$W/r37-pastplanning"; mk_repo "$r37_pp" 'verify=true'
+ORCHID_REPO="$r37_pp" "$ORCHID_BIN" start "$REQ" >/dev/null 2>&1 \
+  || fail "fixture: start must set r37-pastplanning up"
+ORCHID_REPO="$W/r37-pastplanning-orchid" ORCHID_EPOCH=0 "$ORCHID_BIN" plan apply --reason "first plan" >/dev/null 2>&1 \
+  || fail "fixture: plan apply must take this run out of planning"
+assert_match "^run_status: running$" "$(git -C "$r37_pp" show 'orchid/integration:.orchid/roadmap.md')" \
+  "fixture: the run must really be past planning, or every case below is vacuous"
+
+# The hook a repository initialized by an older orchid carries: orchid's own
+# (line 2 starts with the header), name-based leg only, no run-state leg.
+hook37_pp="$r37_pp/.git/hooks/pre-push"
+cat > "$hook37_pp" <<'STALE_PP_HOOK'
+#!/usr/bin/env bash
+# orchid pre-push guard -- installed by `orchid init` (v1-m4 vintage).
+[ "${ORCHID_ALLOW_PUSH:-0}" = 1 ] && exit 0
+integ="orchid/integration"
+exit 0
+STALE_PP_HOOK
+chmod +x "$hook37_pp"
+stale37_pp="$(cat "$hook37_pp")"
+grep -q "run state" "$hook37_pp" \
+  && fail "fixture: the stale hook must NOT already carry the run-state leg"
+
+# A normal start still refuses here -- and must not have touched the hook on
+# its way to that refusal.
+rc=0
+out37_pp="$(ORCHID_REPO="$r37_pp" ORCHID_EPOCH=0 "$ORCHID_BIN" start "$REQ" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "start must still refuse a run that has left planning"
+assert_match "has already left planning" "$out37_pp" "and say so plainly"
+assert_eq "$stale37_pp" "$(cat "$hook37_pp")" \
+  "a start that refuses must not have rewritten a file under .git/ first"
+
+refs37_pp="$(git -C "$r37_pp" for-each-ref --format='%(refname) %(objectname)')"
+out37_ref="$(ORCHID_REPO="$r37_pp" "$ORCHID_BIN" start --refresh-push-guard 2>&1)" \
+  || fail "--refresh-push-guard must succeed against a run past planning: $out37_ref"
+assert_match "pre-push guard upgraded: $hook37_pp" "$out37_ref" \
+  "the explicit route names the file it replaced"
+assert_match "carries orchid.s own run state" "$(cat "$hook37_pp")" \
+  "and the stale hook finally gains the run-state leg -- the whole reason the route exists"
+[ -x "$hook37_pp" ] || fail "a refreshed hook that is not executable is not a hook"
+red_case 'a run past planning reaches the current push guard via start --refresh-push-guard'
+
+# Idempotent, and explicit about it: this is the one command an operator runs
+# to fix exactly this, so "already current" is the answer, not silence.
+body37_pp="$(cat "$hook37_pp")"
+out37_ref2="$(ORCHID_REPO="$r37_pp" "$ORCHID_BIN" start --refresh-push-guard 2>&1)" \
+  || fail "a repeat --refresh-push-guard must still succeed: $out37_ref2"
+assert_match "pre-push guard already current: $hook37_pp" "$out37_ref2" \
+  "a second run reports the state it found rather than claiming an upgrade"
+grep -q "pre-push guard upgraded" <<<"$out37_ref2" \
+  && fail "and it must never report an upgrade it did not make"
+assert_eq "$body37_pp" "$(cat "$hook37_pp")" "a current hook is left byte-for-byte alone"
+
+# It installs a hook and does nothing else -- no ref moves, no commit, no run
+# state written -- which is what makes it safe against a run in flight.
+assert_eq "$refs37_pp" "$(git -C "$r37_pp" for-each-ref --format='%(refname) %(objectname)')" \
+  "--refresh-push-guard moves no ref in the repository it runs against"
+assert_match "^run_status: running$" "$(git -C "$r37_pp" show 'orchid/integration:.orchid/roadmap.md')" \
+  "and neither resumes nor rewinds the run it ran alongside"
+green_case '--refresh-push-guard is idempotent and mutates nothing but the hook'
+
+# It is maintenance, not setup, and refuses anything that would read as setup
+# rather than half-performing it.
+rc=0
+out37_req="$(ORCHID_REPO="$r37_pp" "$ORCHID_BIN" start --refresh-push-guard "$REQ" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--refresh-push-guard must refuse a requirements file"
+assert_match "takes no requirements file" "$out37_req" "and name what it refused"
+rc=0
+out37_opt="$(ORCHID_REPO="$r37_pp" "$ORCHID_BIN" start --refresh-push-guard --verify 'true' 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--refresh-push-guard must refuse a setup option it cannot act on"
+assert_match "takes no other option" "$out37_opt" "and say why"
+
+# Run from the integration WORKTREE, which is where an operator mid-run
+# actually is. A linked worktree shares the main checkout's hooks directory,
+# and `git rev-parse --git-path` maps `hooks/` onto the common git dir for
+# exactly that reason -- so this call must find the hook already installed at
+# the MAIN checkout rather than conclude there is none here.
+#
+# "already current" is the whole proof: a route that resolved a
+# worktree-local hooks path would find no file there, install a second copy,
+# and report `installed`.
+[ -f "$W/r37-pastplanning-orchid/.git" ] \
+  || fail "fixture: the integration worktree must be a LINKED worktree (.git as a file) for this case to mean anything"
+out37_wtref="$(ORCHID_REPO="$W/r37-pastplanning-orchid" "$ORCHID_BIN" start --refresh-push-guard 2>&1)" \
+  || fail "--refresh-push-guard must work from the integration worktree: $out37_wtref"
+assert_match "pre-push guard already current: .*/[.]git/hooks/pre-push" "$out37_wtref" \
+  "a linked worktree resolves the shared hooks dir, not one of its own"
+assert_eq "$body37_pp" "$(cat "$hook37_pp")" \
+  "and the one shared hook is what it found -- unchanged, not duplicated"
+
+# An ABSOLUTE core.hooksPath is resolved by this route too, at inspection as
+# well as at install: a route that looked in .git/hooks would find nothing
+# there and report an install it had already performed elsewhere.
+out37_hpa_ref="$(ORCHID_REPO="$r37_hpa" "$ORCHID_BIN" start --refresh-push-guard 2>&1)" \
+  || fail "--refresh-push-guard must succeed under an absolute core.hooksPath: $out37_hpa_ref"
+assert_match "pre-push guard already current: $hp_abs/pre-push" "$out37_hpa_ref" \
+  "it inspects and reports the same path git runs, so it re-installs nothing"
+[ -e "$r37_hpa/.git/hooks/pre-push" ] \
+  && fail "and it still writes nothing to the .git/hooks git does not read"
+
+# A RELATIVE one refuses, and refuses NON-ZERO: this is the one command whose
+# entire purpose is to put a guard in place, so "did nothing" must not read as
+# "done". It installs nothing at either candidate path and says neither
+# `installed` nor `already current` -- the hand-installed file from the case
+# far above is still exactly where the fixture put it, untouched.
+hp_body37="$(cat "$r37_hp/ci-hooks/pre-push")"
+rc=0
+out37_hp_ref="$(ORCHID_REPO="$r37_hp" "$ORCHID_BIN" start --refresh-push-guard 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "--refresh-push-guard must not report success where it cannot install a repository-wide guard: $out37_hp_ref"
+assert_match "core.hooksPath is relative" "$out37_hp_ref" "naming why it refused"
+assert_match "config --unset core.hooksPath" "$out37_hp_ref" "and carrying the recovery"
+grep -q "already current" <<<"$out37_hp_ref" \
+  && fail "a refusal must never also claim the guard is current"
+grep -q "guard installed" <<<"$out37_hp_ref" \
+  && fail "nor claim an install"
+grep -q "guard upgraded" <<<"$out37_hp_ref" \
+  && fail "nor an upgrade"
+assert_eq "$hp_body37" "$(cat "$r37_hp/ci-hooks/pre-push")" \
+  "and it writes nothing at the per-worktree path either"
+[ -e "$r37_hp/.git/hooks/pre-push" ] \
+  && fail "nor falls back to the .git/hooks git does not read"
+red_case 'start --refresh-push-guard exits non-zero under a relative core.hooksPath instead of half-installing'
+
+# The never-overwrite rule holds through the explicit route, and the route
+# says so with a non-zero exit: the operator asked for a guard git will run,
+# and there is not one.
+rc=0
+out37_userref="$(ORCHID_REPO="$r37_user" "$ORCHID_BIN" start --refresh-push-guard 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "the route must not report success when no guard was installed"
+assert_eq "$user_hook37_body" "$(cat "$user_hook37")" \
+  "--refresh-push-guard never overwrites a hook orchid did not write, either"
+assert_match "is yours, not orchid.s" "$out37_userref" "it says whose file that is"
+assert_match "exec" "$out37_userref" "and how to have both, rather than only what it would not do"
+red_case '--refresh-push-guard refuses rather than overwriting an operator-authored hook'
+
+# An opted-out repository is told, never silently left unguarded.
+rc=0
+out37_offref="$(ORCHID_REPO="$r37_off" "$ORCHID_BIN" start --refresh-push-guard 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "push_guard=false must be reported, not answered with a shrug"
+assert_match "push_guard is off" "$out37_offref" "naming the setting that turned it off"
+[ -e "$r37_off/.git/hooks/pre-push" ] \
+  && fail "and the opt-out is still honored -- nothing is installed"
+
+# And it is maintenance for an ALREADY-INITIALIZED repository: with no run to
+# guard it points at the setup that installs the guard itself.
+r37_noinit="$W/r37-noinit"; mk_repo "$r37_noinit" 'verify=true'
+rc=0
+out37_noinit="$(ORCHID_REPO="$r37_noinit" "$ORCHID_BIN" start --refresh-push-guard 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--refresh-push-guard must refuse a repository with no run in it"
+assert_match "has no orchid/integration branch" "$out37_noinit" "naming what is missing"
+assert_match "orchid start <requirements-file>" "$out37_noinit" "and the command that sets it up"
+[ -e "$r37_noinit/.git/hooks/pre-push" ] \
+  && fail "an uninitialized repository gets no hook out of a refusal"
+
+# ---------------------------------------------------------------------------
+# T037 -- a guard whose BYTES are current but whose execute bit is gone.
+#
+# git runs a hook by exec'ing it and does exactly nothing when the file is not
+# executable: no error, no warning, the push simply proceeds. So the execute
+# bit is not a detail of "installed", it is half of it -- and it goes missing
+# for ordinary reasons: a hook copied out of a template directory with `cp`, a
+# restore from an archive that dropped the mode, a tight `umask`, an orchid
+# install whose own chmod failed. Comparing bytes alone answers "already
+# current" about a repository nothing is guarding.
+#
+# RED (before this fix): the refresh below prints "already current" and exits
+# 0 while the push that follows it goes straight through.
+# ---------------------------------------------------------------------------
+r37_x="$W/r37-noexec"; mk_repo "$r37_x" 'verify=true'
+ORCHID_REPO="$r37_x" "$ORCHID_BIN" init >/dev/null \
+  || fail "fixture: orchid init must succeed on r37-noexec"
+hook37_x="$r37_x/.git/hooks/pre-push"
+[ -x "$hook37_x" ] || fail "fixture: init must leave an executable guard for this case to strip"
+body37_x="$(cat "$hook37_x")"
+# TWO remotes, and that is not incidental. git skips an already-up-to-date ref
+# when it feeds the pre-push hook, so pushing the same branch to the same
+# remote twice hands the hook an empty stdin the second time and it exits 0
+# having judged nothing -- a "refused" that proves the repair and a "passed"
+# that proves nothing would be indistinguishable. Each push below therefore
+# has real work to do.
+remote37_x="$W/r37-noexec-remote.git"
+git init -q --bare "$remote37_x"
+git -C "$r37_x" remote add origin "$remote37_x"
+remote37_x2="$W/r37-noexec-remote2.git"
+git init -q --bare "$remote37_x2"
+git -C "$r37_x" remote add second "$remote37_x2"
+
+# Non-vacuity first: with the bit off, the guard is genuinely inert. If this
+# push were refused anyway, everything below would prove nothing.
+chmod -x "$hook37_x"
+rc=0; push37_x="$(git -C "$r37_x" push origin orchid/integration 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] \
+  || fail "fixture: a non-executable hook must be inert, or this case has nothing to repair (got: $push37_x)"
+grep -q "push blocked" <<<"$push37_x" \
+  && fail "fixture: git must have run nothing at all with the execute bit off"
+
+rc=0; out37_x="$(ORCHID_REPO="$r37_x" "$ORCHID_BIN" start --refresh-push-guard 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "--refresh-push-guard must repair the bit and succeed: $out37_x"
+assert_match "pre-push guard repaired: $hook37_x" "$out37_x" \
+  "the repair is reported -- the bytes did not change, but the repository's protection did"
+assert_match "not executable" "$out37_x" "and says what was wrong with it"
+grep -q "already current" <<<"$out37_x" \
+  && fail "a hook git will not run must never be reported as current"
+[ -x "$hook37_x" ] || fail "and the execute bit is actually back"
+assert_eq "$body37_x" "$(cat "$hook37_x")" \
+  "while the bytes are left exactly as they were -- this is a chmod, not a rewrite"
+
+# Proved by the push, not by the stat: the same branch, to a remote that does
+# not have it yet, is refused now.
+rc=0; push37_x2="$(git -C "$r37_x" push second orchid/integration 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "the repaired guard must actually refuse a managed push"
+assert_match "push blocked" "$push37_x2" "and it is orchid's own hook speaking"
+red_case 'a byte-current but non-executable guard is repaired and reported, never called current'
+
+# The GREEN twin: once the bit is really set, the very next run is `already
+# current` again and reports no repair it did not perform.
+out37_x2="$(ORCHID_REPO="$r37_x" "$ORCHID_BIN" start --refresh-push-guard 2>&1)" \
+  || fail "a repeat refresh must still succeed: $out37_x2"
+assert_match "pre-push guard already current: $hook37_x" "$out37_x2" \
+  "an executable, byte-current guard is current -- both halves, or neither"
+grep -q "guard repaired" <<<"$out37_x2" \
+  && fail "and no repair may be claimed once there is nothing to repair"
+[ -x "$hook37_x" ] || fail "and the bit the previous run restored is still set"
+green_case 'an executable, byte-current guard is reported current and repaired never'
+
+# ---------------------------------------------------------------------------
+# T037 -- a Gerrit review upload is a BRANCH-BOUND push, and the run-state leg
+# must read it as one.
+#
+# The leg refuses a branch whose tip carries `.orchid/`. On a Gerrit-hosted
+# project that leg never sees a branch: nobody pushes `refs/heads/main` at all,
+# the upload IS the push (`git push origin HEAD:refs/for/main`), and the change
+# is submitted onto `main` afterwards on the forge, where no local hook runs.
+# A leg scoped to `refs/heads/*` therefore passes every Gerrit upload straight
+# through -- the whole leak, on an entire class of repository, walking past a
+# guard that reports itself installed.
+#
+# It fails CLOSED, and it has to: `refs/for/...` is magic, never advertised by
+# the remote, so the remote sha git supplies is all zeros and the
+# already-carries-run-state exemption can never apply. The refusal says that
+# rather than offering the push-once-with-the-override recovery, which would
+# leave a Gerrit operator refused identically on their next upload.
+#
+# RED (before this fix): every push below succeeds and run state is uploaded
+# for review, then submitted onto the product's branch.
+# ---------------------------------------------------------------------------
+r37_g="$W/r37-gerrit"; mk_repo "$r37_g" 'verify=true'
+ORCHID_REPO="$r37_g" "$ORCHID_BIN" init >/dev/null \
+  || fail "fixture: orchid init must succeed on r37-gerrit"
+[ -x "$r37_g/.git/hooks/pre-push" ] || fail "fixture: init must have installed the guard"
+g37_branch="$(git -C "$r37_g" rev-parse --abbrev-ref HEAD)"
+remote37_g="$W/r37-gerrit-remote.git"; git init -q --bare "$remote37_g"
+git -C "$r37_g" remote add origin "$remote37_g"
+
+# The realistic shape: an ordinarily-named feature branch that picked up run
+# state by merging the integration branch, uploaded for review.
+git -C "$r37_g" branch feature/gerrit orchid/integration
+[ -n "$(git -C "$r37_g" ls-tree feature/gerrit -- .orchid)" ] \
+  || fail "fixture: the uploaded branch must actually carry .orchid/, or this case proves nothing"
+
+rc=0
+g37_push="$(git -C "$r37_g" push origin "feature/gerrit:refs/for/$g37_branch" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a review upload carrying run state must be refused (got: $g37_push)"
+assert_match "push blocked" "$g37_push" "and it is orchid's own hook speaking"
+assert_match "carries orchid.s own run state" "$g37_push" "which says what is on the tip"
+assert_match "review upload for branch .$g37_branch." "$g37_push" \
+  "naming the branch submitting it would land the state on, which is the ref the operator can act on"
+grep -q "every later push of this ref is exempt" <<<"$g37_push" \
+  && fail "the branch leg's exemption cannot exist for a magic ref the remote never advertises, so it must not be offered"
+# The remote is asked for EVERY ref and the answer filtered here, rather than
+# handed `refs/for/*` as an ls-remote pattern: this has to be able to prove an
+# ABSENCE, and a pattern that silently matched nothing would prove it for free.
+grep -q "refs/for/" <<<"$(git -C "$r37_g" ls-remote "$remote37_g" 2>/dev/null || true)" \
+  && fail "a blocked upload must not have landed on the remote"
+
+# The fully-qualified spelling, and a push-option suffix -- both are ordinary
+# Gerrit, and both are what git hands the hook verbatim.
+rc=0
+g37_push2="$(git -C "$r37_g" push origin "feature/gerrit:refs/for/refs/heads/$g37_branch%topic=leak,r=someone" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "the fully-qualified spelling with push options must be refused too (got: $g37_push2)"
+assert_match "review upload for branch .$g37_branch." "$g37_push2" \
+  "the branch is read out from under both the refs/heads/ spelling and the % push options"
+red_case 'a Gerrit review upload whose tip carries run state is refused, and told it has no exemption'
+
+# The GREEN twin, and the half that keeps the case above from passing because
+# the hook refuses every upload: the SAME magic ref, uploading a branch that
+# carries no run state, goes through -- and actually lands.
+rc=0
+g37_ok="$(git -C "$r37_g" push origin "$g37_branch:refs/for/$g37_branch%topic=clean" 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a clean review upload must push exactly as plain git does (got: $g37_ok)"
+grep -q "refs/for/" <<<"$(git -C "$r37_g" ls-remote "$remote37_g" 2>/dev/null || true)" \
+  || fail "and it must actually have landed on the remote, not merely not-errored"
+green_case 'a review upload carrying no run state is untouched by the leg'
+
+# ---------------------------------------------------------------------------
+# T037 -- ADD THEN DELETE: a push publishes commits, not a tip.
+#
+# The whole leg above asks what the tip tree carries, and the operator response
+# that shape invites is the one that does not work. You merge the integration
+# branch into your feature branch, you see the `.orchid/` paths in the diff, you
+# `git rm -r .orchid && git commit`, and now `git ls-tree` on the tip says
+# clean -- while every one of those files is still in the commits the push
+# sends, still in the clone anybody makes of the branch, and still on its way
+# into whatever the branch is merged into. A deletion is an append, not a
+# removal, and the leak is untouched by it.
+#
+# Built through a throwaway worktree, as the leak fixtures elsewhere are: the
+# fixture repository's own checkout must never be switched onto a branch that
+# tracks `.orchid/`, because checking back out would delete the live run state
+# the rest of the suite is reading.
+#
+# RED (before this fix): every push in this block succeeds, and run state
+# reaches the remote by the one route an operator believes they have closed.
+# ---------------------------------------------------------------------------
+git -C "$r37_g" branch feature/stripped orchid/integration
+strip37_wt="$W/r37-gerrit-strip"
+git -C "$r37_g" worktree add -q "$strip37_wt" feature/stripped
+git -C "$strip37_wt" rm -rq .orchid
+git -C "$strip37_wt" commit -q -m "operator: deleted the .orchid/ paths they noticed in the diff"
+git -C "$r37_g" worktree remove --force "$strip37_wt"
+# BOTH halves of the fixture, or the case is one of the two already covered:
+# the tip must be clean (else this is the tip case again, and would pass with
+# the history walk removed) and the history must not be (else it is the clean
+# case, and would pass with the whole leg removed).
+[ -z "$(git -C "$r37_g" ls-tree feature/stripped -- .orchid)" ] \
+  || fail "fixture: the TIP must carry no .orchid/, or this is the tip case wearing another name"
+[ -n "$(git -C "$r37_g" rev-list --full-history --max-count=1 feature/stripped -- .orchid)" ] \
+  || fail "fixture: the HISTORY must still carry .orchid/, or there is nothing here to detect"
+
+rc=0
+strip37_push="$(git -C "$r37_g" push origin feature/stripped 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a branch whose HISTORY carries run state must be refused (got: $strip37_push)"
+assert_match "push blocked" "$strip37_push" "the history half of the leg names the block plainly"
+assert_match "in the HISTORY this push publishes" "$strip37_push" \
+  "and says where the state is, since the operator is looking at a clean tip"
+# The remedy has to differ from the tip case's, or the message sends an
+# operator to do again the exact thing that did not work.
+grep -q "strip [.]orchid/ from it before pushing" <<<"$strip37_push" \
+  && fail "the tip remedy is the thing that already failed here -- a history leak needs the branch rebuilt"
+assert_match "filter-repo" "$strip37_push" "and it names a way to actually rebuild the branch"
+git -C "$r37_g" ls-remote --exit-code --heads "$remote37_g" feature/stripped >/dev/null 2>&1 \
+  && fail "a blocked push must not have landed the ref on the remote"
+red_case 'a branch whose tip is clean but whose history adds .orchid/ is refused at push'
+
+# The GREEN twin: a branch with a TRULY clean history -- no commit in it ever
+# touched `.orchid` -- pushes exactly as plain git does, and lands. Without
+# this, the case above passes just as well for a leg that refuses everything.
+git -C "$r37_g" branch feature/clean-history "$g37_branch"
+[ -z "$(git -C "$r37_g" rev-list --full-history --max-count=1 feature/clean-history -- .orchid)" ] \
+  || fail "fixture: the clean twin's history must never have touched .orchid/, or it proves nothing"
+rc=0
+clean37_push="$(git -C "$r37_g" push origin feature/clean-history 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a branch with no run state anywhere in its history must push normally (got: $clean37_push)"
+git -C "$r37_g" ls-remote --exit-code --heads "$remote37_g" feature/clean-history >/dev/null 2>&1 \
+  || fail "and it must actually have landed on the remote, not merely not-errored"
+green_case 'a branch with no .orchid/ anywhere in its history pushes exactly as it always did'
+
+# The same add-then-delete history, uploaded the Gerrit way. Submitting this
+# change puts those commits on the target branch just as a merge would, so the
+# leg has to read the magic ref's history and not only its tip.
+#
+# Deliberately asserted AFTER the successful push above, so this repository now
+# HAS a remote-tracking ref (`refs/remotes/origin/feature/clean-history`) --
+# just not one for this upload's target branch. That is what proves a review
+# upload's baseline is the target's tracking ref alone, rather than any
+# tracking ref that happens to exist: an unrelated ref must not excuse it, and
+# an unfetched target must fail closed.
+rc=0
+gstrip37="$(git -C "$r37_g" push origin "feature/stripped:refs/for/$g37_branch%topic=stripped" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a review upload whose history carries run state must be refused (got: $gstrip37)"
+assert_match "in the HISTORY this push publishes" "$gstrip37" "the history half reads the magic ref too"
+assert_match "review upload for branch .$g37_branch." "$gstrip37" \
+  "and still names the branch submitting it would land those commits on"
+grep -q "every later push of this ref is exempt" <<<"$gstrip37" \
+  && fail "a magic ref the remote never advertises still has no exemption to offer"
+red_case 'a Gerrit upload whose tip is clean but whose history adds .orchid/ is refused'
+
+# Its GREEN twin, with the same baseline in place: the clean-history branch
+# uploads for review and lands.
+rc=0
+gclean37="$(git -C "$r37_g" push origin "feature/clean-history:refs/for/$g37_branch%topic=clean-history" 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a clean-history review upload must push exactly as plain git does (got: $gclean37)"
+green_case 'a review upload with no .orchid/ anywhere in its history is untouched by the leg'
+
+# And the documented way through survives the history half unchanged: push it
+# once with the override, and every later push of that ref is exempt because
+# the commits are then part of what the remote already holds -- the same
+# deliberate-remote semantics the tip half has always had.
+rc=0
+ORCHID_ALLOW_PUSH=1 git -C "$r37_g" push origin feature/stripped >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "ORCHID_ALLOW_PUSH=1 must allow a deliberate push of a history-carrying branch"
+more37_wt="$W/r37-gerrit-more"
+git -C "$r37_g" worktree add -q "$more37_wt" feature/stripped
+printf 'more\n' > "$more37_wt/more.txt"
+git -C "$more37_wt" add more.txt
+git -C "$more37_wt" commit -q -m "further work on a branch the remote already holds those commits on"
+git -C "$r37_g" worktree remove --force "$more37_wt"
+rc=0
+again37="$(git -C "$r37_g" push origin feature/stripped 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a ref whose commits the remote ALREADY holds must push without the override (got: $again37)"
+green_case 'once pushed deliberately, a history-carrying ref is exempt on every later push'
+
+# ---------------------------------------------------------------------------
+# T037 -- THE OVERRIDE IS BOUND TO THE REF IT WAS SPENT ON.
+#
+# ORCHID_ALLOW_PUSH=1 says "publish THIS ref anyway". It is one operator, one
+# ref, one deliberate act -- a scratch branch, an archive, orchid's own
+# integration branch -- and the exemption it earns for later pushes has to stop
+# at that destination. Measure "already on the remote" against every tracking
+# ref of the remote instead, and a single override push turns into a permanent
+# repository-wide opt-out: the contaminated commits are parked under
+# `refs/remotes/origin/scratch`, and the identical history then walks onto the
+# product's `main` unrefused because the objects are already there under
+# another name. The objects being present is not the leak; being reachable from
+# `main` is, and that is exactly what the second push would do.
+#
+# The sequence is the one an operator actually performs: add-then-delete
+# history, override-push it to a scratch ref, fetch so the tracking ref is
+# really there, then push the SAME clean-tipped history at a brand-new `main`.
+#
+# RED (before this fix): the push to `main` succeeds, and the override the
+# operator spent on `scratch` is what let it through.
+# ---------------------------------------------------------------------------
+git -C "$r37_g" branch scratch/archive feature/stripped
+rc=0
+ORCHID_ALLOW_PUSH=1 git -C "$r37_g" push origin scratch/archive >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "fixture: the deliberate archive push must succeed under the override"
+git -C "$r37_g" fetch -q origin \
+  || fail "fixture: the fetch that materializes the tracking ref must succeed"
+# Both halves of the precondition, or the case proves nothing: the tracking ref
+# for the scratch destination must really hold the contaminated commits, and
+# the destination about to be pushed must be one the remote has never seen.
+[ -n "$(git -C "$r37_g" rev-list --full-history --max-count=1 refs/remotes/origin/scratch/archive -- .orchid)" ] \
+  || fail "fixture: refs/remotes/origin/scratch/archive must carry the run-state commits, or there is no loose baseline to be tempted by"
+git -C "$r37_g" ls-remote --exit-code --heads "$remote37_g" product/main >/dev/null 2>&1 \
+  && fail "fixture: the product branch must not exist on the remote yet, or its own remote sha would be the baseline"
+
+git -C "$r37_g" branch product/main feature/stripped
+rc=0
+bound37="$(git -C "$r37_g" push origin product/main 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "an override spent on one ref must not exempt the same history pushed at another (got: $bound37)"
+assert_match "in the HISTORY this push publishes" "$bound37" \
+  "and it is the history half speaking, since the tip of this ref is clean"
+git -C "$r37_g" ls-remote --exit-code --heads "$remote37_g" product/main >/dev/null 2>&1 \
+  && fail "and the refused ref must not have landed on the remote"
+red_case 'run state already on the remote under another ref does not exempt a push at a new one'
+
+# The GREEN twin, and the half that keeps the case above from passing for a leg
+# that simply ignores every baseline: a FURTHER push of the ref the override was
+# actually spent on still goes through, because that destination's own remote
+# copy already holds those commits.
+more37b_wt="$W/r37-gerrit-archive"
+git -C "$r37_g" worktree add -q "$more37b_wt" scratch/archive
+printf 'archived\n' > "$more37b_wt/archived.txt"
+git -C "$more37b_wt" add archived.txt
+git -C "$more37b_wt" commit -q -m "further work on the ref the override was spent on"
+git -C "$r37_g" worktree remove --force "$more37b_wt"
+rc=0
+again37b="$(git -C "$r37_g" push origin scratch/archive 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "the destination the override was spent on must stay exempt without it (got: $again37b)"
+green_case 'the ref an override was spent on stays exempt on its own later pushes'
+
+# ---------------------------------------------------------------------------
+# T037 -- THE CLEANUP PUSH IS THE ONE THE REFUSAL ASKS FOR.
+#
+# The history half asks about every commit a push makes newly reachable, and
+# the cheap way to ask it -- `rev-list -- .orchid` -- answers "did any of them
+# TOUCH the path". A deletion touches the path and publishes nothing. So on a
+# ref whose remote copy already carries run state (a repository that pushed it
+# once with the override, orchid's own among them), the single commit that
+# removes `.orchid/` going forward is refused for doing exactly what the
+# message asks, with no way through but the override that says "publish it".
+#
+# What must decide is each newly reachable commit's TREE: the deletion's is
+# clean, so this push introduces nothing the destination does not already hold.
+# Its twin below is the half that keeps this from being a blanket exemption.
+#
+# RED (before this fix): the cleanup push is refused, told that its history
+# publishes run state, and pointed at filter-repo to rebuild a branch whose
+# every `.orchid` object is already sitting on the remote it is pushing to.
+# ---------------------------------------------------------------------------
+git -C "$r37_g" branch deliberate/tracked orchid/integration
+rc=0
+ORCHID_ALLOW_PUSH=1 git -C "$r37_g" push origin deliberate/tracked >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "fixture: the deliberate publication of a run-state branch must succeed under the override"
+git -C "$r37_g" fetch -q origin || fail "fixture: the fetch materializing the tracking ref must succeed"
+[ -n "$(git -C "$r37_g" ls-tree refs/remotes/origin/deliberate/tracked -- .orchid)" ] \
+  || fail "fixture: the DESTINATION's remote copy must already carry .orchid/, or this is not the cleanup shape at all"
+
+# A sibling destination starts from the identical contaminated baseline. Its
+# suffix is deliberately NOT cleanup-only: one ordinary product commit first
+# inherits `.orchid/` without touching it, and only the following commit
+# deletes the path. A path-limited rev-list sees the deletion but skips the
+# inherited-state commit; testing the trees of only those returned commits then
+# waves the push through as though it were the immediate cleanup below.
+git -C "$r37_g" branch deliberate/inherited deliberate/tracked
+rc=0
+ORCHID_ALLOW_PUSH=1 git -C "$r37_g" push origin deliberate/inherited >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "fixture: the inherited-state destination must be seeded under the deliberate override"
+git -C "$r37_g" fetch -q origin || fail "fixture: the inherited destination's tracking ref must be materialized"
+[ -n "$(git -C "$r37_g" ls-tree refs/remotes/origin/deliberate/inherited -- .orchid)" ] \
+  || fail "fixture: the inherited-state destination baseline must carry .orchid/"
+
+inherit37_wt="$W/r37-gerrit-inherited"
+git -C "$r37_g" worktree add -q "$inherit37_wt" deliberate/inherited
+printf 'ordinary product work while run state remains\n' > "$inherit37_wt/product-after-leak.txt"
+git -C "$inherit37_wt" add product-after-leak.txt
+git -C "$inherit37_wt" commit -q -m "ordinary work while inherited run state remains"
+inherit37_commit="$(git -C "$inherit37_wt" rev-parse HEAD)"
+[ -n "$(git -C "$inherit37_wt" ls-tree "$inherit37_commit" -- .orchid)" ] \
+  || fail "fixture: the ordinary commit must inherit .orchid/ in its tree"
+[ -z "$(git -C "$inherit37_wt" diff-tree --no-commit-id --name-only -r "$inherit37_commit" -- .orchid)" ] \
+  || fail "fixture: the inherited-state commit must not touch .orchid/, or a path-limited walk would already see it"
+git -C "$inherit37_wt" rm -rq .orchid
+git -C "$inherit37_wt" commit -q -m "delete inherited run state before pushing"
+git -C "$r37_g" worktree remove --force "$inherit37_wt"
+[ -z "$(git -C "$r37_g" ls-tree deliberate/inherited -- .orchid)" ] \
+  || fail "fixture: the inherited-state branch tip must be clean, or this tests the tip leg"
+rc=0
+inherit37_out="$(git -C "$r37_g" push origin deliberate/inherited 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a newly reachable commit that inherits run state must be refused even when a later deletion cleans the tip (got: $inherit37_out)"
+assert_match "in the HISTORY this push publishes" "$inherit37_out" \
+  "and the history leg must name the clean-tip inherited-state refusal"
+red_case 'a commit that inherits run state without touching it is still refused before a later deletion'
+
+clean37_wt="$W/r37-gerrit-cleanup"
+git -C "$r37_g" worktree add -q "$clean37_wt" deliberate/tracked
+git -C "$clean37_wt" rm -rq .orchid
+git -C "$clean37_wt" commit -q -m "operator: stop carrying run state on this branch from here on"
+git -C "$r37_g" worktree remove --force "$clean37_wt"
+# Non-vacuity, both directions. The newly reachable set must TOUCH `.orchid`
+# (else the old touch-based walk would have passed it anyway and this case
+# proves nothing), and no commit in it may CARRY it (else the fix would be
+# waving through a real leak rather than a cleanup).
+[ -n "$(git -C "$r37_g" rev-list --full-history refs/remotes/origin/deliberate/tracked..deliberate/tracked -- .orchid)" ] \
+  || fail "fixture: the cleanup commit must touch .orchid/, or the refused-before shape is not reproduced"
+while IFS= read -r c37; do
+  [ -n "$c37" ] || continue
+  [ -z "$(git -C "$r37_g" ls-tree "$c37" -- .orchid)" ] \
+    || fail "fixture: no commit this push adds may carry .orchid/ in its tree, or it is a leak and must stay refused"
+done <<<"$(git -C "$r37_g" rev-list refs/remotes/origin/deliberate/tracked..deliberate/tracked)"
+rc=0
+cleanup37="$(git -C "$r37_g" push origin deliberate/tracked 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a deletion-only push at a destination whose remote copy already carries run state must go through (got: $cleanup37)"
+git -C "$r37_g" fetch -q origin || fail "fixture: the confirming fetch must succeed"
+[ -z "$(git -C "$r37_g" ls-tree refs/remotes/origin/deliberate/tracked -- .orchid)" ] \
+  || fail "and the cleanup must actually have landed, not merely not-errored"
+red_case 'a cleanup-only push where the remote copy already carries run state is no longer refused'
+
+# The GREEN twin, on the SAME ref: the allowance is about what a push
+# introduces, never about the ref having been forgiven once. Add `.orchid/`
+# back and delete it again, and the add-then-delete history is refused exactly
+# as it is on a virgin branch -- because one of the commits being sent carries
+# those files in its tree, whatever the commit after it does.
+recontam37_wt="$W/r37-gerrit-recontam"
+git -C "$r37_g" worktree add -q "$recontam37_wt" deliberate/tracked
+mkdir -p "$recontam37_wt/.orchid"
+printf 'journal: a new run, on a branch that was cleaned\n' > "$recontam37_wt/.orchid/journal.md"
+git -C "$recontam37_wt" add .orchid/journal.md
+git -C "$recontam37_wt" commit -q -m "run state back on the branch"
+git -C "$recontam37_wt" rm -rq .orchid
+git -C "$recontam37_wt" commit -q -m "and deleted again before pushing"
+git -C "$r37_g" worktree remove --force "$recontam37_wt"
+[ -z "$(git -C "$r37_g" ls-tree deliberate/tracked -- .orchid)" ] \
+  || fail "fixture: the tip must be clean, or this is the tip case and says nothing about the history walk"
+rc=0
+recontam37="$(git -C "$r37_g" push origin deliberate/tracked 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "an add-then-delete history must stay refused even on a ref whose earlier cleanup was allowed (got: $recontam37)"
+assert_match "in the HISTORY this push publishes" "$recontam37" \
+  "and it is the history half speaking, since this tip is clean too"
+green_case 'a cleanup allowance is not a ref-wide exemption: re-added run state is refused again'
+
+# ---------------------------------------------------------------------------
+# T037 -- THE WHOLE-HISTORY ANSWER IS BATCHED, NOT ONE GIT FORK PER COMMIT.
+#
+# Correctness requires inspecting every newly reachable commit tree, including
+# commits that inherit `.orchid/` without touching it. A literal loop around
+# `git ls-tree` gets the right answer and makes a new-branch push fork once for
+# every commit in the repository. The hook is installed by default, so that is
+# user-visible push latency rather than an offline verifier cost.
+#
+# Run the real rendered hook with a PATH shim that counts `git ls-tree` and
+# emulates an older Git by rejecting rev-list's post-2.30
+# `--no-commit-header`. The clean tip must still take the one explicit tip-tree
+# check; the historical query must add zero more because it is one rev-list ->
+# cat-file batch. This is non-vacuous in both directions: the per-commit
+# implementation called ls-tree once for each ancestor, while the first batch
+# implementation used the rejected newer flag and failed closed on this push.
+# ---------------------------------------------------------------------------
+batch_git37="$W/r37-counting-git"
+mkdir -p "$batch_git37"
+batch_count_file37="$W/r37-ls-tree-count"
+: > "$batch_count_file37"
+real_git37="$(command -v git)"
+cat > "$batch_git37/git" <<'COUNTING_GIT'
+#!/usr/bin/env bash
+if [ "${1:-}" = ls-tree ]; then
+  printf 'ls-tree\n' >> "$ORCHID_TEST_GIT_COUNT"
+fi
+for arg in "$@"; do
+  if [ "$arg" = --no-commit-header ]; then
+    printf 'error: unknown option no-commit-header (older-git fixture)\n' >&2
+    exit 129
+  fi
+done
+exec "$ORCHID_TEST_REAL_GIT" "$@"
+COUNTING_GIT
+chmod +x "$batch_git37/git"
+
+batch_hook37="$(git -C "$r37_g" rev-parse --git-path hooks/pre-push)"
+case "$batch_hook37" in /*) ;; *) batch_hook37="$r37_g/$batch_hook37" ;; esac
+[ -x "$batch_hook37" ] || fail "fixture: the rendered pre-push hook must be executable for the batch query check"
+batch_tip37="$(git -C "$r37_g" rev-parse feature/clean-history)"
+rc=0
+batch_out37="$(
+  cd "$r37_g"
+  printf 'refs/heads/feature/batch-clean %s refs/heads/feature/batch-clean 0000000000000000000000000000000000000000\n' "$batch_tip37" \
+    | PATH="$batch_git37:$PATH" \
+      ORCHID_TEST_GIT_COUNT="$batch_count_file37" \
+      ORCHID_TEST_REAL_GIT="$real_git37" \
+      "$batch_hook37" origin "$remote37_g" 2>&1
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a truly clean new-branch history must pass the batched guard (got: $batch_out37)"
+batch_count37="$(wc -l < "$batch_count_file37" | tr -d '[:space:]')"
+assert_eq "1" "$batch_count37" \
+  "the clean-tip check is the only ls-tree fork; history is resolved by one batch rather than one fork per commit"
+red_case 'the all-commit history check is batched instead of forking ls-tree per commit'
+green_case 'the batched history check does not require git rev-list --no-commit-header'
+
 # ===========================================================================
 # 5 -- worktrees: create at an explicit path, reuse only an EXACT integration
 # checkout, never adopt or overwrite anything else.
@@ -587,6 +1800,8 @@ assert_match "never guesses a verification command" "$help_out" "help states the
 # read as an option instead.
 assert_match "[-]-ack-unattended" "$help_out" "help documents the unattended opt-in"
 assert_match "[-]-worktree" "$help_out" "help documents the worktree option"
+assert_match "[-]-refresh-push-guard" "$help_out" \
+  "help documents the maintenance route, so the upgrade command an operator needs is discoverable from the verb itself"
 
 assert_match "start" "$("$ORCHID_BIN" help)" "the dispatcher lists the new verb"
 

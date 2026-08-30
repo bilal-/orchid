@@ -2061,12 +2061,128 @@ The boundary has five distinct layers; none should be described as another:
 **Defense in depth (v1-m4 — SHIPPED):** `orchid init` installs a pre-push
 hook (`templates/pre-push.sh`,
 `push_guard` config, default true; never overwrites a pre-existing user
-hook) refusing any push whose destination ref is a task branch or the
+hook, and — T037 — `orchid start` UPGRADES one orchid itself installed, since
+init runs once per repository and an upgrade no existing repository can reach
+is not one) refusing any push whose destination ref is a task branch or the
 integration branch (the name baked in at install time, not read from
 `orchid.config` at push time, since a task worktree has no `orchid.config`
 at all), overridable per-push via `ORCHID_ALLOW_PUSH=1` — a backstop for
 when the no-external-mutation policy above is violated anyway, not a
-replacement for it.
+replacement for it. Because setup refuses a run that has left `planning`,
+that upgrade path stops at the door of the repositories most likely to need
+it, so `orchid start --refresh-push-guard` is the explicit, idempotent
+maintenance route: it installs the guard at any `run_status`, moves no
+branch, writes no run state and takes no lock, and it is a distinct
+invocation rather than a side effect of a setup call that then refuses — a
+mutation nobody can name is a mutation nobody can audit. All three callers
+install, inspect and report the hook at the path **git** resolves (`git
+rev-parse --git-path hooks/pre-push`: a repo-contained absolute
+`core.hooksPath`, and a linked worktree's shared hooks directory), never at a
+derived `.git/hooks`, because an inert file at a path git does not read is
+worse than no file — it reads as protection. By the same rule two
+`core.hooksPath` shapes are UNSUPPORTED for this guard rather than
+half-installed. A **relative** value: git resolves it against each worktree's
+own top level, so one setting names a different file in every checkout, and
+orchid gives the integration branch and each task a linked worktree of its
+own — installing into the one checkout a process can see and reporting it
+would be the same false protection in a new place. An **absolute** value whose
+directory is not inside this repository's git COMMON directory: an absolute
+path says nothing about whose directory it is, and a shared one (`~/.githooks`,
+a team mount, a `--global` setting) is read by every repository on the machine,
+so a guard written there carries this repository's baked-in integration branch
+into pushes orchid was never pointed at and collides with whatever another
+repository installed — orchid's own never-overwrite rule cannot help, since
+the hook it wrote for one repository is recognized as its own in the next.
+Both doors warn (naming the risk and both recoveries: an absolute directory
+inside this repository's git dir, or unset), the explicit
+refresh exits non-zero, nothing is written, and no output says `installed`
+or `current`. The setting is the operator's and is never rewritten, on the
+same principle that refuses to force-commit an ignored `orchid.config`.
+Executability is part of "installed", not a detail of it: git silently runs
+nothing when a hook is not executable, so a byte-current guard with the
+execute bit off is repaired in place and reported as `repaired`, and a
+`chmod` that fails is reported as a failure rather than as an install.
+
+**Run-state containment (T037 — SHIPPED):** committing `.orchid/` is what
+makes a run durable, and it is also what lets a run's bookkeeping ride the
+merge chain — integration branch → feature branch → `main` — into a
+product's history, where a large diff makes it read as tooling. Two guards,
+because the kernel never performs the merge that leaks it and never may:
+
+- The same pre-push hook additionally refuses a push of any **other branch**
+  (`refs/heads/*`, checked only after the name-based leg above) that would
+  publish `.orchid/` where the remote does not already have it — carried on
+  the tip, or carried by any commit the push makes **newly reachable**. The
+  history half is not redundancy: a push sends commits, not a tree, so `git rm
+  -r .orchid && git commit` leaves a clean tip over a history that still
+  publishes every file, which is the shape a tip-only test waves through.
+  "Newly reachable" is measured against **the destination ref and nothing
+  else** — for an ordinary branch, the remote's own copy of the ref being
+  pushed (the sha git hands the hook); for a Gerrit upload, where that sha is
+  all zeros by construction, the remote-tracking ref of the target branch when
+  it is present locally, and otherwise no baseline at all, which walks the
+  whole history and fails closed. No other remote-tracking ref stands in:
+  `ORCHID_ALLOW_PUSH=1` is a deliberate publication of ONE ref, and a baseline
+  spanning the remote at large would let one override push park the
+  contaminated commits on a scratch ref and every later push of that identical
+  history walk onto `main` unrefused. What the walk asks of each newly
+  reachable commit is whether its **tree carries** `.orchid`, not whether the
+  commit touched the path: a deletion commit touches it and publishes nothing,
+  so a ref whose remote copy already holds run state can be cleaned up by
+  exactly the commit the refusal asks for, while an add-then-delete history
+  still fails on the commit that added the files. The two readings differ only
+  where the parent of a clean-tree commit is itself in the baseline — where
+  the remote already holds those objects on this destination. Push is the
+  chokepoint rather than merge, because a squash, a cherry-pick or a rebase
+  carries the files across without a merge commit, and a hosted merge request
+  is merged where no local hook runs at all. A branch whose remote copy already tracks run state is
+  exempt, so a deliberately self-hosted repository is asked once and never
+  again — one `ORCHID_ALLOW_PUSH=1` push puts those commits on the remote, and
+  every later push of that ref is then exempt by the same baseline. Gerrit's
+  `refs/for/<branch>` — either spelling, with or without a `%…` push-option
+  suffix — is BRANCH-BOUND and is checked as a branch: on a Gerrit-hosted
+  project the review upload *is* the push, and the change is submitted onto
+  that branch on the forge where no local hook runs, so reading it as "some
+  other ref" would let the whole leak past on that entire class of
+  repository. It fails closed, because the remote never advertises a
+  `refs/for/…` ref and there is therefore no remote copy that could ever
+  exempt it; the refusal says so rather than offering the push-once recovery
+  the branch leg offers. Otherwise scoped to branches, because the leak is a
+  merge-chain leak: a tag or a note names a commit whose branch this leg has
+  already judged, so refusing it would decide nothing and break a release tag
+  cut over any history containing run state. Non-branch, non-review refs push
+  exactly as plain git.
+- `orchid merge` **warns** (stderr, never refuses) when any local branch
+  outside the run — not the integration branch, not a branch recorded on a
+  task, including an **archived** run's tasks under `runs/<run_id>/tasks/`,
+  since `orchid run new` retires a task record but never deletes its branch
+  — carries `.orchid/` in its **tree or in its history**, naming the branch.
+  The history half is the same fact as the hook's: a deletion commit hides
+  the paths from a tree test while every file stays in what the branch
+  publishes. Membership is read from those records, never from the branch's
+  name. The one repository exempt outright is the **self-hosted** one, where
+  `ORCHID_ROOT` and the target repository resolve to the same physical
+  checkout — orchid's own run state on orchid's own branches, where the
+  warning would otherwise fire on every merge forever and train the operator
+  to ignore it. That is decided by path identity alone: never by the
+  repository's name, and never by `.orchid/` already sitting on a product
+  branch, which is the leak rather than consent to it. It does not refuse
+  because the condition is created by an operator's own merge, on branches
+  the kernel does not own and cannot undo; freezing a task in `merging`
+  behind a report would be worse than reporting.
+
+The staging side of the same finding: `orchid init`, `orchid plan apply`
+(via `orchid_commit_durable`) and `orchid run new` stage run state with `git
+add -f`, so an operator who excludes `.orchid/` in `.gitignore` still gets a
+working run instead of git's raw ignored-pathspec error. `orchid.config` is
+deliberately NOT force-staged (`orchid start` refuses with an actionable
+message instead): it is the operator's own file and whether repository
+configuration belongs in history is their call, whereas run state is
+orchid's own and a run whose state is uncommitted does not survive a fresh
+checkout. Because `-f` also overrides the `.orchid/runtime/` ignore line,
+every one of those staging sites carries an explicit
+`:(exclude).orchid/runtime` pathspec — the exclusion, not the ignore rule,
+is what keeps the lock, the epoch and `lease.json` out of a durable commit.
 
 ## Glossary (one sentence each; forbidden confusions marked ✗)
 

@@ -551,7 +551,15 @@ case "$sub" in
       "run rollover: $old_run_id archived to runs/$old_run_id/ -> $new_run_id: $reason"
     rm -rf "$wt_state/runtime"
 
-    git -C "$wt" add .orchid
+    # `-f`, for the same reason orchid_commit_durable stages run state that
+    # way (T037): a rollover must not be the verb that dies because the
+    # operator's .gitignore excludes `.orchid/`. See lib/common.sh for why
+    # run state and orchid.config are answered differently -- and for why the
+    # `runtime/` exclusion travels with the `-f` rather than being left to the
+    # ignore rule that `-f` has just switched off. The `rm -rf` above already
+    # removed the throwaway runtime dir this arm minted for its nested
+    # `journal add`; this says so to git as well.
+    git -C "$wt" add -f -- .orchid ':(exclude).orchid/runtime'
     if git -C "$wt" diff --cached --quiet -- .orchid; then
       orchid_die "nothing to roll over"
     fi
