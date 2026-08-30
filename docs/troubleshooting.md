@@ -184,6 +184,25 @@ schedule is still installed when it returns, and those records are the only
 things naming it, so deleting them for a preview would leave exactly the
 leftover this page is about. Re-run without `--dry-run` to actually end it.
 
+**`uninstall` can refuse because the unload failed.** On macOS it removes the
+plist and clears the binding only once launchd has actually let go of the job.
+If `launchctl unload` fails and `launchctl list` still reports the label,
+nothing is removed and the verb refuses:
+
+```
+orchid: refusing to remove anything for /path/to/repo (label com.orchid.pump.<hash>):
+  'launchctl unload' failed and launchd still reports that job as loaded
+orchid: ... both are left exactly as they were
+orchid: unload it by hand, then re-run: launchctl unload <plist> && orchid service uninstall --repo /path/to/repo
+```
+
+Removing them anyway would be the same leftover reached from the other end: the
+plist is the only path an unload can name that agent by, and the binding is the
+only thing that names the schedule at all. Do what the last line says, then
+re-run the uninstall — it is idempotent. A failed unload with **no** job behind
+it (a plist `install` placed but never loaded) is not this case: uninstall
+clears it normally.
+
 ## The pump woke an orchestrator over and over and nothing moved
 
 **Symptom:** `pump.log` shows repeated hand-offs to an orchestrator for the

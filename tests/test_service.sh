@@ -44,6 +44,20 @@ svc_uninstall_real() {
   ORCHID_SERVICE_DEBUG_SCHEDULER_LOG="$SCHED_LOG" "$SERVICE" uninstall "$@"
 }
 
+# The same real uninstall, with the stubbed scheduler call MADE TO FAIL.
+# A stub that can only succeed cannot reach the arm that matters most -- what
+# uninstall does when `launchctl unload` returns nonzero -- and that arm is the
+# one deciding whether the plist and the binding record survive. $1 is an ERE
+# matched against the quoted command line, so a caller can fail the unload
+# alone (launchd still holds the job) or the unload and the `list` together
+# (nothing was ever loaded). See K7.
+svc_uninstall_failing() {
+  local fail_re="$1"; shift
+  : > "$SCHED_LOG"
+  ORCHID_SERVICE_DEBUG_SCHEDULER_LOG="$SCHED_LOG" \
+  ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL="$fail_re" "$SERVICE" uninstall "$@"
+}
+
 # $WORK (from mktemp -d) commonly has a symlinked component on macOS
 # (/var/folders/... -> /private/var/folders/...) -- the service always
 # hashes/bakes in the CANONICAL, physically-resolved repo path (the brief's
@@ -1086,6 +1100,69 @@ rc=0
 orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "and the checkout is removable again -- the guard cannot be left armed by a record no verb could clear"
 green_case "uninstall clears a binding record whose scheduler artifact never landed"
+
+# -- K7: a failed unload removes nothing ----------------------------------
+# The same finding as K5, reached from the far end of the lifetime. K5 is about
+# an install that cannot record its binding; this is about an UNINSTALL whose
+# `launchctl unload` fails. The removals immediately after it are the plist --
+# the only path an unload can name that agent by -- and the binding record, the
+# only thing on this machine that names the schedule at all. Performed while
+# the job is still loaded, they manufacture precisely the leftover this whole
+# section exists to prevent, and report success while doing it: the guard stops
+# refusing, `orchid doctor` has nothing left to see, and the agent keeps firing.
+#
+# The unload is failed through the scheduler stub (svc_uninstall_failing) --
+# the system call is the only stubbed thing; every removal, record and refusal
+# around it is the real one.
+reinst2_out="$("$SERVICE" install --repo "$BIND_REPO" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the failed-unload fixture re-installs a schedule first (out: $reinst2_out)"
+bind_plist="$HOME/Library/LaunchAgents/$bind_label.plist"
+[ -f "$bind_plist" ] || fail "fixture: the re-install must have placed the plist"
+[ -f "$bind_rec" ] || fail "fixture: the re-install must have written the repo-local binding"
+[ -f "$bind_mrec" ] || fail "fixture: the re-install must have written the machine-local binding"
+
+rc=0
+stuck_out="$(svc_uninstall_failing 'launchctl unload' --repo "$BIND_REPO" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "an uninstall whose unload failed while launchd still holds the job must refuse, not report success (out: $stuck_out)"
+assert_match 'still reports that job as loaded' "$stuck_out" \
+  "and says why it refused -- the unload failed AND the agent is still there, which are two facts, not one"
+assert_match 'left exactly as they were' "$stuck_out" \
+  "and states that it changed nothing, so the operator is not left guessing how far it got"
+assert_match 'unload it by hand' "$stuck_out" "and names the hand step that unblocks it"
+assert_match 'service uninstall --repo' "$stuck_out" "and the uninstall to re-run afterwards"
+[ -f "$bind_plist" ] \
+  || fail "a refused uninstall must NOT remove the plist: it is the only path anything can unload that still-loaded agent by"
+[ -f "$bind_rec" ] \
+  || fail "and must NOT clear the repo-local binding: it is what keeps the removal guard refusing this checkout"
+[ -f "$bind_mrec" ] \
+  || fail "and must NOT clear the machine-local binding: it is the only thing that could name the schedule once the checkout is gone"
+rc=0
+orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "and the checkout must still be refused for removal -- a failed uninstall that unwedged the guard would be the worst of both"
+assert_match 'launchctl list' "$(cat "$SCHED_LOG")" \
+  "the refusal is decided by asking launchd whether the job is still there, never by the unload's exit status alone"
+red_case "an uninstall whose launchctl unload failed leaves the schedule nameable and the checkout guarded"
+
+# GREEN, and the reason the exit status alone could not have decided it: an
+# unload of a plist that was never loaded fails too. `install` writes the plist
+# before loading it, so anything failing in between leaves one -- an ordinary
+# state uninstall must still clear. Here BOTH stubbed calls fail, which is what
+# launchd reports when it holds no such job, and the removals proceed.
+rc=0
+never_out="$(svc_uninstall_failing 'launchctl (unload|list)' --repo "$BIND_REPO" 2>&1)" || rc=$?
+assert_eq 0 "$rc" \
+  "an unload that failed because nothing was ever loaded still clears the records (out: $never_out)"
+assert_match 'is now safe to remove' "$never_out" \
+  "and reaches the same conclusion an ordinary uninstall does"
+[ -f "$bind_plist" ] && fail "the plist must be gone: launchd holds no job that needed it"
+[ -f "$bind_rec" ] && fail "and so must the repo-local binding"
+[ -f "$bind_mrec" ] && fail "and its machine-local copy"
+rc=0
+orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "and the checkout is removable again"
+green_case "a failed unload with no job behind it is the never-loaded case, and still clears the binding"
 
 # The linux/cron branch keeps its own binding record too -- the record is not
 # a launchd-only affordance, and the cron record it points at lives inside the

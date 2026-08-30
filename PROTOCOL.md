@@ -3393,6 +3393,14 @@ Once `orchid status --explain` shows every task `done`:
    SCHEDULED wake sends them to the scheduler's `/dev/null` and the arm exits
    0 — `orchid doctor` warns about the same binding, from the machine-local
    copy, and is the surface that actually reaches an operator here.
+   The verb removes the plist and clears the binding only once the scheduler
+   has actually let the job go: on macOS, a `launchctl unload` that fails while
+   `launchctl list` still reports the label removes NOTHING and refuses, naming
+   the hand unload to run first. Removing them anyway would leave a loaded
+   agent with no plist to unload it by and no record naming it — the same
+   leftover this step exists to prevent, reached from the other end. A failed
+   unload with no job behind it (a plist `install` placed but never loaded) is
+   the ordinary case and is cleared normally.
 
 **TEARDOWN ORDERING.** When the run is over and you are removing the
 integration worktree, the order is not interchangeable:

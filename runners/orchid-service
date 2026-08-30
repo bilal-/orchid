@@ -97,6 +97,9 @@ a crontab line.
                line), and clear the binding record. idempotent: refuses
                cleanly (a plain message, no launchctl/crontab touched) when
                nothing is installed for --repo -- safe to call blind.
+               removes nothing, and refuses, when the scheduler could not
+               unload an agent it still reports as loaded: the plist and
+               the binding are all that could ever name it again.
                under --dry-run it removes NOTHING and prints what it would
                remove: the schedule is still running, and the records it
                would delete are the only things that name it.
@@ -193,10 +196,31 @@ _svc_dryprint() { echo "DRY-RUN: $(_svc_quote_cmd "$@")"; }
 # real crontab -- would have no way left to exercise removal at all. This seam
 # stubs exactly one system call and leaves every removal, record and refusal it
 # is guarding real.
+#
+# ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL is the second half of the same seam, and
+# it exists because a stub that can only SUCCEED cannot reach the arm that
+# matters most: what a real uninstall does when `launchctl unload` FAILS (see
+# _svc_unload_darwin). It is an ERE matched against the quoted command line; a
+# stubbed call that matches returns 1 instead of 0, and is still logged, so a
+# test can fail the unload alone (launchd still reports the job -- the
+# dangerous case) or the unload and the `list` together (nothing was loaded --
+# the ordinary case). Ignored entirely unless the log seam above is set.
+#
+# A herestring, not `_svc_quote_cmd "$@" | grep -q`: this file runs under
+# `pipefail`, and `grep -q` exits the moment it matches, so a producer still
+# writing could take a SIGPIPE and hand the pipeline a nonzero status on the
+# very input that MATCHED -- inverting the answer.
+_svc_scheduler_stub_fails() {
+  [ -n "${ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL:-}" ] || return 1
+  local cmd; cmd="$(_svc_quote_cmd "$@")"
+  grep -qE "$ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL" <<<"$cmd"
+}
 _svc_scheduler_exec() {
+  local rc=0
   if [ -n "${ORCHID_SERVICE_DEBUG_SCHEDULER_LOG:-}" ]; then
     _svc_quote_cmd "$@" >> "$ORCHID_SERVICE_DEBUG_SCHEDULER_LOG"
-    return 0
+    _svc_scheduler_stub_fails "$@" && rc=1
+    return "$rc"
   fi
   "$@"
 }
@@ -422,6 +446,45 @@ _svc_print_log_tail() {
 # darwin (launchd)
 # ---------------------------------------------------------------------------
 
+# _svc_unload_darwin <repo> <label> <plist> -- run the unload a real uninstall
+# needs, and answer whether the removals after it may proceed. Returns 0 to
+# proceed; refuses, changing nothing, otherwise.
+#
+# WHY THIS IS NOT `|| true`. An earlier revision swallowed a failed `launchctl
+# unload` and went straight on to `rm -f` the plist and clear the binding. That
+# is this task's own finding arrived at from the other side: with the unload
+# having failed the agent is STILL LOADED, and the two things removed next are
+# the only path an unload can name it by and the only record on this machine
+# that names the schedule at all. What is left behind is a live launchd job, a
+# removal guard that now waves the checkout through, and an `orchid doctor`
+# with nothing to report -- the invisible leftover, minted by the verb whose
+# entire purpose is to prevent it, and reported to the operator as success.
+#
+# BUT A FAILED UNLOAD IS NOT THE SAME FACT AS A LOADED AGENT, and refusing on
+# the exit status alone would wedge an ordinary state. `install` writes the
+# plist BEFORE it loads it, so anything that failed in between leaves a plist
+# launchd never knew about, and `launchctl unload` fails for exactly that too
+# -- the state `uninstall` most needs to be able to clear. The two are told
+# apart by asking launchd itself: `launchctl list <label>` succeeds only for a
+# job it currently holds. Asked ONLY after a failure, so the ordinary path
+# makes no extra system call and behaves precisely as it did before.
+#
+# THE LINUX BRANCH NEEDS NO EQUIVALENT: `_svc_uninstall_linux` runs its crontab
+# pipeline without `|| true`, so under this file's `set -e` a failed rewrite
+# aborts before the record and the binding are touched -- the same conservative
+# residue, reached by the shell rather than by hand.
+_svc_unload_darwin() {
+  local repo="$1" label="$2" plist="$3" err=""
+  err="$(_svc_scheduler_exec launchctl unload "$plist" 2>&1)" && return 0
+  # `list` nonzero means launchd holds no job under this label, so the failure
+  # above was the never-loaded case and the removals after it are safe.
+  _svc_scheduler_exec launchctl list "$label" >/dev/null 2>&1 || return 0
+  [ -z "$err" ] || echo "orchid: launchctl: $err" >&2
+  echo "orchid: refusing to remove anything for $repo (label $label): 'launchctl unload' failed and launchd still reports that job as loaded" >&2
+  echo "orchid: the plist is the only path an unload can name that agent by, and the binding record is the only thing that names the schedule at all — both are left exactly as they were" >&2
+  orchid_die "unload it by hand, then re-run: launchctl unload $(printf '%q' "$plist") && $(orchid_service_uninstall_command "$repo")"
+}
+
 _svc_install_darwin() {
   local repo="$1" interval_s="$2" dry="$3"
   local label; label="$(_svc_label "$repo")"
@@ -461,6 +524,12 @@ _svc_install_darwin() {
   # an error) before loading the freshly-rendered file, so a second `install`
   # for the same repo replaces the running schedule in place rather than
   # erroring "already loaded" or silently leaving the old copy active.
+  #
+  # `|| true` is right HERE and wrong in uninstall, and the asymmetry is the
+  # whole of _svc_unload_darwin's header: this path removes nothing and ends
+  # with a `launchctl load` of a plist that is still on disk under a binding
+  # that still names it, so a swallowed failure leaves the schedule findable.
+  # Uninstall's next two statements delete exactly those two things.
   if [ "$existed" -eq 1 ]; then
     if [ "$dry" -eq 1 ]; then _svc_dryprint launchctl unload "$plist_path"
     else _svc_scheduler_exec launchctl unload "$plist_path" >/dev/null 2>&1 || true
@@ -503,7 +572,10 @@ _svc_uninstall_darwin() {
   elif [ "$dry" -eq 1 ]; then
     _svc_dryprint launchctl unload "$plist_path"
   else
-    _svc_scheduler_exec launchctl unload "$plist_path" >/dev/null 2>&1 || true
+    # Not `|| true`: a failed unload may mean the agent is still loaded, and
+    # the two removals below are the only things that can ever name it again.
+    # See _svc_unload_darwin's own header.
+    _svc_unload_darwin "$repo" "$label" "$plist_path"
   fi
   # THE DRY RUN STOPS HERE, holding everything. `launchctl unload` was printed
   # rather than run, so the agent is still loaded -- and the plist below is the

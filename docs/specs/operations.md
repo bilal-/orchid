@@ -352,7 +352,11 @@ this section false without touching a byte of it.
    repository is gone under a surviving directory, one whose run has already
    reached a terminal state, and one whose run is parked in `accepting`. A
    schedule that has actually woken and refused says so there too, from a note
-   the pump leaves beside that same record. Doctor is the
+   the pump leaves beside that same record. `uninstall` removes the scheduler
+   artifact and clears the binding only once the scheduler has let the job go:
+   a macOS unload that fails while `launchctl list` still reports the label
+   removes nothing and refuses, since the artifact and the record are the only
+   things that could name the still-loaded agent afterwards. Doctor is the
    surface that reaches an operator here: the pump says the same thing on every
    wake, but it says it before the repo-local service log is opened (nothing
    may open a path inside the target ahead of the unattended trust gate), so a
