@@ -1160,7 +1160,7 @@ assert_match 'is now safe to remove' "$bind_uninstall" \
 [ -f "$bind_rec" ] && fail "uninstall must remove the repo-local binding record"
 [ -f "$bind_mrec" ] && fail "uninstall must remove the machine-local binding record"
 rc=0
-guard_after="$(orchid_service_removal_guard "$BIND_REPO" 2>&1)" || rc=$?
+orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "and the removal guard lets the checkout go once the schedule is gone"
 green_case "a checkout whose schedule has been uninstalled passes the removal guard"
 
@@ -1667,7 +1667,7 @@ assert_eq linux "$(jq -r '.platform' "$LBIND/.orchid/runtime/service.json")" \
 [ -f "$HOME/.orchid/services/$lbind_label.json" ] \
   || fail "the cron branch must write the machine-local binding too"
 rc=0
-lguard="$(orchid_service_removal_guard "$LBIND" 2>&1)" || rc=$?
+orchid_service_removal_guard "$LBIND" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "a cron-scheduled checkout is no more removable than a launchd-scheduled one"
 svc_uninstall_real --repo "$LBIND" >/dev/null 2>&1
 [ -f "$LBIND/.orchid/runtime/service.json" ] \

@@ -2060,12 +2060,16 @@ orchid_service_binding_field() {
 # reads them. They are marked at BOTH ends because ShellCheck reports an unused name
 # once, at a single one of its assignments, and every one of these names is assigned
 # both at its declaration and again in each of the resolver's arms.
+# ShellCheck rationale: this public result is read by runners/orchid-service after sourcing this library.
 # shellcheck disable=SC2034
 ORCHID_SERVICE_ID_LABEL=""
+# ShellCheck rationale: this public result is read by runners/orchid-service after sourcing this library.
 # shellcheck disable=SC2034
 ORCHID_SERVICE_ID_ARTIFACT=""
+# ShellCheck rationale: this public result is read by runners/orchid-service after sourcing this library.
 # shellcheck disable=SC2034
 ORCHID_SERVICE_ID_PLATFORM=""
+# ShellCheck rationale: this public result is read by runners/orchid-service after sourcing this library.
 # shellcheck disable=SC2034
 ORCHID_SERVICE_ID_SOURCE=""
 # The checkout path the resolved binding says it was INSTALLED AGAINST. Not one
@@ -2073,12 +2077,14 @@ ORCHID_SERVICE_ID_SOURCE=""
 # orchid_service_binding_owned below is asked of, and it is exposed rather than
 # re-read because the caller must not open the record a second time and get a
 # different answer from the one this resolution was made on.
+# ShellCheck rationale: this public result is read by runners/orchid-service after sourcing this library.
 # shellcheck disable=SC2034
 ORCHID_SERVICE_ID_REPO=""
 # WHY a record was rejected as something install could not have written -- one
 # sentence naming the field, the value and the record it came from. The caller
 # prints it above its own refusal: "this record is not usable" is not actionable
 # on its own, and the recovery (repair or delete that file) needs the path.
+# ShellCheck rationale: this public result is read by runners/orchid-service after sourcing this library.
 # shellcheck disable=SC2034
 ORCHID_SERVICE_ID_REJECTED=""
 
@@ -2201,6 +2207,7 @@ _orchid_service_record_usable() {
 # ShellCheck rationale: every ORCHID_SERVICE_ID_* assignment below writes one of the
 # public results declared above, which this file never reads. See their declaration
 # for why the SC2034 directive is at both ends rather than on one assignment.
+# ShellCheck rationale: assignments in this resolver publish results consumed by runners/orchid-service.
 # shellcheck disable=SC2034
 orchid_service_identity() {
   local repo="$1" rrec mrec="" rlabel="" mlabel="" k a b rart="" rplat="" rrepo=""
