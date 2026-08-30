@@ -1247,6 +1247,26 @@ orchid_service_machine_dir() {
   echo "$HOME/.orchid/services"
 }
 
+# orchid_service_machine_record <label> -- where that half lives, nonzero when
+# there is no machine-local store at all (see the accessor above). The
+# counterpart of orchid_service_repo_record, and introduced for the same reason
+# that one exists: the writer, `uninstall`'s removal, and the presence test all
+# have to name this file, and a second literal `$mdir/$label.json` spelled out
+# beside them is where one of them goes quietly blind the day the record moves.
+orchid_service_machine_record() {
+  local mdir; mdir="$(orchid_service_machine_dir)" || return 1
+  echo "$mdir/$1.json"
+}
+
+# orchid_service_machine_bound <label> -- 0 iff the machine-local half of that
+# binding is on disk. The counterpart of orchid_service_bound, and the same
+# plain `-f`: this is the test orchid_service_bindings applies to every entry
+# it walks, so anything that walk would skip is not a binding here either.
+orchid_service_machine_bound() {
+  local f; f="$(orchid_service_machine_record "$1")" || return 1
+  [ -f "$f" ]
+}
+
 # orchid_service_uninstall_command <repo> -- the exact command that reverses
 # an install for <repo>, shell-quoted so an operator can paste it verbatim
 # even when the path contains a space. Centralized because refusals, warnings
@@ -1265,12 +1285,16 @@ orchid_service_uninstall_command() {
 # is deliberately strict about.
 #
 # THE INVARIANT IS STATED IN THE READERS' TERMS, NOT THIS FUNCTION'S: a 0 from
-# here means orchid_service_bound will answer yes for <repo>. Returning 0 while
-# that predicate answers no is the one outcome the whole binding exists to
-# prevent -- it is a live schedule the removal guard waves the checkout through
-# -- so both the obstruction check before the first byte and the postcondition
-# after the commit ask that exact predicate rather than trusting a syscall's
-# exit status to imply it.
+# here means orchid_service_bound answers yes for <repo> AND, wherever a
+# machine-local store resolves at all, orchid_service_machine_bound answers yes
+# for <label>. Returning 0 while either predicate answers no is the outcome the
+# whole binding exists to prevent -- the first is a live schedule the removal
+# guard waves the checkout through, the second is a live schedule with nothing
+# left to name it once that checkout goes -- so for EACH destination both the
+# obstruction check before the first byte and the postcondition after its commit
+# ask that exact predicate rather than trusting a syscall's exit status to imply
+# it. `mv` is the reason: it reports success while depositing a file INSIDE a
+# directory standing where the record belongs, at either path.
 #
 # WHY BOTH ARE REQUIRED. An earlier revision made the machine-local copy best
 # effort, on the reasoning that the schedule is installed either way. That has
@@ -1295,9 +1319,14 @@ orchid_service_uninstall_command() {
 # install; uninstall reverses both in the mirror order.
 orchid_service_binding_write() {
   local repo="$1" label="$2" plat="$3" artifact="$4" interval="$5"
-  local rec rtmp mdir mrec="" mtmp="" stamp
+  local rec rtmp mrec="" mtmp="" stamp
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   rec="$(orchid_service_repo_record "$repo")"
+  # BOTH destinations are resolved before anything is written, because both are
+  # obstruction-checked below and that check has to happen before the first
+  # byte. Empty is the one accepted "there is no machine-local store" answer (an
+  # unresolvable HOME); the staging block below skips that half accordingly.
+  mrec="$(orchid_service_machine_record "$label")" || mrec=""
   mkdir -p "$(dirname "$rec")" || return 1
   # FAIL CLOSED WHEN THE RECORD PATH IS OBSTRUCTED BY A NON-REGULAR FILE, and
   # a DIRECTORY there is the case that matters. `mv file dir` does not fail --
@@ -1325,6 +1354,25 @@ orchid_service_binding_write() {
     echo "orchid: $rec is not a regular file — a binding recorded there would be invisible to every removal guard" >&2
     return 1
   fi
+  # THE SAME RULE FOR THE OTHER DESTINATION, because `mv file dir` behaves the
+  # same way at $mrec and because the two halves answer different questions: an
+  # obstruction here is invisible to a DIFFERENT set of readers, not to fewer.
+  # The machine-local copy is the one that outlives the checkout, so if it is
+  # not a file orchid_service_bindings will walk, then once the worktree is
+  # removed there is nothing anywhere naming the schedule -- `orchid doctor` has
+  # no binding to report and `orchid service uninstall` has no label to take.
+  # That is this task's original finding exactly: an agent waking on its
+  # interval against a deleted path, with no record left to name it.
+  #
+  # Refused BEFORE the repo-local temp is produced, not between the two commits,
+  # so the outcome is a failed install with nothing on disk at all rather than
+  # the conservative residue the commit block settles for. Nothing has been
+  # written and the caller has not reached the scheduler, which is the cheapest
+  # possible place to fail.
+  if [ -n "$mrec" ] && [ -e "$mrec" ] && [ ! -f "$mrec" ]; then
+    echo "orchid: $mrec is not a regular file — a binding recorded there could not name this schedule once the checkout is gone" >&2
+    return 1
+  fi
   # Temp-then-rename by hand rather than `jq ... | atomic_write`: a producer
   # that dies mid-pipe still lands its (empty) output through a pipeline, and
   # a zero-byte service.json reads to every consumer below as "a service IS
@@ -1346,10 +1394,9 @@ orchid_service_binding_write() {
   # no machine-local store to write to, and refusing would break a cron install
   # in an environment that never had one. Everything else -- an unwritable
   # store, a failed copy -- aborts.
-  if mdir="$(orchid_service_machine_dir)"; then
-    mrec="$mdir/$label.json"
+  if [ -n "$mrec" ]; then
     mtmp="$mrec.tmp.$$"
-    if ! ( umask 077; mkdir -p "$mdir" && cp "$rtmp" "$mtmp" ) 2>/dev/null; then
+    if ! ( umask 077; mkdir -p "$(dirname "$mrec")" && cp "$rtmp" "$mtmp" ) 2>/dev/null; then
       rm -f "$rtmp" "$mtmp" 2>/dev/null || true
       return 1
     fi
@@ -1407,6 +1454,24 @@ orchid_service_binding_write() {
     rm -f "$mtmp" 2>/dev/null || true
     return 1
   fi
+  # AND THIS RENAME'S 0 IS NOT ITS POSTCONDITION EITHER, for the same reason the
+  # repo-local one's is not: the guard at the top rejects the obstruction this
+  # call can see coming, and this asks the readers' own question of what
+  # actually landed. Same predicate, called -- not a third spelling of `[ -f ]`.
+  # The stray recovered is the deposit a directory at $mrec would have
+  # swallowed, named from $mtmp so the cleanup cannot delete anything this call
+  # did not write.
+  #
+  # The repo-local record is left standing here for exactly the reason the
+  # failed-rename arm above leaves it: on a re-install it is the PREVIOUS
+  # binding, and deleting it would hand the operator a live schedule with a
+  # removal guard that waves the checkout through -- the outcome this whole
+  # mechanism exists to prevent. Nonzero still means no install: the caller
+  # refuses before it touches the scheduler.
+  if [ -n "$mtmp" ] && ! orchid_service_machine_bound "$label"; then
+    [ ! -d "$mrec" ] || rm -f "$mrec/${mtmp##*/}" 2>/dev/null || true
+    return 1
+  fi
   return 0
 }
 
@@ -1423,9 +1488,9 @@ orchid_service_binding_write() {
 # copy first would leave the opposite: `orchid doctor` reporting a schedule
 # that is already gone while the guard waves the checkout through.
 orchid_service_binding_remove() {
-  local repo="$1" label="$2" mdir refusal
-  if mdir="$(orchid_service_machine_dir)"; then
-    rm -f "$mdir/$label.json" 2>/dev/null || true
+  local repo="$1" label="$2" mrec refusal
+  if mrec="$(orchid_service_machine_record "$label")"; then
+    rm -f "$mrec" 2>/dev/null || true
     # The refusal a scheduled pump left beside it goes too: it describes a
     # schedule that no longer exists, and left behind it would have `orchid
     # doctor` reporting a failure nobody can act on. Through the accessor, not
@@ -1452,10 +1517,9 @@ orchid_service_binding_remove() {
 # _svc_orphan_darwin) and holds this record when the answer is "still loaded":
 # with the artifact already gone, it is the only name that agent has left.
 orchid_service_binding_present() {
-  local repo="$1" label="$2" mdir
+  local repo="$1" label="$2"
   [ ! -f "$(orchid_service_repo_record "$repo")" ] || return 0
-  mdir="$(orchid_service_machine_dir)" || return 1
-  [ -f "$mdir/$label.json" ]
+  orchid_service_machine_bound "$label"
 }
 
 # orchid_run_status_terminal <run_status> -- 0 iff the value names a run state
