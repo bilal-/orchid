@@ -531,6 +531,221 @@ assert_match "walked EVERY task" "$drive_help_one_line" \
 stale_help="$(grep -rln "adapter never fills findings" "$REPO_ROOT/runners" "$REPO_ROOT/libexec" "$REPO_ROOT/bin" 2>/dev/null || true)"
 [ -z "$stale_help" ] || fail "stale L006 severity-gate claim still shipped in: $stale_help"
 
+# T033 (dogfood F32): the severity-gate claim moved again, and this help is
+# the site that was left behind LAST time it moved -- the block above exists
+# because of exactly that. `orchid jobs reconcile` now composes a finding from
+# a non-approve review's free-text summary, so "an empty findings[] blocks
+# nothing" is true only of an APPROVING review. Unqualified, it tells an
+# operator who then sees a `high` entry in a filed envelope that the reviewer
+# put it there. Both halves are pinned so neither can drift on its own: the
+# assertion above keeps the approving half, these keep the scope and the
+# marker that distinguishes a kernel-composed entry from a reviewer's own.
+assert_match "approving review an empty findings\[\] blocks nothing" "$drive_help_one_line" \
+  "orchid drive --help must scope its empty-findings claim to an APPROVING review — reconcile synthesizes a finding for one that withholds approval"
+assert_match "synthesized-finding:" "$drive_help_one_line" \
+  "orchid drive --help must name the line reconcile prints when it composes a finding from a non-approve review's summary"
+assert_match "synthesized: true" "$drive_help_one_line" \
+  "orchid drive --help must say a synthesized entry is marked, so it is never read as the reviewer's own severity call"
+# ...and the marker is a plugin CONTRACT too: an adapter author reading only
+# the spec has to be able to tell a kernel-composed finding from their own.
+assert_match "synthesized: true" "$plugins_spec_one_line" \
+  "docs/specs/plugins.md must document the synthesized finding's marker as part of the envelope contract"
+# The third arm of the same complaint, and the one the two above cannot reach:
+# an APPROVING review is where an empty findings[] is both routine and
+# invisible, so the approval line itself has to say how much the severity gate
+# had to weigh. The help is where an operator learns to read that clause; if it
+# goes unmentioned here, the sentence in lib/drive.sh reads as an alarm rather
+# than the disclosure it is.
+assert_match "weighed an empty array" "$drive_help_one_line" \
+  "orchid drive --help must explain that a deterministic approval says when the severity gate weighed nothing, so the clause is not read as a failure"
+assert_match "weighed against it" "$drive_help_one_line" \
+  "…and must give the other half of that clause, the count of findings a clean approval did weigh"
+
+# THE SAME CLAIM IS WRITTEN DOWN IN FIVE PLACES (PROTOCOL.md, architecture.md,
+# docs/engines/claude.md, lib/drive.sh, the driver's own help), so qualifying
+# it in one place is how it went stale the last two times (the L006 sweep above
+# is the scar). "An
+# empty findings[] blocks nothing" is now true only of an APPROVING review, so
+# every live surface that states it must carry that word within the same
+# sentence -- and a NEW site written a year from now must not be able to state
+# the old, unqualified version. This is the sweep, not another per-file pin: it
+# reads whatever files carry the phrase rather than a list someone has to
+# remember to extend. Folded first, and folded at BOTH ends of the sweep:
+# every one of these sentences straddles a hard wrap, so a line-oriented step
+# anywhere in the path silently drops the files the sweep exists for.
+# docs/architecture.md is the live proof -- it writes the claim as "blocks\n
+# nothing", so `grep -rl "blocks nothing"` does not list it at all, and a
+# discovery step built that way would hand the matcher four of the five files
+# and call the repo clean. Discovery therefore ENUMERATES the surface and folds
+# each file, rather than pre-filtering it with a line-oriented grep.
+# docs/plans/ and docs/dogfood-notes.md are excluded by construction: they are
+# dated records of what was true when written, and rewriting them would falsify
+# the history the rest of this suite cites.
+#
+# unqualified_blocks_nothing <file> -- prints " <file>" once per occurrence of
+# the claim that does NOT carry its qualifier within the 120 folded characters
+# before it. Silent when the file is clean AND when it carries no claim at all,
+# which is what lets sweep_unqualified_claims below hand it the whole surface
+# instead of a pre-filtered shortlist.
+unqualified_blocks_nothing() {
+  local cf="$1"
+  local cf_one_line hit out
+  # Silenced because the sweep now hands this every regular file on the
+  # surface, not a grep-filtered shortlist: an unreadable file is simply a file
+  # that carries no claim, and its complaint would otherwise land in the run's
+  # stderr and read there as a failed assertion. `2>/dev/null` comes BEFORE the
+  # input redirect on purpose -- redirections are applied left to right, so the
+  # other order leaves fd 2 still pointing at the terminal when `< "$cf"` is the
+  # thing that fails.
+  cf_one_line="$(tr '\n' ' ' 2>/dev/null < "$cf" | tr -s '[:space:]' ' ')"
+  out=""
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    # Lowercased once rather than matched in two cases: these sentences shout
+    # the qualifier in the code comments (APPROVING) and whisper it in the
+    # prose (approving), and a third spelling must not read as a missing one.
+    case "$(printf '%s' "$hit" | tr '[:upper:]' '[:lower:]')" in
+      *approving*) ;;
+      *) out="$out $cf" ;;
+    esac
+  done < <(printf '%s\n' "$cf_one_line" | grep -o '.\{0,120\}blocks nothing' || true)
+  printf '%s' "$out"
+}
+
+# sweep_claim_sites <path>... -- DISCOVERY, and the half the finding was about.
+# Walks every regular file under the given paths, folds each one, and emits the
+# ones that carry the claim at all (qualified or not). Folding here rather than
+# pre-filtering with `grep -rl` is the whole point: a wrapped occurrence is
+# invisible to any line-oriented step, so the enumeration costs one read per
+# file on the surface and buys back the files that step drops. NUL-delimited at
+# both ends because a path may legally contain a newline, and a `find`-to-`read`
+# handoff on newlines would split one such path into two that do not exist.
+sweep_claim_sites() {
+  local sweep_file sweep_folded
+  while IFS= read -r -d '' sweep_file; do
+    # Silenced, and ordered, for the same reason unqualified_blocks_nothing is:
+    # the walk reaches every regular file, and an unreadable one is a file
+    # carrying no claim, not a failure to report.
+    sweep_folded="$(tr '\n' ' ' 2>/dev/null < "$sweep_file" | tr -s '[:space:]' ' ')"
+    case "$sweep_folded" in
+      *"blocks nothing"*) printf '%s\0' "$sweep_file" ;;
+    esac
+  done < <(find "$@" -type f -print0 2>/dev/null)
+}
+
+# sweep_claim_site_count <path>... -- how many files discovery reached, counted
+# off the NUL delimiters rather than lines so a path containing a newline counts
+# once. The stream itself is never captured in a command substitution: bash
+# drops NUL bytes there (and says so on stderr), so the count is taken inside
+# the pipeline and only the digit crosses out.
+sweep_claim_site_count() {
+  sweep_claim_sites "$@" | tr -dc '\000' | wc -c | tr -d '[:space:]'
+}
+
+# sweep_unqualified_claims <path>... -- the whole sweep, discovery included, so
+# the RED case below can drive the same entry point production does rather than
+# the matcher on its own.
+sweep_unqualified_claims() {
+  local sweep_file sweep_out
+  sweep_out=""
+  while IFS= read -r -d '' sweep_file; do
+    sweep_out="$sweep_out$(unqualified_blocks_nothing "$sweep_file")"
+  done < <(sweep_claim_sites "$@")
+  printf '%s' "$sweep_out"
+}
+
+sweep_roots=(
+  "$REPO_ROOT/PROTOCOL.md" "$REPO_ROOT/README.md" "$REPO_ROOT/docs/architecture.md"
+  "$REPO_ROOT/docs/specs" "$REPO_ROOT/docs/engines" "$REPO_ROOT/lib"
+  "$REPO_ROOT/libexec" "$REPO_ROOT/runners" "$REPO_ROOT/plugins"
+)
+stale_claim="$(sweep_unqualified_claims "${sweep_roots[@]}")"
+[ -z "$stale_claim" ] || fail "unqualified 'an empty findings[] blocks nothing' claim — true only of an APPROVING review since reconcile synthesizes one for a withheld verdict — still shipped in:$stale_claim"
+
+# The sweep goes green two ways and only one of them is good news: nothing
+# unqualified, or nothing FOUND. A mistyped root, a directory that has moved,
+# or a rewording that carried the sentence off this surface all read as clean
+# and would keep reading as clean forever. So discovery is required to still be
+# looking at something: at least one file under the roots above must carry the
+# claim.
+claim_site_count="$(sweep_claim_site_count "${sweep_roots[@]}")"
+[ "${claim_site_count:-0}" -gt 0 ] \
+  || fail "the empty-findings sweep found the claim on no file at all — its roots no longer reach the surface that states it, so it would pass whatever the docs said"
+
+# ...and the sweep is fed both answers through its own front door, because a
+# sweep that never fires would pass this repo in exactly the state the finding
+# describes -- and one that fires only when HANDED the file cannot say it would
+# have found it. So the fixture is a directory, with the claim nested a level
+# below the root the sweep is pointed at, and both cases go in through
+# sweep_unqualified_claims: what is under test is discovery + fold + qualifier,
+# not the matcher alone. The fixture WRAPS the claim mid-phrase, which is how
+# docs/architecture.md actually writes it, so this is exactly the shape a
+# line-oriented discovery step drops on the floor.
+sweep_root="$WORK/stale-claim-sweep"
+mkdir -p "$sweep_root/nested"
+sweep_doc="$sweep_root/nested/claim.md"
+printf 'the gate cuts both ways: an empty findings[] blocks\nnothing, and one finding at or above the threshold halts the pass.\n' \
+  > "$sweep_doc"
+# The witness for the finding this fixture encodes: the discarded line-oriented
+# discovery step, run against the very same tree, comes back empty. Without it
+# the RED case below passes just as well with a `grep -rl` pre-filter restored,
+# and the regression walks straight back in.
+[ -z "$(grep -rl "blocks nothing" "$sweep_root" 2>/dev/null || true)" ] \
+  || fail "the wrapped-claim fixture is discoverable by a line-oriented grep — it no longer stands for the wrapped shape the sweep must fold to reach"
+[ "$(sweep_claim_site_count "$sweep_root")" -gt 0 ] \
+  || fail "the sweep's discovery step does not find a wrapped claim a line-oriented grep also misses — no step in the path would ever reach it"
+[ -n "$(sweep_unqualified_claims "$sweep_root")" ] \
+  || fail "the stale-claim sweep does not report the unqualified sentence it exists for — it would accept whatever it is pointed at"
+red_case "the empty-findings sweep DISCOVERS and reports a wrapped, unqualified 'blocks nothing' claim that a line-oriented grep never lists"
+printf 'on an approving review an empty findings[] blocks\nnothing, and one finding at or above the threshold halts the pass.\n' \
+  > "$sweep_doc"
+# Still discovered -- only the qualifier arm changes verdict. Pinning both keeps
+# the GREEN case honest: a discovery step that had quietly stopped finding the
+# file would otherwise look identical to a qualifier that correctly passed it.
+[ "$(sweep_claim_site_count "$sweep_root")" -gt 0 ] \
+  || fail "the qualified fixture is no longer discovered at all — the GREEN case below would pass for the wrong reason"
+[ -z "$(sweep_unqualified_claims "$sweep_root")" ] \
+  || fail "the stale-claim sweep flags a correctly qualified sentence — it would force the stale wording back into the docs"
+green_case "the same sweep still discovers the wrapped sentence but accepts it once it names the approving review"
+
+# The two doc sites that carry the claim in prose say what happens INSTEAD, not
+# merely that the old sentence was narrowed: an operator who meets a `high`
+# entry in a filed envelope has to be able to learn, from the page describing
+# the adapter that filed it, that the kernel composed it.
+arch_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/architecture.md" | tr -s '[:space:]' ' ')"
+assert_match "WITHHOLDS approval never reaches that gate with an empty" "$arch_one_line" \
+  "docs/architecture.md must say a non-approve review does not reach the severity gate with an empty findings[]"
+assert_match "synthesized: true" "$claude_doc_one_line" \
+  "docs/engines/claude.md must name the marker that tells a kernel-composed finding from the reviewer's own"
+
+# THE ADAPTER HALF OF THE SAME FINDING. The synthesis lifts an envelope's
+# `summary` and reads nothing else, and plugins/engines/claude/run -- the only
+# shipped reviewer that populates findings[] itself -- wrote no summary at all,
+# so on the one reply that needs it (request-changes with no parseable FINDING
+# line) there was nothing to lift. It asks for the `REASON:` line its siblings
+# already did, which is what lets PROTOCOL.md state the contract of EVERY
+# shipped review adapter rather than of most of them.
+#
+# Checked against the adapters rather than trusted, and as a glob rather than a
+# list, so a sixth engine added next year is held to it the day it lands. Both
+# ends are pinned because the two can drift apart in either direction: the
+# prompt must ASK for the line, and the envelope must CARRY it. Guarded on the
+# prompt line so `plugins/engines/codex-review/run`, which `exec`s codex's
+# adapter and carries no prompt of its own, is not asked for a contract it
+# delegates.
+assert_match "REASON: one sentence" "$claude_doc_one_line" \
+  "docs/engines/claude.md's reply contract must show the REASON line the adapter asks for"
+for adapter_run in "$REPO_ROOT"/plugins/engines/*/run; do
+  [ -e "$adapter_run" ] || continue
+  grep -q "^VERDICT: approve OR request-changes" "$adapter_run" || continue
+  grep -q "^REASON: one sentence" "$adapter_run" \
+    || fail "$adapter_run prompts for a verdict but never asks for a REASON line — PROTOCOL.md's synthesis arm claims every shipped review adapter does, and its summary is the only thing that arm can lift"
+  grep -q 'verdict:\$v.*summary:\$s' "$adapter_run" \
+    || fail "$adapter_run asks for a REASON line but never carries it into the VERDICT envelope's summary — the synthesis would file a placeholder for a real objection"
+done
+assert_match "line and carries it into" "$protocol_one_line" \
+  "PROTOCOL.md must say where the summary the synthesis lifts comes from, not just that it is lifted"
+
 # v1-m4 T006, the notify return leg: the two manifest keys doctor's check
 # reads are a plugin CONTRACT, so they belong in the plugin spec — an
 # operator writing a notify plugin has nowhere else to learn them.

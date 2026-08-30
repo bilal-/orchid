@@ -765,6 +765,48 @@ drive_envelope_has_blocking_finding() {
   ' "$f" >/dev/null 2>&1
 }
 
+# drive_blocking_finding_title <envelope> <blocking_severity> -- the `title` of
+# the finding that made drive_envelope_has_blocking_finding true, folded to one
+# line for the record it travels in. Empty when nothing blocks, when the
+# blocking entry carries no title, or when the file cannot be read.
+#
+# WHY THE RECORD NAMES THE FINDING AND NOT JUST THE THRESHOLD (dogfood F32,
+# same complaint as the summary excerpt beside it). `<file>:finding>=medium`
+# states that the gate weighed something and withholds what it weighed, so the
+# arbiter that boundary wakes has to `jq` the envelope to learn what is
+# actually wrong -- which is exactly the trip two dogfood operators made. The
+# verdict arm of drive_review_decision stopped sending them on it; this is the
+# same fix for the arm that fires when every verdict said `approve` and a
+# finding blocked anyway, which is the case where the record is the ONLY
+# indication that anything is wrong at all.
+#
+# HIGHEST-RANKED FIRST, ties in filed order: `sort_by` is stable, so the entry
+# named is the worst one the reviewer filed and, among equals, the one it filed
+# first. An unrecognized severity ranks 99 here exactly as it does in the gate
+# above -- the two must agree, or the record could name a finding that is not
+# the one that blocked.
+#
+# The title is FOLDED and truncated like any other engine-written text in this
+# record (envelope_fold_line's own note): an adapter's finding title is free
+# text, and a tab in it would shift the decision line's fields just as a tab in
+# a summary would. Nothing branches on the result -- it is carried to a human,
+# never read back.
+drive_blocking_finding_title() {
+  local f="$1" rank raw
+  rank="$(drive_threshold_rank "$2")"
+  raw="$(jq -r --argjson t "$rank" '
+    def frank: if . == "low" then 0
+               elif . == "medium" then 1
+               elif . == "high" then 2
+               else 99 end;
+    [ (.findings // [])[]
+      | select(((.severity // "") | ascii_downcase | frank) >= $t) ]
+    | sort_by(0 - ((.severity // "") | ascii_downcase | frank))
+    | (.[0].title // "")
+  ' "$f" 2>/dev/null || true)"
+  envelope_fold_line "$raw"
+}
+
 # drive_review_decision <repo> <task> -- THE non-overlapping arbitration
 # truth table, evaluated over the reconciled reviewer envelopes bound to the
 # task's CURRENT attempt. Prints exactly one line:
@@ -784,8 +826,14 @@ drive_envelope_has_blocking_finding() {
 #
 # The three arms are mutually exclusive and evaluated in that order, so an
 # incomplete review set is never also reported as a conflict (and vice
-# versa). No prose is parsed anywhere: every input is a structured envelope
-# field the kernel already validates.
+# versa). No prose is parsed anywhere: every input to the DECISION is a
+# structured envelope field the kernel already validates. The conflict arm
+# QUOTES engine-written text into its detail (F32, below) in all three of the
+# entries it can emit -- a rejecting review's `summary`, that same `summary` on
+# a review whose only objection is `scope_complete: false`, and the `title` of
+# the finding that tripped the severity gate -- which is the prose firewall
+# observed rather than bent: the text is carried for the human the boundary
+# wakes, and nothing here branches on a byte of it.
 #
 # THE EVIDENCE SET IS EXACTLY THE ONE THE KERNEL GATE COUNTS, and this
 # function's job is to mirror libexec/orchid-task's reviewing->arbitrating
@@ -828,8 +876,32 @@ drive_envelope_has_blocking_finding() {
 # and write `findings: []` verbatim (`FINDING:` lines are requested by their
 # CRITIQUE prompt alone) -- for those reviewers the severity gate is INERT
 # and deterministic approval rests on `verdict` + `scope_complete` alone.
-# Either way an EMPTY findings[] blocks nothing: an engine that reports no
-# findings is a valid review, and this gate has always read `[]` that way.
+# Either way an EMPTY findings[] on an APPROVING review blocks nothing: an
+# engine that reports no findings is a valid review, and this gate has always
+# read `[]` that way.
+#
+# ON A NON-APPROVING REVIEW IT IS NOT THE SAME SENTENCE (dogfood F32). A
+# reviewer that withholds approval while filing `findings: []` has put its
+# objection somewhere this gate cannot look -- the free-text `summary` -- and
+# the line the approve arm prints ("no finding at or above <severity>") would
+# then be reporting a weighing that never happened. `orchid jobs reconcile`
+# closes that at the FILING end: it lifts such a summary into findings[] as it
+# makes the envelope durable, so what arrives here already carries the
+# substance. The conflict arm below closes the rest at the READING end -- it
+# says `findings=0` when an envelope reaches it with an empty array anyway (an
+# older kernel's file, or a synthesis reconcile refused), and it carries the
+# summary excerpt into the detail that becomes the boundary record.
+#
+# AND THE APPROVE ARM STATES THE SIZE OF ITS OWN EVIDENCE, because neither of
+# those two reaches it. The verdict-only adapters above file `findings: []` on
+# an approving review legitimately, so this arm is reached with an empty array
+# as a matter of routine -- and "no finding at or above <severity>" reads the
+# same whether it weighed six findings that all ranked below the threshold or
+# weighed nothing at all. Those are not the same claim about a candidate, and
+# the operator reading a deterministic approval is the one who needs them told
+# apart. The line now carries the count (see the printf at the foot of this
+# function); the DECISION is untouched, since a count is disclosure and the
+# threshold test above is what actually gates.
 #
 # REVIEW DEPTH (v1.1, T012 -- lesson L010, evidenced on run r-001's T003). At
 # `medium`/`high` the count is not the whole bar: at least one of the counted
@@ -901,7 +973,7 @@ drive_envelope_has_blocking_finding() {
 drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n depth_n conflicts base verdict scope status ecand eengine pool
-  local plan pin_state
+  local plan pin_state entry nfind excerpt ftitle weighed_n weighed_note sum_carried
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
@@ -919,7 +991,7 @@ drive_review_decision() {
     return 0
   fi
 
-  n=0; approve_n=0; depth_n=0; conflicts=""; pool=""
+  n=0; approve_n=0; depth_n=0; conflicts=""; pool=""; weighed_n=0
   for f in "$state/reviews/$id-a$attempt-reviewer"*.json; do
     [ -e "$f" ] || continue
     base="$(basename "$f")"
@@ -950,16 +1022,90 @@ drive_review_decision() {
 "
     verdict="$(envelope_field "$f" '.verdict // empty' 2>/dev/null || true)"
     scope="$(envelope_field "$f" '.scope_complete // false' 2>/dev/null || true)"
+    # Step 4 -- HOW MUCH THE SEVERITY GATE ACTUALLY HAD TO WEIGH, taken over
+    # every counted envelope rather than only the rejecting ones, because the
+    # arm that needs it is the APPROVE arm (see the printf at the end of this
+    # function). Counted here, in the one walk that already scopes the
+    # evidence set, so the number can never describe a different set of
+    # envelopes from the decision printed beside it.
+    #
+    # Unreadable, absent and non-numeric all count as 0: a count this function
+    # could not take is not evidence that the gate had something to weigh, and
+    # a `length` taken over a `findings` that is not an array must not reach
+    # the arithmetic below as a word.
+    nfind="$(envelope_field "$f" '(.findings // []) | length' 2>/dev/null || true)"
+    case "$nfind" in ''|*[!0-9]*) nfind=0 ;; esac
+    weighed_n=$(( weighed_n + nfind ))
+    # Reset PER ENVELOPE: this envelope's summary has not been carried into the
+    # record yet. Two arms below can carry it and only the first of them may
+    # (see the scope arm's own note), and a flag left set by the previous
+    # envelope in this walk would silence the next one's objection entirely.
+    sum_carried=0
     if [ "$verdict" = approve ]; then
       approve_n=$(( approve_n + 1 ))
     else
-      conflicts="$conflicts $base:verdict=${verdict:-none}"
+      # THE OBJECTION TRAVELS WITH THE VERDICT (dogfood F32). `<file>:verdict=
+      # request-changes` names the fact and hides the content: on both runs
+      # that hit this, the actionable defect was sitting in the envelope's
+      # `summary` and the operator found it only by hand-jq-ing the raw file.
+      # This detail becomes the `review-conflict` boundary's reason, which is
+      # what the arbiter is shown and what `orchid notify` carries, so the
+      # substance belongs in it -- excerpted and folded to one line, since
+      # this record is TAB-separated (envelope_summary_excerpt's own note).
+      #
+      # `findings=0` is stated explicitly rather than left to be inferred:
+      # reconcile lifts a prose-only objection into findings[] as it files it,
+      # so an envelope that still reaches here with an empty array predates
+      # that (an older kernel's reviews/ file) or had its synthesis refused.
+      # Either way the severity gate below is weighing nothing for it, and
+      # that has to be said where the decision is read rather than discovered.
+      entry="$base:verdict=${verdict:-none}"
+      # `nfind` is this envelope's own count, taken in step 4 above under the
+      # same fail-to-zero reading: a count this function could not take is not
+      # evidence that the gate has something to weigh.
+      [ "$nfind" != 0 ] || entry="$entry:findings=0"
+      excerpt="$(envelope_summary_excerpt "$f")"
+      if [ -n "$excerpt" ]; then
+        entry="$entry (summary: \"$excerpt\")"
+        sum_carried=1
+      fi
+      conflicts="$conflicts $entry"
     fi
     if [ "$scope" != true ]; then
-      conflicts="$conflicts $base:scope_complete=false"
+      # THE THIRD ARM OF THE SAME RECORD, and until now the only one still
+      # bare (dogfood F32; the verdict arm above and the finding arm below are
+      # the other two). `scope_complete: false` is a reviewer saying it did not
+      # cover the whole change -- WHICH part it could not reach, and why, is
+      # free text in the same `summary` the verdict arm lifts, and this arm
+      # fires on its own whenever the review APPROVED what it did read. That is
+      # the same shape as the blocking-finding arm: the entry is then the whole
+      # of what the arbiter is told, and a bare `scope_complete=false` sends
+      # them to `jq` the envelope for the one sentence that says what is
+      # missing. A rule that surfaced prose in two arms of three would just be
+      # the same defect wearing the third arm's name.
+      entry="$base:scope_complete=false"
+      # ONCE PER ENVELOPE, NEVER TWICE IN ONE RECORD. A review that both
+      # withholds approval and reports incomplete scope contributes two
+      # entries, and the verdict arm has already carried this envelope's one
+      # summary into the first of them; repeating it would pad the boundary
+      # reason with a duplicate rather than tell the arbiter anything new. Read
+      # lazily too -- an envelope that reaches neither arm never pays the jq
+      # call, which is every envelope on the approving path.
+      if [ "$sum_carried" -eq 0 ]; then
+        excerpt="$(envelope_summary_excerpt "$f")"
+        [ -z "$excerpt" ] || entry="$entry (summary: \"$excerpt\")"
+      fi
+      conflicts="$conflicts $entry"
     fi
     if drive_envelope_has_blocking_finding "$f" "$blocking"; then
-      conflicts="$conflicts $base:finding>=$blocking"
+      # The finding that blocked is NAMED, not merely counted
+      # (drive_blocking_finding_title's own note). This arm is the one that
+      # fires when every verdict said `approve` and a finding stopped the pass
+      # anyway, so its entry is the whole of what the arbiter is told.
+      entry="$base:finding>=$blocking"
+      ftitle="$(drive_blocking_finding_title "$f" "$blocking")"
+      [ -z "$ftitle" ] || entry="$entry (\"$ftitle\")"
+      conflicts="$conflicts $entry"
     fi
   done
 
@@ -1001,8 +1147,31 @@ drive_review_decision() {
     return 0
   fi
 
-  printf 'approve\tunanimous scope-complete approval from %s review(s), %s of them worktree-capable, no finding at or above %s\n' \
-    "$approve_n" "$depth_n" "$blocking"
+  # THE APPROVE ARM SAYS HOW MUCH IT WEIGHED, NOT ONLY WHAT IT CONCLUDED
+  # (dogfood F32, and the half of that complaint the conflict arm's
+  # `findings=0` does not reach). "no finding at or above medium" is the one
+  # sentence the criteria quotes, and until now it read identically in two
+  # states an operator has to tell apart: reviewers who filed findings and
+  # none of them cleared the threshold, and reviewers who filed NOTHING, where
+  # the severity gate weighed an empty array and the approval rests entirely
+  # on `verdict` + `scope_complete`. One empty list was answering two
+  # different questions -- the same defect as the prose-only objection, in the
+  # arm that APPROVES rather than the one that blocks, which is the arm where
+  # it is dangerous.
+  #
+  # A COUNT, NOT A JUDGMENT. Nothing here changes the decision: the threshold
+  # test is unchanged and already returned above if anything tripped it. This
+  # is disclosure -- the number is carried into the record and the journal so
+  # an operator reading a deterministic approval can see whether it was
+  # backed by weighed structured evidence, and reconcile's synthesis is what
+  # keeps a withheld verdict from ever reaching this arm with nothing in it.
+  if [ "$weighed_n" -eq 0 ]; then
+    weighed_note="-- and NO findings were filed across those $n review(s), so the severity gate weighed an empty array and this approval rests on verdict + scope_complete alone"
+  else
+    weighed_note="($weighed_n finding(s) filed across those $n review(s) and weighed against it)"
+  fi
+  printf 'approve\tunanimous scope-complete approval from %s review(s), %s of them worktree-capable, no finding at or above %s %s\n' \
+    "$approve_n" "$depth_n" "$blocking" "$weighed_note"
 }
 
 # drive_hook_has_required <repo> <point> -- 0 iff the point's binding carries

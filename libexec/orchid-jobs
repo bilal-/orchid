@@ -1562,6 +1562,37 @@ case "$sub" in
       # it is keep itself in the rotation -- which `refusals <n>` in `orchid
       # status` then shows the operator.
       failure_kind="$(envelope_field "$f" '.failure_kind // empty')"
+      # A NON-APPROVE VERDICT WITH AN EMPTY findings[] IS NOT FILED SILENTLY
+      # (dogfood F32; lib/envelope.sh's own header has the case and the
+      # reasoning). The objection is lifted out of the free-text `summary`
+      # into findings[] HERE, at the one place every envelope passes through
+      # on its way to becoming durable evidence, so that every later reader
+      # -- lib/drive.sh's blocking_severity gate, PROTOCOL.md's PLANNING fold,
+      # an arbiter reading the file -- consults a field that has the
+      # substance in it rather than an empty array that weighs nothing.
+      #
+      # Done BEFORE the move, on the spool copy, so what lands in reviews/ is
+      # already complete: nothing downstream has to know whether it is reading
+      # a pre- or post-synthesis file. If the composed envelope does not
+      # itself validate, the ORIGINAL is filed untouched and the failure is
+      # printed -- a synthesis that cannot be trusted must not be allowed to
+      # replace the reviewer's own words, and the operator has to hear that
+      # the gate is weighing nothing for this one.
+      # The `mv` is INSIDE the chain, not after it: a replacement that did not
+      # happen must not be reported as one. `.synth` is deliberately not a
+      # `.json` name, so a half-written scratch file can never be picked up as
+      # a spool envelope by this loop or the next pass's.
+      synth=none
+      if envelope_prose_only_objection "$f"; then
+        if envelope_synthesize_finding "$f" > "$f.synth" 2>/dev/null &&
+           envelope_validate "$f.synth" 2>/dev/null &&
+           mv "$f.synth" "$f"; then
+          synth=ok
+        else
+          rm -f "$f.synth"
+          synth=failed
+        fi
+      fi
       # Naming (collision counter, and the hook op's own hook-<point> shape)
       # is reviews_dest's, shared with the salvage pass at the end of this
       # arm so a degraded envelope can never be filed under a name no reader
@@ -1578,6 +1609,12 @@ case "$sub" in
       # already quarantined any envelope whose reported engine disagreed,
       # but this is our own durable record, not forgeable input).
       ledger_mark "$repo" "$m_engine" "$status" "$retry_after" "$failure_kind"
+      # Printed under the durable name, never the spool one: the operator who
+      # reads this line goes and looks at the file it names.
+      case "$synth" in
+        ok) echo "synthesized-finding: $(basename "$dest") ($verdict verdict with an empty findings[]; its summary is now a $ENVELOPE_SYNTHESIZED_FINDING_SEVERITY-severity finding, so the severity gate can see the objection)" ;;
+        failed) echo "synthesis-failed: $(basename "$dest") ($verdict verdict with an empty findings[]; its summary could NOT be carried into findings[] -- every severity gate weighs nothing for this envelope, read its summary yourself)" ;;
+      esac
       printf '%s\t%s\t%s\n' "$m_task" "$status" "$verdict"
       # A refusal gets its own line, not a new column: the three-column TSV
       # above is what the tick prints and what tests match on, and the

@@ -116,11 +116,13 @@ all output until exit) and runs a liveness heartbeat alongside it.
 
 ## Reviewer: the reply contract carries findings, not just a verdict
 
-A `review` reply is asked for the same two line shapes a `critique` reply is:
+A `review` reply is asked for the same two line shapes a `critique` reply is,
+plus the `REASON:` line codex's and agy's reviewers already carry:
 
 ```
 VERDICT: approve OR request-changes
 FINDING: <low|medium|high>: <title>      # zero or more; omit entirely if none
+REASON: one sentence                     # optional; becomes the envelope's summary
 ```
 
 The adapter parses those `FINDING:` lines into the envelope's `findings[]`
@@ -131,10 +133,29 @@ review envelope carried `findings: []` and the reviewer's reasoning survived
 only if it happened to appear in prose in the engine log, which is reaped —
 a real run lost three reported findings from a single review round that way.
 The verdict contract is unchanged, and a review that reports no findings
-still writes `findings: []`; that empty array blocks nothing, in the
-driver's `blocking_severity` gate or anywhere else. Other shipped review
-adapters remain verdict-only — see PROTOCOL.md's deterministic-approval arm
-for which reviewer makes that gate live.
+still writes `findings: []`; on an **approving** review that empty array
+blocks nothing, in the driver's `blocking_severity` gate or anywhere else.
+Other shipped review adapters remain verdict-only in the sense that matters
+here — they ask their review for no `FINDING:` line, so their `findings[]` is
+always empty; see PROTOCOL.md's deterministic-approval arm for which reviewer
+makes that gate live.
+
+**A reply that withholds approval does not keep an empty `findings[]`.** An
+objection that exists only in prose contributes nothing to any severity
+gate — the field every gate reads would be empty — so when a `review` or
+`critique` reply carries a `request-changes` verdict and no usable `FINDING:`
+line, `orchid jobs reconcile` composes ONE finding from that envelope's
+free-text `summary` as it files it, at severity `high` (the one rank no
+task's `blocking_severity` filters out), marked `synthesized: true` with the
+summary kept whole in `detail`, and prints a `synthesized-finding:` line
+naming the filed envelope. That is the kernel's fail-closed reading of a
+withheld verdict, never a claim about what the reviewer chose: this adapter
+is asked for `FINDING:` lines precisely so the severity stays the reviewer's
+own, and the review prompt now says that in as many words. The `REASON:` line
+exists for the same case — until it was asked for, this adapter wrote no
+`summary` at all, so a withheld verdict with no parseable finding left the
+synthesis nothing but a placeholder to file. See `docs/specs/plugins.md` for
+the exact entry shape.
 
 **Severity is a gate, so the prompt spells out what each one does.** Because
 this adapter populates `findings[]`, the driver's `blocking_severity` gate is

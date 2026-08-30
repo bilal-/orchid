@@ -130,3 +130,152 @@ envelope_salvage_json() {
 envelope_salvage_empty() {
   [ "$(printf '%s' "$1" | jq -r '((.findings | length) == 0) and (.verdict == null)')" = true ]
 }
+
+# ---------------------------------------------------------------------------
+# A NON-APPROVE VERDICT MUST CARRY A FINDING THE SEVERITY GATE CAN SEE
+# (dogfood F32, reproduced independently in r-002).
+#
+# THE DEFECT. A reviewer may return `verdict: request-changes` with
+# `findings: []` and put the entire substance of its objection in the
+# free-text `summary`. On wasiyyat T004 that summary held a real correctness
+# defect -- a handler that flushed `started` while the run row it claimed was
+# not guaranteed committed -- and the structured array was empty. On r-002
+# T020 the same shape appeared again: `request-changes`, `findings: []`, the
+# whole objection in one line of prose.
+#
+# THE DANGER IS NOT THE DISAGREEMENT, IT IS THE AGREEMENT. Every
+# severity-based gate in this system reads `findings[]`: lib/drive.sh's
+# deterministic approval arm reports "no finding at or above <severity>" from
+# it, and PROTOCOL.md's PLANNING loop folds a critique's findings back into
+# the draft until nothing at or above `medium` is left. An envelope whose only
+# content is prose contributes NOTHING to either. Had the second reviewer on
+# that task also said `approve` while keeping the same prose caveat, the
+# defect would have sailed through deterministic approval -- not because the
+# gate was wrong, but because the field it consults was empty. A gate weighing
+# an empty array reports the same sentence whether the reviewers found nothing
+# or wrote everything they found somewhere the gate cannot look.
+#
+# WHY THIS IS NOT SPELLED "MALFORMED". Refusing such an envelope at
+# envelope_validate (or quarantining it at reconcile) is the tempting fix and
+# it is the wrong one: the shipped verdict-only `review` adapters --
+# plugins/engines/codex/run and its siblings -- write `findings: []` VERBATIM
+# on every review they file, so "non-approve with an empty findings[]" is the
+# ordinary shape of a legitimate objection from them, not a forgery. Rejecting
+# it would throw the reviewer's prose into quarantine, leave the task short of
+# its required review count, and park it at a review-evidence boundary whose
+# operator then has nothing to read. That destroys the very evidence F32 is
+# about. So the envelope is ACCEPTED and its objection is MADE VISIBLE:
+# `envelope_synthesize_finding` lifts the summary into findings[] at reconcile
+# time, and the entry says plainly that the kernel composed it. The invariant
+# a validation rule would have bought -- every non-approve review carries at
+# least one finding -- is delivered by CONSTRUCTION instead of by rejection,
+# and it holds for the adapters that cannot be changed as well as the ones
+# that can. This is the prose firewall (docs/specs/kernel.md) applied exactly
+# as written: free-form text reaches a gate only after a deterministic verb
+# has translated it into structured state, and that verb is `jobs reconcile`.
+#
+# The severity is `high` deliberately: drive_threshold_rank maps every
+# recognized threshold to at most `high`, so a `high` finding is the one value
+# that cannot be filtered out below any task's `blocking_severity`. The kernel
+# cannot read a severity out of prose, and the only fail-closed reading of "I
+# will not approve this" is the severity no threshold silently drops. Nothing
+# here pretends the reviewer said `high`: the entry carries its own provenance
+# (`source`/`synthesized`), and the reviewer's summary is preserved verbatim
+# in `detail` alongside the truncated title.
+ENVELOPE_SYNTHESIZED_FINDING_SEVERITY="high"
+ENVELOPE_SYNTHESIZED_FINDING_SOURCE="orchid:synthesized-from-summary"
+
+ENVELOPE_EXCERPT_MAX=160
+
+# envelope_fold_line <text> [max] -- <text> folded to ONE line, with runs of
+# whitespace squeezed to single spaces and the result truncated to [max]
+# characters (default ENVELOPE_EXCERPT_MAX). Empty in, empty out.
+#
+# THE FOLD IS NOT COSMETIC. Every caller puts the result into a TAB-separated,
+# one-line record: lib/drive.sh's decision line is read with `cut -f1`/`cut
+# -f2-`, and runners/orchid-drive turns field 2 into a boundary reason. Text
+# carrying a newline would truncate that record at the first line and a raw
+# TAB would shift every field after it -- so an envelope could corrupt the
+# very boundary record meant to surface it.
+#
+# ONE FOLD FOR EVERY FIELD THAT TRAVELS IN THAT RECORD, which is why this is a
+# function and not two copies. Both an engine-written `summary` and an
+# engine-written finding `title` reach the record, both are free text an
+# adapter controls, and a fold that protected only the field someone happened
+# to add first would leave the record corruptible through the other.
+#
+# THE FOLD IS DONE IN THE SHELL, NOT IN jq, and that is deliberate. Collapsing
+# whitespace runs wants `gsub`, and jq's regex functions need an
+# Oniguruma-enabled build -- nothing else in this kernel asks jq for one, and
+# a jq built without it does not fail loudly at the call sites below: `gsub`
+# would error, the `2>/dev/null || true` guarding their jq calls would swallow
+# that error, and the excerpt would come back EMPTY on every envelope. That is
+# the one failure this must not have, since an empty excerpt is
+# indistinguishable from "the reviewer wrote nothing there" and silently drops
+# the objection it exists to carry. `tr` is already a hard dependency of every
+# verb in the repo.
+envelope_fold_line() {
+  local raw="$1"
+  local max="${2:-$ENVELOPE_EXCERPT_MAX}"
+  raw="$(printf '%s' "$raw" | tr '\n\r\t\v\f' '     ' | tr -s ' ')"
+  # `tr -s` leaves at most a single leading/trailing space behind.
+  raw="${raw# }"; raw="${raw% }"
+  if [ "${#raw}" -gt "$max" ]; then
+    printf '%s...\n' "${raw:0:$max}"
+  else
+    printf '%s\n' "$raw"
+  fi
+}
+
+# envelope_summary_excerpt <envelope> [max] -- the envelope's `summary`, folded
+# by envelope_fold_line. Empty when the envelope carries no summary.
+envelope_summary_excerpt() {
+  local f="$1"
+  local raw
+  raw="$(jq -r '.summary // ""' "$f" 2>/dev/null || true)"
+  envelope_fold_line "$raw" "${2:-$ENVELOPE_EXCERPT_MAX}"
+}
+
+# envelope_prose_only_objection <envelope> -- 0 iff this envelope is an `ok`
+# review/critique that WITHHOLDS approval while reporting no finding at all:
+# the shape above. Absent and empty `findings` are the same case (a reviewer
+# that omits the key reports exactly as much as one that writes `[]`).
+#
+# Bound to `review`/`critique` because `verdict` means nothing on the other
+# operations, and to `status == ok` because a `failed`/`timeout`/`no_envelope`
+# envelope is the residue of a slot that errored -- it carries no judgment to
+# lift. That last one matters since T040: a salvaged envelope reconstructed
+# from a dead job's log can carry a scraped `request-changes` verdict with no
+# finding beside it, and inventing a `high` out of the kernel's own
+# reconstruction would be putting weight on text nobody filed as a judgment.
+envelope_prose_only_objection() {
+  jq -e '
+    (.status == "ok")
+    and ((.operation // "") | IN("review","critique"))
+    and ((.verdict // "") | (length > 0) and (. != "approve"))
+    and (((.findings // []) | length) == 0)
+  ' "$1" >/dev/null 2>&1
+}
+
+# envelope_synthesize_finding <envelope> -- prints the envelope with exactly
+# one finding composed from its `summary`, for an envelope that
+# envelope_prose_only_objection has just matched. Prints; writes nothing (the
+# caller decides whether the result is fit to keep).
+#
+# The title is MARKED, so no reader mistakes a kernel-composed entry for the
+# reviewer's own severity call, and `detail` keeps the summary whole where the
+# title had to be cut. An objection filed with neither findings nor a summary
+# still yields an entry -- there is nothing to carry, and that itself is what
+# the gate must be told, rather than being handed a silent empty array again.
+envelope_synthesize_finding() {
+  local f="$1"
+  local excerpt
+  excerpt="$(envelope_summary_excerpt "$f" 200)"
+  [ -n "$excerpt" ] || excerpt="a non-approve verdict filed with no findings[] and no summary"
+  jq --arg sev "$ENVELOPE_SYNTHESIZED_FINDING_SEVERITY" \
+     --arg title "synthesized from summary: $excerpt" \
+     --arg src "$ENVELOPE_SYNTHESIZED_FINDING_SOURCE" '
+    .findings = [ { severity: $sev, title: $title, source: $src,
+                    synthesized: true, detail: (.summary // "") } ]
+  ' "$f"
+}

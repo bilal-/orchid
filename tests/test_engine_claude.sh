@@ -150,6 +150,49 @@ grep -q "blocking_severity is medium" <<<"$bsev_stdin" \
 grep -q "medium: should block this candidate" <<<"$bsev_stdin" \
   && fail "blocking_severity=high stub: the severity menu must not claim medium always blocks"
 
+# --- 1e. T033 (dogfood F32): A WITHHELD VERDICT'S PROSE HAS TO LAND SOMEWHERE
+# A GATE CAN READ IT. `orchid jobs reconcile` composes a finding from a
+# non-approve envelope's `summary` when findings[] is empty -- but this adapter
+# wrote NO summary at all until now, so for the one shipped reviewer that
+# populates findings[] the synthesis had nothing but a placeholder to lift on
+# the exact reply that needs it (request-changes, every FINDING line dropped by
+# the best-effort scrape above). The `REASON:` line codex's and agy's reviewers
+# already carry closes that, with their idiom: last line wins, cut to 200
+# characters, and ABSENT rather than placeholder text when the reply has none.
+d="$(build_request reviewreason review '#!/usr/bin/env bash
+cat > "'"$WORK"'/reason.stdin"
+echo "REASON: an early return flushes started before the run row is committed"
+echo "FINDING: bogus: severity token is not one of the three"
+echo "VERDICT: request-changes"')"
+run_adapter "$d" || fail "review reason stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "review reason stub: envelope invalid"
+assert_eq "request-changes" "$(jq -r .verdict "$d/out/envelope.json")" "review reason stub: verdict request-changes"
+assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" \
+  "review reason stub: every FINDING line was dropped, so this is the prose-only objection F32 named"
+assert_eq "an early return flushes started before the run row is committed" \
+  "$(jq -r '.summary // ""' "$d/out/envelope.json")" \
+  "review reason stub: the REASON line reaches the summary reconcile synthesizes a finding from"
+# The prompt has to SAY what happens, or a reviewer cannot choose the severity
+# itself -- which is the whole point of asking it for FINDING lines.
+reason_stdin="$(cat "$WORK/reason.stdin")"
+assert_match "REASON: one sentence" "$reason_stdin" \
+  "review reason stub: the review prompt asks for the REASON line it now captures"
+assert_match "A request-changes verdict carries at least one FINDING line" "$reason_stdin" \
+  "review reason stub: the prompt states that withholding approval needs a finding, not prose alone"
+assert_match "a high-severity finding from your REASON line" "$reason_stdin" \
+  "review reason stub: …and names the consequence of not filing one, so the severity stays the reviewer's call"
+# ABSENT, not empty and not invented: the union never requires `summary`, and a
+# manufactured sentence would be handed to the synthesis as if a reviewer had
+# written it. Case 1c's own reply carries no REASON line either, so this is the
+# same envelope that case asserts on.
+d="$(build_request reviewnoreason review '#!/usr/bin/env bash
+echo "nothing to report"
+echo "VERDICT: approve"')"
+run_adapter "$d" || fail "review no-reason stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "review no-reason stub: envelope invalid"
+assert_eq "false" "$(jq -r 'has("summary")' "$d/out/envelope.json")" \
+  "review no-reason stub: a reply with no REASON line leaves summary absent rather than blank or placeholder"
+
 # --- 2. failing stub: rate limit on stderr ----------------------------------
 d="$(build_request ratelimit review '#!/usr/bin/env bash
 echo "429 usage limit exceeded" >&2

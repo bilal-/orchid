@@ -667,3 +667,216 @@ assert_eq "$TWO_ENGINE_PLAN" "$planV" \
 [ -f "$pinV" ] || fail "GREEN: the journaled review plan is then stored"
 diff -q "$journal_bin" "$journal_backup" >/dev/null 2>&1 \
   || fail "the journal executable must be restored byte-for-byte after failure injection"
+# P -- T033 (dogfood F32, reproduced independently in r-002): the review
+# policy's own record must carry a non-approve verdict's SUBSTANCE.
+#
+# The boundary record used to read `<file>:verdict=request-changes` and
+# nothing else. On both runs that hit this shape the actionable defect was
+# sitting in the envelope's free-text `summary`, and the operator found it
+# only by hand-jq-ing the raw file -- with the structured `findings[]` the
+# severity gate consults sitting empty the whole time. This detail line is
+# what `runners/orchid-drive` turns into the `review-conflict` boundary's
+# reason, so it is where both facts have to appear: that the gate was handed
+# an empty array, and what the reviewer actually objected to.
+#
+# Read STRUCTURALLY as well as by content: the decision is one TAB-separated
+# line, split by `cut -f1`/`cut -f2-` at its only caller, so a summary
+# carrying a newline or a tab must be folded before it goes anywhere near it.
+# ===========================================================================
+# drive_review_decision reads task frontmatter, lib/review.sh's required
+# count and lib/envelope.sh's readers -- all of which this file already
+# sources. It touches none of drive.sh's archetype/schedule/hooks callers, so
+# the four sources above are the whole dependency for this Part.
+source "$REPO_ROOT/lib/drive.sh"
+
+repoP="$WORK/repoP"; mkdir -p "$repoP/.orchid/tasks" "$repoP/.orchid/reviews"
+candP=3333333333333333333333333333333333333333
+
+# mk_p_task <id> <blocking_severity> -- risk_tier low, so ONE review is the
+# whole required set and the decision turns on that envelope alone.
+mk_p_task() {
+  printf -- '---\nschema: 1\nid: %s\nstatus: arbitrating\narchetype: feature\nattempts: 0\nrisk_tier: low\nblocking_severity: %s\ncandidate_sha: %s\n---\nbody\n' \
+    "$1" "$2" "$candP" > "$repoP/.orchid/tasks/$1.md"
+}
+
+# A summary with a newline AND a tab in it, exactly the two characters that
+# would corrupt the record this text is about to travel in.
+objectionP="$(printf 'prepareBackupAttempt() can return run_id 0 after a best-effort startRun() failure,\nyet the handler still\tflushes started')"
+
+mk_p_task TP1 high
+jq -n --arg cand "$candP" --arg s "$objectionP" \
+  '{contract:1, job_id:"j-p1", task:"TP1", operation:"review", status:"ok",
+    verdict:"request-changes", scope_complete:true, summary:$s,
+    candidate_sha:$cand, findings:[]}' \
+  > "$repoP/.orchid/reviews/TP1-a1-reviewer.json"
+
+decisionP="$(drive_review_decision "$repoP" TP1)"
+assert_eq conflict "$(printf '%s' "$decisionP" | cut -f1)" \
+  "a request-changes verdict is a conflict, findings[] empty or not"
+detailP="$(printf '%s' "$decisionP" | cut -f2-)"
+assert_match "verdict=request-changes" "$detailP" "the record still names the verdict that blocked approval"
+assert_match "findings=0" "$detailP" \
+  "and says the severity gate was handed an empty array, rather than leaving that to be inferred from silence"
+assert_match "prepareBackupAttempt" "$detailP" \
+  "the objection itself reaches the record the arbiter is shown -- no jq of the raw envelope required"
+assert_match "summary:" "$detailP" "and is labelled as the reviewer's summary, not as a finding it never filed"
+assert_eq 1 "$(printf '%s\n' "$decisionP" | wc -l | tr -d ' ')" \
+  "the decision stays ONE line: a summary's newline must never split the record its caller reads with cut"
+assert_eq 2 "$(printf '%s\n' "$decisionP" | awk -F'\t' '{print NF}')" \
+  "and exactly two TAB fields: a summary's tab must never shift the fields after it"
+red_case "a request-changes envelope with an empty findings[] and a prose-only objection: the decision record names findings=0 and carries the prose, instead of reporting a bare verdict and a gate that weighed nothing"
+
+# The twin: an approving, scope-complete review with the same empty findings[]
+# is the ordinary output of every verdict-only adapter. It approves, and
+# nothing is dragged out of its summary into a record it does not belong in.
+mk_p_task TP2 high
+jq -n --arg cand "$candP" \
+  '{contract:1, job_id:"j-p2", task:"TP2", operation:"review", status:"ok",
+    verdict:"approve", scope_complete:true, summary:"scope covered, nothing to report",
+    candidate_sha:$cand, findings:[]}' \
+  > "$repoP/.orchid/reviews/TP2-a1-reviewer.json"
+
+decisionP2="$(drive_review_decision "$repoP" TP2)"
+assert_eq approve "$(printf '%s' "$decisionP2" | cut -f1)" \
+  "an approving review with no findings still approves: an empty array is not itself a signal"
+detailP2="$(printf '%s' "$decisionP2" | cut -f2-)"
+assert_match "unanimous scope-complete approval from 1 review" "$detailP2" \
+  "and the approval verdict clause itself is unchanged"
+case "$detailP2" in
+  *"nothing to report"*) fail "an approving review's summary must not be spliced into the approval record" ;;
+esac
+green_case "an approving review with an empty findings[] approves, with its summary left where the reviewer put it"
+# ...but the line must not stop at "no finding at or above high", because that
+# reads identically whether the gate weighed findings that all ranked below the
+# threshold or weighed an EMPTY ARRAY, as here. That is the same one-empty-list-
+# two-answers defect as the prose-only objection above, in the arm that
+# APPROVES -- the arm where nobody is woken to go and look.
+assert_match "NO findings were filed across those 1 review" "$detailP2" \
+  "a deterministic approval must say when the severity gate was handed nothing at all, not report a threshold it never weighed anything against"
+assert_match "severity gate weighed an empty array" "$detailP2" \
+  "and say so in those terms, so the operator is not left to infer it from a clean-looking threshold clause"
+assert_match "rests on verdict [+] scope_complete alone" "$detailP2" \
+  "and name what the approval actually rests on when the gate is inert -- the verdict-only adapters' ordinary case"
+red_case "a deterministic approval backed by ZERO structured findings: the record says the severity gate weighed an empty array, instead of reporting 'no finding at or above high' as though it had weighed something"
+
+# The twin of the twin, and the reason the disclosure above is a COUNT rather
+# than an alarm: an approving review that did file findings, none of which
+# reach this task's blocking_severity, is a gate that genuinely weighed
+# something and let it through. It must read differently from the empty one.
+mk_p_task TP4 high
+jq -n --arg cand "$candP" \
+  '{contract:1, job_id:"j-p4", task:"TP4", operation:"review", status:"ok",
+    verdict:"approve", scope_complete:true, summary:"one nit, not blocking",
+    candidate_sha:$cand,
+    findings:[{severity:"low", title:"a nit below the threshold"}]}' \
+  > "$repoP/.orchid/reviews/TP4-a1-reviewer.json"
+
+decisionP4="$(drive_review_decision "$repoP" TP4)"
+assert_eq approve "$(printf '%s' "$decisionP4" | cut -f1)" \
+  "a filed finding BELOW blocking_severity does not block: the threshold is what gates, and the count is only disclosure"
+detailP4="$(printf '%s' "$decisionP4" | cut -f2-)"
+assert_match "no finding at or above high" "$detailP4" \
+  "the threshold clause is unchanged when the gate had something to weigh"
+assert_match "1 finding[(]s[)] filed across those 1 review[(]s[)] and weighed against it" "$detailP4" \
+  "and the record says how much it weighed, so this approval is distinguishable from one backed by an empty array"
+case "$detailP4" in
+  *"weighed an empty array"*)
+    fail "a review that DID file a finding must not be reported as one the gate weighed nothing for -- the disclosure would then be noise on every approval" ;;
+  *"a nit below the threshold"*)
+    fail "a non-blocking finding's title must not be spliced into the approval record: the conflict arm names what BLOCKED, this arm only counts" ;;
+esac
+assert_eq 2 "$(printf '%s\n' "$decisionP4" | awk -F'\t' '{print NF}')" \
+  "and the approval stays a two-field TAB record like every other arm"
+green_case "an approving review with one below-threshold finding approves, and its record reports one finding weighed rather than an empty gate"
+
+# The OTHER half of the same complaint, and the case where the record is the
+# only warning there is. Every verdict said `approve`; a filed finding at or
+# above blocking_severity stopped the pass anyway. The record used to say
+# `<file>:finding>=medium` -- that the gate weighed something, never what --
+# so the arbiter it wakes had the same trip to `jq` ahead of it that the bare
+# `verdict=request-changes` record sent two dogfood operators on.
+#
+# Two findings, deliberately: the WORST one is named, and it is filed SECOND,
+# so a record that simply took findings[0] would name the wrong one. And the
+# title carries the same newline-and-tab payload as the summary above, because
+# a finding title is engine-written free text travelling in the same
+# TAB-separated line -- a fold that covered only `summary` would leave the
+# record corruptible through `title`.
+mk_p_task TP3 medium
+titleP="$(printf 'run_id 0 is flushed as\tstarted before the row\nis committed')"
+jq -n --arg cand "$candP" --arg t "$titleP" \
+  '{contract:1, job_id:"j-p3", task:"TP3", operation:"review", status:"ok",
+    verdict:"approve", scope_complete:true, summary:"looks fine to me",
+    candidate_sha:$cand,
+    findings:[{severity:"medium", title:"a lesser one, filed first"},
+              {severity:"high", title:$t}]}' \
+  > "$repoP/.orchid/reviews/TP3-a1-reviewer.json"
+
+decisionP3="$(drive_review_decision "$repoP" TP3)"
+assert_eq conflict "$(printf '%s' "$decisionP3" | cut -f1)" \
+  "a finding at or above blocking_severity is a conflict even when every verdict approved"
+detailP3="$(printf '%s' "$decisionP3" | cut -f2-)"
+assert_match "finding>=medium" "$detailP3" "the record still names the threshold the gate applied"
+assert_match "run_id 0 is flushed as started before the row is committed" "$detailP3" \
+  "and names the finding that tripped it, folded to one line -- the arbiter is not sent to the raw envelope"
+case "$detailP3" in
+  *"a lesser one, filed first"*)
+    fail "the record must name the WORST blocking finding, not whichever one the reviewer filed first" ;;
+esac
+assert_eq 1 "$(printf '%s\n' "$decisionP3" | wc -l | tr -d ' ')" \
+  "the decision stays ONE line: a finding title's newline must never split the record its caller reads with cut"
+assert_eq 2 "$(printf '%s\n' "$decisionP3" | awk -F'\t' '{print NF}')" \
+  "and exactly two TAB fields: a finding title's tab must never shift the fields after it"
+red_case "an approving review whose filed finding blocks: the decision record names the worst blocking finding, instead of reporting a bare threshold the arbiter has to jq the envelope to understand"
+
+# THE THIRD ENTRY THIS RECORD CAN EMIT, and the one the two cases above leave
+# bare. `scope_complete: false` is a reviewer reporting it did not cover the
+# whole change; WHICH part it could not reach is free text in the very same
+# `summary` the verdict arm lifts. It fires on its own whenever the review
+# APPROVED what it did read -- so, exactly as with the blocking-finding entry
+# above, that entry is then the whole of what the arbiter is told, and a bare
+# `scope_complete=false` sends them back to `jq` for the one sentence that says
+# what is missing. Same newline-and-tab payload, because this arm shares the
+# TAB-separated record with the other two.
+mk_p_task TP5 high
+scopeP="$(printf 'the generated migration under db/migrate was not read at all:\nit is the only caller of\tprepareBackupAttempt()')"
+jq -n --arg cand "$candP" --arg s "$scopeP" \
+  '{contract:1, job_id:"j-p5", task:"TP5", operation:"review", status:"ok",
+    verdict:"approve", scope_complete:false, summary:$s,
+    candidate_sha:$cand, findings:[]}' \
+  > "$repoP/.orchid/reviews/TP5-a1-reviewer.json"
+
+decisionP5="$(drive_review_decision "$repoP" TP5)"
+assert_eq conflict "$(printf '%s' "$decisionP5" | cut -f1)" \
+  "a review that reports incomplete scope is a conflict even though its verdict approved"
+detailP5="$(printf '%s' "$decisionP5" | cut -f2-)"
+assert_match "scope_complete=false" "$detailP5" "the record still names the structured field that produced the decision"
+# Bracketed parens: assert_match is `grep -Eq`, where a bare `()` is an empty
+# GROUP and would match the name with no parentheses after it at all.
+assert_match "the generated migration under db/migrate was not read at all: it is the only caller of prepareBackupAttempt[(][)]" "$detailP5" \
+  "and carries the reviewer's own account of what it could not reach, folded to one line -- this entry is the whole of what the arbiter is told"
+assert_match "summary:" "$detailP5" "labelled as the reviewer's summary, not as a finding it never filed"
+assert_eq 1 "$(printf '%s\n' "$decisionP5" | wc -l | tr -d ' ')" \
+  "the decision stays ONE line: a summary's newline must never split the record its caller reads with cut"
+assert_eq 2 "$(printf '%s\n' "$decisionP5" | awk -F'\t' '{print NF}')" \
+  "and exactly two TAB fields: a summary's tab must never shift the fields after it"
+red_case "an approving review that reports scope_complete=false: the decision record carries the summary saying WHAT was left uncovered, instead of a bare field name the arbiter has to jq the envelope to understand"
+
+# ...and ONCE, not once per arm. A review that both withholds approval and
+# reports incomplete scope emits two entries; the summary belongs to the
+# envelope, not to either entry, so repeating it would pad the boundary reason
+# with a duplicate rather than tell the arbiter anything new.
+mk_p_task TP6 high
+jq -n --arg cand "$candP" --arg s "$objectionP" \
+  '{contract:1, job_id:"j-p6", task:"TP6", operation:"review", status:"ok",
+    verdict:"request-changes", scope_complete:false, summary:$s,
+    candidate_sha:$cand, findings:[]}' \
+  > "$repoP/.orchid/reviews/TP6-a1-reviewer.json"
+
+decisionP6="$(drive_review_decision "$repoP" TP6)"
+detailP6="$(printf '%s' "$decisionP6" | cut -f2-)"
+assert_match "verdict=request-changes" "$detailP6" "both entries are still emitted: the verdict one..."
+assert_match "scope_complete=false" "$detailP6" "...and the scope one"
+assert_eq 1 "$(grep -o -e '(summary: ' <<<"$detailP6" | wc -l | tr -d ' ')" \
+  "but the envelope's one summary is carried exactly once across them, not repeated per entry"
+green_case "a review that both rejects and reports incomplete scope emits both entries and quotes its summary once"

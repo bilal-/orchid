@@ -2152,12 +2152,46 @@ reply for `FINDING: <low|medium|high>: <title>` lines alongside the
 there; the other shipped `review` adapters ask for a `VERDICT:` line only and
 always write `findings: []` (`FINDING:` lines belong to the `critique`
 prompt), so with them approval turns on `verdict` and `scope_complete` alone.
-An empty `findings[]` is never itself a signal — a reviewer that found
-nothing to report writes the same empty array. A NON-empty one, though, is
-decisive on its own: on a task whose `blocking_severity` is `medium` — the
-fallback when the field is absent, and what `templates/task-migrate.md` and
-`templates/task-refactor.md` ship, though `templates/task.md` and
-`templates/task-test.md` ship `high` — one `medium`
+On an APPROVING review an empty `findings[]` is never itself a signal — a
+reviewer that found nothing to report writes the same empty array. On one
+that WITHHOLDS approval it is, and the two must not be read the same way
+(dogfood F32, reproduced independently in r-002): a `request-changes` verdict
+whose whole substance sits in the free-text `summary` leaves every
+severity-based gate weighing an empty array, and the approval line's "no
+finding at or above `<severity>`" would then report a weighing that never
+happened. `orchid jobs reconcile` closes that where the envelope becomes
+durable evidence — it lifts such a summary into `findings[]` as one
+`high`-severity entry marked `synthesized: true` (docs/specs/plugins.md has
+the exact shape), so what any gate later reads carries the objection. The
+envelope is never quarantined for it: the verdict-only adapters above write
+`findings: []` on every review, so refusing it would destroy real objections
+and park the task at a `review-evidence` boundary with nothing to read. The
+`review-conflict` boundary record names the gap and the substance too —
+`<file>:verdict=request-changes:findings=0 (summary: "…")` — because the
+arbiter that record wakes should not have to `jq` the raw envelope to learn
+what the objection was. The blocking-finding entry names itself for the same
+reason, `<file>:finding>=medium ("…")` quoting the title of the worst finding
+at or above the threshold: that arm fires when every verdict said `approve`,
+so its entry is the only warning the arbiter gets. An incomplete-scope report
+is the third entry of the same record and carries the summary the same way —
+`<file>:scope_complete=false (summary: "…")`, since which part of the change
+the reviewer could not reach is in that prose and this entry, too, fires on
+its own behind an approving verdict; an envelope's summary is quoted once
+across its entries rather than once per entry. All three quoted strings are
+engine-written free text folded to one line before they travel (they share a
+TAB-separated record with the decision word). The APPROVE arm states the same
+fact from the other side, because none of those reaches it: "no finding
+at or above `<severity>`" reads identically whether the gate weighed six
+findings that all ranked below the threshold or weighed an empty array, so the
+approval line now carries the count — `N finding(s) filed … and weighed
+against it`, or `NO findings were filed … so the severity gate weighed an
+empty array and this approval rests on verdict + scope_complete alone`, which
+is the routine and correct reading for a verdict-only adapter. It is
+disclosure: the threshold test itself is unchanged. A NON-empty `findings[]`,
+however it got there, is decisive on its own: on a task whose
+`blocking_severity` is `medium` — the fallback when the field is absent, and
+what `templates/task-migrate.md` and `templates/task-refactor.md` ship, though
+`templates/task.md` and `templates/task-test.md` ship `high` — one `medium`
 finding turns an all-`approve`, all-`scope_complete` review set into a
 `review-conflict` boundary. Approve-with-a-nit is not a state this gate has;
 that is what arbitration is for.
