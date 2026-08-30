@@ -3416,6 +3416,19 @@ PUMP_DONE="$PUMP_PROOF/repo-complete"
 mkdir -p "$PUMP_DONE/.orchid"
 printf -- '---\nrun_status: complete\nrun_id: inv15-pump-done\n---\n# Roadmap\n' \
   > "$PUMP_DONE/.orchid/roadmap.md"
+# A REAL CHECKOUT, and it is the fixture's own subject rather than setup (T036).
+# The pump asks whether the repository behind this directory still exists
+# BEFORE it asks whether the run is finished, and that ordering is deliberate:
+# a run reaching `complete` is the likeliest moment for its checkout to be torn
+# down, and the `complete` arm's cheerful `exit 0` would swallow the broken-
+# target refusal if it came first. A fixture that is not a checkout is
+# therefore answered by the LIVENESS arm -- so this section's green run would
+# never produce `pump: run complete` at all, and the red run's absence of that
+# line would be inherited from a verdict the pump never reaches rather than
+# caused by the stale-root gate this section measures.
+git init -q "$PUMP_DONE"
+[ -d "$PUMP_DONE/.git" ] \
+  || fail "INV-15: the finished-run fixture must be a real git checkout, or the pump answers it with its broken-target refusal and the 'run complete' verdict measured below is never produced at all"
 # The pump's remaining verdict, and it is BUILT rather than argued from the
 # other two, because the predicate behind it is a different one:
 # orchid_split_brain is true when .orchid/tasks or .orchid/journal.md exists

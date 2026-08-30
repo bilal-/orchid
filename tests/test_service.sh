@@ -666,6 +666,10 @@ rm -rf "$WORK2"
 #       conditional operation, not two commands. A refused uninstall must never
 #       reach `git worktree remove`; the identical command with the identical
 #       fixture must remove the worktree once the uninstall succeeds.
+#   K13 RED/GREEN: WHICH schedule those arms act on. Every one of them used to
+#       re-hash the CURRENT repo path, which stops naming the installed
+#       schedule the moment a checkout is moved. Identity comes from the
+#       binding twins install wrote, and twins that disagree are refused.
 # ===========================================================================
 source "$REPO_ROOT/lib/common.sh"
 
@@ -1813,6 +1817,141 @@ assert_match 'service uninstall --repo' "$td_notwt" "and names the half that doe
 [ -s "$SCHED_LOG" ] \
   && fail "and no scheduler call may have been made at all -- that is what 'before the uninstall' means"
 red_case "teardown refuses a non-worktree checkout before uninstalling anything, naming the uninstall instead"
+
+# -- K13: the schedule a removal acts on is the one INSTALL RECORDED --------
+# `install` derives its label by hashing the canonical repo path, and every
+# removing arm above used to re-derive it the same way. That is the same
+# schedule only while the checkout stays where it is, and `git worktree move`
+# is the ordinary way it stops being: the repo-local binding travels INSIDE the
+# worktree, the machine-local copy never moves at all, and the path they were
+# hashed from is now nobody's. Re-hashed, `uninstall` asked about a label that
+# was never installed -- it found no plist and no binding, reported `no service
+# installed`, and left a launchd agent firing every interval with both its
+# records on disk and no verb able to name them. That is this task's own
+# leftover, reached through a rename instead of a deletion.
+MV_MAIN="$BIND/mv-main"
+mkdir -p "$MV_MAIN"
+(
+  cd "$MV_MAIN" || exit 1
+  git init -q .
+  # Same shape as K12's fixture, and for the same reason: runtime/ ignored and
+  # .orchid/ committed, so the worktree git sees is CLEAN and the green arm
+  # exercises a plain `git worktree remove` rather than a --force that would
+  # mask a removal git had refused.
+  printf '.orchid/runtime/\n' > .gitignore
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: complete\nrun_id: r-mv\n---\n# Roadmap\n' > .orchid/roadmap.md
+  git add .gitignore .orchid
+  git commit -q -m root
+  git worktree add -q -b mv-integration ../mv-wt
+) || fail "K13 fixture: could not build a main checkout with a linked integration worktree"
+[ -d "$BIND/mv-wt" ] || fail "K13 fixture: the linked worktree was not created"
+MV_WT="$(cd "$BIND/mv-wt" && pwd -P)"
+trust_repo "$MV_WT"
+
+mv_inst="$("$SERVICE" install --repo "$MV_WT" --interval-s 240 --dry-run 2>&1)"; rc=$?
+assert_eq 0 "$rc" "the moved-worktree fixture installs a schedule at the ORIGINAL path first (out: $mv_inst)"
+mv_label="$(echo "$mv_inst" | grep -oE "$label_re" | head -n1)"
+mv_plist="$HOME/Library/LaunchAgents/$mv_label.plist"
+mv_mrec="$HOME/.orchid/services/$mv_label.json"
+[ -f "$mv_plist" ] || fail "K13 fixture: the install must have placed the plist"
+[ -f "$mv_mrec" ] || fail "K13 fixture: the install must have written the machine-local binding"
+
+# THE MOVE, through git's own verb -- the thing an operator actually does, not
+# a hand-built approximation of its result.
+git -C "$MV_MAIN" worktree move "$MV_WT" "$BIND/mv-wt-moved" \
+  || fail "K13 fixture: 'git worktree move' failed, so nothing below is about a moved worktree"
+MV_NEW="$(cd "$BIND/mv-wt-moved" && pwd -P)"
+mv_rec="$MV_NEW/.orchid/runtime/service.json"
+[ -f "$mv_rec" ] \
+  || fail "K13 fixture: the repo-local binding must have travelled inside the checkout, or the move took the very record this section is about"
+[ ! -e "$MV_WT" ] || fail "K13 fixture: the original path must be gone, or the checkout was copied rather than moved"
+
+# THE WITNESS THAT MAKES EVERY ASSERTION BELOW NON-VACUOUS: both records still
+# name the path the schedule was installed against, and that is not where this
+# checkout is any more -- so a label hashed from the CURRENT path cannot be the
+# one the schedule was installed under.
+assert_eq "$MV_WT" "$(jq -r '.repo' "$mv_rec")" \
+  "the binding still names the path it was installed against, which the checkout has left"
+assert_eq "$MV_WT" "$(jq -r '.repo' "$mv_mrec")" \
+  "and so does the machine-local copy, which never moved at all"
+
+# The resolution itself, at the library boundary, before any verb is asked to
+# act on it -- the same place K9/K10 pin the write-side invariant.
+rc=0
+orchid_service_identity "$MV_NEW" || rc=$?
+assert_eq 0 "$rc" \
+  "the twins must resolve for a moved checkout: they were written from one staged file and the move touched neither"
+assert_eq "$mv_label" "$ORCHID_SERVICE_ID_LABEL" \
+  "and resolve to the label INSTALL created, never to a hash of the path the checkout now sits at"
+assert_eq twins "$ORCHID_SERVICE_ID_SOURCE" \
+  "from BOTH halves -- the machine-local copy is found by LABEL, since finding it by path is the same mistake one indirection further along"
+
+# RED: twins that DISAGREE are refused rather than guessed at. A record edited
+# by hand, or a checkout COPIED rather than moved, would otherwise have this
+# unload an agent belonging to a different checkout -- or clear the last name
+# the one here has.
+cp "$mv_mrec" "$mv_mrec.keep" || fail "K13 fixture: could not stash the machine-local twin"
+jq '.repo = "/somewhere/else"' "$mv_mrec.keep" > "$mv_mrec" \
+  || fail "K13 fixture: could not stage a tampered machine-local twin"
+rc=0
+mv_tamper="$(svc_teardown_notfound 'launchctl (unload|list)' --repo "$MV_NEW" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "a teardown whose two binding records disagree must refuse, not pick one of them (out: $mv_tamper)"
+assert_match 'do not name the same schedule' "$mv_tamper" \
+  "and says which fact stopped it -- the launchd answer here is the one that CLEARS, so this cannot be some other refusal"
+assert_match 'reconcile or delete the wrong record' "$mv_tamper" "and names the step that resolves it"
+[ -d "$MV_NEW" ] || fail "and it removes nothing: not the worktree"
+[ -f "$mv_plist" ] || fail "nor the plist"
+[ -f "$mv_rec" ] || fail "nor the repo-local binding"
+[ -f "$mv_mrec" ] || fail "nor the machine-local one"
+[ -s "$SCHED_LOG" ] \
+  && fail "and makes no scheduler call at all -- an identity nothing agrees on is refused before launchd is asked anything about it"
+red_case "a teardown whose binding twins disagree about the schedule they name removes nothing and asks the scheduler nothing"
+mv "$mv_mrec.keep" "$mv_mrec" || fail "K13 fixture: could not restore the machine-local twin"
+
+# RED: the identity resolves, and every refusal the schedule's own liveness
+# earns still holds through the moved path. Pinned by the refusal's TEXT and by
+# the label it names, never by its exit status alone: re-hashed, this same
+# command also exited nonzero -- with `no service installed`, about a schedule
+# that never existed, while the real one kept firing.
+rc=0
+mv_red="$(svc_teardown_failing 'launchctl (unload|list)' --repo "$MV_NEW" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a teardown whose launchd query never answered must refuse (out: $mv_red)"
+assert_match 'launchd could not be asked' "$mv_red" \
+  "and it must be the LIVENESS refusal -- 'no service installed' is a different nonzero, about a label the current path hashes to and nothing ever installed"
+assert_match "$mv_label" "$mv_red" \
+  "and it names the label install created, not one derived from where the checkout was moved to"
+[ -d "$MV_NEW" ] || fail "THE FINDING: nothing is removed -- the moved worktree stands"
+[ -f "$mv_plist" ] || fail "and the plist, the only path an unload can name that agent by"
+[ -f "$mv_rec" ] || fail "and the repo-local binding, which is what keeps the removal guard refusing"
+[ -f "$mv_mrec" ] || fail "and its machine-local copy, the only name that would outlive the checkout"
+rc=0
+orchid_service_removal_guard "$MV_NEW" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "and the moved checkout is still guarded against removal"
+red_case "a moved checkout's teardown resolves the schedule install recorded and preserves every refusal that schedule's liveness earns"
+
+# GREEN twin: the same command against the same moved fixture, differing only
+# in what launchctl answered. This is the whole of the finding in one line --
+# the ORIGINAL schedule ends, both records go, and the checkout at its NEW path
+# is removed.
+rc=0
+mv_green="$(svc_teardown_notfound 'launchctl (unload|list)' --repo "$MV_NEW" 2>&1)" || rc=$?
+assert_eq 0 "$rc" \
+  "the identical teardown succeeds once launchd answers that it holds no such job (out: $mv_green)"
+assert_match "$mv_label" "$mv_green" "and it is the ORIGINAL schedule it reports having ended"
+assert_match 'removed the integration worktree' "$mv_green" "and the removal half then runs"
+[ -f "$mv_plist" ] \
+  && fail "the plist install created must be gone -- re-hashed, this teardown left it in place and firing"
+[ -f "$mv_mrec" ] \
+  && fail "and the machine-local binding, which was the last thing on this machine that could name it"
+[ -f "$mv_rec" ] && fail "and the repo-local binding went with the checkout"
+[ -d "$MV_NEW" ] && fail "and the moved worktree is removed"
+mv_wt_list="$(git -C "$MV_MAIN" worktree list 2>&1)"
+grep -qF 'mv-wt-moved' <<<"$mv_wt_list" \
+  && fail "and git must no longer have the moved worktree registered"
+green_case "a teardown of a MOVED worktree ends the schedule install recorded, clears both binding records, and removes the checkout at its new path"
+
 unset ORCHID_SERVICE_OS
 
 # ===========================================================================

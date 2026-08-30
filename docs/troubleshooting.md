@@ -196,6 +196,31 @@ WARN: pump service com.orchid.pump.<hash> is still installed for /path/to/repo,
 That line is the difference between a schedule that was installed and never
 fired and one that is failing on its interval right now.
 
+**A checkout that MOVED keeps its schedule.** `install` derives the label by
+hashing the checkout's canonical path, but `uninstall` and `teardown` never
+re-derive it — they read it out of the binding records `install` wrote. The
+repo-local half travels inside the worktree and the machine-local half never
+moves at all, so after a `git worktree move` both verbs still end the schedule
+that is genuinely installed. Re-hashed from the new path they would ask about a
+label nothing ever installed, report `no service installed`, and leave the agent
+firing every interval with no verb able to name it.
+
+The two records have to agree about which schedule that is. A repo-local record
+and its machine-local twin naming different labels, platforms, repositories or
+artifacts are refused with nothing removed and no scheduler call made — that
+shape is a record edited by hand, or a checkout **copied** rather than moved,
+and acting on either half alone would unload another checkout's agent or clear
+the last name this one has:
+
+```
+orchid: refusing to remove anything for /path/to/repo: its two binding records
+  do not name the same schedule
+orchid: <repo>/.orchid/runtime/service.json and its machine-local copy must agree
+  on label, platform, repository and artifact ...
+orchid: ... reconcile or delete the wrong record, then re-run: orchid service
+  teardown --repo /path/to/repo
+```
+
 **`--dry-run` previews an uninstall without performing it.** It prints the
 `launchctl`/`crontab` command it would run and names the plist (or `pump.cron`
 record) and the binding record it would remove — and removes none of them. The

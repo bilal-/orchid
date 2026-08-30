@@ -101,7 +101,13 @@ a crontab line.
                never stacks a second launchd job or a second crontab line.
   uninstall  remove exactly what install created for --repo (the plist
                file + its launchctl load, or the marker-guarded crontab
-               line), and clear the binding record. idempotent: refuses
+               line), and clear the binding record. which schedule that is
+               comes from the binding records install wrote, not from
+               hashing --repo's path, so a checkout MOVED since it was
+               installed (`git worktree move`) still ends the schedule it
+               really has. the two records must agree about it: one edited
+               by hand, or a checkout copied rather than moved, is refused
+               with nothing removed. idempotent: refuses
                cleanly (a plain message, no launchctl/crontab touched) when
                nothing is installed for --repo -- safe to call blind.
                removes nothing, and refuses, when the scheduler could not
@@ -194,6 +200,72 @@ _svc_hash12() {
   fi
 }
 _svc_label() { echo "com.orchid.pump.$(_svc_hash12 "$1")"; }
+
+# ---------------------------------------------------------------------------
+# WHICH SCHEDULE A REMOVAL ACTS ON
+# ---------------------------------------------------------------------------
+# `install` hashes the label from the canonical repo path, and while a checkout
+# stays where it is that is the same thing as "the schedule bound here". A
+# REMOVAL cannot assume it: `git worktree move` changes the path while both
+# binding records keep naming the schedule that was installed, so the hash of
+# the CURRENT path names one that never existed. Derived from it, `uninstall`
+# found no plist and no binding, said `no service installed` for an agent still
+# firing every interval, and left both records behind with no verb able to name
+# them -- this task's own leftover, reached through a rename.
+#
+# So every removing subverb resolves its identity from what INSTALL RECORDED,
+# through orchid_service_identity (lib/common.sh): the repo-local record names
+# the label, its machine-local twin is looked up BY THAT LABEL rather than by
+# path, and the two must agree. Disagreement is refused, not guessed at.
+#
+# Set by _svc_identity and read for the rest of the call. THE REMOVING SUBVERBS
+# ARE THE CALLERS, and `status` is deliberately not one. This resolution fails
+# CLOSED -- records that disagree end the process rather than being guessed at
+# -- and `status` promises the opposite (it always exits 0; a query about a
+# checkout is never a failure), so wiring it in would trade a report that names
+# a stale label for one that refuses to report at all. What is at stake differs
+# too: a label reported wrongly costs a confusing line, while a label REMOVED
+# wrongly unloads another checkout's agent or orphans this one's.
+SVC_LABEL=""
+SVC_ARTIFACT=""
+SVC_ARTIFACT_PLATFORM=""
+
+# _svc_identity <repo> -- resolve SVC_LABEL/SVC_ARTIFACT/SVC_ARTIFACT_PLATFORM,
+# or refuse. Falls back to the path hash only when NO record names a schedule
+# here at all (an install predating the binding record); that is a different
+# answer from "the records disagree", which exits.
+_svc_identity() {
+  local repo="$1"
+  if ! orchid_service_identity "$repo"; then
+    echo "orchid: refusing to remove anything for $repo: its two binding records do not name the same schedule" >&2
+    echo "orchid: $(orchid_service_repo_record "$repo") and its machine-local copy must agree on label, platform, repository and artifact — one has been edited, or this checkout was COPIED from the one the schedule was installed against rather than moved" >&2
+    orchid_die "acting on either half alone would unload another checkout's agent or clear the last name this one has; reconcile or delete the wrong record, then re-run: $(_svc_rerun_command "$repo")"
+  fi
+  SVC_LABEL="$ORCHID_SERVICE_ID_LABEL"
+  SVC_ARTIFACT="$ORCHID_SERVICE_ID_ARTIFACT"
+  SVC_ARTIFACT_PLATFORM="$ORCHID_SERVICE_ID_PLATFORM"
+  [ -n "$SVC_LABEL" ] || SVC_LABEL="$(_svc_label "$repo")"
+}
+
+# _svc_artifact <platform> <derived> -- the artifact a removal acts on: the one
+# INSTALL RECORDED where that record belongs to this platform and is still
+# there, and this file's own derivation otherwise.
+#
+# THE TWO PLATFORMS' ARTIFACTS LIVE IN DIFFERENT PLACES, which is why this is a
+# preference rather than a substitution. The launchd plist is machine-local: a
+# moved checkout does not move it, so the recorded path is exactly right. The
+# cron record is repo-local -- it travels INSIDE the checkout -- so after a move
+# the recorded path names a directory that is gone while the file itself is
+# right here under the new one. Preferring the record only while it is still a
+# file gives both.
+_svc_artifact() {
+  local plat="$1" derived="$2"
+  if [ "$SVC_ARTIFACT_PLATFORM" = "$plat" ] && [ -n "$SVC_ARTIFACT" ] && [ -f "$SVC_ARTIFACT" ]; then
+    printf '%s\n' "$SVC_ARTIFACT"
+  else
+    printf '%s\n' "$derived"
+  fi
+}
 
 # _svc_platform -- "darwin" (launchd) or "linux" (cron fallback, the
 # default for anything that isn't Darwin). ORCHID_SERVICE_OS is a TEST-ONLY
@@ -801,8 +873,15 @@ _svc_install_darwin() {
 
 _svc_uninstall_darwin() {
   local repo="$1" dry="$2"
-  local label; label="$(_svc_label "$repo")"
-  local plist_path="$HOME/Library/LaunchAgents/$label.plist"
+  # The recorded identity, never the current path's hash -- see _svc_identity.
+  # A checkout that has been moved keeps its schedule, and everything below
+  # (the plist to unload, the launchd job asked about, the binding records
+  # cleared afterwards) has to be the one install created rather than the one
+  # this path would hash to now.
+  _svc_identity "$repo"
+  local label="$SVC_LABEL"
+  local plist_path
+  plist_path="$(_svc_artifact darwin "$HOME/Library/LaunchAgents/$label.plist")"
   # A binding record with no plist behind it is a REACHABLE state, not a
   # contradiction: install writes the record first, so anything that fails
   # between the two leaves one. That record makes the removal guard refuse the
@@ -982,8 +1061,13 @@ _svc_install_linux() {
 
 _svc_uninstall_linux() {
   local repo="$1" dry="$2"
-  local label; label="$(_svc_label "$repo")"
-  local record; record="$(_svc_cron_record_path "$repo")"
+  # Same resolution as the darwin branch, and it matters here for the MARKER:
+  # the crontab line this rewrite strips is matched by `# orchid-service:
+  # <label>`, so a re-hashed path leaves the operator's real crontab exactly as
+  # it was while reporting the schedule removed.
+  _svc_identity "$repo"
+  local label="$SVC_LABEL"
+  local record; record="$(_svc_artifact linux "$(_svc_cron_record_path "$repo")")"
   # The cron record lives INSIDE the checkout, so a schedule that outlived its
   # repository has none left to reason from -- and that is precisely the case
   # an operator most needs uninstall for. Either half of the binding is enough

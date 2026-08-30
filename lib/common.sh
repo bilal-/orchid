@@ -1757,6 +1757,115 @@ orchid_service_binding_label_for() {
   return 1
 }
 
+# orchid_service_binding_field <record> <key> -- one field out of a binding
+# record as a plain string; nonzero (and nothing on stdout) when the record is
+# not there or does not parse. `tostring` because `interval_s` is written as a
+# NUMBER and every caller here compares strings.
+orchid_service_binding_field() {
+  local f="$1" k="$2"
+  [ -f "$f" ] || return 1
+  jq -r --arg k "$k" '(.[$k] // "") | tostring' "$f" 2>/dev/null || return 1
+}
+
+# The three facts orchid_service_identity resolves, and its account of where
+# they came from. Globals rather than a composed stdout line: `artifact` is a
+# path that may contain anything, and a caller splitting a joined line back
+# apart is a second parser to keep in step with the writer.
+ORCHID_SERVICE_ID_LABEL=""
+ORCHID_SERVICE_ID_ARTIFACT=""
+ORCHID_SERVICE_ID_PLATFORM=""
+ORCHID_SERVICE_ID_SOURCE=""
+
+# orchid_service_identity <repo> -- WHICH SCHEDULE IS BOUND TO THIS CHECKOUT.
+# Sets the four globals above and returns 0; returns 1, setting nothing, when
+# the two binding records disagree about the schedule they name.
+#
+# WHY THIS IS NOT THE PATH HASH. `orchid service install` derives its launchd
+# label / cron marker by hashing the canonical repo path, and for an INSTALL
+# that is the same thing as "the schedule for this checkout". For a REMOVAL it
+# is not, and `git worktree move` is the ordinary way the two come apart: the
+# repo-local record travels INSIDE the checkout and the machine-local one never
+# moves at all, while the path they were hashed from is now somebody else's. A
+# removal that re-hashed the current path asked about a schedule that was never
+# installed -- it found no plist and no binding under that label and reported
+# `no service installed`, for a launchd agent still firing every interval, whose
+# records it then left behind with no verb able to name them. That is this
+# task's own finding reached through a rename instead of through a deletion.
+#
+# THE TWINS ARE RESOLVED AS TWINS. The repo-local record names the label; the
+# machine-local half is then looked up BY THAT LABEL, never by path -- looking
+# it up by path is the same mistake one indirection further along, since the
+# `repo` it recorded is the pre-move one. Both halves are written from one
+# staged file (orchid_service_binding_write), so where both are present they
+# must agree, and where they do not the answer is a refusal rather than a guess:
+# a record edited by hand, or a checkout COPIED rather than moved, would
+# otherwise have this unload an agent belonging to a different checkout, or
+# clear the last name the one here has.
+#
+# The four compared fields are the IDENTITY of the schedule and deliberately
+# not the whole record. `installed_at` differs between the halves after a
+# re-install whose second rename failed -- a state the write path commits to
+# leaving behind (see its own note) and which `uninstall` must still be able to
+# clear -- and `interval_s` moves whenever an install is re-run with a new
+# interval. Comparing either would turn a recoverable residue into a wedge.
+#
+# THREE ANSWERS, and the empty label is the third rather than a failure: no
+# record names a schedule here at all, which is what an install predating the
+# binding record leaves, and the caller falls back to the path hash for it. A
+# disagreement is the only nonzero -- "I could not ask" and "the answer is no"
+# must not arrive as the same value.
+orchid_service_identity() {
+  local repo="$1" rrec mrec="" rlabel="" mlabel="" k a b
+  ORCHID_SERVICE_ID_LABEL=""; ORCHID_SERVICE_ID_ARTIFACT=""
+  ORCHID_SERVICE_ID_PLATFORM=""; ORCHID_SERVICE_ID_SOURCE=""
+  rrec="$(orchid_service_repo_record "$repo")"
+  if [ -f "$rrec" ]; then
+    rlabel="$(orchid_service_binding_field "$rrec" label)" || rlabel=""
+  fi
+  if [ -n "$rlabel" ]; then
+    mrec="$(orchid_service_machine_record "$rlabel")" || mrec=""
+    if [ -n "$mrec" ] && [ -f "$mrec" ]; then
+      for k in label platform repo artifact; do
+        a="$(orchid_service_binding_field "$rrec" "$k")" || a=""
+        b="$(orchid_service_binding_field "$mrec" "$k")" || b=""
+        [ "$a" = "$b" ] || return 1
+      done
+      ORCHID_SERVICE_ID_SOURCE=twins
+    else
+      # The machine-local half is missing, which is the residue an install that
+      # failed between its two renames leaves -- and it never reached the
+      # scheduler, so the record here is both the only evidence and a harmless
+      # one. It must stay usable or the removal guard is wedged by a record no
+      # verb can clear.
+      ORCHID_SERVICE_ID_SOURCE=repo-only
+    fi
+    ORCHID_SERVICE_ID_LABEL="$rlabel"
+    ORCHID_SERVICE_ID_ARTIFACT="$(orchid_service_binding_field "$rrec" artifact)" \
+      || ORCHID_SERVICE_ID_ARTIFACT=""
+    ORCHID_SERVICE_ID_PLATFORM="$(orchid_service_binding_field "$rrec" platform)" \
+      || ORCHID_SERVICE_ID_PLATFORM=""
+    return 0
+  fi
+  # No repo-local half. Either the checkout is already gone -- the case a
+  # leftover schedule is uninstalled in -- or the record inside it was removed
+  # by hand; the machine-local store is then the only thing that can name the
+  # schedule, and it is searched by the path it RECORDED (an exact string, since
+  # a directory that no longer exists cannot be resolved).
+  if mlabel="$(orchid_service_binding_label_for "$repo")"; then
+    ORCHID_SERVICE_ID_LABEL="$mlabel"
+    if mrec="$(orchid_service_machine_record "$mlabel")"; then
+      ORCHID_SERVICE_ID_ARTIFACT="$(orchid_service_binding_field "$mrec" artifact)" \
+        || ORCHID_SERVICE_ID_ARTIFACT=""
+      ORCHID_SERVICE_ID_PLATFORM="$(orchid_service_binding_field "$mrec" platform)" \
+        || ORCHID_SERVICE_ID_PLATFORM=""
+    fi
+    ORCHID_SERVICE_ID_SOURCE=machine-only
+    return 0
+  fi
+  ORCHID_SERVICE_ID_SOURCE=none
+  return 0
+}
+
 # orchid_service_refusal_path <label> -- where a scheduled pump leaves the
 # reason it refused to run. Beside the machine-local binding it belongs to, so
 # it survives the checkout exactly as that record does.
