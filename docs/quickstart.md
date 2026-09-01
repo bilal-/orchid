@@ -238,8 +238,24 @@ runners/orchid-launch plan plan_critic critique
 orchid jobs reconcile
 # fold .orchid/reviews/plan-a1-plan_critic.json's findings back into your tasks,
 # repeat until nothing at/above medium severity remains, then:
+orchid plan crosscheck
 orchid plan apply --reason "initial plan"
 ```
+
+`orchid plan crosscheck` asks what the PREVIOUS run left behind — ledger
+items in its archived journal, and the active lessons carried across the
+rollover — and names every one your new plan does not appear to consider.
+On a repository's first run it says so and there is nothing to do. Once
+there is a previous run, `orchid plan apply` runs the same check itself and
+refuses while any carried item is neither covered by a task nor deferred
+with `orchid plan defer <item-id> --reason "..."`.
+`orchid run advance` applies the same refusal on every edge out of
+`planning`, so it cannot be sidestepped by leaving `planning` first. One
+journal entry often records several findings at once, so entries written as
+`(1) … (2) …` are listed as `r-001#57.1`, `r-001#57.2` and answered
+separately — covering one never closes its siblings. See PROTOCOL.md's
+PLANNING section for what counts as coverage and why it is deliberately
+cautious.
 
 ## 5. Start the orchestrator and walk away
 
@@ -286,7 +302,9 @@ Installs a launchd agent (macOS) or a crontab line (Linux) that runs
 `240`) — a no-op most passes, and a single headless tick whenever the
 interactive session's lease has gone stale. `orchid service status` reports
 whether it's loaded and when it last ran; `orchid service uninstall`
-reverses it.
+reverses it, and `orchid service teardown` does that and removes the
+integration worktree in one conditional operation — see
+[tearing it down](#tearing-it-down).
 
 The pump and direct `runners/orchid-tick` entry point re-check trust on every
 invocation, before creating runtime state, draining the notification outbox,
@@ -317,10 +335,36 @@ and `orchid service uninstall` intentionally remain available.
 ```sh
 orchid status               # task table, engines, open questions
 orchid status --explain     # + unattended gate/provenance and dispatch reasons
+orchid status --jobs        # + a process table for the run in place of the
+                             # bare task/state pairs (see below)
 orchid status --html        # writes a static page to runtime/status.html —
                              # open it directly, "check from another room"
 orchid status --html --explain # + gate/provenance in page; stdout remains its path
 ```
+
+A run's jobs get their own table — one row per outstanding job, with the job
+id, task, role, operation, attempt, engine, pid, state, age, elapsed, budget
+consumed, who launched it, and its log path:
+
+```sh
+orchid jobs ls              # the process table
+orchid jobs ls --watch      # ... refreshed every 5s (--interval N to change)
+orchid jobs ls --all        # + jobs that already finished: what this task ran,
+                             # in what order, and how long each took
+```
+
+Two things it is careful about. **State is computed, never read**: a manifest
+records the pid its launcher stamped and nothing ever unstamps it, so every row
+asks the same predicates as `jobs check` — a stamped job whose process is gone
+reads `dead` (or `delivered`, if its envelope is written and simply not
+reconciled yet); `pid: 0` with no log reads `never-started`, with a fresh log
+reads `prepared`, and with a log silent past `stall_minutes` reads `unstamped`.
+**Age is shown beside it**: `AGE` is how long since the job last wrote anything.
+Dead jobs without envelopes, never-started jobs past the threshold, unstamped
+jobs, and running jobs silent past the threshold get a `WARNING:` line on
+stderr — which `orchid status` prints in every mode, with no flag, because a
+run whose only in-flight job died is exactly the state nobody thinks to go
+looking at a table for.
 
 A genuine blocker raises a question in `BLOCKERS.md` and (if you configured
 [a notify channel](./engines/openclaw.md)) pings you outside the terminal.
@@ -334,14 +378,92 @@ orchid task unblock <id> --reason "..."
 
 ## 8. Done
 
-Once every task is `done`, the orchestrator runs the acceptance procedure
-itself (`orchid run advance accepting`, coverage + acceptance checks,
-`orchid run accept --reason ... --evidence ...`) and `orchid status` shows
-`run_status: complete`. The integration branch now holds your finished
-product — pushing or deploying it from there is entirely up to you. Orchid's
+Once every task is `done`, the driver advances the run to `accepting` and
+stops. Complete the evidence before accepting: the canonical local-CI command
+must be recorded for the candidate and, after the last candidate merges, run
+once more from a checkout actually parked on the configured integration
+branch. Hosted CI is a third observation, made only after you push; a
+local-only run records it as not observed. Then run `orchid run accept
+--reason ... --evidence ...`, and `orchid status` shows `run_status: complete`.
+The integration branch now holds your finished product — pushing or deploying
+it from there is entirely up to you. Orchid's
 supported verbs do not push; see the
 [threat model](./specs/plugins.md#threat-model-consolidated) before treating
 that prompt policy as containment.
+
+It also holds the run's own bookkeeping. `.orchid/` — roadmap, journal,
+blockers, `plugins.lock`, every review envelope — is committed on that branch
+by design, because that is what makes a run survive a fresh checkout. If you
+merge the integration branch into a branch bound for your `main`, those files
+go with it, and in a large merge request they look like tooling and are
+approved as tooling. Decide which you want before you take the work across:
+[troubleshooting.md](./troubleshooting.md) — "Run state in your product's
+history" — has both answers, and describes the two guards that will tell you
+when it is happening (a warning from `orchid merge`, and a refused `git push`).
+
+### Tearing it down
+
+A finished run does not stop a schedule. Nothing does — not the last task
+merging, not `orchid run accept`, not `run_status: complete`. And a run does
+not finish by itself either: the pass that finds every task `done` advances it
+to `run_status: accepting` and stops there, because accepting a run is your
+judgment and takes an evidence file. So the ordinary end state of an unattended
+run is a schedule waking every `pump_interval_s` against a run only you can
+move — the pump, `orchid service status` and `orchid doctor` all say so, and
+name `orchid run accept` rather than pretending the run is over.
+
+If you installed the service in step 6, the launchd agent or crontab line is
+still firing every `pump_interval_s`, and once you accept the run every one of
+those wakes is a certain no-op. The
+pump says so on each of them and names the command below — but it says it
+before it has opened its own `pump.log`, so a scheduled wake reports it to the
+scheduler's `/dev/null` rather than to a log you can read afterwards.
+`orchid doctor` is the surface that does not depend on catching an invocation.
+
+So when you are done with the working checkout, the order matters — and it is
+one command, not two:
+
+```sh
+orchid service teardown --repo "$PWD"    # uninstall, then remove this worktree
+```
+
+`orchid service teardown` uninstalls the schedule and removes that worktree
+**only if the uninstall succeeded**. The uninstall refuses whenever it cannot
+prove the scheduler let the job go, and the removal is that refusal's opposite
+branch rather than the next line in your terminal — so a refusal cannot be
+followed by a removal that goes ahead anyway. It exits nonzero with the
+checkout untouched, and `--dry-run` removes neither half.
+
+If you would rather run the two commands yourself, chain them so the second
+cannot run without the first — and run the chain from your **main** checkout,
+because `git worktree remove` needs a repository to run in and the one you are
+removing is about to stop being one:
+
+```sh
+cd /path/to/your-project                                        # the main checkout
+orchid service uninstall --repo /path/to/your-project-orchid \
+  && git worktree remove /path/to/your-project-orchid
+```
+
+Orchid cannot refuse a `git worktree remove` or an `rm -rf` you type on its own
+— that reaches no orchid code at all. The `&&` is what makes the ordering hold
+there, and `orchid service teardown` is that same `&&` in a command you cannot
+half-run — and it finds the main checkout for you, so it works from anywhere.
+
+Reversed, you leave a scheduler waking on a timer against a directory that is
+no longer there, and the record naming that leftover schedule was inside the
+directory you just deleted. `orchid service status` names this ordering next
+to the schedule it applies to, and `orchid doctor` — run from anywhere on the
+machine, not just from the repository — warns about both ends of this: a
+binding whose repository is gone, and a binding whose run has already reached
+a terminal state, each with the teardown command that ends
+it. The pump itself refuses to run, loudly, rather than waking against a
+deleted path.
+
+`orchid service uninstall` is safe to run blind: it refuses cleanly, touching
+nothing, when no schedule is installed for that path. Add `--dry-run` to see
+exactly what it would run and remove without removing any of it — the schedule
+stays installed, and so do the records that name it.
 
 ## Before you hand this to someone else
 
@@ -360,6 +482,15 @@ it, and writes anonymized local evidence — check identities, durations, exit
 codes, and outcomes, never contents, paths, prompts, diffs, or secrets. What it
 cannot test locally, including the inbound half of the blocker round trip, it
 records as `not-tested` with the reason rather than as a pass.
+
+It executes exactly one thing inside that repository, and it says so on stderr
+as it does: the repository's own configured `verify=` command, once, in place,
+so the timing is measured instead of guessed. On someone else's project, read
+their `verify=` line before you run this — it is their code, running with your
+privileges, and the harness does not sandbox it. `--no-run-verify` skips it and
+records that probe as `not-tested`. Qualification itself asks for no
+acknowledgement; `orchid trust unattended` comes *after* this, once you know the
+repository is drivable.
 
 Full checklist, including the manual steps no harness can perform:
 [beta-qualification.md](./beta-qualification.md).

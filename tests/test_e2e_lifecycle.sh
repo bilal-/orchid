@@ -29,7 +29,7 @@ reconcile_until_ok() {
   local task="$1" tries=0 out=""
   while [ "$tries" -lt 50 ]; do
     out="$("$ORCHID_BIN" jobs reconcile)"
-    if printf '%s\n' "$out" | grep -Eq "^${task}[[:space:]]ok"; then
+    if grep -Eq "^${task}[[:space:]]ok" <<<"$out"; then
       "$ORCHID_BIN" jobs gc --older-than-s 0 >/dev/null   # THE TICK step 2, reconcile-first ordering
       printf '%s\n' "$out"
       return 0
@@ -201,9 +201,13 @@ run_ok "advance arbitrating" "$ORCHID_BIN" task advance T001 arbitrating \
 
 # ---------------------------------------------------------------------------
 # arbitrating -> merging: inline judgment (approve), journaled with kind
-# `arbitration` by the kernel itself (from=arbitrating).
+# `arbitration` by the kernel itself (from=arbitrating). Recorded through
+# `orchid task arbitrate`, which since T032 is the only public verb that
+# reaches an arbitration OUTCOME edge out of `arbitrating`; it derives `merging` from
+# the archetype and still takes the edge through `task advance`, so the journal
+# kind below is the same one.
 # ---------------------------------------------------------------------------
-run_ok "advance merging" "$ORCHID_BIN" task advance T001 merging \
+run_ok "arbitrate approve" "$ORCHID_BIN" task arbitrate T001 --result approve \
   --reason "approved for merge" >/dev/null
 assert_match "T001 arbitration" "$(cat .orchid/journal.md)" "journal records the arbitration entry"
 
@@ -232,7 +236,7 @@ git show "$integ:stub_feature.txt" >/dev/null 2>&1 \
 
 explain_out="$("$ORCHID_BIN" status --explain)"
 assert_match "T001[[:space:]]done[[:space:]].*-$" "$explain_out" "status --explain: T001 done, no outstanding reason"
-echo "$explain_out" | grep -qi "blocked\|FAIL" && fail "status --explain must be clean (no blocked/FAIL) once T001 is done"
+grep -qi "blocked\|FAIL" <<<"$explain_out" && fail "status --explain must be clean (no blocked/FAIL) once T001 is done"
 
 run_ok "run advance accepting" "$ORCHID_BIN" run advance accepting \
   --reason "all tasks done" >/dev/null
@@ -252,4 +256,4 @@ assert_match "run acceptance" "$journal" "journal contains the acceptance entry"
 
 final_explain="$("$ORCHID_BIN" status --explain)"
 assert_match "run_status: complete" "$final_explain" "final status --explain: run_status complete"
-echo "$final_explain" | grep -qi "blocked\|FAIL" && fail "final status --explain must be clean"
+grep -qi "blocked\|FAIL" <<<"$final_explain" && fail "final status --explain must be clean"

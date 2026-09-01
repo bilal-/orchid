@@ -3,7 +3,13 @@ set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
-source "$ORCHID_ROOT/lib/resolver.sh"
+source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
+# schedule.sh for schedule_attempt_budget alone: the merge_gate accounting at
+# the bottom of this file needs the task's rework cap, and that function is the
+# single home for that number (its own header says why). Read, never
+# re-derived here -- a second copy of `rework_max` is how a configurable cap
+# stops being configurable.
+source "$ORCHID_ROOT/lib/schedule.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 epoch_require "$repo"
 # task set/advance below run as child processes of THIS verb; ORCHID_EPOCH
@@ -33,6 +39,82 @@ fi
 status="$(fm_get "$tf" status)"
 [ "$status" = merging ] || orchid_die "task $id is not in merging (status: $status)"
 
+# Whole verb runs under the run lock (serializes concurrent merges); trap is
+# installed only AFTER a successful acquire, mirroring orchid-run's pattern.
+#
+# Taken HERE, ahead of the frontmatter and hook checks below rather than
+# after them, because the stale-evidence delete underneath it has to be
+# inside the lock: the file it removes is one a CONCURRENT merge of the same
+# task could be in the middle of writing, and the lock is the only thing that
+# makes "no other merge is running" true. Everything between the status gate
+# above and that acquire is a read.
+lock_acquire "$repo" >/dev/null || orchid_die "cannot acquire lock"
+wt=""
+out_tmp=""
+# Set to $repo only while this merge is inside its advance-then-refresh
+# window; see the block around the CAS below. Declared HERE, ahead of the
+# trap that reads it, because `set -u` makes an unset name fatal in the one
+# path that must never die.
+kernel_window=""
+merge_cleanup() {
+  # Note: this is an EXIT trap — it does not run on SIGKILL (-9). An
+  # operator (or an OOM-killer) that SIGKILLs the orchestrator process while
+  # this script is mid-merge leaves the temp worktree directory AND its
+  # `git worktree` registration behind: nothing can run to clean either up.
+  # The registration is reclaimed the same way a normal stale worktree would
+  # be — `git worktree prune` (here, and available to an operator directly,
+  # or via `orchid doctor` once it grows a check for this) — and the leaked
+  # directory under $TMPDIR is ordinary temp-file litter.
+  if [ -n "$wt" ] && orchid_service_removal_guard "$wt"; then
+    git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
+    rm -rf "$wt" 2>/dev/null || true
+    git -C "$repo" worktree prune >/dev/null 2>&1 || true
+  fi
+  # Merge-evidence temp file: guard against leaking it on a mid-path failure
+  # between its creation and its normal removal below.
+  if [ -n "$out_tmp" ]; then
+    rm -f "$out_tmp" 2>/dev/null || true
+  fi
+  # The advance-then-refresh window, closed on every exit path. Leaving it
+  # open would not suppress anything -- other verbs from this root refuse
+  # either way -- but until this process died they would be told a repair was
+  # in flight and to retry, which stops being true the instant this merge
+  # gives up. Liveness, not this line, is what keeps that bounded; this line
+  # is what keeps it honest.
+  if [ -n "$kernel_window" ]; then
+    orchid_kernel_refresh_close "$kernel_window"
+  fi
+  lock_release "$repo"
+}
+trap merge_cleanup EXIT
+
+# FIRST ACT OF A COMMITTED RUN: any $id-merge.log a PREVIOUS attempt left
+# behind goes now. From here on this run either writes its own or dies
+# without one, and until it does, that file is not a record but a trap -- the
+# merging->rework arm deliberately keeps merge evidence, so a task can come
+# back round to `merging` with a log still describing a candidate and a
+# merged tree that no longer exist. Deleting it is what lets a caller read
+# the file's PRESENCE as "this run got as far as validating", which
+# runners/orchid-drive does to avoid sending an operator to a log that is
+# absent or stale for the failure they actually hit (lesson L023).
+#
+# Placed at the TOP of the committed path rather than just before the temp
+# worktree is created, which is where it used to live. Every die between the
+# two leaves the task in `merging` with that stale file still on disk and the
+# driver's rule then misdirecting: a missing base_sha or branch, an
+# integration branch that does not exist, a refused before_merge hook, a
+# rebase that cannot get a worktree for the task branch, and -- the one no
+# reordering inside this verb could ever have covered -- a lock this process
+# did not get, whose die is above. That last one is why the driver ALSO
+# fingerprints the file across the call (runners/orchid-drive): a verb that
+# dies before it can clean anything up cannot be the only thing standing
+# between an operator and the wrong log.
+#
+# Safe against the concurrent merge whose log this could otherwise be: the
+# only path here holds the run lock, and a second merge of the same task
+# fails to acquire it and dies above without reaching this line.
+rm -f "$state/reviews/$id-merge.log"
+
 base_sha="$(fm_get "$tf" base_sha)"
 candidate_sha="$(fm_get "$tf" candidate_sha)"
 [ -n "$base_sha" ] && [ -n "$candidate_sha" ] || orchid_die "task $id missing base_sha/candidate_sha"
@@ -43,6 +125,43 @@ task_branch="$(fm_get "$tf" branch)"
 integ="$(config_get "$repo" integration_branch orchid/integration)"
 git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
   || orchid_die "integration branch '$integ' does not exist"
+
+# --- run-state containment (T037; dogfood finding, webBooks run) -----------
+# This verb is the one that grows the integration branch, and the integration
+# branch carries `.orchid/` -- roadmap, journal, BLOCKERS, plugins.lock, every
+# review envelope. That is by design and is what makes the run durable. What
+# is NOT by design is that state continuing on down the merge chain: on a real
+# product repository 14 of those files reached `main` this way, integration
+# branch -> feature branch -> MR, reviewed and approved because the diff was
+# large and the paths look like tooling.
+#
+# So before advancing anything, ask whether run state has ALREADY escaped the
+# run's own branches locally. If it has, every further merge this verb performs
+# is more run state queued up behind the same route, and the operator is the
+# only one who can decide what to do about it.
+#
+# A WARNING, not a refusal, and the choice is deliberate. The condition is not
+# created by this merge -- it is created by an operator's own `git merge`,
+# which the kernel never runs and, per PROTOCOL.md's Preamble, never may.
+# Refusing here would freeze a task in `merging` over something that already
+# happened, that this verb cannot undo, and whose only remedy is work on
+# branches orchid does not own; a run deadlocked behind a report is strictly
+# worse than a run that reports. The place a refusal IS safe -- reversible,
+# and squarely on orchid's side of the line -- is the boundary where the state
+# would leave the machine, and that refusal ships in templates/pre-push.sh.
+#
+# Best-effort and an `if`, never `x="$(...)" || true` on a bare line: nothing
+# about this advisory may cost the merge under `set -e`, and a repository
+# whose refs cannot be listed must lose the warning, never the verb.
+leaked_branches=""
+if leaked_out="$(orchid_leaked_run_state_branches "$repo" "$integ" 2>/dev/null)"; then
+  if [ -n "$leaked_out" ]; then
+    leaked_branches="$(printf '%s\n' "$leaked_out" | tr '\n' ' ')"
+  fi
+fi
+if [ -n "$leaked_branches" ]; then
+  echo "orchid: warning: orchid's own run state (.orchid/ — roadmap, journal, BLOCKERS, plugins.lock, review envelopes) is already carried, in the tree or in the history, by branch(es) OUTSIDE this run: ${leaked_branches}— merging $id advances $integ, and whatever route put run state on those branches puts the rest of it there too, then on into whatever THEY merge into. This is how a run's bookkeeping arrives on a product's main branch and gets approved as tooling. A branch is named here even if its tip no longer shows those files: deleting them is a further commit, not a removal, and every push and merge of that branch still carries the commits that added them. Nothing here is undone and nothing is prescribed — only you know what those branches are for. If run state does not belong on them, rebuild them without the commits that carry it (deleting the files is not enough) before they go anywhere — docs/troubleshooting.md 'Run state in your product's history'" >&2
+fi
 
 # --- before_merge kernel gate (v1-m3 Task 6; exit-code registry: 2 unknown
 # verb, 3 illegal transition, 5 rebase_rereview_required, 12 input_overflow,
@@ -101,34 +220,6 @@ if [ -n "$hook_bindings" ]; then
   done <<< "$hook_bindings"
 fi
 
-# Whole verb runs under the run lock (serializes concurrent merges); trap is
-# installed only AFTER a successful acquire, mirroring orchid-run's pattern.
-lock_acquire "$repo" >/dev/null || orchid_die "cannot acquire lock"
-wt=""
-out_tmp=""
-merge_cleanup() {
-  # Note: this is an EXIT trap — it does not run on SIGKILL (-9). An
-  # operator (or an OOM-killer) that SIGKILLs the orchestrator process while
-  # this script is mid-merge leaves the temp worktree directory AND its
-  # `git worktree` registration behind: nothing can run to clean either up.
-  # The registration is reclaimed the same way a normal stale worktree would
-  # be — `git worktree prune` (here, and available to an operator directly,
-  # or via `orchid doctor` once it grows a check for this) — and the leaked
-  # directory under $TMPDIR is ordinary temp-file litter.
-  if [ -n "$wt" ]; then
-    git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
-    rm -rf "$wt" 2>/dev/null || true
-    git -C "$repo" worktree prune >/dev/null 2>&1 || true
-  fi
-  # Merge-evidence temp file: guard against leaking it on a mid-path failure
-  # between its creation and its normal removal below.
-  if [ -n "$out_tmp" ]; then
-    rm -f "$out_tmp" 2>/dev/null || true
-  fi
-  lock_release "$repo"
-}
-trap merge_cleanup EXIT
-
 integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")"
 
 if [ "$integ_head" != "$base_sha" ]; then
@@ -174,7 +265,7 @@ if [ "$integ_head" != "$base_sha" ]; then
       # being checked out elsewhere (e.g. the operator's own working copy), in
       # which case name both the branch and the exact checkout path (parsed
       # from `git worktree list`) instead of a bare "cannot create" message.
-      if printf '%s' "$wt_err" | grep -qiE "already (checked out|used by worktree)"; then
+      if grep -qiE "already (checked out|used by worktree)" <<<"$wt_err"; then
         # git's own message conventions differ by version ("already checked
         # out at '<path>'" vs "already used by worktree at '<path>'") but both
         # end in "at '<path>'" — extract directly; fall back to parsing
@@ -207,8 +298,41 @@ if [ "$integ_head" != "$base_sha" ]; then
   # now evidence about a candidate that no longer exists. merge is the one
   # actor that invalidates it this way, so merge must delete it here — this
   # makes INV-07 kernel-enforced via the INV-11 gate (no log => advance to
-  # reviewing dies, forcing an unconditional re-verify).
+  # reviewing dies, forcing an unconditional re-verify). The VERIFY log is
+  # what this line is now for: the merge log went at the top of the verb,
+  # where it goes on every path rather than only on this one, and naming it
+  # again here costs nothing and keeps the pair of them stated together.
   rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
+  # T010, the same invalidation applied to the OPERATOR HAND-OFF. An
+  # acknowledgement records that a human performed this candidate's
+  # execution-requiring mechanical steps -- a lint fix, a mode bit, a
+  # regenerated per-file artifact. The rebase just minted a DIFFERENT
+  # candidate, so that acknowledgement is a statement about a tree that no
+  # longer exists and must not be inherited by the rebased one, exactly as
+  # the verify evidence above is not. Without this the sha binding alone
+  # would already refuse it (handoff_ack no longer equals candidate_sha), and
+  # this call is the belt-and-braces half: it makes the invalidation an
+  # explicit, journalled event an operator can see, rather than a silent
+  # mismatch. Routed through the verb, never fm_set: `handoff_ack` has
+  # exactly one writer, and the call is a no-op that journals nothing when no
+  # hand-off was recorded.
+  "$ORCHID_ROOT/bin/orchid" task handoff "$id" --clear \
+    --reason "rebase minted candidate $new_candidate; a hand-off performed against $candidate_sha does not carry over (INV-07)" >/dev/null
+  # T024: `prerequisite_ack` is deliberately NOT cleared alongside it, and the
+  # asymmetry is the point rather than an oversight. Both acks are already
+  # dead here by the same rule — each is satisfied only while it equals the
+  # CURRENT `candidate_sha`, and this arm just moved it — so neither clear is
+  # load-bearing; what differs is what the stale VALUE is still worth. Emptying
+  # `prerequisite_ack` would destroy the one thing the next boundary needs to
+  # say: with the field gone it can only report "unacknowledged", to an
+  # operator who did apply the migration and will reasonably read that as a
+  # broken gate. Left standing, the same boundary says "acknowledged for
+  # candidate <old>, superseded by <new>" — which is true, and is the sentence
+  # that tells them the step must be re-taken for the rebased tree. The
+  # hand-off has no equivalent to lose (the work it names is IN the commits the
+  # rebase carried over, so there is nothing for the operator to re-do that the
+  # ordinary re-ack does not cover), so clearing it costs nothing there and
+  # buys the journal entry above.
   # Normative per kernel.md's decision-journal table: the rebase-reset is a
   # judgment-bearing event (evidence invalidated, re-review now mandatory) —
   # journal it as `rebase_review` so the decision trail shows why re-verify
@@ -220,9 +344,68 @@ if [ "$integ_head" != "$base_sha" ]; then
   exit 5
 fi
 
+# T024 (dogfood F26): the SAME operator-prerequisite gate `orchid verify`
+# applies in `testing`, applied here because everything below runs the SAME
+# verification suite against the SAME external store. Without it the two
+# stages disagree about one condition: an unapplied migration is forgiven in
+# `testing` (exit 16, no evidence, no attempt) and charged here, where the
+# nonzero-suite arm at the bottom of this file advances the task to `rework`
+# with `validation_failed` and a merge log full of "prepare() returned
+# false". That is precisely the environment problem wearing the candidate's
+# clothes F26 exists to remove — and it lands a whole rework round on a
+# candidate with nothing wrong with it. The `validation_failed` arm's
+# `merging`->`rework` edge charges no attempt (`task advance` exempts it
+# deliberately: this candidate was independently verified once already), so
+# the counter does not even record that the round happened. One predicate
+# (handoff_prereq_unmet), both stages.
+#
+# "The `validation_failed` arm's", not "the edge": T007's `gate_failed` arm
+# takes the same edge and DOES charge, by passing `--charge-attempt`. The
+# reasoning is unchanged for the arm this comment is about -- an unapplied
+# migration is not a fresh round of the implementer's work either -- and the
+# gate arm's own note says why a red repo-wide gate is the one merge failure
+# for which it does not hold.
+#
+# Deliberately BELOW the rebase-reset above rather than beside the status
+# gate at the top of this verb. The rebase path runs no suite, so it has
+# nothing to protect — and it is the path that RESOLVES a stale ack, by
+# sending the task back to `testing` on a freshly minted candidate. Refusing
+# before it would park the run on a boundary whose own remedy sits on the
+# far side of the refusal.
+#
+# Exit 16 (the judgment-boundary code) and NOT merge's FAIL code 1, for the
+# reason verify uses it: nothing about the candidate is in question. The task
+# stays in `merging`, no evidence is written, no ref moves and no attempt is
+# spent — `orchid merge` is simply re-run once the step is acknowledged.
+# `orchid task prereq-ack` accepts `merging` for exactly this refusal.
+#
+# What this gate does NOT claim: the ack covers the step THIS task declared,
+# and the tree revalidated below is the candidate merged into an integration
+# branch that may have landed other tasks' migrations since. Those are their
+# own tasks' declarations, acknowledged when they verified. This closes the
+# stage disagreement; it is not a general assertion that the store matches
+# the merged tree.
+if handoff_prereq_unmet "$tf"; then
+  echo "merge refused: $id declares an operator prerequisite not acknowledged for this candidate: $(fm_get "$tf" operator_prerequisite)" >&2
+  # Same stale-ack disambiguation as `orchid verify`: a non-empty
+  # `prerequisite_ack` sitting in the frontmatter beside a "not acknowledged"
+  # refusal reads like a broken gate unless the message says the candidate
+  # moved underneath it.
+  if handoff_prereq_stale "$tf"; then
+    echo "orchid: the acknowledgement on file is for candidate $(fm_get "$tf" prerequisite_ack), superseded by $candidate_sha — the step must be re-taken and re-acknowledged for the current candidate" >&2
+  fi
+  echo "orchid: merge re-runs the same suite against the same store — do the step, then: orchid task prereq-ack $id --reason \"...\"" >&2
+  exit 16
+fi
+
 # Base current: merge the candidate in a detached temp worktree — never the
 # user's checkout — then run the verification suite there before touching
 # the integration ref.
+#
+# (Any $id-merge.log a previous attempt left behind is already gone: it is
+# deleted at the top of the committed path, above, so that every die between
+# there and here is covered by the same rule rather than only the ones below
+# this line.)
 wt="$(mktemp -d "${TMPDIR:-/tmp}/orchid-merge.XXXXXX")"
 git -C "$repo" worktree add -q --detach "$wt" "$integ_head" >/dev/null 2>&1 \
   || orchid_die "cannot create temp worktree at $integ_head"
@@ -234,24 +417,292 @@ if ! git -C "$wt" merge --no-ff -q -m "orchid: merge $id" "$candidate_sha" >/dev
 fi
 merged_sha="$(git -C "$wt" rev-parse HEAD)"
 
+# This temp checkout runs the task's whole verification suite in a moment,
+# and it holds only what is committed — so it needs the same `worktree_prepare`
+# step a dispatch worktree gets (lib/common.sh), or a project whose suite
+# depends on untracked setup passes in the task's own worktree and fails
+# here, on the merge, every single time. Prepared AFTER the merge, so the
+# command sees the merged tree (a candidate that changed the dependency
+# manifest is exactly the case that matters), and it is handed the same
+# ORCHID_REPO_ROOT — which this checkout, an unrelated mktemp directory
+# under $TMPDIR, has no other way to find. A prepare failure dies here
+# rather than falling through: the run would otherwise be recorded as merge
+# validation failing, which sends a blameless candidate back to rework.
+# Dying leaves the task in `merging`, which the driver already reports as a
+# config problem rather than a candidate defect.
+# `$id` is the task, `$id-merge` is only the log's name: ORCHID_TASK is the
+# task id here exactly as it is on a dispatch worktree, so a prepare command
+# can key off it without having to strip a suffix it was never told about,
+# while this checkout's record stays separate from the dispatch worktree's.
+prep="$(worktree_prepare "$repo" "$wt" "$id" "$id-merge")"
+case "$(printf '%s' "$prep" | cut -f1)" in
+  fail)
+    prep_why="$(printf '%s' "$prep" | cut -f2-)"
+    # Recorded on the INFRA ladder, exactly as the dispatch worktree's own
+    # prepare failure is (runners/orchid-drive). Dying without charging it
+    # leaves the one failure class this feature exists to classify counted
+    # nowhere: the task sits in `merging`, the driver re-raises the same
+    # boundary every pass, and no bound is ever reached. The counter is
+    # kernel-owned (it journals its reason and auto-blocks at `infra_max`),
+    # so an environment nobody repairs ends as a blocked task rather than an
+    # unbounded loop -- and the candidate's `attempts` are untouched, which
+    # is the distinction the whole step is for.
+    #
+    # Output suppressed, not the error. The counter's own receipt ("<id>:
+    # infra_failures n/max") is not this verb's report: runners/orchid-drive
+    # echoes everything merge printed and then quotes it to an operator, so
+    # the line would arrive as part of merge's account of what went wrong
+    # while saying nothing about the environment that did. Nothing is lost by
+    # dropping it -- infra-fail journals its reason before it writes, and the
+    # count is in the task's frontmatter. The die below is what explains this
+    # failure, and it is the last line either way: infra-fail is a child that
+    # has already exited by the time orchid_die runs.
+    "$ORCHID_ROOT/bin/orchid" task infra-fail "$id" \
+      --reason "worktree_prepare failed for the merge validation worktree: $prep_why" >/dev/null || true
+    orchid_die "cannot prepare the merge validation worktree: $prep_why" ;;
+esac
+
 # Command source: task frontmatter first, config fallback second — same
 # resolution order as `orchid verify`.
 cmd="$(fm_get "$tf" verification_commands)"
 [ -n "$cmd" ] || cmd="$(config_get "$repo" verify)"
 [ -n "$cmd" ] || orchid_die "no verification_commands on task $id and no config 'verify' set — nothing to run"
 
+# --- the repo-wide merge gate (T007; lesson L016) --------------------------
+# `verification_commands` is authored PER TASK, so a repo-wide check added
+# part-way through a run reaches only the tasks written after it AND told
+# about it. In r-001 that check was `scripts/ci-local.sh`: it existed for the
+# whole run, two of eight tasks named it, seventeen ShellCheck findings
+# accumulated behind a green suite, and the run-level criterion "the
+# configured ShellCheck gate passes" was failing on the integration branch the
+# entire time. Nobody bypassed anything — six task authors simply never opted
+# in, which is the defect restated: a gate whose reach depends on an author
+# remembering it is not a gate.
+#
+# `merge_gate` is that check named ONCE, for the repository, in orchid.config.
+# Every task inherits it because no task is consulted about it — it is read
+# here, from repo config, and a task's own frontmatter cannot switch it off.
+# That is deliberately the OPPOSITE resolution order from `cmd` above:
+# `verification_commands` is this candidate's own suite and belongs to the
+# task, while this is the repository's floor and belongs to the repository.
+#
+# WHERE IT RUNS, AND WHY IT BLOCKS RATHER THAN MERELY RUNS. In `$wt` — the
+# detached temp worktree holding the ALREADY-MERGED tree, so what is judged is
+# what would land on integration, not the candidate branch in isolation — and
+# its exit status folds into the same `rc` the task's own suite feeds. The
+# block is therefore structural rather than bolted on: the ref advance below
+# is already guarded by `[ "$rc" -eq 0 ]`, so a failing gate never reaches it.
+# Running the gate and then merging anyway is the exact failure this exists to
+# remove, which is why the gate gets no arm of its own on the success side —
+# there is no branch here that could be written to advance the ref past a red
+# gate, because there is no branch here at all.
+#
+# THE COST, said plainly, and where it is NOT paid. By the time the gate runs,
+# `$cmd` above has already run the task's own suite on this same tree, so a
+# gate that repeats that suite pays for it twice per merge and learns nothing
+# the second time. This code cannot detect the overlap — the only way to do it
+# from here is to ask whether the task's command "looks like" it contains the
+# gate, and satisfaction decided by string compare is how a gate ships
+# bypassable. So the overlap is avoided where it CAN be avoided honestly, in
+# the choosing of the command: a `merge_gate` should name the checks a task's
+# suite does not already run. Orchid's own is `scripts/ci-local.sh
+# --no-tests` — static checks and ShellCheck, which is precisely the half of
+# L016 no task ever opted into, and seconds rather than a second full suite.
+# What is left after that choice is cheap, and it is once per MERGE in any
+# case: `orchid verify` runs on every attempt and is untouched, so the fast
+# inner loop stays fast. Exactly one deduplication is made in code, and it is
+# not textual: the gate is skipped when the task's own suite has ALREADY
+# failed, since this merge is going to `rework` either way and the run buys
+# nothing that the next round will not produce.
+#
+# WHAT IT COSTS IN ROUTING. Once this fires for every task, its failures
+# become the rework path for every task — and a ShellCheck location is not
+# actionable by an implementer that cannot run a linter. That is why this
+# lands after T010 rather than before it: `lib/findings.sh` scrapes THIS log,
+# gate output included (it is appended to the same captured body, ahead of the
+# same trailing `exit:` line that file keys on), and carries the exact
+# `file:line: RULE:` lines into the next brief.
+#
+# WHICH IS WHY THE LOG SAYS WHO FAILED, PER COMMAND. Before this gate existed,
+# a merge log held ONE command's output and its trailing `exit:` line answered
+# "did that command fail" for the whole file — which is exactly the question
+# lib/findings.sh asks before quoting anything, precisely so a PASSING run's
+# location-shaped chatter never reaches a brief as though a gate had reported
+# it. Two commands in one file breaks that: the common failing shape here is a
+# GREEN task suite followed by a red gate, and a whole-file answer of "failed"
+# hands the scraper the green suite's output as evidence. The cost is not only
+# noise. `FINDINGS_MAX_LINES` caps a brief at twenty lines in log order, and
+# the suite's output comes FIRST — so a chatty green suite can spend the cap
+# before the gate's real locations are reached, and the one thing the
+# implementer needed is the one thing the brief drops.
+#
+# So `command_status:` and `gate_exit:` are written into the log HEADER, where
+# lib/findings.sh already stops parsing at the `---` and therefore cannot be
+# lied to by captured output, and the `== merge_gate:` banner below marks
+# where one command's output ends and the other's begins. Together they let
+# the scraper quote the half that actually failed. The classification is made
+# HERE, by the process that ran both commands and is the only one that knows;
+# re-deriving it downstream from "the gate ran, so the suite must have passed"
+# would bake this verb's current skip rule into another file.
+#
+# RECURSION. If the gate is the repository's own suite, and that suite
+# exercises `orchid merge`, the gate re-enters itself. ORCHID_MERGE_GATE_ACTIVE
+# is what stops it: set in the gate command's own environment below, so every
+# nested `orchid merge` underneath it — at any depth, through any number of
+# fixtures — sees it and declines to open a second level. `scripts/ci-local.sh`
+# sets it too, covering the other direction (an operator or hosted CI running
+# the suite directly, where a test's `orchid merge` would otherwise be free to
+# open the first level). A skip is NEVER silent: it is recorded in the evidence
+# log and said on stderr, because a marker left set in some ambient environment
+# would otherwise disable this gate everywhere while every merge went on
+# reporting a pass — L016 again, this time wearing its own fix's clothes.
+#
+# AND WHY A RED GATE COSTS A ROUND. `merging -> rework` charges no attempt:
+# libexec/orchid-task exempts it because this candidate was independently
+# verified once already, so a conflict or a revalidation failure is not a
+# fresh round of the implementer's work. That reasoning holds for every merge
+# failure except this one. A red repo-wide gate is a statement about the
+# REPOSITORY, and a repository nobody has touched is red again on the next
+# round — so the loop it makes is dispatch, implement, verify, review, merge,
+# red gate, rework, dispatch, with the counter that exists to stop exactly
+# that never moving. Uncharged, it does not terminate; it just spends
+# engine budget until an operator happens to look.
+#
+# So this arm, and only this arm, passes `--charge-attempt`, and when the
+# charge exhausts the task's budget it takes `merging -> blocked` instead of
+# `merging -> rework`. Both halves are needed: charging alone makes the loop
+# countable, and the cap is what turns the count into a stop. The number is
+# `schedule_attempt_budget`'s — the same cap `orchid verify`'s failures are
+# measured against, per task, raisable by `orchid task retry --attempts N` —
+# never a literal here.
+#
+# THAT THE CANDIDATE IS OFTEN INNOCENT IS THE REASON FOR THE CAP, NOT AN
+# ARGUMENT AGAINST IT. A gate failure may well be nothing the task author did;
+# that is said plainly in the reason and again at the boundary. But the
+# alternative to charging is not "the task is treated fairly" — it is an
+# unbounded loop that re-dispatches an implementer against a fault no
+# implementer round can clear. Charging bounds it, and the block is what puts
+# it in front of the human who can actually fix the repository. Where the
+# candidate really was innocent, `orchid task reverify` re-runs verification
+# with no attempt consumed once the repository is green again, and `orchid
+# task retry --attempts N` grants back the rounds — both already exist, and
+# both are named in the reason this arm records.
+#
+# NOTHING ELSE ON THIS VERB'S FAILURE PATHS CHARGES. The merge-conflict arm,
+# the rebase-conflict arm and `validation_failed` all keep the exemption
+# untouched, because none of them repeats identically: a conflict is resolved
+# by the next rebase, and a red suite is the candidate's own defect already
+# counted where it was found.
+gate_cmd="$(config_get "$repo" merge_gate)"
+gate_status=none
+gate_rc=0
+[ -z "$gate_cmd" ] || gate_status=configured
+
+# Resolved HERE — before the suite, the gate, the log or any advance — and
+# only when a gate is actually configured. schedule_attempt_budget is
+# fail-closed: it dies on a `rework_max` or an `attempt_budget` that is not a
+# positive integer. The one place the number is USED is the failure arm at the
+# very bottom of this file, and asking for it there would put that die between
+# the evidence log and the `task advance`, leaving the task in `merging`
+# behind a merge that had already done every expensive thing it does. Asked
+# now, the same misconfiguration costs nothing and says what it is; asked at
+# all only when a gate exists, so a repository with no `merge_gate` is not
+# newly refused for a cap it never consults.
+gate_budget=""
+if [ "$gate_status" = configured ]; then
+  gate_budget="$(schedule_attempt_budget "$repo" "$id")"
+fi
+
 mkdir -p "$state/reviews"
 log="$state/reviews/$id-merge.log"
 out_tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-merge-verify.XXXXXX")"
 
-rc=0
-( cd "$wt" && bash -c "$cmd" ) >"$out_tmp" 2>&1 || rc=$?
+# `cmd_rc` is the task suite's OWN status and is never overwritten; `rc` is the
+# merge's, which the gate below may raise. Two variables because the log has to
+# report each command separately — collapsing them loses which of the two a
+# non-zero merge status came from, which is the whole of the attribution the
+# header records.
+# The validation checkout lives under TMPDIR, so give the suite the canonical
+# dispatching repository path just as prepare did. Close stdin because this
+# verb is called from the driver's stdin-fed task walk; a suite must see EOF,
+# never consume the remaining worklist.
+verify_root="$(orchid_physical_dir "$repo")" || verify_root=""
+[ -n "$verify_root" ] || verify_root="$repo"
+cmd_rc=0
+( cd "$wt" && ORCHID_REPO_ROOT="$verify_root" bash -c "$cmd" ) \
+  >"$out_tmp" 2>&1 </dev/null || cmd_rc=$?
+rc="$cmd_rc"
+
+if [ "$gate_status" = configured ]; then
+  if [ -n "${ORCHID_MERGE_GATE_ACTIVE:-}" ]; then
+    gate_status=skipped-nested
+    echo "orchid: merge_gate skipped for $id: this merge already runs inside a merge_gate (ORCHID_MERGE_GATE_ACTIVE is set) — the outer gate is the one judging this tree" >&2
+  elif [ "$cmd_rc" -ne 0 ]; then
+    gate_status=skipped-suite-failed
+  else
+    gate_status=ran
+    # A banner, so the two commands' output is separable in one log — and it
+    # is load-bearing rather than cosmetic: lib/findings.sh splits the body
+    # here to decide which half a failing merge's evidence is. It is
+    # deliberately NOT a bare `---`: that line is the header terminator both
+    # `orchid verify` and `orchid merge` write, and lib/findings.sh stops
+    # parsing the header at the first one — a second bare `---` down in the
+    # body would be harmless today only by accident of ordering.
+    #
+    # The gate command is repeated IN the banner, matching the `gate:` header
+    # line verbatim, so the split point is not a bare marker any captured
+    # output could counterfeit: a suite would have to echo this repository's
+    # own configured gate command, character for character, to move it. That
+    # is weaker than the header's guarantee and is why the STATUSES live in
+    # the header rather than here — the banner says only where the boundary
+    # is, never who passed.
+    printf '\n== merge_gate: %s\n' "$gate_cmd" >>"$out_tmp"
+    # Set for THIS command only, never exported for the whole verb: the
+    # marker's job is to describe the subtree beneath the gate, and a
+    # verb-wide export would also reach the `task advance` calls below, which
+    # are not the gate and are not running inside one.
+    ( cd "$wt" && ORCHID_MERGE_GATE_ACTIVE=1 bash -c "$gate_cmd" ) >>"$out_tmp" 2>&1 || gate_rc=$?
+    if [ "$gate_rc" -ne 0 ]; then rc="$gate_rc"; fi
+  fi
+fi
 
 {
   echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "sha: $merged_sha"
+  # sha-binding, same contract as `orchid verify`'s log (T010). `sha:` above
+  # is the MERGED tree, which exists nowhere but this temp worktree and names
+  # no candidate; without this line the log carries no claim about WHICH
+  # candidate's failure it recorded, and a merge log left behind by a
+  # superseded candidate reads exactly like a current one. lib/findings.sh
+  # refuses to quote a log it cannot bind to the task's current candidate_sha.
+  echo "candidate: $candidate_sha"
   echo "cwd: $wt"
   echo "command: $cmd"
+  # The task suite's OWN exit status, always, gate or no gate. The trailing
+  # `exit:` line is the MERGE's status and answers a different question as soon
+  # as two commands share the file: with a green suite and a red gate it reads
+  # "failed" over output that is mostly a passing run's. A reader that has to
+  # attribute a location to the command that produced it — lib/findings.sh
+  # does, and quotes the result into the next implementer's brief — needs this
+  # per-command answer, and needs it from the header, which nothing captured
+  # below the `---` can reach.
+  echo "command_status: $cmd_rc"
+  # Reported whenever a gate is CONFIGURED, including on the two paths where
+  # it did not actually run. "this repository configures no gate" and "a gate
+  # was configured and passed over" are different facts about a merge, and a
+  # reader has to be able to tell them apart: an ABSENT `gate:` line means the
+  # repository set none, and never that one was skipped quietly.
+  if [ "$gate_status" != none ]; then
+    echo "gate: $gate_cmd"
+    echo "gate_status: $gate_status"
+    # Only where there is a status to report. `gate_rc` is initialised to 0
+    # and stays there on both skip paths, so printing it unconditionally would
+    # state, in the same field a reader compares against zero, that a gate
+    # which never executed had passed.
+    if [ "$gate_status" = ran ]; then
+      echo "gate_exit: $gate_rc"
+    fi
+  fi
   echo "---"
   cat "$out_tmp"
   echo "exit: $rc"
@@ -259,6 +710,155 @@ rc=0
 rm -f "$out_tmp"
 
 if [ "$rc" -eq 0 ]; then
+  # --- self-hosted refresh (T006 / lesson L018) ------------------------------
+  # The ref advance below is what MAKES a checkout of $integ stale: it moves
+  # the branch and, by design, never touches any working tree. When orchid is
+  # being run OUT OF the very checkout whose branch this is -- the self-hosted
+  # case, and the only one that can hit lib/common.sh's stale-root refusal --
+  # that leaves this process's own $ORCHID_ROOT behind its own HEAD. Every
+  # child process from that instant on, starting with the `task advance <id>
+  # done` at the end of this block, would refuse; the branch would be
+  # advanced, the task stuck in `merging`, and no verb left able to move it.
+  #
+  # So refresh it. This is NOT the rejected "merge refreshes other checkouts"
+  # remedy (see orchid_root_stale): the one checkout written here is the one
+  # this process is already operating on and already holds the run lock for.
+  # An operator's parallel checkout, a linked worktree this process cannot see
+  # -- neither is touched, and neither can be, which is exactly why the
+  # refusal still has to exist for them. (A separate CLONE is a different
+  # story: its refs are its own, so this update-ref does not make it stale and
+  # the refusal cannot see it either way. lib/common.sh says so where it says
+  # who the refusal is for.)
+  #
+  # Decided BEFORE the advance, because afterwards "this tree fell behind" and
+  # "someone is editing the kernel here" look identical. orchid_kernel_clean
+  # is what keeps the r-001 journal-loss incident from repeating in a new
+  # shape: it refuses the refresh unless every path it would restore is
+  # already byte-equal to HEAD, and it never names `.orchid/` or orchid.config
+  # at all. A hand-edited kernel therefore keeps its edits and gets the
+  # refusal instead -- the operator decides, not this verb.
+  #
+  # "Same checkout" is compared as PHYSICAL paths, and both sides must resolve
+  # to something: `cd ""` is a silent no-op that leaves $PWD in place (the trap
+  # tests/helpers.sh's scratch registry exists for), and two failed resolutions
+  # would compare equal as empty strings -- either way green-lighting a write
+  # to a directory neither variable actually names.
+  #
+  # TWO flags, not one, because the two questions have different consequences.
+  # `self_checkout` is "is $ORCHID_ROOT the very checkout this ref advance is
+  # about" -- it decides whether the operator is OWED A WORD when the merge
+  # ends. `refresh_self` adds "and is its kernel clean enough that restoring
+  # it destroys nothing" -- it decides whether this verb may WRITE. Collapsing
+  # them loses the case that matters most: a self-hosted checkout with a
+  # hand-edited kernel, where the refresh is correctly declined and the merge
+  # would otherwise advance the branch, say nothing, and leave the operator to
+  # discover from the next verb's refusal that their own edit is why.
+  self_checkout=0
+  refresh_self=0
+  dirty_before=""
+  # A THIRD flag, about a file the other two never name: the committed
+  # `orchid.config`. Same shape as `refresh_self` -- may this verb write --
+  # asked on that file's own bytes, and initialised out here so `set -u` is
+  # satisfied on every path below whether or not this is a self-hosted merge.
+  config_refresh=0
+  config_dirty_before=""
+  repo_phys=""; root_phys=""
+  if [ -n "$repo" ]; then repo_phys="$(cd "$repo" 2>/dev/null && pwd -P || true)"; fi
+  if [ -n "${ORCHID_ROOT:-}" ]; then root_phys="$(cd "$ORCHID_ROOT" 2>/dev/null && pwd -P || true)"; fi
+  if [ -n "$repo_phys" ] && [ -n "$root_phys" ] && [ "$repo_phys" = "$root_phys" ] \
+     && [ "$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null || true)" = "$integ" ]; then
+    self_checkout=1
+    # An `if`, never `orchid_kernel_clean ... && refresh_self=1`: this file
+    # runs under `set -e`, where that idiom is a bare failing command as soon
+    # as the checkout is dirty and aborts the merge between its verification
+    # and its ref advance -- the exact window nothing may die in.
+    if orchid_kernel_clean "$repo"; then
+      refresh_self=1
+    else
+      # The operator's kernel edit, captured BEFORE the CAS and therefore
+      # before the ref move mixes the merge's own drift into every comparison.
+      # Against HEAD, which covers a STAGED edit as well as an unstaged one:
+      # pre-advance, anything that differs from HEAD in these paths is
+      # someone's uncommitted work here and nothing else.
+      dirty_before="$(git -C "$repo" diff --name-only HEAD -- \
+        "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null | tr '\n' ' ' || true)"
+    fi
+    # THE COMMITTED CONFIGURATION, asked separately because it answers to a
+    # different owner (T007). `orchid.config` is outside ORCHID_KERNEL_PATHS
+    # and stays outside it -- an edit awaiting `orchid config commit` is
+    # legitimate, so it may neither refuse a verb nor be restored out from
+    # under the operator who made it. But the ref advance leaves this checkout
+    # RESOLVING pre-merge values for as long as nobody reconciles it, and that
+    # is not cosmetic here of all places: `merge_gate` is read from exactly
+    # this file, so a merge that LANDS a repo-wide gate would leave the
+    # repository that just adopted it still not running it, and every later
+    # merge would go on reporting a pass. That is L016 wearing the clothes of
+    # its own fix.
+    #
+    # So: the same rule as the kernel, on this file's own evidence. Refresh it
+    # only where there is provably nothing here to lose; where there is
+    # something, keep the operator's bytes and say so at the end of the merge.
+    # Asked BEFORE the CAS for the reason the kernel question is asked before
+    # it -- afterwards "this checkout fell behind" and "somebody edited this
+    # file" are the same diff.
+    if orchid_config_committed_clean "$repo"; then
+      config_refresh=1
+    else
+      # Their edit, in `git status` shorthand so an UNTRACKED orchid.config
+      # (`??`) is reported as plainly as a modified one; both are edits this
+      # merge must not touch, and only one of them appears in a `git diff`.
+      #
+      # `--ignored`, because the precondition above and this report have to be
+      # able to see the SAME file. orchid_config_committed_clean asks
+      # `ls-files --others` WITHOUT `--exclude-standard` on purpose -- an
+      # ignored orchid.config is still somebody's only copy -- and a plain
+      # `git status --porcelain` is silent about exactly that file. Without
+      # this flag the one case the precondition was widened to catch is the
+      # one the warning names nothing for: "Pending: " with an empty list,
+      # about a file the operator cannot then find. Nothing else moves; an
+      # ignored path is the only status shorthand this adds.
+      #
+      # Fails CLOSED to a literal `?` rather than to an empty string: a git
+      # that cannot answer must still leave the operator a warning that names
+      # something.
+      config_dirty_before="$(git -C "$repo" status --porcelain --ignored -- orchid.config 2>/dev/null | tr '\n' ' ')" \
+        || config_dirty_before="? "
+      # ...and belt-and-braces on the same rule, because the two commands are
+      # not the same command: the precondition refused on evidence THIS one may
+      # still not carry (a future shape neither anticipates, a git that answered
+      # one and not the other). Whatever happened, the warning never goes out
+      # naming nothing.
+      #
+      # A single `?`, deliberately not the porcelain `??`: this arm is reached
+      # only when the file could not be characterised, and inventing "untracked"
+      # for it would state a fact about the operator's checkout that nothing
+      # here established. It names the path and says the status is unknown,
+      # which is exactly what is true.
+      [ -n "$config_dirty_before" ] || config_dirty_before="? orchid.config "
+    fi
+    # Open the advance-then-refresh window BEFORE the CAS, so no instant
+    # exists in which this checkout's index is behind its HEAD and nothing
+    # says a repair is in flight. Every OTHER process started from this root
+    # in that window -- an operator's `orchid status`, a heartbeat, a notify
+    # hook, none of them a child of this merge and so none of them reached by
+    # the ORCHID_ALLOW_STALE_ROOT below -- meets the stale-root refusal, which
+    # is correct and is not what this marker changes: this working tree really
+    # does hold pre-merge code until the restore below lands, and letting a
+    # verb run out of it is the failure L018 names. What the marker changes is
+    # what those verbs are TOLD -- "a repair is in flight, retry" and exit 75,
+    # rather than a report inviting the operator to diagnose their own index
+    # (lib/common.sh, _orchid_kernel_refresh_inflight). It carries this
+    # process's full identity, pid + start time + host, so a marker outliving
+    # a SIGKILLed merge cannot later be answered for by whatever process
+    # inherits the number.
+    #
+    # Best-effort, and an `if` for the same reason as the one above: under
+    # `set -e` a bare failing command here aborts the merge between its
+    # verification and its ref advance, so an unwritable runtime dir must cost
+    # the wording of someone else's refusal and never the merge.
+    if orchid_kernel_refresh_open "$repo"; then kernel_window="$repo"; fi
+  fi
+
   # Compare-and-swap: `update-ref <ref> <new> <old>` only succeeds if <ref>
   # STILL points at <old> (integ_head, read at the top of this script). If a
   # concurrent merge landed on integration in the window between that read
@@ -270,10 +870,175 @@ if [ "$rc" -eq 0 ]; then
       "merge CAS failed: update-ref refs/heads/$integ expected $integ_head but it moved concurrently; task remains in merging for retry"
     orchid_die "update-ref CAS failed: integration branch '$integ' changed concurrently (expected $integ_head) — retry orchid merge $id"
   fi
-  "$ORCHID_ROOT/bin/orchid" task advance "$id" "done"
+  # orchid_kernel_clean re-asked AFTER the advance answers a different
+  # question than it did before it: with HEAD already moved, "clean" now means
+  # this merge changed nothing the launcher executes from, so there is nothing
+  # to refresh and nothing to announce. Most merges of a non-kernel change
+  # land here silently.
+  if [ "$self_checkout" -eq 1 ] && ! orchid_kernel_clean "$repo"; then
+    if [ "$refresh_self" -eq 0 ]; then
+      # ...but only if THIS merge moved something the launcher executes. The
+      # condition above cannot tell: with the refresh declined, the operator's
+      # own edit keeps the checkout "unclean" whether or not the merge changed
+      # one kernel byte, so every merge of a docs or config change would warn
+      # that it had left this checkout stale when it had left it exactly
+      # current. A warning that fires when nothing happened is the one that
+      # gets filtered out, and this warning is the ONLY place in the whole
+      # sequence where the cause of a real refusal is known -- spending its
+      # credibility on merges that changed nothing is how the advisory version
+      # of this whole guard died.
+      #
+      # The merge's own diff answers it exactly, and it is the only thing that
+      # does: $integ_head is what this branch pointed at before the CAS. Fails
+      # CLOSED to the literal `?`, which is non-empty and so still warns: a
+      # `git` that cannot answer must not silence the one message the operator
+      # needs.
+      kernel_moved="$(git -C "$repo" diff --name-only "$integ_head" "$merged_sha" -- \
+        "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null || echo '?')"
+      if [ -n "$kernel_moved" ]; then
+        # The declined refresh, said out loud. This is the ONE outcome where
+        # the merge leaves its own launcher stale on purpose, so the operator
+        # is owed the reason at the moment it is created rather than only when
+        # the next verb refuses -- by then the refusal can only report what it
+        # observes, and cannot know that THIS edit is why. It prints no
+        # restoring command for the same reason lib/common.sh's refusal does
+        # not: the operator's bytes are here and nowhere else, and a command
+        # that overwrites them is never worth the keystrokes it saves.
+        echo "orchid: warning: $integ advanced and orchid runs from this checkout ($repo), but its kernel files were already modified before the merge — refreshing would have discarded that work, so it was not done. Modified: ${dirty_before}— those bytes are in this checkout and nowhere else. Verbs run from this checkout may now refuse; they will report what they see and prescribe nothing. Deal with the edit whichever way you want it kept, then bring this checkout to $integ yourself; docs/troubleshooting.md 'Stale orchid itself' has the options and what each costs" >&2
+      fi
+    # $integ_head is passed as the refresh's BASE: it is the commit this
+    # branch -- and so this checkout's HEAD -- was on when orchid_kernel_clean
+    # passed above, and the CAS just proved it was still that at the instant
+    # of the advance. Every per-write safety check inside the refresh is asked
+    # against it rather than against this checkout's index, because an
+    # operator who edits AND STAGES a kernel file inside the window moves the
+    # index and the file together and would otherwise look untouched.
+    elif orchid_refresh_kernel "$repo" "$integ_head"; then
+      echo "refreshed $repo to $integ (orchid runs from this checkout)"
+    else
+      # Partial or refused restore — including the case orchid_refresh_kernel
+      # declines rather than overwrite an UNTRACKED file at a path the branch
+      # now carries. `git status` is all that is named, and deliberately: the
+      # restore that would "finish the job" here is precisely the command that
+      # overwrites that untracked file, which is the only copy of it. Whatever
+      # stopped the refresh is a file the operator has to look at first.
+      echo "orchid: warning: $integ advanced but this checkout could not be fully refreshed — run 'git -C $repo status' and look for an untracked file at a path the branch now carries; restoring over it would destroy it, so nothing further was done and nothing further is prescribed here. Move or keep that file as you decide, then bring this checkout to $integ yourself (docs/troubleshooting.md 'Stale orchid itself')" >&2
+    fi
+  fi
+
+  # --- the committed configuration, made live (T007) -------------------------
+  # The block above restores what the launcher EXECUTES. This one deals with
+  # what it READS, under its own condition and with its own report, because
+  # `orchid.config` is the one path in this checkout that may be carrying
+  # somebody's pending edit at the moment a merge lands a change to it.
+  #
+  # Only when THIS merge moved the committed file, exactly as the warning above
+  # is conditional on `kernel_moved` and for the same reason: a message that
+  # fires when nothing happened is the message that gets filtered out, and this
+  # is the only place the cause is still known. Fails CLOSED to the literal
+  # `?`, which is non-empty and so still acts -- a git that cannot answer must
+  # not be what silently decides this checkout keeps a pre-merge configuration.
+  if [ "$self_checkout" -eq 1 ]; then
+    config_moved="$(git -C "$repo" diff --name-only "$integ_head" "$merged_sha" -- \
+      orchid.config 2>/dev/null || echo '?')"
+    if [ -n "$config_moved" ]; then
+      if [ "$config_refresh" -eq 0 ]; then
+        # PRESERVED, and said out loud. The operator's edit is untouched, so
+        # what this checkout resolves is still their file and not the one the
+        # branch now carries -- which is a fact about every subsequent verb in
+        # this run, not about this merge, and is invisible everywhere else:
+        # nothing downstream compares a working config against its branch.
+        #
+        # It prescribes no restoring command, for the reason the kernel warning
+        # gives, and it warns about `orchid config commit` rather than
+        # recommending it blind: that verb commits the bytes ON DISK here, so
+        # running it over an unreconciled file would land a config that drops
+        # what this merge just added.
+        echo "orchid: warning: $integ advanced with a change to orchid.config and orchid runs from this checkout ($repo), but this checkout already carried an uncommitted config edit — so that edit was left exactly as it is and the merged configuration was NOT made live here. Pending: ${config_dirty_before}— until you reconcile the two, every verb run from here resolves the values in your working copy, not the ones $integ now carries (compare: 'git -C $repo diff HEAD -- orchid.config' for yours, 'git -C $repo show $integ:orchid.config' for the branch's). Keep whichever parts you want kept; note that 'orchid config commit' lands the bytes that are on disk here, so running it before you have merged in the branch's change would drop that change" >&2
+      elif orchid_refresh_config "$repo" "$integ_head"; then
+        # Announced on stdout beside the kernel's own line, and worth a line:
+        # this is the moment a `merge_gate`, a `verify` command or a role
+        # binding that the branch has just adopted starts applying to the run
+        # reading it from here.
+        echo "refreshed $repo/orchid.config to $integ (the merged configuration is live in this checkout)"
+      else
+        # The refresh was permitted and did not complete -- the file was saved
+        # inside the window and the per-write check declined it, or git could
+        # not answer. Reported rather than retried, and the operator's bytes
+        # are on disk either way.
+        echo "orchid: warning: $integ advanced with a change to orchid.config, but this checkout's copy could not be brought to it — run 'git -C $repo status' and look at orchid.config: it was written between this merge's own check and its write, so nothing was overwritten. Until you reconcile it, every verb run from here resolves your copy rather than the one $integ now carries" >&2
+      fi
+    fi
+  fi
+  # The window is over: either this checkout now matches the branch, or it
+  # never will without the operator. Closed HERE rather than left to the EXIT
+  # trap so that "retry in a moment" stops being said at the instant it stops
+  # being true -- in the declined-refresh arm above there was never anything
+  # to wait for, and an operator told to retry a repair that was declined
+  # before it began would retry until they read the merge's own warning.
+  if [ -n "$kernel_window" ]; then
+    orchid_kernel_refresh_close "$kernel_window"
+    kernel_window=""
+  fi
+  # The bookkeeping that closes out a merge whose ref has ALREADY moved must
+  # not be stoppable by the stale-root refusal, refresh or no refresh: the
+  # alternative is a task frozen in `merging` behind an integration branch
+  # that already carries its work, which is worse in every way than one more
+  # deterministic verb running from the code that was live one second ago.
+  # Scoped to this single invocation, never exported for the whole verb.
+  ORCHID_ALLOW_STALE_ROOT=1 "$ORCHID_ROOT/bin/orchid" task advance "$id" "done"
   echo "merged $id: $integ -> $merged_sha"
   exit 0
 fi
 
+# A DISTINCT reason from `validation_failed`, though both route identically
+# (rework, integration ref untouched, same exit 1). They are not the same
+# finding: `validation_failed` says this candidate's own suite is red, while
+# this says the candidate is red against a check the REPOSITORY applies to
+# everything and that the task was never asked about. An operator reading the
+# journal should not have to open the log to tell which of those happened —
+# the second one is frequently not the task author's doing at all.
+#
+# It is also the ONE failure here that costs the task a round — see the long
+# note beside `gate_budget` above for why, and for why none of the others do.
+# The charge is asked for explicitly (`--charge-attempt`, which the kernel
+# admits on this edge and validates); the attempt NUMBER is derived by the
+# kernel, so what is computed here is only whether this charge would be the
+# last one the budget allows.
+if [ "$gate_status" = ran ] && [ "$gate_rc" -ne 0 ]; then
+  gate_attempts="$(fm_get "$tf" attempts)"; [ -n "$gate_attempts" ] || gate_attempts=0
+  # The attempt this failure IS, i.e. the value `task advance` is about to
+  # write. Compared with `-ge` so the block lands on the round that spends the
+  # last one rather than a round later: with the default budget of 3 the gate
+  # gets three red rounds and the third stops the run.
+  #
+  # THE SAME CAP, ONE ROUND EARLIER THAN THE DRIVER, and the difference is
+  # deliberate rather than a slip. `runners/orchid-drive` compares the count
+  # BEFORE charging (`attempts -ge budget`), so a verify failure blocks on the
+  # pass AFTER the budget is spent and that last failure is free; this compares
+  # the count the charge is about to write. Both give the task exactly `budget`
+  # charged rounds and both end at `attempts == budget` -- what differs is only
+  # whether one further failure is observed first. Mirroring the driver here
+  # would buy that extra observation with a whole dispatch, implement, verify
+  # and review cycle whose merge re-runs the same gate against the same
+  # repository for the same colour, and would need a `rework` edge taken at
+  # `attempts == budget`, which the driver would re-dispatch on its very next
+  # pass because nothing outside `drive_testing` consults the budget at all.
+  gate_charged=$(( gate_attempts + 1 ))
+  gate_reason="gate_failed: repo-wide merge_gate exited $gate_rc — see reviews/$id-merge.log"
+  if [ "$gate_charged" -ge "$gate_budget" ]; then
+    # BLOCKED, not another rework round. Every remaining round would re-run
+    # the same gate against the same repository and produce the same colour,
+    # so what is left to do is not another attempt — it is a person. The
+    # reason carries both recoveries, because which one applies depends on
+    # something this verb cannot see: whether the gate is red because of this
+    # candidate or in spite of it.
+    "$ORCHID_ROOT/bin/orchid" task advance "$id" blocked --charge-attempt \
+      --reason "$gate_reason — the repository's own gate has now been red for every rework round this task had ($gate_charged/$gate_budget), and a gate failure is frequently not this task's doing at all, so the next round would repeat it rather than resolve it. Fix the repository (or this candidate, if the gate is naming it), then: orchid task reverify $id --reason \"...\" re-runs verification with no attempt consumed, or orchid task retry $id --reason \"...\" --attempts N grants further rounds"
+    exit 1
+  fi
+  "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --charge-attempt --reason "$gate_reason (round $gate_charged/$gate_budget)"
+  exit 1
+fi
 "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "validation_failed: see reviews/$id-merge.log"
 exit 1

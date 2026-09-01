@@ -102,6 +102,56 @@ honestly in `pack.json` (`{"name":"diff.patch","omitted":"worktree-read"}`).
 An inline-only engine gets no such relief — a diff that large still hits
 `input_overflow` exactly as above, since it has no other way to see it.
 
+**Rework packs (v1.1):** an `implement` pack for a task with captured rework
+evidence also carries `rework.md` — the previous round's failure output
+VERBATIM (never a summary: a summarized "verify failed" is exactly what the
+loop already had), led by whether that same failure has now repeated
+unchanged, and followed by a diff against the round before it when it has
+not. It is truncatable and is budgeted FIRST among the truncatables, ahead
+of `lessons.md`/`context.md` — on a rework attempt it is the most specific
+input in the pack — and it trims TAIL-KEPT, the opposite of the others,
+because a suite's output ends with the failing assertions. Tail-kept applies
+to the captured LOG alone, and its three parts are budgeted separately:
+
+- the PREAMBLE (round number, signature, and whether it repeated unchanged)
+  is kept WHOLE, because a tail trim over the whole file would drop precisely
+  that preamble and leave an unlabelled fragment of test output — the pre-v1.1
+  brief with extra noise;
+- the FAILING RUN is the only part ever cut, and it is cut tail-kept;
+- the COMPARISON against the previous round is dropped ENTIRELY, and first.
+  Trimming run and comparison together as one body keeps the diff and eats
+  the run, leaving a description of a change to output the engine cannot see.
+
+**A required `rework.md` is never quietly omitted.** When a captured round
+binds to the task's current candidate, that failure is the specific input the
+attempt was dispatched to act on, so a budget that cannot carry the preamble
+plus a meaningful tail of the failing run fails the pack with `input_overflow`
+(exit 12) instead of shipping one without it. The alternative is a dispatch
+that re-derives the same change and produces the same failure while every
+counter reads healthy.
+
+**Evidence is bound to the candidate that produced it.** Each captured round
+carries the `candidate:` header of the log it copied, and `rework.md` is built
+only from a round whose header matches the task's CURRENT `candidate_sha` —
+the same rule the rework brief in the task body applies to the locations it
+quotes. The candidate moves under captured evidence in ordinary operation (the
+reworking implementer commits, `orchid merge`'s rebase arm mints a new sha, an
+operator re-derives the branch), and "you already tried this and got exactly
+this" said about a superseded candidate is a confident false claim rather than
+a weaker true one. A round that is not fed forward is withheld and recorded
+with its reason, as an `items[]` entry of its own rather than in the plain
+budget-omission list — `{"name":"rework.md","omitted":"<reason>"}`, one of
+exactly four: `superseded-candidate` (the round names a candidate the task has
+moved off), `unbindable` (it claims no candidate at all — an older kernel
+wrote it), `no-candidate` (the TASK has none to bind to, so there is nothing
+for two vacuous sentinels to agree about), and `unreadable` (the brief could
+not be built from a round that is there, which is a different fact from a
+budget that could not carry one and is never routed into the overflow refusal
+above). A first attempt, with no captured round at all, is not an omission and
+records nothing. `implement` only: a reviewer judges `base_sha..candidate_sha`
+as it stands, and the previous attempt's failure would prejudge a candidate
+that no longer carries it.
+
 One adapter serves many roles by branching on `operation` — no pseudo-engine
 identities. Adapters never guess paths, never choose output locations, exit
 nonzero on detectable failure.
@@ -113,6 +163,7 @@ request's `output` path:
 { "contract": 1, "job_id": "j-<nonce>", "task": "T001", "attempt": 3,
   "engine": "orchid/codex", "role": "reviewer",
   "status": "ok|failed|rate_limited|timeout|auth|malformed",
+  "failure_kind": "capability|engine",
   "base_sha": "...", "candidate_sha": "...", "session_id": "...",
   "started_at": "...", "ended_at": "...", "retry_after": null,
   "verdict": "approve|request-changes|n/a", "scope_complete": true,
@@ -127,6 +178,55 @@ the common fields — `review` → `verdict`, `scope_complete`, `findings[]`;
 artifact per hook schema; `orchestrate` → `actions[]` (the verb invocations
 the tick performed, for audit). An `ok` missing its operation's required
 payload is `malformed`.
+
+**A non-approve verdict must carry a finding.** `findings[]` is the only
+field any severity gate reads. An `ok` `review`/`critique` that withholds
+approval while reporting `findings: []` has therefore put its objection
+somewhere no gate can weigh it — free-text `summary` — and every
+severity-based decision downstream is then made against an empty array. Such
+an envelope is still ACCEPTED (the shipped verdict-only adapters write
+`findings: []` verbatim on every review, so refusing it would quarantine
+legitimate objections), but `orchid jobs reconcile` composes ONE finding from
+the summary as it files it, at `severity: high` — the one value no task's
+`blocking_severity` filters out — tagged with a `source` of
+`orchid:synthesized-from-summary` and `synthesized: true`, and with the
+summary kept whole in `detail`. Reconcile prints a `synthesized-finding:`
+line naming the filed envelope when it does. Those last two keys are the
+kernel's own and are absent from the sample above deliberately: no adapter is
+asked to write either, and their presence on an entry is exactly what tells a
+later reader that no reviewer chose that severity. An adapter that files its
+own findings is never touched, so the way to keep severity yours is to report
+it — which is why every shipped `review` prompt asks for a `REASON:` line as
+well: that line becomes the `summary` this arm reads, and an adapter that
+collects no prose leaves it with nothing but the fact of the objection.
+
+**`failure_kind` — a refusal is not a fault (v1-m5).** Optional, and
+meaningful only on a non-`ok` envelope (`capability` or `engine`; absent means
+`engine`, so every adapter written before this field keeps its exact
+meaning). An adapter sets `capability` when it declined the request BY DESIGN
+— an operation it never claimed (`agy` handed `implement`, `codex-review`
+handed anything outside review/critique), a plan pack it has no prompt shape
+for, a diff over its own inline byte cap (`agy_max_bytes`,
+`hermes_max_bytes`). Such an envelope is the adapter working correctly: it
+read the request, recognized it as outside its declared envelope, and said so
+naming the limit and the remedy. `engine` (or absence) is the ordinary case —
+the engine crashed, timed out, lost its auth, or answered something
+unparseable. The status itself stays `failed`/`malformed`, so nothing
+downstream changes: the envelope is still not review evidence and the slot is
+still relaunched. What changes is the LEDGER: `lib/ledger.sh` charges a
+consecutive failure for the second kind and never for the first (see Engine
+availability & role failover below). A `failure_kind` on an `ok` envelope, or
+any value outside the two, fails validation and is quarantined.
+
+**One status is the kernel's, not an adapter's: `no_envelope`.** It marks a
+DEGRADED envelope `orchid jobs reconcile` writes itself for a job that exited
+without producing one, reconstructed from results left in the job's log
+(`degraded: true`, plus `exit_code` and `salvaged_from`). An adapter that
+writes it is not reporting its own status but impersonating the kernel's
+account of one, so reconcile quarantines any spool envelope carrying it
+(`kernel-status`) on the same anti-forgery terms as any other bad binding.
+No gate treats a `no_envelope` envelope as evidence — it is not `ok` — so it
+recovers work without ever passing for a review, a delivery or a hook result.
 
 **Binding rules (anti-forgery):** `job_id` is kernel-minted per launch
 (distinct from the logical rework `attempt`); reconciliation accepts an
@@ -176,8 +276,14 @@ execute?
   repository, the broker script itself. The prompt's "never hand-edit
   `.orchid/`" is policy, not enforcement.
 - `soft` — no. The vendor CLI offers no restriction Orchid can rely on, so
-  the orchestrator's reach is bounded only by launcher environment hygiene
-  and by the operator's machine-local unattended acknowledgement.
+  the orchestrator's reach is bounded only by launcher environment hygiene,
+  by the operator's machine-local unattended acknowledgement, and by the
+  orchestrate prompt the adapter hands it. That last bound is asked for, not
+  enforced — but it is the SAME judgment-boundary contract the broker
+  enforces, so boundary policy classifies a `soft` surface against that same
+  verb set, never against "every verb is reachable" (see
+  [kernel.md](./kernel.md)'s `command_surface` section for why the wider
+  reading suppressed the operator blocker).
 
 An absent value reads as `soft`: this field may weaken its own claim by
 omission, never strengthen it. `runners/orchid-tick` prints the resolved
@@ -388,9 +494,10 @@ Hook.
 ## Engine availability & role failover (v1-m2 — SHIPPED)
 
 Ledger (`lib/ledger.sh`, `runtime/engines.json`: last status,
-`rate_limited_until`, consecutive failures — updated by `orchid jobs
-reconcile`'s `ledger_mark` from every accepted/quarantined envelope, and by
-`runners/orchid-tick` for the tick's own orchestrator pick; `rate_limited`
+`rate_limited_until`, consecutive failures, capability refusals — updated by
+`orchid jobs reconcile`'s `ledger_mark` from every accepted/quarantined
+envelope, and by `runners/orchid-tick` for the tick's own orchestrator
+pick; `rate_limited`
 opens a window sized by `rate_limit_backoff_s`, config, default 3600s, or
 the envelope's own `retry_after`; `engine_fail_threshold`, config, default
 3, is the consecutive-failure count that flips an engine to `failing`;
@@ -415,6 +522,29 @@ PROTOCOL.md's HEADLESS OPERATION section is normative on the wait/fallback
 mechanics; this is orchestrator-followed policy, not a kernel-verb gate.
 Model/effort: static per-role defaults in v1; risk×model matrix v1-m4.
 
+**A capability refusal never counts toward `engine_fail_threshold`
+(v1-m5).** `ledger_mark` takes the envelope's `failure_kind` (see the
+envelope contract above) and, for a `capability` refusal, records the event
+without touching the engine's health: `consecutive_failures` and `status` are
+left exactly as they were, `last_status` becomes `refused` rather than
+`failed`, and a separate cumulative `capability_refusals` count is
+incremented. `orchid status`'s engines section shows that count
+(`<engine> ok refusals 3`) so a refusal is visible rather than silent — the
+reconcile pass that accepted it also prints one `refusal: <task> <engine>
+declined by design` line, and the envelope naming the limit is filed durably
+under `reviews/`. A `capability` claim on a `rate_limited` envelope is ignored
+(there is no fault to reclassify, and it must not shorten a quota window).
+Measured on r-002: `agy` refused three review packs whose diffs were ~1% over
+`agy_max_bytes`, the ledger read those as three faults and marked it
+`failing`, the run's reviewer pool silently dropped to one
+session-independent engine, and a reviewer slot was recomputed out from under
+a review `agy` had already filed — stranding that task. The refusal count is
+deliberately NOT a second disqualifier: an adapter that claimed `capability`
+on everything would stay in the rotation, exactly as an adapter that claimed
+`ok` on work it never did would — envelopes are self-reports (see Binding
+rules), and the answer to a lying plugin is the operator removing it, with
+`refusals <n>` in `orchid status` being what makes the lie legible.
+
 ## Threat model (consolidated)
 
 | Untrusted input | Boundary | Mitigation |
@@ -426,4 +556,4 @@ Model/effort: static per-role defaults in v1; risk×model matrix v1-m4.
 | task/diff content in reviewer prompts | reviewer/arbiter judgment | prompt injection is assumed possible; verdicts are advisory to the arbiter, which reads high-risk diffs itself; verification commands are selected by the operator and their recorded exit/evidence is deterministic, but the commands themselves are repository-specific code and are not made safe by Orchid |
 | inbound answers | `orchid answer` | question-id + idempotency; channel adapters get no shell/repo access; nonce + sender allowlist (v1-m4 — SHIPPED): `answer_allowlist` unconfigured leaves the lenient v0 behavior (no nonce, no allowlist check) since no remote answer path exists to attack; once configured, EVERY caller (local or remote) must supply a matching `--nonce`, closing the prior bypass of simply omitting `ORCHID_ANSWER_SENDER` — that env var, when set, additionally requires the identity to appear in the allowlist |
 | implementer commits | merge path | worktree contamination guard; review immutability; transactional merge |
-| an operator-supplied candidate repository under beta qualification | `scripts/beta-qualify.sh` | read-only against the target; its ONE execution there is the operator's own configured `verify=` command, run to time it with both output streams discarded unread — that command is repository-specific code and this harness does not make it safe, exactly as the reviewer-prompt row above says of verification generally. Evidence is anonymized by construction: no subprocess output is ever copied into a record, so only harness-authored strings, measured numbers, and closed-vocabulary tokens are emitted — the single class of value another program chooses the characters of, a toolchain version or the platform name, must match a pattern authored in the harness or is recorded as `unrecognized`/`other` — and both files are re-scanned for the target/home/scratch/output paths before being left on disk. The harness never acknowledges unattended trust, never writes inside the target, never contacts a remote, and records what it could not settle as `not-tested` rather than as a pass |
+| an operator-supplied candidate repository under beta qualification | `scripts/beta-qualify.sh` | read-only against the target; its ONE execution there is the operator's own configured `verify=` command, run to time it with both output streams discarded unread — that command is repository-specific code and this harness does not make it safe, exactly as the reviewer-prompt row above says of verification generally. Evidence is anonymized by construction: no subprocess output is ever copied into a record, so only harness-authored strings, measured numbers, and closed-vocabulary tokens are emitted — the single class of value another program chooses the characters of, a toolchain version or the platform name, must match a pattern authored in the harness or is recorded as `unrecognized`/`other` — and both files are re-scanned for the target/home/scratch/output paths before being left on disk. The harness never acknowledges unattended trust and deliberately requires none of its own — gating it on the record it exists to inform would invert the documented qualify-then-acknowledge order, so the in-place run is disclosed on stderr as it happens instead ([operations.md](./operations.md), which records that decision and the alternatives rejected with it). It never writes inside the target, never contacts a remote, and records what it could not settle as `not-tested` rather than as a pass |

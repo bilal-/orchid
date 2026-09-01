@@ -4,13 +4,122 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
+# lib/objection.sh before lib/review.sh: review_operator_relay reads the
+# authority records that file defines, and `task arbitrate` spends one.
+source "$ORCHID_ROOT/lib/objection.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
-source "$ORCHID_ROOT/lib/schedule.sh"
+source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/findings.sh"
+source "$ORCHID_ROOT/lib/capability.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
+source "$ORCHID_ROOT/lib/rework.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; tasks="$state/tasks"
 sub="${1:-}"; shift || true
 tf() { echo "$tasks/$1.md"; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 journal() { ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add "$@"; }
+
+# _no_newline <what> <value> [remedy] -- dies cleanly, BEFORE anything is
+# written, if value contains an embedded newline. Same guard (and same wording
+# shape) as
+# libexec/orchid-lessons' own `_no_newline`, for the same reason one line up:
+# a task file's frontmatter is strictly one `key: value` per line, and a value
+# carrying its own newline cannot be represented there at all.
+#
+# T034 (dogfood F34, and the identical accident on r-002's `.orchid/tasks/
+# T002.md`): without this, `task set <id> <key> "<value with a newline>"` did
+# not reject the write -- it DESTROYED the file. `awk -v v=...` refused the
+# assignment, printed "newline in string" three times, and the old
+# `awk | atomic_write` pipeline renamed awk's empty output over the task,
+# leaving zero bytes and exiting 0. lib/frontmatter.sh's fm_set now refuses the
+# same input as a backstop; this is where an operator gets told, in terms of the
+# value THEY typed, which argument was the problem and what to do with it. The
+# field where it hurts most is exactly the one it happens in: a long
+# `acceptance_criteria` or `hook_guidance` pasted as prose.
+#
+# THE REMEDY IS A PARAMETER because the two callers stand in different places.
+# `task set` refuses a write to a task file that EXISTS, so naming the verb that
+# writes prose INTO that task is advice the operator can act on immediately.
+# `task create` refuses BEFORE any file is created, and there is no task for any
+# such verb to write to yet -- the actionable advice there is to re-run the
+# create. Default remedy is the `set` one, since that is the caller this guard
+# was written for; the create arm passes its own.
+#
+# EVERY REMEDY HERE IS A VERB (T034 rework). Both of these used to end "put the
+# prose in the task BODY (below the closing '---' in .orchid/tasks/<id>.md)",
+# which reads as an instruction to open that file and type into it -- the one
+# thing PROTOCOL.md's Preamble forbids without qualification ("Never hand-edit
+# anything under `.orchid/` -- no frontmatter, no journal, no roadmap -- even
+# when you can see exactly what line would need to change"). A refusal that
+# names a forbidden remedy is worse than one that names none: it is the moment
+# the operator is most willing to reach for the file, since the verb has just
+# told them it will not do the job. The two verbs named instead are the ones
+# that genuinely append prose to a task body -- `unblock` and `retry`, both
+# `--reason`-bearing (docs/specs/kernel.md's transition table: "guidance
+# recorded into the task BODY") -- and the third answer, flattening, is a verb
+# call too, since a literal `\n` is stored as those two characters and reads
+# back exactly as typed.
+#
+# AND EVERY VERB IT NAMES CAN BE RUN FROM WHERE IT IS PRINTED (T034 rework):
+# both of those two are status-gated, and the status this refusal fires in is
+# usually one that neither accepts. _body_prose_remedy just below builds the
+# `set` arm's remedy from the task's CURRENT status for that reason; this
+# function's own default is the one sentence that is true everywhere, since a
+# default cannot know which task it is about.
+_no_newline() {
+  case "$2" in
+    *$'\n'*) orchid_die "$1 must not contain a newline: task frontmatter is one 'key: value' per line, so a multi-line value cannot be stored there. Nothing was written. ${3:-Flatten it to a single line (a literal \\n is kept verbatim, not expanded). Nothing under .orchid/ is ever hand-edited.}" ;;
+  esac
+}
+
+# _body_prose_remedy <id> <status> -- the half of a single-line refusal that
+# answers "then where does my paragraph go", for THIS task as it stands right
+# now.
+#
+# NAMED VERB, VALID FROM THE STATUS IT IS PRINTED IN (T034 rework). The refusal
+# used to name `orchid task unblock <id> --reason ...` and `orchid task retry
+# <id> --reason ...` unconditionally, and both of those are gated: `unblock`
+# dies "$id is not blocked" from anywhere but `blocked`, and `retry` exits 3
+# ("illegal retry from <status>") from anywhere but `blocked` or `rework`. The
+# value this whole guard exists for is a long `acceptance_criteria` or
+# `hook_guidance`, which is written while a task is being PLANNED -- `pending`,
+# where neither verb is legal. So the operator whose write was just refused was
+# handed two commands that refuse them again, in the same breath as being told
+# not to touch the file. A remedy that cannot be run is not better than none: it
+# spends the operator's trust and returns them to the file anyway.
+#
+# The three answers are therefore the three real ones, keyed on the status:
+# the verb that is legal here, or -- when none is -- the fact that none is,
+# plus the edge that reaches one. `advance <id> blocked --reason` is that edge
+# and it is legal from EVERY status (see `legal` below: `blocked` is the one
+# universal transition), so the escape route named is one that always exists.
+#
+# Flattening is offered first in every case, because it is the answer to the
+# question actually asked -- this value, in this field -- while the body verbs
+# answer a different one: prose that is guidance for the implementer rather
+# than a field's content.
+#
+# A status that will not read at all is its own answer, and it is the one this
+# task exists for: the file is damaged, so the remedy is to recover it rather
+# than to write anything else into it.
+_body_prose_remedy() {
+  case "$2" in
+    '')
+      printf "%s" "Flatten it to a single line (a literal \\n is kept verbatim, not expanded). Note also that this task's status could not be read at all, which means its file is damaged: 'orchid task show $1' and 'orchid doctor' say which way, and a committed copy comes back with 'git checkout <sha> -- .orchid/tasks/$1.md'. Recover it before writing anything else to it, and never by hand-editing anything under .orchid/." ;;
+    blocked)
+      printf "%s" "Flatten it to a single line (a literal \\n is kept verbatim, not expanded). If it is guidance rather than a field's value, it belongs in the task BODY, and from '$2' the verb that records it there is 'orchid task unblock $1 --reason \"...\"'. Nothing under .orchid/ is ever hand-edited." ;;
+    rework)
+      printf "%s" "Flatten it to a single line (a literal \\n is kept verbatim, not expanded). If it is guidance rather than a field's value, it belongs in the task BODY, and from '$2' the verb that records it there is 'orchid task retry $1 --reason \"...\"'. Nothing under .orchid/ is ever hand-edited." ;;
+    *)
+      printf "%s" "Flatten it to a single line (a literal \\n is kept verbatim, not expanded). If it is guidance rather than a field's value, it belongs in the task BODY -- but no verb writes prose there from status '$2': 'orchid task unblock' requires 'blocked' and 'orchid task retry' requires 'blocked' or 'rework'. Take the task to one of them first with 'orchid task advance $1 blocked --reason \"...\"', which is legal from every status. Nothing under .orchid/ is ever hand-edited." ;;
+  esac
+}
+
+# The create arm's remedy, for the same reason the parameter exists: a refused
+# create has no task file, so every verb that writes into one is advice about
+# something that does not exist. It names the preconditions anyway (T034
+# rework) rather than the bare verbs, because a task fresh out of `task create`
+# is `pending`, which is precisely the status neither of them accepts -- the
+# earlier wording sent an operator straight from one refusal into another.
+_CREATE_NEWLINE_REMEDY="No task file was created, so there is nothing to repair and nothing to open: re-run 'orchid task create' with a single-line id and title. Multi-paragraph prose reaches a task's BODY only through 'orchid task unblock <id> --reason ...' (from status 'blocked') or 'orchid task retry <id> --reason ...' (from 'blocked' or 'rework') — never from the 'pending' a new task starts in, and never by hand-editing anything under .orchid/."
 
 # legal <from> <to> <archetype> -- archetype-driven (INV-05: data from the
 # manifest, never a name branch): `to=blocked` is the one universal escape
@@ -36,10 +145,492 @@ legal() {
   grep -qxF "$from:$to" <<< "$transitions"
 }
 
-needs_reason() { case "$1:$2" in
-  *:merging|*:blocked|arbitrating:rework|arbitrating:done) return 0;; *) return 1;; esac; }
+needs_reason() {
+  case "$1:$2" in
+    *:merging|*:blocked|arbitrating:rework|arbitrating:done) return 0 ;;
+  esac
+  # The reverify edge -- an idle status re-entering `testing` -- carries an
+  # operator judgment ("the tree is green, the failure was not the
+  # candidate's") that nothing else in the run records, so INV-08 applies to
+  # it whichever door it is taken through: `task reverify` demands `--reason`
+  # of its own accord, and a bare `task advance <id> testing` out of
+  # `blocked`/`rework` must not be the way to make the same claim silently.
+  # Keyed on the same idle -> `testing` predicate as the gate below, never on
+  # the literal pair `blocked|rework` (INV-05).
+  if schedule_is_active_status "$1"; then return 1; fi
+  [ "$2" = testing ]
+}
+
+# testing_entry_blocker <task-file> <candidate-sha> -- the entry-to-`testing`
+# preconditions that depend only on the candidate, not on the source status:
+# base_sha and candidate_sha both set, and no commit in `base..candidate`
+# touching `.orchid/` (INV-04). Echoes the refusal text and returns 1 when one
+# of them fails; silent, exit 0, when the candidate may enter `testing`.
+#
+# One function with two callers, deliberately (T026 rework): `advance` enforces
+# it on the edge itself, and `reverify` has to ask the SAME question about the
+# sha it is about to stamp BEFORE it stamps it -- a verb that mutated first and
+# asked afterwards would leave the task pointing at a candidate the very next
+# line refused. A second hand-written copy of the two checks in the second
+# caller could drift away from this one; a second call cannot.
+testing_entry_blocker() {
+  local f="$1" cand="$2" b walk
+  b="$(fm_get "$f" base_sha)"
+  if [ -z "$b" ] || [ -z "$cand" ]; then
+    echo "testing requires base_sha and candidate_sha set"; return 1
+  fi
+  # FAIL CLOSED WHEN THE WALK CANNOT BE DONE (T026 rework). This is an INV-04
+  # check, and the only evidence it has is the output of `git log base..cand`.
+  # If that command fails -- either sha not a commit in this repo, a corrupt or
+  # missing object, `$repo` not a git checkout at all -- it prints nothing and
+  # exits non-zero, and a `| grep -q` on its output then finds no `.orchid/`
+  # path for exactly the same reason it would on a genuinely clean range. The
+  # old form could not tell those two apart and admitted both, so a candidate
+  # whose history could not be READ was certified as containing no kernel-state
+  # commits. "I could not look" must never answer "nothing there": the walk is
+  # captured first, its exit status is checked on its own, and an unanswerable
+  # range is refused with the reason it could not be answered.
+  #
+  # stderr is folded into the capture so the refusal can QUOTE git's own
+  # diagnosis (`unknown revision`, `not a git repository`) instead of asking an
+  # operator to re-run the command by hand. On the success path git writes
+  # nothing there; a hypothetical warning that began with `.orchid/` would trip
+  # the scan below, which is a refusal -- the same direction this whole
+  # function fails in, never a pass.
+  if ! walk="$(git -C "$repo" log --format=%H --name-only "$b..$cand" 2>&1)"; then
+    echo "cannot walk $b..$cand in $repo, so nothing can confirm the candidate adds no .orchid/ commits — entry to testing refused (INV-04): $walk"
+    return 1
+  fi
+  if grep -q '^\.orchid/' <<< "$walk"; then
+    echo "commits touch .orchid/ — entry to testing refused (INV-04)"; return 1
+  fi
+  return 0
+}
+
+# candidate_lineage_blocker <cwd> <task-id> <old-candidate> <new-head> <branch>
+# -- may <new-head> be treated as this task's candidate? Echoes the refusal and
+# returns 1 when it may not; silent, exit 0, when it may.
+#
+# WHICH COMMIT IS ITSELF A GATE. Every path that moves `candidate_sha` onto
+# whatever `HEAD` happens to be is one `git checkout` away from a WORSE
+# mis-binding than the drift it exists to remove: a tree left on another task's
+# branch, a HEAD detached by a bisect, a worktree path since reused for
+# something else. The record would then name a commit that shares no history
+# with the work under judgment while every downstream gate -- the verify
+# evidence, the review envelopes bound to it, the merge -- carried on as though
+# it did. A clean tree is not the right tree, and nothing about "clean" says
+# whose it is. So the new commit must be BOTH:
+#
+#   * a DESCENDANT of the candidate it replaces. Every legitimate move of a
+#     candidate ADDS commits on top of work already captured -- an operator's
+#     fix, a mode bit, a regenerated per-file artifact -- so anything that
+#     does not contain that work is not this candidate's successor, whatever
+#     else it is.
+#   * ON the branch the task record names. Descent alone still admits a commit
+#     made on a branch that merely forked from this candidate, which is what an
+#     operator working two tasks in two checkouts produces by mistake -- and it
+#     is the shape whose commits silently vanish from the branch that merges.
+#
+# Every refusal names BOTH shas, because the whole content of the mistake is
+# which two commits were about to be conflated.
+#
+# T026 rework: two callers, deliberately -- `task handoff --ack`'s advance and
+# the `reverify` edge -- for the same reason testing_entry_blocker has two.
+# They are the only two paths that move a candidate sideways onto a tree an
+# operator produced, they are answerable to exactly the same question, and a
+# second hand-written copy of it in the second caller could drift away from
+# this one. A call cannot.
+candidate_lineage_blocker() {
+  local cwd="$1" cid="$2" old="$3" new="$4" br="$5"
+  if [ -n "$old" ]; then
+    # A recorded candidate that is not a commit HERE is reported as what it is.
+    # It would otherwise fall through to the descent refusal below and be
+    # described as an unrelated history, sending an operator to compare two
+    # commits when one of them does not exist in this checkout at all.
+    if ! git -C "$cwd" cat-file -e "$old^{commit}" 2>/dev/null; then
+      echo "the recorded candidate $old is not a commit in $cwd, so nothing can say whether $new continues it (the record names a tree this checkout does not have — check that the task's worktree is the one the work was done in)"
+      return 1
+    fi
+    if ! git -C "$cwd" merge-base --is-ancestor "$old" "$new" 2>/dev/null; then
+      echo "$new does not descend from the current candidate $old, so it is not this candidate's own line of work (HEAD of $cwd is on an unrelated history — check out the branch task $cid names, commit on top of $old, and re-run)"
+      return 1
+    fi
+  fi
+  if [ -n "$br" ]; then
+    if ! git -C "$cwd" rev-parse --verify --quiet "refs/heads/$br" >/dev/null 2>&1; then
+      echo "task $cid names branch '$br', which does not exist in $cwd, so nothing can confirm $new belongs to this task's line of work (create it at that commit, or point the record at the branch the work is really on with 'orchid task set $cid branch <name>')"
+      return 1
+    fi
+    if ! git -C "$cwd" merge-base --is-ancestor "$new" "refs/heads/$br" 2>/dev/null; then
+      echo "$new is not contained in task $cid's branch '$br' (HEAD of $cwd is detached, or on another branch — commit on '$br' and re-run; the candidate it would have replaced is ${old:-none})"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# reverify_edge_gate <task-file> -- the preconditions for the OPERATOR edge
+# into `testing`: an IDLE status (`blocked`/`rework`) re-entering verification
+# with no implementation pass in between. That is the edge `task reverify`
+# names, and this is what makes it safe to take.
+#
+# T026 rework: these checks used to live inside `reverify` alone, while `task
+# advance` accepted the very same `blocked|rework -> testing` edge with none
+# of them -- a guarded door with an unguarded one beside it, so verification
+# could certify exactly the tree they exist to refuse just by taking the other
+# route. They are a function called from BOTH for the same reason
+# testing_entry_blocker is: two doors that are the same door cannot disagree.
+#
+# Three questions, in the order an operator can act on them: can the tree be
+# READ, is it CLEAN, and is the commit standing there THIS TASK'S (descended
+# from the candidate it would replace, on the branch the record names --
+# candidate_lineage_blocker).
+#
+# On success: echoes the task worktree's HEAD -- the only tree this edge may
+# hand to verification -- and returns 0. On refusal: prints the whole
+# operator-facing reason to stderr (multi-line, naming the offending paths or
+# the two shas) and returns 1; callers exit 3 and print nothing more.
+reverify_edge_gate() {
+  local f="$1" wt rvh rvst dirty rvid rvold rvlin
+  # The tree under test is read the same way the driver reads it when it hands
+  # an implementer's work to `testing`: worktree when set, repo otherwise.
+  wt="$(fm_get "$f" worktree)"; [ -n "$wt" ] || wt="$repo"
+  if ! rvh="$(git -C "$wt" rev-parse HEAD 2>/dev/null)"; then
+    echo "orchid: cannot read HEAD of the task worktree $wt — nothing to re-verify" >&2
+    return 1
+  fi
+  # A status this gate cannot READ is refused rather than read as clean: "I
+  # could not look" must never certify a tree.
+  if ! rvst="$(git -C "$wt" status --porcelain)"; then
+    echo "orchid: cannot read the status of the task worktree $wt — refusing to certify a tree this edge cannot inspect" >&2
+    return 1
+  fi
+  # A DIRTY worktree is refused, never certified. `orchid verify` runs the
+  # suite in exactly this directory but stamps its evidence with a sha, so an
+  # uncommitted change here is EXERCISED by the run while candidate_sha names a
+  # tree that never contained it: the evidence would then describe something
+  # that was never the candidate, and a later reviewer, merge, or re-run would
+  # be reading a PASS for a tree nobody can reconstruct (lesson L025).
+  # Untracked files count: a suite reads a new test file exactly as happily as
+  # a modified one. `.orchid/` is the one exclusion, and not as a convenience:
+  # it is kernel state that every verb writes into the working tree by design
+  # (the state dir is only committed at run/merge boundaries), INV-04 bars it
+  # from candidates outright, and it is therefore never part of what the
+  # operator is asking to have verified.
+  #
+  # Porcelain v1 is `XY <path>` -- except for a rename or copy, which is
+  # `XY <old> -> <new>`. THAT SECOND FORM IS WHY THIS IS NOT A PATH-PREFIX
+  # FILTER (T026 rework). A filter anchored at the path column reads only the
+  # left-hand side, so `R  .orchid/scratch -> libexec/orchid-thing` looks like
+  # kernel state and is dropped -- while what it actually stages is a candidate
+  # path holding content no commit contains. The whole gate would then pass, the
+  # suite would exercise that file, and candidate_sha would name the commit
+  # without it: precisely the mis-binding the refusal exists to stop, walked
+  # around by renaming rather than adding.
+  #
+  # So each record is parsed rather than prefix-matched. A rename/copy is
+  # skipped only when BOTH of its sides are kernel state; anything else, and
+  # anything that cannot be parsed as one of the two forms, is KEPT -- refused,
+  # never assumed tidy, the same direction every other check in this function
+  # fails in. (`.orchid/` itself is skipped for the reason above: it is kernel
+  # state, never part of the candidate.)
+  dirty="$(printf '%s\n' "$rvst" | awk '
+    # A leading quote is stripped first: porcelain quotes paths that contain
+    # control characters, quotes, backslashes or (by default) non-ASCII bytes.
+    function kernel(p) { sub(/^"/, "", p); return p ~ /^\.orchid\// }
+    { code = substr($0, 1, 2); rest = substr($0, 4) }
+    # R or C in EITHER status column means the record carries both paths.
+    code ~ /[RC]/ {
+      i = index(rest, " -> ")
+      if (i > 0 && kernel(substr(rest, 1, i - 1)) && kernel(substr(rest, i + 4))) next
+      print; next
+    }
+    kernel(rest) { next }
+    { print }')"
+  if [ -n "$dirty" ]; then
+    echo "orchid: the task worktree $wt has uncommitted changes — reverify refused" >&2
+    printf '%s\n' "$dirty" >&2
+    echo "orchid: verification runs in that worktree, so those would be exercised while candidate_sha named $rvh — commit them on the task branch (or discard them), then reverify" >&2
+    return 1
+  fi
+  # A CLEAN TREE IS NOT THE RIGHT TREE. Everything above this line asks whether
+  # the worktree is certifiable at all; nothing in it asks WHOSE work is
+  # standing there. A checkout left on another task's branch, a HEAD detached
+  # by a bisect, a worktree path reused for something else -- all clean, all
+  # certifiable, and adopting one as this task's candidate is a worse
+  # mis-binding than the dirty tree just refused, because every field then
+  # agrees and the evidence produced for it looks exactly right. So the
+  # commit's lineage is asked too, by the same function `task handoff --ack`
+  # asks it with (candidate_lineage_blocker).
+  #
+  # The candidate it must descend from is the one being replaced; on a task
+  # that has none yet, `base_sha` is the same claim made against the point the
+  # work forked from. With neither recorded there is no lineage to check here,
+  # and testing_entry_blocker refuses the entry outright a moment later.
+  rvid="$(fm_get "$f" id)"
+  rvold="$(fm_get "$f" candidate_sha)"; [ -n "$rvold" ] || rvold="$(fm_get "$f" base_sha)"
+  if ! rvlin="$(candidate_lineage_blocker "$wt" "$rvid" "$rvold" "$rvh" "$(fm_get "$f" branch)")"; then
+    echo "orchid: refusing to verify $rvh as task $rvid's candidate: $rvlin" >&2
+    return 1
+  fi
+  printf '%s\n' "$rvh"
+}
 
 rank() { case "$1" in low) echo 0;; medium) echo 1;; high) echo 2;; *) echo -1;; esac; }
+
+# refresh_briefs <task-file> <id> -- the task body as the NEXT implementer
+# should read it, printed for the caller to pipe into fm_write_task: every
+# rework brief bound to a candidate other than the current one collapsed to a
+# superseded notice, and -- when a failing gate left location-bearing evidence
+# for the CURRENT candidate -- one fresh brief appended.
+#
+# Both halves belong to the same moment, which is why they are one function
+# called from all three entries to `rework` (`advance`, `unblock`, `retry`)
+# rather than an append at each. A brief is APPENDED to a body that outlives
+# the candidate it describes, so appending alone means round three hands the
+# implementer round one's line numbers next to round three's with nothing to
+# tell them apart -- the mechanism that exists to carry the CURRENT failure,
+# quietly re-serving expired ones. The aging pass is what makes "the brief"
+# singular. See lib/findings.sh.
+#
+# AND THE APPEND IS IDEMPOTENT BY CONTENT (findings_brief_present). Aging
+# withdraws only the briefs describing some OTHER candidate -- the ones
+# describing the current one are still true and are left standing -- so a second
+# entry to `rework` on an UNCHANGED candidate, with the same evidence log still
+# on disk, would otherwise regenerate a block identical to the one already in
+# the body and hand the implementer the same locations twice. `merging` ->
+# `rework` followed by `orchid task retry` is the route that does it today (the
+# `merging` arm exempts `<id>-merge.log` from its rm, and `retry` re-reads that
+# survivor), but the guard is here at the append rather than on that route
+# because every other way of reaching `rework` twice without minting a new
+# candidate produces the same body.
+#
+# FAIL-CLOSED ON ITS OWN, not on errexit (T034 rework). This function is the
+# PRODUCER of a whole replacement task document, and fm_write_task_from runs it
+# with its status under test -- which suppresses errexit inside it, exactly as
+# `set -e` is suppressed in any command whose status is being read. So a step
+# that failed here would no longer abort the function; it would fall through to
+# the `printf` below and could still return 0, and what got written over the
+# task would be a document built from an answer nothing produced. Every step is
+# therefore checked here, and the empty body is checked with them: a task
+# document is never empty, so an empty `rbody` means findings_age_briefs could
+# not read the file (it returns 0 with no output for a missing one) rather than
+# that the task had nothing in it.
+refresh_briefs() {
+  local rf="$1" rid="$2" rcand rbrief rbody
+  rcand="$(fm_get "$rf" candidate_sha)" || return 1
+  rbrief="$(findings_brief "$state" "$rid" "$rcand")" || return 1
+  # The AGED body is what the presence check reads, because aging is what
+  # decides which blocks are still live: one it just collapsed no longer
+  # matches, and the fresh brief is appended as it should be.
+  rbody="$(findings_age_briefs "$rf" "$rcand")" || return 1
+  [ -n "$rbody" ] || return 1
+  printf '%s\n' "$rbody" || return 1
+  if [ -n "$rbrief" ] && ! findings_brief_present "$rbody" "$rbrief"; then
+    printf '\n%s\n' "$rbrief" || return 1
+  fi
+}
+
+# refresh_briefs_with_guidance <task-file> <id> <timestamp> <reason> -- the
+# rework body refresh_briefs produces, with the operator's own guidance appended
+# as the last word on top of it. `unblock`'s producer, factored out of the
+# `{ ...; ...; } | fm_write_task` compound it used to be so that it can be
+# handed to fm_write_task_from BY NAME and have its status read.
+refresh_briefs_with_guidance() {
+  refresh_briefs "$1" "$2" || return 1
+  printf '\n**Operator guidance (%s):** %s\n' "$3" "$4" || return 1
+}
+
+# append_guidance <task-file> <timestamp> <reason> -- the task exactly as it is,
+# plus the operator's guidance. `retry`'s second producer, and the one where a
+# failed producer is least visible: a `cat` that stops partway leaves a document
+# that still opens and closes with `---` and still resolves `id`, so it passes
+# every shape check while the body it silently truncated is the task's whole
+# rework history.
+append_guidance() {
+  cat "$1" || return 1
+  printf '\n**Operator guidance (%s):** %s\n' "$2" "$3" || return 1
+}
+
+# capture_rework_evidence <task-file> <id> <from-status> (T025) -- copy the
+# failing output that is causing THIS rework somewhere the invalidating
+# `rm -f` a few lines below every caller does not reach, and record what it
+# says about convergence.
+#
+# It runs ahead of both the attempt accounting and that `rm -f`, because the
+# `rm -f` is what destroys it: the reason journalled on this very edge points
+# at reviews/<id>-verify.log, and that pointer dangles the instant it is
+# written (lesson L023). The copy lands at reviews/<id>-r<round>-rework.log, a
+# path no evidence gate accepts (see lib/rework.sh), so INV-11 stays armed
+# exactly as before while the output survives for the next attempt's input
+# pack to carry.
+#
+# ONE FUNCTION FOR ALL THREE ENTRIES TO REWORK, exactly as refresh_briefs
+# above is, and for a sharper version of the same reason. `advance <id>
+# rework` is not the only door: `task unblock` and `task retry` both take a
+# task to `rework` and both delete the verify log on their way through --
+# and `retry` is the verb an operator reaches for after `attempts
+# exhausted`, which is the one edge that arrives at rework with a verify log
+# STILL ON DISK (the exhausted stop advances to `blocked`, which captures
+# nothing and deletes nothing). Living only on the advance arm, this capture
+# therefore missed the failure most worth carrying forward and let the
+# operator's own recovery verb destroy it -- the F27 loop reproduced by the
+# remedy for F27.
+#
+# AND ALL THREE DELETE BOTH LOGS, so the source is looked for in both. `from`
+# picks which of <id>-verify.log and <id>-merge.log is asked first, never which
+# is admitted (rework_evidence_source). The operator's doors are the reason:
+# they arrive `from = blocked` or `from = rework`, so they prefer the verify
+# log -- and a task stopped by a red repo-wide `merge_gate` has a PASSING
+# verify log from before the merge sitting beside the failing merge log that
+# is the entire reason it stopped. Preferring the verify log and stopping there
+# would answer "nothing failed" and then delete the failure, on the one edge
+# (`merging -> blocked`) that captures nothing on its own way past.
+#
+# NOT a duplicate of `refresh_briefs`, which lifts the same log in the same
+# window (T010, lesson L017). That one extracts the LOCATIONS a failing gate
+# named -- `file:line: RULE: message` -- into the task BODY, so an actor that
+# cannot open or re-run a log still learns where to look. It is a
+# distillation, and it is empty for exactly the failure this task was opened
+# over: an assertion diff carries no `file:line:` anywhere, so F27's task got
+# a brief with nothing in it. This capture keeps the bytes THEMSELVES, in a
+# file, for the pack to carry verbatim -- and it is the only one of the two
+# that can answer "is this the same failure as last time", because a
+# distillation cannot be compared for byte-identity with anything.
+#
+# `rework_rounds` counts CAPTURED rounds, not rework entries: a rework with no
+# failing evidence to capture (a rebase conflict, an operator advance) mints
+# no file, so the counter and the files on disk can never disagree. Such a
+# round also leaves `rework_signature`/`_repeats` untouched rather than
+# resetting them -- an uncapturable round is an absence of evidence about
+# convergence, and clearing the streak on it would hide a genuine repeat
+# behind an unrelated interruption.
+#
+# AND IT IS BOUND TO THE CANDIDATE IT DOCUMENTS. The evidence logs both carry
+# a `candidate:` header, and the capture refuses one that names a different
+# candidate than the task is reworking (lib/rework.sh's
+# rework_evidence_bound, the same rule lib/findings.sh applies to the
+# locations it quotes). The `merging` arm is why: `orchid merge`'s rebase path
+# mints a new candidate_sha while the previous candidate's <id>-merge.log is
+# still on disk and deliberately exempt from the delete below, so an unbound
+# capture would file a superseded candidate's output as this round's failure
+# -- and then digest it, count it toward the streak, reroute the role on it
+# and block the task for not converging. The refusal is journalled rather than
+# silent: "rework arrived with nothing to act on" is the exact complaint this
+# task exists to answer, so the one case where the kernel deliberately
+# captures nothing has to say so.
+#
+# AND BOUND IS NOT THE SAME AS FRESH. The binding above refuses a log naming a
+# candidate this task has MOVED OFF; it cannot refuse one naming the candidate
+# still under work, which is every stale log on the one path where the
+# candidate does not move. `orchid merge` dying before its own opening `rm -f`
+# (a run lock it did not get) leaves the previous round's <id>-merge.log --
+# already exempt from the delete below -- sitting in exactly the place the
+# merging arm looks, bound to exactly the right candidate. Captured a second
+# time it is a digest identical to the round already on disk BY CONSTRUCTION:
+# repeat 2 reroutes the role, repeat 3 blocks the task for not converging,
+# both derived from a single run read twice. So the source is compared with
+# the newest captured round BYTE FOR BYTE (rework_evidence_recaptured -- the
+# volatile header the signature drops is what distinguishes a re-run from a
+# re-read), and a duplicate mints no round and moves no counter. That guard is
+# what makes the operator verbs safe to wire in here: `unblock` and `retry`
+# reach rework over an unchanged candidate by definition, so the log they find
+# is sometimes one an earlier edge already filed.
+#
+# Every caller must have finished refusing before it calls this: a died verb
+# must not leave a captured round and bumped counters behind describing a
+# transition that never happened.
+capture_rework_evidence() {
+  local cf="$1" cid="$2" cfrom="$3"
+  local ccand csrc cdup cround cdest csig cprev creps csame cunbound cclaim
+  ccand="$(fm_get "$cf" candidate_sha)"
+  csrc=""; cdup=""
+  if csrc="$(rework_evidence_source "$state" "$cid" "$cfrom" "$ccand")"; then
+    cdup="$(rework_evidence_recaptured "$state" "$cid" "$csrc")" || cdup=""
+  fi
+  if [ -n "$csrc" ] && [ -n "$cdup" ]; then
+    # Journalled, like every other deliberate non-capture on this edge: an
+    # operator asking why the streak did not move needs the difference
+    # between "no evidence" and "the same evidence again" spelled out, and
+    # the entry names both files so the claim can be checked by hand.
+    journal --task "$cid" --kind intervention \
+      "rework evidence NOT captured: ${csrc##*/} is byte-identical to the already-captured ${cdup##*/}, so it is one run read a second time rather than a second failure — no round is filed and the convergence streak is untouched"
+  elif [ -n "$csrc" ]; then
+    cround="$(fm_get "$cf" rework_rounds)"
+    case "$cround" in ''|*[!0-9]*) cround=0 ;; esac
+    cround=$((cround + 1))
+    cdest="$(rework_log_path "$state" "$cid" "$cround")"
+    atomic_write "$cdest" < "$csrc"
+    csig="$(rework_signature "$cdest")"
+    cprev="$(fm_get "$cf" rework_signature)"
+    creps="$(fm_get "$cf" rework_signature_repeats)"
+    case "$creps" in ''|*[!0-9]*) creps=0 ;; esac
+    if [ -n "$cprev" ] && [ "$csig" = "$cprev" ]; then
+      creps=$((creps + 1)); csame="identical to the previous round"
+    else
+      creps=1; csame="new"
+    fi
+    # Journal-first (INV-08 discipline), same as `infra-fail`: the fact is
+    # recorded before the counters that assert it. An unchanged signature
+    # is the whole point of the record -- it is evidence the loop is not
+    # converging, not a fresh failure, and it must be greppable as such
+    # without re-reading two logs by hand.
+    journal --task "$cid" --kind intervention \
+      "rework evidence captured: reviews/$cid-r$cround-rework.log; failure signature ${csig:0:12} ($csame, repeat $creps)"
+    fm_set "$cf" rework_rounds "$cround"
+    fm_set "$cf" rework_signature "$csig"
+    fm_set "$cf" rework_signature_repeats "$creps"
+  elif cunbound="$(rework_evidence_source "$state" "$cid" "$cfrom")"; then
+    # Failing evidence IS on disk and was refused, which is a different
+    # fact from "there was nothing to capture" and the only one of the two
+    # an operator can act on. Named with the candidate it actually
+    # describes, so the entry answers the next question too. Only reachable
+    # with a candidate to bind to: an empty one skips the check entirely
+    # above, so this arm is a genuine mismatch every time.
+    cclaim="$(findings_log_candidate "$cunbound")"
+    if [ -z "$cclaim" ]; then
+      journal --task "$cid" --kind intervention \
+        "rework evidence NOT captured: ${cunbound##*/} carries no candidate header — it cannot be bound to this task's '$ccand', so it is neither fed forward nor counted toward the convergence streak"
+    else
+      journal --task "$cid" --kind intervention \
+        "rework evidence NOT captured: ${cunbound##*/} names candidate '$cclaim', not this task's '$ccand' — it documents a superseded candidate, so it is neither fed forward nor counted toward the convergence streak"
+    fi
+  fi
+}
+
+# warn_rework_nonconverged <task-file> <id> -- say, at the operator's own two
+# doors into rework, what the driver will do with the task they just moved.
+#
+# The consecutive-signature streak deliberately SURVIVES `retry` and `unblock`:
+# an identical failure reached over the operator's route is the same evidence of
+# a loop that is not converging as one reached over the driver's, which is why
+# `capture_rework_evidence` counts it there too. The driver's dispatch guard
+# reads that count before it launches anything, so a task returned to `rework`
+# at or past `rework_nonconvergence_max` is stopped again on the next pass
+# instead of being dispatched -- no engine round, no attempt.
+#
+# That is the right call (the round would re-ask a question already answered
+# identically N times) and it is invisible from here, which is what this warning
+# is for. `unblock` already prints exactly this shape of line about the attempt
+# budget, for exactly this reason: an operator who has to rediscover the stop by
+# watching a pass do nothing has been told nothing. So the door names the
+# condition, the count, the key that sets it, and the two things that actually
+# release the loop -- a verification that answers DIFFERENTLY (`reverify`, which
+# re-runs it without spending an attempt, and whose new signature restarts the
+# count at one) or a repository that has decided this loop deserves more rope
+# (`rework_nonconvergence_max`).
+#
+# Called last, after `capture_rework_evidence` has counted the round being
+# recovered from: the number this warns about is the one the driver will read.
+warn_rework_nonconverged() {
+  local wf="$1" wid="$2" wreps wmax
+  wreps="$(fm_get "$wf" rework_signature_repeats)"
+  case "$wreps" in ''|*[!0-9]*) wreps=0 ;; esac
+  wmax="$(config_get "$repo" rework_nonconvergence_max 3)"
+  case "$wmax" in ''|*[!0-9]*) wmax=3 ;; esac
+  [ "$wmax" -gt 0 ] && [ "$wreps" -ge "$wmax" ] || return 0
+  echo "$wid: WARNING — the last $wreps round(s) failed with a byte-identical signature (rework_nonconvergence_max=$wmax), so the next pass withholds the dispatch and stops this task again rather than spending a round re-asking an identically-answered question. Your reason is in the task body and will reach the next round, but something has to make verification answer differently first: fix it and run 'orchid task reverify $wid --reason \"...\"' (no attempt spent, and a changed failure restarts the count), or raise rework_nonconvergence_max if this loop really should get more rounds of the same question." >&2
+}
 
 case "$sub" in
   create)
@@ -52,6 +643,22 @@ case "$sub" in
     # convention (jobs prepare's plan-branch would then shadow a real task's
     # frontmatter). Refused up front, before any file is written.
     [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    # Same single-line rule as `set` below, on the two values that reach the
+    # template. These are not rendered by fm_set -- fm_render_task_template
+    # renders them, and it stores what it is given byte-for-byte -- so an
+    # embedded newline reaches the document as a `title:` line split in two,
+    # with the remainder sitting in the frontmatter as a key-less line.
+    # Frontmatter is one `key: value` per line, and this is where that rule is
+    # enforced: before the template is read and before anything is written.
+    #
+    # fm_write_task's structural check would refuse that document too (T034
+    # rework), and no file would be created either way -- but it would refuse it
+    # in the vocabulary of the DOCUMENT ("line 4 is not a 'key: value' entry"),
+    # about a file the operator has never seen, naming neither the argument that
+    # was wrong nor what to do instead. A backstop is not a diagnosis. This
+    # guard is here so the message is about the id or the title they typed.
+    _no_newline "task id" "$id" "$_CREATE_NEWLINE_REMEDY"
+    _no_newline "task title" "$title" "$_CREATE_NEWLINE_REMEDY"
     # --archetype <name> (default: feature) -- the ONLY new flag; a bare
     # `task create <id> <title>` behaves exactly as before this arm gained
     # option parsing.
@@ -77,30 +684,110 @@ case "$sub" in
     # v1-m3 Task 8: per-archetype template lookup. `templates/task-<arch>.md`
     # when present (refactor/test/migrate each pre-set their own risk_tier/
     # blocking_severity/exclusive defaults and body lens text in frontmatter
-    # -- plain sed substitution, so these create-time defaults are never
-    # routed through `task set risk_tier`'s monotonic/--reason guard, which
-    # only fires on POST-create changes to an existing task file), else the
+    # -- rendered straight out of the template, so these create-time defaults
+    # are never routed through `task set risk_tier`'s monotonic/--reason
+    # guard, which only fires on POST-create changes to an existing file), else the
     # generic `templates/task.md` fallback (unchanged content/behavior for
     # feature/review and any other archetype without its own template).
     tmpl="$ORCHID_ROOT/templates/task-$arch.md"
     [ -f "$tmpl" ] || tmpl="$ORCHID_ROOT/templates/task.md"
-    sed -e "s|__ID__|$id|g" -e "s|__TITLE__|$title|g" \
-        -e "s|__ARCHETYPE__|$arch|g" \
-        -e "s|__ENGINE__|$(resolve_role "$repo" implementer)|g" \
-        -e "s|__DATE__|$(now)|g" \
-      "$tmpl" | atomic_write "$(tf "$id")" ;;
-  show) cat "$(tf "$1")" ;;
-  list) for f in "$tasks"/*.md; do [ -e "$f" ] || continue
-        printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"; done ;;
+    # fm_render_task_template | fm_write_task, never `sed | atomic_write`
+    # (T034). Two separate accidents met at this one line, and each half closes
+    # one of them:
+    #
+    #   THE RENDER. A sed replacement string is a language, not literal text,
+    #   and `&`, `\` and `|` are all ordinary characters in a title an operator
+    #   types. `parser & lexer` used to land as `parser __TITLE__ lexer`, and a
+    #   literal `\n` landed as a real newline on GNU sed and as the letter `n`
+    #   on BSD sed -- three wrong answers, two of them silent.
+    #   fm_render_task_template substitutes out of ENVIRON in awk, in one
+    #   left-to-right scan, so what was typed is what the file gets.
+    #
+    #   THE WRITE. atomic_write renames whatever its stdin gave it, INCLUDING
+    #   NOTHING -- so a renderer that dies on the operator's own text would land
+    #   a brand-new ZERO-BYTE task file that `task create` itself then refuses
+    #   to replace ever after ("task <id> exists"). fm_write_task validates the
+    #   document before the rename, and the renderer emits all of it or none of
+    #   it, so a create that fails leaves nothing behind.
+    #
+    # fm_write_task_from, not a pipe (T034 rework): in a pipe the renderer's
+    # exit status arrives through `pipefail` only AFTER fm_write_task has
+    # already decided, so the decision is made on bytes alone. Here the render
+    # is staged, its status is read first, and only a render that finished is
+    # allowed to become a task file.
+    fm_write_task_from "$(tf "$id")" \
+      fm_render_task_template "$tmpl" "$id" "$title" "$arch" \
+        "$(resolve_role "$repo" implementer)" "$(now)" ;;
+  show)
+    # `cat` alone (T034, dogfood F34): a task file destroyed by a failed
+    # rewrite is ZERO BYTES, and `cat` on it prints nothing and exits 0 -- so
+    # the verb an operator uses to ask "what is the state of this task" answered
+    # SUCCESSFULLY, with silence, about a task that no longer existed. Both
+    # dogfood operators found the damage only by noticing a grep came back
+    # empty. An unreadable task file is a damaged one, and must be reported as
+    # damage, loudly, by the verb whose whole job is to show it.
+    show_id="${1:-}"
+    [ -n "$show_id" ] || orchid_die "usage: orchid task show <id>"
+    show_f="$(tf "$show_id")"
+    [ -f "$show_f" ] || orchid_die "no task $show_id"
+    if ! show_why="$(fm_check "$show_f" id)"; then
+      orchid_die "task $show_id is DAMAGED, not empty: $show_why ($show_f). Recover the frontmatter rather than re-creating the task: 'git log --all --oneline -- .orchid/tasks/$show_id.md' then 'git checkout <sha> -- .orchid/tasks/$show_id.md'; a review pack under .orchid/runtime/packs/ may also carry a copy of it."
+    fi
+    cat "$show_f" ;;
+  list)
+    # A DAMAGED task file gets a row that SAYS SO (T034, dogfood F34), never a
+    # row of empty fields. Three columns read straight out of frontmatter that
+    # is not there produce `<tab><tab>`, and that row is worse than useless in
+    # both of its audiences:
+    #
+    #   * an operator scanning `orchid task list` sees a blank line among the
+    #     tasks and reads it as cosmetic. Both dogfood operators found the
+    #     destroyed file only when an unrelated grep came back empty -- this
+    #     list was on screen, and it had nothing to say.
+    #   * the driver's task walk is `while read ... done < <(orchid task list)`,
+    #     and its first act is `[ -n "$_id" ] || continue`. An empty id row is
+    #     therefore SKIPPED IN SILENCE: the task is never dispatched, never
+    #     reported, and -- because the walk also counts what it saw -- a run
+    #     whose only unfinished task is the damaged one concludes that every
+    #     task is done. "A task that simply stopped existing" is precisely how
+    #     this defect presents, and this is the line that makes it present that
+    #     way.
+    #
+    # So the id is taken from the FILENAME (`.orchid/tasks/<id>.md` is the
+    # kernel's own mapping, and it is the one piece of the task that damage to
+    # the file cannot erase) and the status column carries `DAMAGED` -- upper
+    # case, which no real status is, so nothing can mistake it for one. The walk
+    # reads it as an unrecognized status and stops at an operator-decision
+    # boundary naming the task, which is the correct answer: no verb can decide
+    # what to do about a task file that cannot be read.
+    #
+    # This verb still exits 0. `task list` is a worklist producer read through a
+    # process substitution whose status nobody can see, so a non-zero exit here
+    # would be invisible to every caller while breaking the ones that check --
+    # the row is the signal. `task show` and `orchid doctor` are the two verbs
+    # that report this damage by exit code.
+    for f in "$tasks"/*.md; do [ -e "$f" ] || continue
+      if ! list_why="$(fm_check "$f" id)"; then
+        list_base="${f##*/}"
+        printf '%s\t%s\t%s\n' "${list_base%.md}" DAMAGED "DAMAGED task file ($list_why) — run 'orchid doctor' or 'orchid task show ${list_base%.md}'"
+        continue
+      fi
+      printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"
+    done ;;
   set)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; key="$2"; val="$3"; shift 3 || true
     # Reserved-id + existence guards BEFORE any read/write of the task
-    # file (v1-m3 fix): `fm_set`'s `awk ... | atomic_write "$f"` pipe has
-    # atomic_write write empty stdin to `$f` BEFORE awk's own can't-open-
-    # file failure aborts the script under `set -e` -- so a nonexistent id
+    # file (v1-m3 fix): `fm_set` was `awk ... | atomic_write "$f"`, and
+    # atomic_write wrote empty stdin to `$f` BEFORE awk's own can't-open-
+    # file failure aborted the script under `set -e` -- so a nonexistent id
     # used to crash with a raw awk error AND leave a stray empty
-    # tasks/<id>.md behind. `plan` is additionally refused by name (same
+    # tasks/<id>.md behind. fm_set no longer has that pipeline at all (T034:
+    # it renames a temp file only once awk has SUCCEEDED and produced a
+    # non-empty document, so it can no longer truncate anything), but these
+    # guards stay: "no task NOPE" is the diagnostic an operator can act on,
+    # and a library-level refusal about an unreadable file is not.
+    # `plan` is additionally refused by name (same
     # message `task create` uses) rather than falling through to the
     # generic "no task" die -- it can never have a real task file (`task
     # create` refuses it), so a plain existence check alone would still be
@@ -109,10 +796,158 @@ case "$sub" in
     # existence out-of-band and defeat the reserved-id protection.
     [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    # BEFORE any read, any derived write (risk_tier's blocking_severity), and
+    # any rewrite of the file: a newline in the VALUE is what destroyed a task
+    # file on r-002 and again in dogfood F34. See _no_newline's header.
+    #
+    # The status is read for the REMEDY, not for the refusal: the two verbs that
+    # record prose in a task body are legal only from `blocked`/`rework`, and
+    # this refusal fires most often while a task is still `pending`. See
+    # _body_prose_remedy.
+    _no_newline "the value for '$key'" "$val" \
+      "$(_body_prose_remedy "$id" "$(fm_get "$f" status)")"
+    # THE KEY MUST BE ONE THAT CAN BE READ BACK (T034 rework). `set` takes its
+    # key straight off the command line and fm_set writes `<key>: <value>` with
+    # it, so `orchid task set T1 'hook guidance' x` -- a space where an
+    # underscore was meant -- appends a line that is not a frontmatter entry at
+    # all. Nothing objected: the write succeeded, `task set` exited 0, and from
+    # that moment every reader of the task (`task show`, `orchid doctor`, the
+    # driver's task walk) reports it DAMAGED. One typo in one argument,
+    # destroying a task exactly as the newline used to, and by the same
+    # mechanism -- a value that cannot be represented in a one-entry-per-line
+    # document, written anyway.
+    #
+    # Refused here rather than only in fm_set (which refuses it too, as a
+    # backstop, by checking the document it staged) for the reason the newline
+    # guard gives: the library can say the document is unreadable, but only the
+    # verb can say WHICH ARGUMENT was wrong and what a usable one looks like.
+    #
+    # The shape is the one fm_check accepts as an entry, and deliberately no
+    # narrower: this refuses keys that cannot be stored, never keys the kernel
+    # does not recognize. An unknown-but-well-formed key is a legal thing to
+    # write (plugins and archetypes add their own fields), and a closed list
+    # here would be a second schema drifting away from the templates.
+    case "$key" in
+      '') orchid_die "the key is empty: 'orchid task set <id> <key> <value>' writes '<key>: <value>' as one frontmatter entry, and an entry needs a name. Nothing was written and $f is unchanged." ;;
+      [A-Za-z_]*) ;;
+      *) orchid_die "'$key' is not a usable frontmatter key: it must start with a letter or '_'. Frontmatter is one 'key: value' entry per line, and a line that does not start with a key name is not an entry -- writing it would leave this task unreadable to 'orchid task show', 'orchid doctor' and the driver's task walk. Nothing was written and $f is unchanged." ;;
+    esac
+    case "$key" in
+      *[!A-Za-z0-9_-]*) orchid_die "'$key' is not a usable frontmatter key: it may contain only letters, digits, '_' and '-' (a space is the usual slip -- 'hook_guidance', not 'hook guidance'). Frontmatter is one 'key: value' entry per line, and writing this one would leave the task unreadable to 'orchid task show', 'orchid doctor' and the driver's task walk. Nothing was written and $f is unchanged." ;;
+    esac
     case "$key" in
       status|attempts|infra_failures|id|created|updated|schema)
         orchid_die "'$key' is kernel-owned — use task advance/unblock/retry" ;;
+      handoff_ack)
+        # T010: an operator hand-off is an assertion that execution-requiring
+        # work was really done AGAINST A COMMITTED CANDIDATE, so the field can
+        # only ever hold the task's own current candidate_sha. A bare `task
+        # set` would let any string land there -- including one copied from a
+        # candidate the rebase arm has already superseded -- which is the one
+        # way this record could lie. `task handoff` derives the value itself.
+        orchid_die "'handoff_ack' is kernel-owned — use task handoff <id> --ack|--clear (it is bound to the current candidate_sha, never set by hand)" ;;
+      # T026: the per-task rework budget joins the deny-list for the same
+      # reason `infra_failures` is on it -- it needs journal-first discipline
+      # and a recorded reason, which only `task retry --attempts N` gives it.
+      # Named separately from the line above so the diagnostic points at the
+      # ONE verb that writes it, not at all three.
+      attempt_budget)
+        orchid_die "'$key' is kernel-owned — use task retry <id> --reason \"...\" --attempts N" ;;
+      # Single-writer, same discipline as `infra_failures` and `handoff_ack`
+      # above: an acknowledgement that a human did something outside this
+      # repository is worth exactly as much as the journal entry behind it,
+      # and a bare frontmatter write carries none. `task prereq-ack` is the
+      # one path that records both, and it DERIVES the candidate it binds to
+      # rather than accepting one.
+      prerequisite_ack)
+        orchid_die "'prerequisite_ack' is kernel-owned — use task prereq-ack" ;;
+      # The rework-convergence record (T025). Written by exactly one function —
+      # capture_rework_evidence, from evidence it captured itself, under the
+      # same journal-first discipline `infra_failures` gets. Three verbs call
+      # it (`advance <id> rework`, `unblock`, `retry`), which is three doors
+      # into rework and not three writers: they share the composer precisely so
+      # the record cannot come to mean different things depending on who sent
+      # the task round again. Hand-writable counters here would let an attempt
+      # claim a fresh failure signature it never produced, which is precisely
+      # the judgment the driver's failover and non-convergence stop read off
+      # these fields.
+      rework_rounds|rework_signature|rework_signature_repeats)
+        orchid_die "'$key' is kernel-owned — it records captured rework evidence (task advance <id> rework, task unblock, task retry)" ;;
+      # T032 (dogfood F33). This one is on the deny-list for a reason none of
+      # the others share: the field exists to stop an APPROVAL, and the actor
+      # most able to reach `task set` is the deterministic driver, which acts
+      # only through verbs (INV-13) and would otherwise have a verb that
+      # deletes the one thing standing between it and a merge. Deciding that an
+      # objection has been answered is the judgment `task arbitrate` records;
+      # a bare frontmatter write records nothing, and a cleared objection with
+      # no journal entry behind it is indistinguishable from one that was met.
+      #
+      # `unresolved_objection_by` is on it for a sharper reason still: it is
+      # the field that decides WHO may clear the objection. Left writable, the
+      # stop an operator raised could be relabelled as an orchestrator's by
+      # anything holding the verb -- downgrading an operator-only boundary to
+      # one a woken model settles, without touching a character of the
+      # objection an operator would reread. The two fields are written by one
+      # arbitration and refused by one arm, so neither can drift from the other.
+      #
+      # `objection_seq` is the third, and it is the one that makes an operator's
+      # ANSWER unspendable twice: it is the instance the authority record beside
+      # their page is bound to (lib/objection.sh). Left writable, rewinding it by
+      # one would make a page they answered rounds ago authorise the objection
+      # standing now -- the replay this counter exists to refuse, reachable by a
+      # verb rather than by a forgery.
+      unresolved_objection|unresolved_objection_by|objection_seq)
+        orchid_die "'$key' is kernel-owned — 'task arbitrate <id> --result request-changes' writes it (recording the arbiter's own class alongside, which is what decides whether a woken orchestrator may settle the stop or only an operator may, and rotating the objection instance an operator's answer is bound to) and 'task arbitrate <id> --result approve --reason \"...\"' is the ONLY thing that clears it. It is what keeps a deterministic approval from firing on a defect an arbiter already rejected, so it is cleared by a recorded judgment or not at all." ;;
     esac
+    # depends_on ids are checked HERE, at write time (dogfood F30). The
+    # scheduler can only ever report an id it cannot satisfy as
+    # `waiting-deps (<id>)` -- indistinguishable, in the status table and in
+    # a dispatch refusal, from a real dependency that simply has not finished
+    # yet. So a typo'd or renamed id does not look like an error at all: the
+    # task just never dispatches, and the predicate explaining why reads
+    # exactly like a task correctly waiting its turn. Refusing the write is
+    # the only point at which the operator is still holding the id and can be
+    # told it names nothing, hours before it can deadlock a run.
+    #
+    # Split with schedule_split_deps, the same function the scheduler reads
+    # with, so "accepted at write time" and "resolved at dispatch time" can
+    # never disagree about where one id ends and the next begins. An empty
+    # value is legal (it clears the field) and yields no tokens to check.
+    if [ "$key" = depends_on ]; then
+      unknown_deps=""
+      while IFS= read -r dep_id; do
+        [ -f "$tasks/$dep_id.md" ] || unknown_deps="$unknown_deps $dep_id"
+      done < <(schedule_split_deps "$val")
+      [ -z "$unknown_deps" ] || orchid_die "depends_on names no such task:$unknown_deps (ids are separated by commas or whitespace, and each must already exist as a task)"
+    fi
+    # A REDECLARED prerequisite is an unacknowledged one. The operator
+    # acknowledged the step AS IT WAS WORDED; replacing the wording replaces
+    # the step, and a surviving ack would silently vouch for work nobody did.
+    # Read before the write below, so the comparison sees the old value.
+    #
+    # Journaled, like every other write of this field. `prerequisite_ack` is
+    # kernel-owned precisely because an acknowledgement is worth the record
+    # behind it: `task prereq-ack` journals the stamp, the rework advance and
+    # `unblock`/`retry` each journal the intervention that clears it. This
+    # path clears it too, and a decision trail that shows an ack appearing and
+    # then silently gone -- with the operator's `--reason` for the ack still
+    # standing as the last word on the subject -- is the one shape that reads
+    # as an unexplained retraction. Journal-first (INV-08), and both the entry
+    # and the clear under the SAME non-empty guard: a redeclaration over an
+    # empty field retracts nothing, so it deserves no journal entry -- and
+    # `fm_set` on an absent key APPENDS it, which would give a
+    # `prerequisite_ack:` line to every task in a repository that never
+    # acknowledges one. Same reasoning as the rework arm's guard below, which
+    # follows T010's `handoff_ack` clear.
+    if [ "$key" = operator_prerequisite ] && \
+       [ "$val" != "$(fm_get "$f" operator_prerequisite)" ]; then
+      old_ack="$(fm_get "$f" prerequisite_ack)"
+      if [ -n "$old_ack" ]; then
+        journal --task "$id" --kind intervention \
+          "prerequisite redeclared — acknowledgement for candidate $old_ack cleared: \"$(fm_get "$f" operator_prerequisite)\" -> \"$val\""
+        fm_set "$f" prerequisite_ack ""
+      fi
+    fi
     if [ "$key" = risk_tier ]; then
       reason=""
       if [ "${1:-}" = "--reason" ]; then
@@ -139,11 +974,13 @@ case "$sub" in
   advance)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; to="$2"; shift 2
-    reason=""; waive=0
+    reason=""; waive=0; charge=0
     while [ $# -gt 0 ]; do case "$1" in
       --reason) [ -n "${2:-}" ] || orchid_die "--reason requires a value"
         reason="$2"; shift 2;;
-      --waive-attempt) waive=1; shift;; *) shift;; esac; done
+      --waive-attempt) waive=1; shift;;
+      --charge-attempt) charge=1; shift;;
+      *) shift;; esac; done
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     from="$(fm_get "$f" status)"
     arch="$(fm_get "$f" archetype)"; [ -n "$arch" ] || arch=feature
@@ -155,6 +992,104 @@ case "$sub" in
       exit 13
     fi
     legal "$from" "$to" "$arch" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
+    # AN ARBITRATION OUTCOME IS RECORDED BY ONE VERB (T032, dogfood F33).
+    #
+    # Three edges out of `arbitrating` ARE the arbitration's result: approve is
+    # `arbitrating:merging` (or `arbitrating:done` on an outcome=report
+    # archetype), request-changes is `arbitrating:rework`. `task arbitrate`
+    # derives which of them from the archetype, journals the result, and --
+    # since T032 -- raises and clears the standing
+    # objection that keeps a later round from being approved past a defect an
+    # arbiter already rejected. `task advance` does NONE of that. Taken by hand
+    # it settles the round with nothing in the state saying who decided it, what
+    # they decided, or whether the objection standing on the task was ever
+    # answered -- and on `arbitrating:merging` it walks a live
+    # `unresolved_objection` straight to the merge queue, which is F33's exact
+    # outcome through the one door the gate was not on.
+    #
+    # So the edges are refused HERE rather than removed from the archetypes:
+    # they are real transitions, `task arbitrate` takes them a few lines below
+    # through this same verb, and every gate on this path (the reason
+    # requirement, attempt accounting, evidence invalidation, the `arbitration`
+    # journal kind) has to keep applying to them exactly as it did.
+    #
+    # THE MARKER CARRIES THE ID, not a bare flag. It is set as a prefix on that
+    # one child invocation, so it exists for the length of a single `task
+    # advance` and for no other process; binding it to the id means a value that
+    # somehow outlived its call cannot admit a hand-typed advance on a DIFFERENT
+    # task. It is a private kernel handshake, not an option: nothing documents
+    # it, and an operator reaching for it has the verb the refusal names.
+    #
+    # THE OUTCOME DESTINATIONS, AND ONLY THOSE. The three below are exactly the
+    # ones `task arbitrate` derives a few hundred lines down -- `merging` and
+    # `done` for an approval (whichever the archetype declares), `rework` for a
+    # request-changes -- which is what makes them arbitration RESULTS rather
+    # than merely edges leaving `arbitrating`. The list is written out here so
+    # it can be read against that derivation, and both twins are pinned in
+    # tests/test_task.sh.
+    #
+    # This used to read `arbitrating:*`, refusing everything but `blocked`, and
+    # that was wider than the argument for it (T032 convergence, after the
+    # attempt-4 arbitration). An archetype is free to declare an `arbitrating`
+    # edge that decides nothing about the candidate -- `arbitrating:reviewing`,
+    # sending a round back for more review, is the obvious one -- and such an
+    # edge records no result, so `task arbitrate` cannot take it and this verb
+    # is the only door there is. Refusing it did not close a bypass; it deleted
+    # a transition, in the one verb whose refusal names an alternative that
+    # cannot reach it. What the rule protects is the merge queue and the
+    # attempt counter, and a destination outside these three touches neither.
+    #
+    # `arbitrating:blocked` is outside the list for the same reason and one
+    # more: it is the universal escape hatch every status has, and it is the
+    # move this refusal itself sends an operator to.
+    case "$from:$to" in
+      arbitrating:merging|arbitrating:done|arbitrating:rework)
+        if [ "${ORCHID_ARBITRATION_ID:-}" != "$id" ]; then
+          echo "orchid: $from -> $to is an arbitration RESULT, and 'orchid task advance' records none — refused" >&2
+          echo "orchid: use 'orchid task arbitrate $id --result approve|request-changes --reason \"...\"', which derives this destination from the archetype, journals the decision, and is the only thing that raises or clears the standing objection a later round is judged against (T032, dogfood F33). To stop the task instead of deciding it: 'orchid task advance $id blocked --reason \"...\"'." >&2
+          exit 3
+        fi ;;
+    esac
+    # A candidate failure normally charges through `testing -> rework`, whose
+    # existing accounting below increments `attempts`. Some valid code
+    # archetypes deliberately have no such edge, however, and a verb can also
+    # refuse that edge before it mutates. The driver still has to preserve the
+    # strict rule "candidate FAIL -> attempts++". This narrow fallback lets it
+    # charge the failed round while taking the universal escape hatch to
+    # `blocked`; it is not a general counter-writing option.
+    #
+    # THE `merging` PAIR (T007) IS THE SAME OPTION FOR THE OTHER EXEMPTION.
+    # `merging -> rework` charges nothing by default -- see the `to = rework`
+    # arm below, where the exemption and its reason live -- and that exemption
+    # has exactly one caller for which it is wrong: a repo-wide `merge_gate`
+    # that is red. A red gate on an unchanged repository is red on the next
+    # round too, so an uncharged edge makes that loop unbounded: dispatch,
+    # implement, verify, review, merge, red gate, rework, forever, with the
+    # counter that is supposed to stop it never moving. `orchid merge` opts
+    # THAT one failure into the charge (and into `blocked` once the charge
+    # exhausts the budget), which is why both `merging` destinations are
+    # admitted here. Every other `merging -> rework` -- a merge conflict, a
+    # rebase conflict, `validation_failed` -- passes no flag and keeps the
+    # exemption exactly as it was.
+    #
+    # An OPT-IN rather than a rule about reasons, deliberately: the kernel
+    # would otherwise have to decide which merge failures cost a round by
+    # reading the prose in `--reason`, and a counter driven by string matching
+    # is one rewording away from charging a merge conflict.
+    #
+    # Validate the complete shape before any write. In particular it cannot be
+    # combined with the semantic opposite (`--waive-attempt`) and cannot turn
+    # an arbitrary operator block into an attempt charge. Written as a `case`
+    # on the whole edge rather than as an `&&`/`||` chain: under `set -e` the
+    # chained form is a bare failing command on the refusing path, which dies
+    # with no message where this one dies with the legal pairs named.
+    if [ "$charge" -eq 1 ]; then
+      [ "$waive" -eq 0 ] || orchid_die "--charge-attempt cannot be combined with --waive-attempt"
+      case "$from:$to" in
+        testing:blocked|merging:rework|merging:blocked) ;;
+        *) orchid_die "--charge-attempt is only valid for testing -> blocked, merging -> rework or merging -> blocked (got $from -> $to)" ;;
+      esac
+    fi
     # v1-m2 Task 5 (keyed on active-status, not literally on `to=implementing`,
     # per final-review Finding 1): the kernel-side dispatch gate. Applies on
     # BOTH edges that actually dispatch a task (pending-> and rework->) INTO
@@ -173,7 +1108,18 @@ case "$sub" in
     # supplied facts for worktree/base_sha (unchanged, set before this call)
     # -- only the schedule predicates (cap/exclusive/resources/deps) are
     # enforced HERE, fail-closed.
-    if { [ "$from" = pending ] || [ "$from" = rework ]; } && schedule_is_active_status "$to"; then
+    #
+    # The SOURCE side is keyed the same data-driven way as the destination
+    # (T026): "an idle status entering an active one" is what a dispatch IS,
+    # so the predicate is the negation of schedule_is_active_status rather
+    # than the literal pair `pending`/`rework`. That literal pair was every
+    # dispatch edge there was until `task reverify` added `blocked:testing`
+    # -- an idle status entering `testing`, i.e. a dispatch by every property
+    # this gate cares about, which the literal form silently exempted from
+    # the cap it exists to enforce. Active -> active (implementing->testing,
+    # testing->reviewing, ... , merging->testing) stays ungated exactly as
+    # before: those are phases of an attempt already counted, not dispatches.
+    if ! schedule_is_active_status "$from" && schedule_is_active_status "$to"; then
       blockers="$(schedule_dispatch_blockers "$repo" "$id")"
       if [ -n "$blockers" ]; then
         echo "orchid: dispatch refused for $id ($from -> $to):" >&2
@@ -185,10 +1131,40 @@ case "$sub" in
       [ -n "$reason" ] || orchid_die "$from -> $to requires --reason (INV-08)"
     fi
     if [ "$to" = testing ]; then
-      b="$(fm_get "$f" base_sha)"; c="$(fm_get "$f" candidate_sha)"
-      [ -n "$b" ] && [ -n "$c" ] || orchid_die "testing requires base_sha and candidate_sha set"
-      if git -C "$repo" log --format=%H --name-only "$b..$c" 2>/dev/null | grep -q '^\.orchid/'; then
-        orchid_die "commits touch .orchid/ — entry to testing refused (INV-04)"
+      if ! schedule_is_active_status "$from"; then
+        # THE REVERIFY EDGE, arrived at through the public verb (T026 rework).
+        # `blocked|rework -> testing` is legal transition DATA, so this door
+        # is open to any operator and to any future caller; it therefore has
+        # to enforce exactly what `task reverify` enforces, or the safeguards
+        # are optional and the tree they refuse gets certified by whoever
+        # types the other command. Same function, so they cannot drift.
+        #
+        # The one thing this door cannot do is `reverify`'s re-stamp: an edge
+        # verb has no business silently rewriting the candidate under an
+        # operator who asked only for a transition. So it requires what the
+        # re-stamp would have produced -- candidate_sha IS the committed tree
+        # verification is about to run against -- and names the verb that
+        # does the re-stamping. Refusing is strictly stronger than fixing up.
+        adv_head="$(reverify_edge_gate "$f")" || exit 3
+        if [ "$adv_head" != "$(fm_get "$f" candidate_sha)" ]; then
+          echo "orchid: candidate_sha is not the HEAD of the task worktree — $from -> testing refused" >&2
+          echo "orchid: candidate_sha $(fm_get "$f" candidate_sha), worktree HEAD $adv_head — verification would run against the second and stamp its evidence with the first" >&2
+          echo "orchid: use \`orchid task reverify $id --reason \"...\"\`, which re-stamps the candidate from the worktree and journals why" >&2
+          exit 3
+        fi
+      fi
+      # Same two checks as before, now behind testing_entry_blocker so
+      # `reverify` can run them against its own candidate before it writes it.
+      #
+      # Exit 3, the code every refusal of an EDGE uses here -- an illegal
+      # transition, a dispatch the schedule declines, the reverify-edge gates --
+      # and the code `reverify` already exits with when it asks this same
+      # question a moment earlier. It used to `orchid_die` (exit 1) on this
+      # route alone, so one condition answered with two codes depending on which
+      # door was used, and a caller branching on the status could not tell a
+      # refused entry from a usage error.
+      if ! tblock="$(testing_entry_blocker "$f" "$(fm_get "$f" candidate_sha)")"; then
+        echo "orchid: $tblock" >&2; exit 3
       fi
       if [ "$from" = implementing ]; then
         # Kernel-derived, single-writer: this verb is the ONLY writer of
@@ -200,7 +1176,8 @@ case "$sub" in
         # check), stripped to the bare name lib/review.sh's independence
         # comparison expects. A fixture that hand-walks the lifecycle
         # without planting an envelope leaves the field untouched (absent
-        # file is not an error here).
+        # file is not an error here) -- an envelope that IS here and names no
+        # engine is the opposite case, and clears it (see that arm below).
         #
         # `--waive-attempt` on arbitrating->rework leaves `attempts`
         # unchanged (by design -- it's a waiver, not a fresh attempt), so a
@@ -216,13 +1193,36 @@ case "$sub" in
         # candidate_sha matches the task's CURRENT candidate_sha (the
         # strongest signal available), and otherwise fall back to the
         # highest counter (the most recently reconciled envelope).
+        #
+        # An envelope the orchestrator REFUSED as a no-op delivery (its
+        # basename is listed in `refused_envelopes`; see kernel.md's
+        # "a delivery that delivered nothing" rule) is skipped here too. It is
+        # `ok`, it is a sibling of this same attempt, and it can outlive the
+        # round that produced it -- so left visible it could name the engine of
+        # a dispatch that delivered nothing as the implementer of a candidate
+        # some LATER, possibly failed-over, engine actually built. This field
+        # is what lib/review.sh's independence comparison excludes from
+        # reviewing; deriving it from a refused envelope would exclude the
+        # wrong engine.
         impl_attempt=$(( $(fm_get "$f" attempts) + 1 ))
         impl_cand="$(fm_get "$f" candidate_sha)"
+        impl_refused="$(fm_get "$f" refused_envelopes)"
         impl_best=""; impl_best_n=0
         impl_match=""; impl_match_n=0
         for impl_ef in "$state/reviews/$id-a$impl_attempt-implementer"*.json; do
           [ -e "$impl_ef" ] || continue
           impl_base="$(basename "$impl_ef")"
+          case " $impl_refused " in
+            *" $impl_base "*) continue ;;
+          esac
+          # A DEGRADED envelope (T040, status `no_envelope`) names the engine
+          # of a dispatch that never reported anything -- `jobs reconcile`
+          # reconstructed it from the job's log after the process exited
+          # silently. It is not that dispatch's account of itself, so it must
+          # not become the record of who implemented the candidate some
+          # later, possibly failed-over, engine actually built. Skipped for
+          # the same reason a refused no-op delivery is, one line above.
+          [ "$(envelope_field "$impl_ef" '.status // empty' 2>/dev/null || true)" != no_envelope ] || continue
           impl_rest="${impl_base#"$id"-a"$impl_attempt"-implementer}"
           case "$impl_rest" in
             .json) impl_n=1 ;;
@@ -241,9 +1241,52 @@ case "$sub" in
         done
         impl_envelope="$impl_best"; [ -z "$impl_match" ] || impl_envelope="$impl_match"
         if [ -n "$impl_envelope" ]; then
-          impl_engine="$(envelope_field "$impl_envelope" '.engine // empty')"
+          # Read the same way its two sibling fields above are (`2>/dev/null ||
+          # true`): an envelope this verb cannot parse is not an account of who
+          # ran the round, and folding that in with "reported no engine" is the
+          # same answer for the same reason. Without the guard the read is the
+          # one of the three that can abort the advance outright under errexit,
+          # over an optional field, and it would abort BEFORE the arm below
+          # could drop the stale name it is there to drop.
+          impl_engine="$(envelope_field "$impl_envelope" '.engine // empty' 2>/dev/null || true)"
           impl_engine="${impl_engine#orchid/}"
-          [ -z "$impl_engine" ] || fm_set "$f" implementer_engine_id "$impl_engine"
+          if [ -n "$impl_engine" ]; then
+            fm_set "$f" implementer_engine_id "$impl_engine"
+          elif [ -n "$(fm_get "$f" implementer_engine_id)" ]; then
+            # AN ENVELOPE THAT NAMES NO ENGINE CLEARS THE FIELD; it does not
+            # leave the previous round's answer standing (T025). Reporting
+            # `.engine` is optional -- `jobs reconcile` cross-checks it only
+            # when it is there -- so a MIXED chain (one adapter that reports,
+            # one that does not) walks this arm with a value already on the
+            # task, and every reader downstream then attributes THIS
+            # candidate to the engine that built the LAST one. Two of them
+            # act on it: lib/review.sh excludes the recorded engine from
+            # reviewing, so the engine that actually implemented is admitted
+            # to review its own work while an uninvolved one is barred; and
+            # runners/orchid-drive's identical-signature failover reroutes
+            # away from it, which durably journals "an identical failure
+            # signature under '<engine>'" naming an engine that did not run
+            # the round that failed.
+            #
+            # CLEARED RATHER THAN RESTAMPED, because nothing here knows the
+            # answer: the only account of who ran this round is the envelope,
+            # and this is the envelope saying nothing. Empty is the state both
+            # readers already handle honestly -- review_implementer_engine
+            # falls back to the role's first-of-chain baseline it uses for any
+            # task that has not recorded one, and the failover withholds the
+            # reroute and its journal line outright ("no implementer_engine_id
+            # is recorded"), dispatching on the same chain. Both are weaker
+            # than a true name and neither is false, which a stale name is.
+            #
+            # Journal-first (INV-08), as everywhere else in this verb: the
+            # record that the field was dropped, and what it held, is written
+            # before the field is. An operator asking why the reviewer pool
+            # widened on this round has otherwise nothing to read -- the old
+            # value is gone and the envelope never claimed anything.
+            journal --task "$id" --kind intervention \
+              "implementer_engine_id cleared: $(basename "$impl_envelope") names no engine, so the recorded '$(fm_get "$f" implementer_engine_id)' names an earlier round's actor rather than the one that filed candidate $(fm_get "$f" candidate_sha) — reviewer independence and the rework failover fall back to their no-record behaviour instead of acting on a stale name"
+            fm_set "$f" implementer_engine_id ""
+          fi
         fi
       fi
     fi
@@ -273,6 +1316,62 @@ case "$sub" in
       fcand="$(fm_get "$f" candidate_sha)"; [ -n "$fcand" ] || fcand=none
       [ -f "$vlog" ] && [ "$(tail -n1 "$vlog")" = "exit: 0" ] && [ "$fcand" != none ] && [ "$vcand" = "$fcand" ] || \
         orchid_die "reviewing requires passing verify evidence bound to the current candidate_sha (run: orchid verify $id)"
+      # A passing verification is demonstrated forward progress. End the
+      # consecutive-failure streak HERE, on the kernel edge that has just
+      # validated current PASS evidence, rather than letting a later failure
+      # inherit repeats from before the successful candidate. Keep the last
+      # signature for comparison, but restart its consecutive count at zero;
+      # if that old failure returns it is a first post-success sighting, not
+      # evidence that every round in between was identical.
+      #
+      # AND THE CAPTURED LOGS GO WITH THE COUNT. Resetting the streak alone
+      # leaves every `reviews/<id>-r<n>-rework.log` on disk, and on the one
+      # path where the candidate does NOT move -- a verify failure outside the
+      # candidate, then `task reverify` with no implementer cycle -- those
+      # rounds stay bound to the candidate that has just PASSED. The next entry
+      # to `rework` (a request-changes round, a merge conflict: neither of them
+      # captures anything of its own) would then ship that round to the next
+      # attempt under the brief's own sentence, "the verbatim output of the run
+      # that FAILED is reproduced below", about a tree this edge has just
+      # verified green. Retirement moves the bytes outside every reader that
+      # feeds an attempt while keeping them for a human (the destination is
+      # rework_retired_log_path); the ROUND COUNTER is deliberately not
+      # rewound, so the next capture is n+1 and no retired name can be
+      # collided with.
+      #
+      # ALL of them, not only the rounds bound to the passing candidate. A round
+      # is only ever fed forward as the NEWEST one, so a superseded round is
+      # already refused there -- but it is still the baseline lib/pack.sh diffs
+      # the next failure against, under a heading promising "what changed since
+      # the round before it", and a comparison that silently spans a green
+      # verification is not that. The whole record ends together, exactly as the
+      # counter does.
+      #
+      # The rename is HERE and not in lib/rework.sh because that file is one of
+      # the read-only policy libraries INV-13 audits; it owns what a retired
+      # round is called (rework_retired_log_path) and nothing else.
+      #
+      # Journal-first, like the reset below it: what was retired is the fact,
+      # and "why is there no previous-failure brief" has to be answerable from
+      # the journal rather than from an `ls` of a directory nothing points at.
+      rw_retire_rounds="$(rework_rounds_present "$state" "$id")"
+      if [ -n "$rw_retire_rounds" ]; then
+        rw_retire="${rw_retire_rounds//$'\n'/, }"
+        journal --task "$id" --kind intervention \
+          "rework evidence retired after successful verification: captured round(s) $rw_retire describe candidate $fcand, which has now PASSED — renamed to reviews/$id-r<n>-rework.retired.log so no later rework can feed a disproved failure forward"
+        while IFS= read -r rw_n; do
+          [ -n "$rw_n" ] || continue
+          mv -f "$(rework_log_path "$state" "$id" "$rw_n")" \
+                "$(rework_retired_log_path "$state" "$id" "$rw_n")"
+        done <<< "$rw_retire_rounds"
+      fi
+      rw_reps="$(fm_get "$f" rework_signature_repeats)"
+      case "$rw_reps" in ''|*[!0-9]*) rw_reps=0 ;; esac
+      if [ "$rw_reps" -gt 0 ]; then
+        journal --task "$id" --kind intervention \
+          "rework convergence streak reset after successful verification (was $rw_reps consecutive failure round(s))"
+        fm_set "$f" rework_signature_repeats 0
+      fi
     fi
     if [ "$from" = reviewing ] && [ "$to" = arbitrating ]; then
       # Kernel envelope-count gate (v1-m2): arbitrating may only be reached
@@ -315,14 +1414,75 @@ case "$sub" in
       [ "$gate_have" -ge "$gate_need" ] || \
         orchid_die "arbitrating requires $gate_need reconciled review envelope(s) for risk_tier $gate_tier (have $gate_have)"
     fi
-    if [ "$to" = implementing ]; then
-      # v0b2: the task wall-clock anchor. Stamped only the FIRST time a task
-      # ever enters `implementing` (rework re-entries leave it alone) — it
-      # marks when the clock on `wallclock_budget_s` started, not when the
-      # current attempt happened to (re)start.
-      [ -n "$(fm_get "$f" started_at)" ] || fm_set "$f" started_at "$(now)"
+    # The task wall-clock anchor `jobs check` reads for its budget-exceeded
+    # backstop. Re-stamped on every DISPATCH edge — pending/rework INTO an
+    # active status, the exact pair the schedule gate above keys on — so it
+    # marks when the CURRENT attempt started.
+    #
+    # It used to be stamped only the first time a task ever reached
+    # `implementing` (`[ -n "$(fm_get "$f" started_at)" ] || fm_set ...`),
+    # which quietly turned `wallclock_budget_s` into a CALENDAR budget:
+    # every hour of operator downtime, debugging and overnight idling
+    # between attempts was spent against it. r-001's T013 was reported
+    # budget-exceeded on a candidate that had already verified clean,
+    # against an eleven-hour-old anchor, while the job actually running was
+    # three minutes old; the same defect stalled a task in the webBooks run
+    # (its lesson L006). A budget whose whole purpose is to catch a runaway
+    # ATTEMPT has to be anchored to the attempt, and PROTOCOL.md always
+    # described it that way ("stamped by `task advance ... implementing`").
+    #
+    # Keyed on schedule_is_active_status rather than a literal
+    # `to = implementing` for the same INV-05 reason the dispatch gate is: a
+    # `review`-archetype task dispatches pending/rework -> reviewing and
+    # must get the same anchor, with no branch on the archetype's name.
+    #
+    # Deliberately NOT re-stamped on the intra-attempt edges (implementing
+    # -> testing -> reviewing -> arbitrating -> merging): those are all the
+    # same attempt, and re-anchoring there would let one attempt run
+    # unbounded, a phase at a time. And nothing extra is needed on the
+    # operator's recovery verbs (`task unblock`, `task retry`): both land
+    # the task in `rework`, which is not an active status — `jobs check`
+    # therefore reports no budget for it at all (see libexec/orchid-jobs),
+    # and the rework -> active dispatch that follows re-anchors it here,
+    # before the attempt it bounds actually starts.
+    #
+    # Keyed on the SAME idle -> active predicate as the dispatch gate above,
+    # and for the same T026 reason: `task reverify`'s `blocked -> testing`
+    # form is a dispatch into an active status, so it must carry a fresh
+    # anchor too. Under the old literal `pending|rework` pair it did not, and
+    # the leftover anchor was the previous attempt's — which is precisely the
+    # stale-anchor shape libexec/orchid-jobs' budget backstop keys on
+    # (`schedule_is_active_status` + `started_at` + `wallclock_budget_s`).
+    # A reverify out of `blocked` — the state the attempts-exhausted trap
+    # actually ends in — would therefore have re-entered `testing` already
+    # over budget and been escalated straight back to `blocked`, rebuilding
+    # the unconvergent recovery loop that gate's own comment records fixing.
+    if ! schedule_is_active_status "$from" && schedule_is_active_status "$to"; then
+      fm_set "$f" started_at "$(now)"
     fi
+    # `merging -> rework` is exempt from the charge BY DEFAULT and not by
+    # rule: this candidate was independently verified once already, so a merge
+    # conflict, a rebase conflict or a revalidation failure is not a fresh
+    # round of the implementer's work. `--charge-attempt` is the one way past
+    # that exemption, validated above, and `orchid merge` passes it on exactly
+    # one arm -- a red repo-wide `merge_gate`, the one merge failure that
+    # repeats identically until somebody outside this task acts. The charge
+    # itself is made by the shared block further down, never here, so the
+    # exemption and the opt-in cannot end up charging the same round twice.
     if [ "$to" = rework ]; then
+      # Argument validation is hoisted ahead of the capture below: the waiver
+      # check further down is the one way this arm can still die, and a died
+      # advance must not leave a captured round and bumped counters behind
+      # describing a transition that never happened.
+      if [ "$from" != merging ] && [ "$waive" -eq 1 ] && [ -z "$reason" ]; then
+        orchid_die "--waive-attempt requires --reason"
+      fi
+      # ---- Capture the failure BEFORE anything invalidates it (T025) ------
+      # The whole of it, including why it has to happen here rather than after
+      # the accounting below, is in capture_rework_evidence's header. This is
+      # one of its three callers; `task unblock` and `task retry` are the other
+      # two, and all three delete the evidence a few lines later.
+      capture_rework_evidence "$f" "$id" "$from"
       if [ "$from" != merging ]; then
         if [ "$waive" -eq 1 ]; then
           [ -n "$reason" ] || orchid_die "--waive-attempt requires --reason"
@@ -343,14 +1503,128 @@ case "$sub" in
       # deleting it here would destroy that diagnostic evidence. The
       # rebase-reset path (exit-5) invalidates both logs itself when it
       # mints a new candidate, so it never reaches this arm at all.
+      #
+      # THE REWORK BRIEF (T010, lesson L017) is lifted BEFORE that rm, and
+      # that ordering is the whole point: the verify log is about to be
+      # deleted, and it is the only place the failing gate's exact locations
+      # exist. `findings_brief` copies them into the task BODY, which
+      # lib/pack.sh carries verbatim into the next implementer's pack as
+      # `task.md` -- so `file:line: RULE: message` reaches the actor asked to
+      # fix it, instead of a pointer to a log that actor may be unable to
+      # open, re-run or reproduce. Appended on EVERY rework edge, not just
+      # the driver's: a hand-walked `task advance <id> rework`, `orchid
+      # merge`'s validation-failure arm and `task arbitrate --result
+      # request-changes` all land here, which is what makes this automatic
+      # rather than a convention someone has to remember. Emits nothing at
+      # all when no failing log carried a location (a merge conflict, a
+      # request-changes with no gate output), so a rework never gains a
+      # heading promising locations it does not have. The candidate is passed
+      # in because the brief only quotes evidence BOUND to it: a log whose
+      # header names a superseded candidate is dropped, not carried forward.
+      # The same rule is applied to the briefs ALREADY in the body, which is
+      # the other end of the same defect: each one names the candidate it
+      # describes, and this pass ages out the ones that describe a candidate
+      # this task has since replaced (refresh_briefs, above).
+      #
+      # fm_write_task, not atomic_write (T034): atomic_write renames whatever
+      # its stdin gave it, so a producer that emitted nothing would truncate
+      # the task here exactly as fm_set's old pipeline did -- and `pipefail`
+      # reports the producer's failure only after that rename. Which is also
+      # why this is fm_write_task_from and not a pipe (T034 rework): the same
+      # "too late to act on" applies to a producer that emitted MOST of the
+      # task and then died, whose fragment fm_write_task would accept.
+      fm_write_task_from "$f" refresh_briefs "$f" "$id"
+      # An operator hand-off is acknowledged AGAINST a candidate, and a rework
+      # round exists to mint a different one -- so the acknowledgement does
+      # not survive entry to rework, the same INV-07 symmetry the evidence
+      # invalidation just below has. Guarded on being non-empty so this never
+      # appends a `handoff_ack:` line to tasks in repositories that do not use
+      # the gate at all.
+      if [ -n "$(fm_get "$f" handoff_ack)" ]; then
+        fm_set "$f" handoff_ack ""
+      fi
+      # A deferred on_verify_fail hook pins one exact failed verifier log in
+      # `verify_fail_pending`. Leaving that receipt across a rework edge would
+      # make a later reverify of the same candidate resume evidence the edge is
+      # deleting below instead of running a fresh verifier. The edge owns both
+      # invalidations, so every caller gets the same symmetry.
+      if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+        fm_set "$f" verify_fail_pending ""
+      fi
+      # The same invalidation, one field over (T024). An operator prerequisite
+      # is acknowledged FOR A CANDIDATE (`prerequisite_ack` holds that
+      # candidate_sha), and rework exists precisely to replace the candidate:
+      # the migration this task authors on the next attempt may not be the
+      # migration the operator applied for the last one. Cleared on every arm
+      # including merging->rework — a rebase conflict or a failed merge
+      # revalidation is still a candidate about to change. The declaration
+      # itself (`operator_prerequisite`) survives, so the task re-raises its
+      # boundary on its next pass through `testing` rather than quietly
+      # forgetting it needs one.
+      #
+      # Guarded on non-empty for T010's reason above, not merely to match it:
+      # an unguarded `fm_set` APPENDS the key to a task file that lacks it, so
+      # every task in every repository that never declares a prerequisite would
+      # grow a `prerequisite_ack:` line on its first rework — a field the run
+      # does not use, on tasks created before these templates existed.
+      if [ -n "$(fm_get "$f" prerequisite_ack)" ]; then
+        fm_set "$f" prerequisite_ack ""
+      fi
       rm -f "$state/reviews/$id-verify.log"
       [ "$from" = merging ] || rm -f "$state/reviews/$id-merge.log"
+    fi
+    if [ "$to" = testing ] && ! schedule_is_active_status "$from"; then
+      # The other half of the reverify edge, and owned HERE rather than by
+      # `task reverify` for the same reason the gate above is: the whole point
+      # of re-entering `testing` from an idle status is a FRESH verify run, so
+      # a prior PASS must never satisfy INV-11's testing -> reviewing gate on
+      # the re-verified candidate's behalf -- and that must hold on the raw
+      # `task advance` route too, which used to leave the stale log sitting
+      # there. Emitted once, on the edge, rather than once per route (a
+      # per-route copy is how the two doors came to disagree in the first
+      # place). `orchid verify` overwrites the log anyway, so this is
+      # belt-and-braces; the case it actually closes is a hand-walk on to
+      # `reviewing` with no verify in between. The merge log is deliberately
+      # left alone: it is the record of a merge that really did happen, and
+      # this edge does not undo it.
+      if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+        fm_set "$f" verify_fail_pending ""
+      fi
+      rm -f "$state/reviews/$id-verify.log"
+    fi
+    # Journal the charge before changing the counter, then land the counter,
+    # receipt consumption, and status while this verb still owns the
+    # transaction lock. The attempt number is kernel-derived, so a caller
+    # cannot claim a different charge in prose than the one frontmatter gets.
+    if [ "$charge" -eq 1 ]; then
+      charge_n=$(( $(fm_get "$f" attempts) + 1 ))
+      # The prefix says what the charge DID, and the two admitted destinations
+      # did different things: `blocked` stops the run for a human, `rework`
+      # sends the task round again with one fewer round left. A single
+      # "charged while blocking" over both would put the word "blocking" on
+      # every journal line of a task that was not blocked -- and this line is
+      # the operator's whole record of why the counter moved, since the number
+      # itself is kernel-derived and the caller cannot state it.
+      if [ "$to" = blocked ]; then
+        reason="candidate attempt #$charge_n charged while blocking: $reason"
+      else
+        reason="candidate attempt #$charge_n charged on $from -> $to: $reason"
+      fi
     fi
     if [ -n "$reason" ]; then
       kind=intervention
       [ "$from" = arbitrating ] && kind=arbitration
       [ "$to" = blocked ] && kind=blocker
       journal --task "$id" --kind "$kind" "$from -> $to: $reason"
+    fi
+    if [ "$charge" -eq 1 ]; then
+      fm_set "$f" attempts "$charge_n"
+      # The blocked state now durably accounts for this exact failed round.
+      # A deferred-hook receipt must not make a later retry resume and charge
+      # the same evidence a second time.
+      if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+        fm_set "$f" verify_fail_pending ""
+      fi
     fi
     fm_set "$f" status "$to"; fm_set "$f" updated "$(now)"
     echo "$id: $from -> $to" ;;
@@ -378,8 +1652,22 @@ case "$sub" in
     # existing gate (reason requirement, attempt accounting, evidence
     # invalidation, the arbitration journal kind) applies unchanged -- this
     # verb adds a judgment vocabulary on top of that machinery, it does not
-    # fork it. `task advance` remains available for operators and for the
-    # pre-existing documented walk; backward compatibility is untouched.
+    # fork it.
+    #
+    # AND IT IS THE ONLY PUBLIC DOOR ONTO THOSE EDGES (T032, dogfood F33). It
+    # used to be one of two: `task advance <id> merging` out of `arbitrating`
+    # was legal for an operator and for the hand-executed walk, which meant the
+    # objection this verb raises and clears could be walked past by typing the
+    # other command -- an approval with nothing recording who made it and a live
+    # `unresolved_objection` riding into the merge queue underneath it. That
+    # edge, and the two other destinations an arbitration RESULT derives
+    # (`arbitrating:done`, `arbitrating:rework`), are now refused unless this
+    # verb is the caller (see the refusal's own note in the `advance` arm
+    # above). Edges out of `arbitrating` that decide nothing about the
+    # candidate are untouched -- `blocked`, because stopping a task is not
+    # deciding it, and any non-outcome edge an archetype declares, because this
+    # verb cannot derive it and refusing it would delete a transition rather
+    # than close a bypass.
     verb_lock_guard "$repo"
     epoch_require "$repo"; export ORCHID_EPOCH
     id="${1:-}"; shift || true
@@ -428,10 +1716,531 @@ case "$sub" in
       echo "orchid: archetype '$arch' declares no arbitrating edge for result '$result'" >&2
       exit 3
     fi
+    # THE OBJECTION OUTLIVES THE ROUND IT WAS RAISED IN (T032, dogfood F33).
+    #
+    # Before this, a `request-changes` arbitration left the run state saying
+    # nothing at all: the task moved to `rework`, the journal recorded the
+    # decision, and the NEXT attempt was judged entirely on its own reviews.
+    # Nothing ever asked whether the arbiter's objection had been met. F33 is
+    # what that costs -- the operator rejected the same concurrency hole
+    # twice, naming the constants and the line range the second time; round 3's
+    # reviewers, judging the diff cold, both returned `approve`; and the
+    # deterministic path merged it with "unanimous scope-complete approval from
+    # 2 review(s), no finding at or above medium". The defect shipped, and the
+    # operator found it by reading the merged source after `status` said done.
+    #
+    # So a rejection writes the objection down, on the task, where the two
+    # actors who need it can read it: lib/drive.sh's `drive_review_decision`
+    # refuses a deterministic approval while the field stands, and every
+    # shipped `review` adapter carries it into the next round's prompt (the
+    # pack copies task.md whole, frontmatter included).
+    #
+    # WRITTEN BEFORE THE ADVANCE, CLEARED AFTER IT, and the asymmetry is the
+    # whole safety argument. A write that failed here dies under `set -e` with
+    # the task still `arbitrating` -- nothing moved, nothing recorded. A clear
+    # placed before the advance would delete the objection and then leave it
+    # deleted if the advance were refused, handing the very next `orchid drive`
+    # pass a task it may now approve deterministically. Each half fails in the
+    # direction that keeps the objection standing.
+    #
+    # THE ROUND IS NAMED, and the field is not bound to it. `a<attempt>` says
+    # which round was rejected, which is what makes a standing objection legible
+    # three rounds later; it is not a binding, because a rework round moves
+    # `attempts` and `candidate_sha` and an objection that expired on either
+    # would expire on precisely the event it exists to survive. Only an explicit
+    # `--result approve` clears it -- not `unblock`, not `retry`, not
+    # `reverify`, none of which is an answer to "was this defect fixed".
+    #
+    # AND IT RECORDS WHO RAISED IT. `orchid task arbitrate` has two callers who
+    # are not the same actor: an operator at their own shell, and a brokered
+    # orchestrator the pump woke for a `review-conflict` -- `task-arbitrate` is
+    # the one judgment write that surface admits, so a model reaching this line
+    # is the surface working as designed, not a leak. Recording the class of
+    # the arbiter beside the text is what lets one field serve both without
+    # either reading collapsing into the other: an orchestrator's own objection
+    # is not a human page nobody can answer, and an operator's is not something
+    # the next wakeup may clear. See lib/review.sh for the rule -- an objection
+    # is settled by an arbiter of at least the authority that raised it -- and
+    # for why ORCHID_ACTOR is the provenance rather than a new one.
+    #
+    # THE GUARD IS AT THE VERB, not only in the routing. lib/drive.sh raises an
+    # operator's standing objection as `operator-decision`, which names no
+    # settling verb and so wakes nobody; that keeps a model from being HANDED
+    # this task. It does not keep a model woken for some OTHER boundary from
+    # naming this id -- `task arbitrate <id>` takes an id, and any task sitting
+    # in `arbitrating` is reachable by one. Both results are refused, because
+    # `request-changes` would supersede the operator's words with the model's
+    # own and leave a stop the model may then clear, which reaches F33's
+    # outcome by a longer road than `approve` does. The one thing that gets a
+    # model past this guard is the operator's own answer, read off durable
+    # notify/answer state rather than asserted by the caller -- see the relay
+    # note below.
+    obj_prev="$(fm_get "$f" unresolved_objection)"
+    obj_prev_by_raw="$(fm_get "$f" unresolved_objection_by)"
+    obj_prev_by="$(review_objection_arbiter "$obj_prev" "$obj_prev_by_raw")"
+    obj_prev_seq="$(objection_seq "$repo" "$id")"
+    arb_by="$(review_arbiter_class)"
+    # ...AND THE OPERATOR MAY HAVE ALREADY DECIDED THIS (T032 convergence,
+    # after the attempt-4 arbitration). The stop an operator's objection raises
+    # is paged with `orchid notify`, the operator answers it with `orchid
+    # answer`, and no verb consumes an answer file -- so an operator who has
+    # decided still needs an actor to run the arbitration, and the actor at the
+    # keyboard for an unattended run is a woken orchestrator. Refusing THAT is
+    # refusing to carry out the operator's own recorded decision, which leaves
+    # the run parked on a question its owner has already answered.
+    #
+    # So the class of this arbitration is the actor's UNLESS a durable operator
+    # answer authorises it, bound to this task, THIS OBJECTION INSTANCE, THE
+    # REVIEW EVIDENCE THE PAGE PRESENTED and this result -- lib/review.sh's
+    # review_operator_relay is the whole of that reading, and its header is where
+    # the axes are argued. Nothing the relaying
+    # model supplies is an input: not `--reason` (its own prose), not a flag
+    # (there is none), not an environment variable (the one read here can only
+    # ever make the arbitration a MODEL's). The authority is a record the
+    # brokered surface has no argv form to write, beside an answer only `orchid
+    # answer` -- off that surface entirely -- can produce.
+    #
+    # The qid is kept, not just the verdict, for two jobs. An arbitration
+    # recorded with an authority its actor did not have on its own must say,
+    # durably, WHICH answer lent it -- the clear below journals it, so a reader
+    # of the record can go and open the operator's page. And the record has to be
+    # SPENT: the consume below deletes it before anything is cleared, so the same
+    # answer cannot authorise a second arbitration, and a crash between the two
+    # leaves the objection standing with no authority left -- the operator pays a
+    # shell of their own and the guarantee pays nothing.
+    #
+    # READ ONLY WHEN IT IS NEEDED, which is also what keeps it honest in the
+    # record: an OPERATOR arbitrating at their own shell needs no relay, and
+    # crediting one anyway would put "relayed by ..." on the clear of an
+    # arbitration nobody relayed -- and would spend an authority record the
+    # operator may still need. The condition is the refusal's own, so the only
+    # arbitration this state can speak for is the one it would otherwise have
+    # refused.
+    relay_qid=""
+    if [ "$obj_prev_by" = operator ] && [ "$arb_by" != operator ]; then
+      relay_qid="$(review_operator_relay "$repo" "$id" "$result" "$obj_prev" "$obj_prev_seq")"
+      if [ -n "$relay_qid" ]; then
+        # SPENT BEFORE IT IS ACTED ON, and here rather than beside the clear a
+        # few dozen lines down. Everything after this point can still fail --
+        # the advance can be refused, the process can be killed -- and every one
+        # of those outcomes leaves the objection STANDING. An authority consumed
+        # ahead of them means the replay of a killed arbitration finds nothing to
+        # spend, so a crash costs the operator one more page and costs the
+        # guarantee nothing. Consuming after the clear would invert that: the
+        # window would hold a cleared objection whose authority was still on
+        # disk, spendable against whatever is raised next.
+        objection_authority_consume "$repo" "$relay_qid" \
+          || orchid_die "$id: the operator's answer to $relay_qid authorises this arbitration, but the authority record could not be spent — refusing rather than acting on a record a replay could spend again. Remove $(objection_authority_file "$repo" "$relay_qid") or arbitrate from the operator's own shell."
+        arb_by=operator
+      fi
+    fi
+    if [ "$obj_prev_by" = operator ] && [ "$arb_by" != operator ]; then
+      orchid_die "$id carries an OPERATOR's unresolved objection, and this arbitration is not the operator's (actor: ${ORCHID_ACTOR:-unset}) — refused, and nothing was written. The standing objection is: \"$obj_prev\" (instance $obj_prev_seq). Whether it was answered is the call of the arbiter who raised it, who saw twice what a review of this diff did not; a --result approve here would clear it from the same diff that produced it, and a --result request-changes would replace their words with these. Raise it to the operator instead: orchid notify --task $id \"<what they must decide>\". If they have already decided, they answer the page the driver raised for THIS objection ('orchid answer <qid> approve') and this verb will then relay THAT decision — an answer to some other page, to an earlier objection, to a round whose candidate, review plan or reviews have moved since they were paged, or in any other words, is not one."
+    fi
+    if [ "$result" = request-changes ]; then
+      # SUPERSEDED, NOT ACCUMULATED: the arbiter's latest word is the operative
+      # statement of what is still unresolved, and one frontmatter line cannot
+      # grow a list. The journal keeps every rejection in full, so the history
+      # is not lost -- but a value silently replaced is the shape that reads as
+      # an objection nobody withdrew and nobody kept, so the replacement says
+      # so before it happens.
+      if [ -n "$obj_prev" ]; then
+        journal --task "$id" --kind arbitration \
+          "objection superseded by this arbitration — previous: \"$obj_prev\" (raised by: $obj_prev_by)"
+      fi
+      # THE INSTANCE ROTATES FIRST, then the class, and the text goes first when
+      # they are cleared below -- one asymmetry, the same one the advance is
+      # bracketed by, for the same reason: each half fails in the direction that
+      # leaves the stop no weaker than it already was.
+      #
+      # `objection_seq` leads because it is what an operator's answer is bound
+      # to. A text written under a seq that has not moved yet is an objection an
+      # answer to the PREVIOUS one already authorises -- which is the replay the
+      # counter exists to refuse, reachable through a crash. Bumped first, a
+      # failure between the writes leaves the older text standing under a seq
+      # nothing is bound to: nothing can be relayed, the operator settles it from
+      # their own shell, and no answer is spent on words they never read. It is
+      # never reset, in either direction, because a counter that rewound would
+      # make an old page's authority live again.
+      #
+      # Then the class, because a class written with no text yet behind it is
+      # inert (review_objection_arbiter answers "none standing" on an empty
+      # objection, whatever the class says), while a text written under a class
+      # that has not caught up yet reads as the operator's -- the stricter of
+      # the two. The reachable case that matters is an operator superseding an
+      # orchestrator's objection: with the class first, a failure between the
+      # two leaves the older text standing as operator-only rather than leaving
+      # the operator's own words labelled as a model's.
+      #
+      # AND IT ROTATES WHEN NOTHING ELSE DOES. `--waive-attempt` leaves
+      # `attempts` exactly where it was, so an operator rejecting the same defect
+      # in the same words across a waived round composes a BYTE-IDENTICAL
+      # `a<attempt>: <reason>` line. Every other field on this task would say the
+      # objection had never changed; the seq is the one that says it is a new
+      # one, and an answered page for the old one is refused because of it.
+      fm_set "$f" objection_seq "$(( obj_prev_seq + 1 ))"
+      fm_set "$f" unresolved_objection_by "$arb_by"
+      fm_set "$f" unresolved_objection \
+        "$(review_objection_record "$(( $(fm_get "$f" attempts) + 1 ))" "$reason")"
+    fi
     adv_args=("$id" "$to" --reason "arbitrate($result): $reason")
     [ "$waive" -eq 0 ] || adv_args+=(--waive-attempt)
-    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" task advance "${adv_args[@]}" >/dev/null
+    # `ORCHID_ARBITRATION_ID` is the private handshake `task advance`'s
+    # arbitrating-edge refusal reads (see its note there). A prefix assignment,
+    # so it is set for this one child and for nothing else in this process --
+    # and carrying the id, so it can only ever admit the edge this arbitration
+    # is actually taking.
+    ORCHID_ARBITRATION_ID="$id" ORCHID_REPO="$repo" \
+      "$ORCHID_ROOT/bin/orchid" task advance "${adv_args[@]}" >/dev/null
+    if [ "$result" = approve ] && [ -n "$obj_prev" ]; then
+      # Journal-first (INV-08), and guarded on a NON-EMPTY previous value for
+      # the reason the `operator_prerequisite` clear a few hundred lines up is:
+      # `fm_set` on an absent key APPENDS it, so an unguarded clear would give
+      # an `unresolved_objection:` line to every task in every repository that
+      # never carried one. An approval that clears nothing has nothing to say.
+      #
+      # THE RELAY IS NAMED IN THE RECORD, and this is the only place it can be:
+      # the entry's own actor string is the process's (a model's, when one
+      # relayed), and `cleared by:` is the AUTHORITY the arbitration acted with.
+      # Those are two different facts on a relayed clear, so the entry carries
+      # both and the qid that joins them -- otherwise the record says an
+      # operator cleared it while every other trace of the pass says a model
+      # ran the verb, and there is nothing to reconcile the two.
+      obj_relay_note=""
+      [ -z "$relay_qid" ] || obj_relay_note=" — relayed by ${ORCHID_ACTOR:-unset} from the operator's own answer to $relay_qid, whose authority for objection instance $obj_prev_seq was spent to do it"
+      journal --task "$id" --kind arbitration \
+        "objection cleared by an explicit arbitration approval — was: \"$obj_prev\" (raised by: $obj_prev_by, cleared by: $arb_by)$obj_relay_note"
+      fm_set "$f" unresolved_objection ""
+      # Both halves, so a later `request-changes` cannot inherit a class from an
+      # objection that is no longer standing -- and the text first, per the note
+      # above: a failure between the two leaves an unread class behind an empty
+      # objection, which is inert, rather than the operator-only label behind a
+      # live one that nobody now needs to answer. Guarded on the RAW value for
+      # the reason the enclosing `-n "$obj_prev"` is guarded: `fm_set` on an
+      # absent key APPENDS it, and a task carrying an objection written before
+      # the class was recorded at all must not come out of this the owner of an
+      # empty `unresolved_objection_by:` line it never had.
+      [ -z "$obj_prev_by_raw" ] || fm_set "$f" unresolved_objection_by ""
+    fi
     echo "arbitrated $id: result=$result from=$from to=$to" ;;
+  handoff)
+    # T010: the verb that ACKNOWLEDGES a hand-off, and the only place a
+    # `handoff_ack` is ever created -- the durable record that an
+    # operator really performed this candidate's execution-requiring
+    # mechanical steps (a lint fix, a mode bit on a new executable, a
+    # generator whose output is checked in -- but NEVER an artifact derived
+    # from the whole tree, which belongs to the integration branch and
+    # conflicts unresolvably if regenerated per candidate, lesson L022), the
+    # ones an engine profile that denies on the command
+    # string cannot perform at all (lesson L017). PROTOCOL.md's THE TICK
+    # names the point in the procedure where they happen; this verb is what
+    # makes that point RESUMABLE, and it is why the pause is not an infinite
+    # loop: a second driver pass, or a session restarted an hour later, reads
+    # `handoff_ack` against the task's current `candidate_sha` and can tell
+    # "already performed" from "still outstanding" with no memory of its own.
+    #
+    # BOUND TO A COMMITTED CANDIDATE, NEVER TO A TASK OR A MOMENT. The value
+    # is DERIVED here and is never accepted from the caller, so an
+    # acknowledgement cannot be made for a candidate other than the one the
+    # hand-off actually left behind. It stops counting the instant that sha
+    # moves -- which is exactly how `orchid merge`'s rebase arm invalidates it
+    # (INV-07): a rebased tree is a different candidate, and work done on the
+    # old one is not evidence about it.
+    #
+    # EVERY OTHER VERB THAT TOUCHES THE FIELD ONLY EVER WITHDRAWS IT (entry to
+    # `rework`, `unblock`, `retry`, `--clear`, and `reverify` when it re-stamps
+    # the candidate). Nothing but this arm writes a value into it, because
+    # writing one is an assertion an operator made about a specific commit and
+    # nothing else is in a position to make it for them.
+    #
+    # AND THE HAND-OFF ADVANCES THE CANDIDATE TO ITS OWN RESULTING COMMIT.
+    # This is the defect the feature would otherwise institutionalise. The
+    # candidate is captured when the implementer's envelope reconciles; the
+    # hand-off's whole purpose is to COMMIT work after that -- a lint fix, a
+    # mode bit, a regenerated per-file artifact -- so by the time it is
+    # acknowledged the tree `orchid verify` will run is no longer the one the
+    # task record names. Acknowledging against the pre-hand-off sha would leave every
+    # downstream piece of evidence bound to a commit that was never the one
+    # verified (lesson L025), inside the very procedure that formalises the
+    # hand-off. So the ack reads HEAD of the tree verification will use --
+    # resolved exactly as `orchid verify` resolves its own cwd (the task's
+    # `worktree` when set, else the repo) -- and moves `candidate_sha` there
+    # first. That leaves the two equal, so `orchid verify`'s two header lines
+    # (`sha:`, read from the tree it ran in, and `candidate:`, read from
+    # frontmatter) agree, and the INV-11 gate on `testing -> reviewing` accepts
+    # the evidence. Since T031 landed, `orchid verify` itself compares them
+    # BEFORE running and refuses outright (exit 20) when they disagree, so this
+    # equality is no longer only what makes the evidence admissible afterwards
+    # -- it is the precondition for the suite running at all.
+    #
+    # AND IT SUPERSEDES ANY PREREQUISITE ACKNOWLEDGEMENT MADE BEFORE IT
+    # (T024). `prerequisite_ack` is bound to `candidate_sha` by the same rule
+    # this field is, so the advance above expires one taken earlier in the
+    # same pause -- correctly, since the binding cannot tell a re-pinned
+    # checksum from a rewritten migration. Nothing here compensates for that,
+    # deliberately: weakening the binding to special-case a hand-off is
+    # exactly the hole it was written to close. It is instead an ORDERING,
+    # stated in PROTOCOL.md, surfaced by `orchid status --explain` (which
+    # names the hand-off first) and raised first by the driver -- perform the
+    # hand-off, THEN acknowledge the prerequisite, and neither expires the
+    # other. An operator who does it the other way round pays one re-run of
+    # `orchid task prereq-ack`, and the boundary tells them exactly that.
+    #
+    # `--clear` withdraws it. Idempotent by content, like `run boundary set`:
+    # clearing a field that is already empty journals nothing, so the rebase
+    # arm can call it unconditionally without one journal line per rebase on
+    # every repository that never uses the gate.
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; export ORCHID_EPOCH
+    id="${1:-}"; shift || true
+    mode=""; reason=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --ack) mode=ack; shift ;;
+      --clear) mode=clear; shift ;;
+      --reason)
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      *) orchid_die "usage: orchid task handoff <id> --ack|--clear --reason \"...\"" ;;
+    esac; done
+    [ -n "$id" ] || orchid_die "usage: orchid task handoff <id> --ack|--clear --reason \"...\""
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    [ -n "$mode" ] || orchid_die "task handoff requires --ack or --clear"
+    [ -n "$reason" ] || orchid_die "task handoff requires --reason (INV-08)"
+    old="$(fm_get "$f" handoff_ack)"
+    if [ "$mode" = clear ]; then
+      if [ -z "$old" ]; then
+        echo "$id: no operator hand-off was recorded"
+        exit 0
+      fi
+      # Journal-first (INV-08 discipline): the reason is recorded before the
+      # field it justifies is written.
+      journal --task "$id" --kind intervention "operator hand-off cleared (was $old): $reason"
+      fm_set "$f" handoff_ack ""; fm_set "$f" updated "$(now)"
+      echo "$id: operator hand-off cleared (was $old)"
+      exit 0
+    fi
+    # WHICH STATES MAY BE ACKNOWLEDGED FROM. The hand-off is one named point in
+    # the procedure: after the implementer's envelope reconciles (which is what
+    # captures `candidate_sha` and moves the task to `testing`) and before
+    # `orchid verify` runs. `testing` is therefore the only status in which
+    # acknowledging one means anything -- and, more to the point, the only one
+    # in which ADVANCING `candidate_sha` is safe.
+    #
+    # From `reviewing` or `arbitrating` that advance would move the candidate
+    # out from under reviewers who are judging that exact commit: their
+    # envelopes name the sha they were dispatched against, the record would name
+    # a different one, and the verdicts would be read as judgments of a tree
+    # nobody looked at. From `merging` it would move the candidate underneath a
+    # merge already in flight. From `pending`/`implementing`/`rework` there is
+    # no candidate anyone has finished producing yet, and from `done`/`blocked`
+    # there is nothing left for a hand-off to unblock. The refusal NAMES the
+    # status it declined from, because which of those it was is the whole
+    # content of the mistake.
+    #
+    # (`orchid task prereq-ack` accepts `merging` as well as `testing`, and the
+    # difference is not an inconsistency: that verb writes no candidate, so
+    # there is nothing for it to move out from under a merge -- and merge's own
+    # refusal has to be clearable from the state it fires in.)
+    #
+    # `--clear` is deliberately NOT restricted: it only ever WITHDRAWS, it is
+    # what `orchid merge`'s rebase arm calls from `merging`, and a withdrawal
+    # that some status could refuse would be a stale acknowledgement nothing
+    # could remove.
+    hstatus="$(fm_get "$f" status)"
+    if [ "$hstatus" != testing ]; then
+      orchid_die "refusing to acknowledge a hand-off for task $id from status '$hstatus': the hand-off is the pause between the implementer's envelope reconciling and 'orchid verify' running, so it is acknowledged from 'testing' only. Acknowledging here would advance candidate_sha out from under whoever owns '$hstatus' (a reviewer or arbiter judging that exact commit, or a merge in flight). Use 'orchid task handoff $id --clear' to withdraw an acknowledgement — that is legal from any status."
+    fi
+    cand="$(fm_get "$f" candidate_sha)"
+    [ -n "$cand" ] || orchid_die "task $id has no candidate_sha — a hand-off is acknowledged against a committed candidate, never against a task"
+    # The tree `orchid verify` will actually run in, resolved exactly the way
+    # orchid-verify resolves its own cwd. Unreadable is fatal rather than
+    # "acknowledge the old sha anyway": the one thing this verb asserts is
+    # that the record names the tree the work landed in, and it cannot assert
+    # that about a HEAD it cannot read.
+    hwt="$(fm_get "$f" worktree)"; hcwd="$repo"; [ -z "$hwt" ] || hcwd="$hwt"
+    hhead="$(git -C "$hcwd" rev-parse HEAD 2>/dev/null || true)"
+    [ -n "$hhead" ] || orchid_die "cannot read HEAD of $hcwd — a hand-off is acknowledged against the tree 'orchid verify' will run in, and that tree cannot be read"
+    # AND THE TREE'S STATE, not only its HEAD. Every other check on this path
+    # compares SHAS, and a sha describes a commit -- it says nothing about the
+    # working tree sitting on top of it. An operator who applies the linter's
+    # own fix and acknowledges without committing leaves `handoff_ack`,
+    # `candidate_sha` and `HEAD` in perfect three-way agreement about a commit
+    # that does not contain the work, while `orchid verify` runs the dirty tree
+    # that does: every downstream judgment is then evidence about a commit
+    # nobody ran, which is lesson L025 reached by the one road matching shas
+    # cannot see. Refused BEFORE the advance, because advancing onto a HEAD with
+    # uncommitted work on top of it would write exactly that record.
+    #
+    # It names WHAT is uncommitted rather than only that something is: "commit
+    # your changes" over a tree an operator believes is clean is the same
+    # unsatisfiable-instruction shape this whole task exists to remove.
+    #
+    # AND A TREE THAT COULD NOT BE INSPECTED IS REFUSED IN THE SAME DIRECTION.
+    # `git status` failing says nothing about the tree being tidy -- the path
+    # is not a checkout, it is bare, its index is unreadable -- and treating
+    # that silence as "clean" would hand the ack out on the strength of a look
+    # that never happened, which is the one failure this check exists to
+    # prevent. Same reasoning as the unreadable HEAD above it: this verb's
+    # single assertion is that the record names the tree verification will
+    # run, and it cannot assert that about a tree it could not read.
+    hdrc=0
+    hdirty="$(handoff_worktree_dirty "$hcwd")" || hdrc=$?
+    if [ "$hdrc" -ne 0 ]; then
+      orchid_die "refusing to acknowledge the hand-off for task $id: the working tree of $hcwd could not be inspected ($hdirty). An acknowledgement asserts that 'orchid verify' will run the commit it names, and nothing can assert that about a tree whose state could not be read — an inspection that answers 'clean' when it could not look is not a check at all. $hcwd is the path task $id's 'worktree' field names (empty means the repository itself); make it a readable checkout with a working tree, then re-run the ack."
+    fi
+    if [ -n "$hdirty" ]; then
+      orchid_die "refusing to acknowledge the hand-off for task $id: $hcwd has uncommitted changes ($hdirty). An acknowledgement names a COMMITTED candidate, but 'orchid verify' runs this tree as it stands — acknowledging now would bind every downstream judgment to a commit that does not contain that work (lesson L025). Commit them in that tree, on the branch the task record names, with the trailer 'Orchid-Handoff: operator' (or discard them), then re-run the ack."
+    fi
+    if [ "$hhead" != "$cand" ]; then
+      # WHICH COMMIT, THOUGH. Advancing to whatever HEAD happens to be is a
+      # WORSE mis-binding than the drift this advance exists to remove, and the
+      # rule that says so -- descended from the candidate it replaces, and on
+      # the branch the task record names -- belongs to
+      # candidate_lineage_blocker, shared with the `reverify` edge (T026
+      # rework). That edge moves a candidate onto an operator's own tree for
+      # the same reasons this one does, so it has to answer the same question;
+      # two copies of it could answer differently, and a call cannot.
+      if ! hlin="$(candidate_lineage_blocker "$hcwd" "$id" "$cand" "$hhead" "$(fm_get "$f" branch)")"; then
+        orchid_die "refusing to advance candidate_sha $cand -> $hhead: $hlin"
+      fi
+      # INV-04, re-checked. Entry to `testing` scans base..candidate for
+      # `.orchid/` commits, and this is the only other path that moves
+      # candidate_sha forward past that gate -- so an operator's mechanical
+      # commit gets the same scan the implementer's did, rather than a way
+      # around it. Captured, not piped into `grep -q`: under `pipefail` a
+      # short-circuiting matcher SIGPIPEs `git log` and the 141 would read as
+      # "clean" (see tests/inv/test_INV-13_driver_verb_only.sh's note).
+      #
+      # The diagnostic names the TWO CAUSES, because neither way of tripping
+      # this is deliberate and refusing with only "touches .orchid/" leaves an
+      # operator staring at a commit they are sure contains one file. Both
+      # arise from the same fact -- that the integration branch is where
+      # orchid's own state lives:
+      #
+      #   * The hand-off was committed onto the integration branch itself
+      #     (a task with no separate worktree). That branch is where orchid's
+      #     own state commits land -- `plan apply`, `run accept`, `config
+      #     commit` and `start` all write `.orchid/` through
+      #     orchid_commit_durable and move it with `update-ref` -- so any of
+      #     them running while the task was in flight leaves one inside
+      #     `base_sha..HEAD`, and the range spans more than the operator's own
+      #     commit. The remedy is the tree the task record names: its worktree.
+      #   * The commit was made in a stale checkout of that branch. Because
+      #     `update-ref` never touches the repository's index, a plain `git
+      #     commit` after `git add <path>` builds its tree from an index many
+      #     commits back and reverts kernel state along with the intended
+      #     change.
+      hbase="$(fm_get "$f" base_sha)"
+      if [ -n "$hbase" ]; then
+        hstate_files="$(git -C "$repo" log --format=%H --name-only "$hbase..$hhead" 2>/dev/null | grep '^\.orchid/' || true)"
+        [ -z "$hstate_files" ] || orchid_die "the commits in $hbase..$hhead touch .orchid/ — refusing to advance candidate_sha to $hhead (INV-04). Either the hand-off was committed onto the integration branch, which carries orchid's own state commits (commit it in the task's worktree instead — 'orchid task show $id' names it), or your index was stale: orchid moves that branch with update-ref and never updates it, so a plain commit reverted kernel state too (undo it, 'git reset', re-stage just your path, re-run)"
+      fi
+      # Journal-first, and journalled SEPARATELY from the acknowledgement
+      # below: a candidate moving is the event an operator reading the trail
+      # needs to see on its own, not a detail folded into an ack line.
+      journal --task "$id" --kind intervention "operator hand-off advanced candidate_sha $cand -> $hhead (hand-off commits landed after the candidate was captured): $reason"
+      fm_set "$f" candidate_sha "$hhead"; fm_set "$f" updated "$(now)"
+      echo "$id: candidate_sha advanced $cand -> $hhead (the hand-off's own commits)"
+      cand="$hhead"
+    fi
+    if [ "$old" = "$cand" ]; then
+      echo "$id: operator hand-off already acknowledged for candidate $cand"
+      exit 0
+    fi
+    journal --task "$id" --kind intervention "operator hand-off acknowledged for candidate $cand: $reason"
+    fm_set "$f" handoff_ack "$cand"; fm_set "$f" updated "$(now)"
+    echo "$id: operator hand-off acknowledged for candidate $cand" ;;
+  prereq-ack)
+    # T024 (dogfood F26). Some tasks cannot be verified by their own candidate
+    # alone: a schema task authors a migration, and the database its suite runs
+    # against is still unmigrated when the tick reaches `testing`. Nothing in
+    # the tick applies it — deliberately, because the sandbox that authors a
+    # migration is not where schema-write credentials for a shared store
+    # belong — so the suite fails with something like "prepare() returned
+    # false", the driver reads a nonzero exit as a bad candidate, and an
+    # attempt is spent on an environment problem.
+    #
+    # The convention that replaces that: the task DECLARES the step
+    # (`operator_prerequisite`, set when the task is planned — the implementer
+    # cannot set it, since its commits may not touch `.orchid/` at all), the
+    # run stops at a `task-prerequisite` judgment boundary before verifying,
+    # and this verb is how the operator says the step is done.
+    #
+    # It is bound to the CANDIDATE, not to the task: `prerequisite_ack` holds
+    # the candidate_sha it was given, and the gate (handoff_prereq_unmet)
+    # only counts it while it still names the task's CURRENT candidate_sha.
+    # An acknowledgement is a claim about one specific migration having been
+    # applied, and the next candidate may need a different one — so it expires
+    # the moment the candidate it named is superseded, whether by a route
+    # through `rework` (which clears the field outright) or by merge's
+    # rebase-reset, which mints a new candidate and never touches `rework`.
+    #
+    # THE THIRD WAY THE CANDIDATE MOVES is `orchid task handoff --ack` above,
+    # which advances `candidate_sha` onto the commit an operator hand-off
+    # produced. That expires an ack taken before it, which is why PROTOCOL.md
+    # orders the two stops — hand-off first, prerequisite second — and why the
+    # driver and `orchid status --explain` both name the hand-off first. The
+    # binding is not relaxed for it: it cannot tell a re-pinned checksum from a
+    # rewritten migration, and a rule that guessed would be the hole the
+    # binding exists to close. Doing them in the wrong order costs one re-run
+    # of this verb, and the boundary raised afterwards says exactly that.
+    #
+    # Deliberately UNLIKE `task handoff`, this verb writes no `candidate_sha`
+    # and reads no tree. The step it records happened outside this repository
+    # and left the candidate untouched, so there is no commit to advance to and
+    # no working tree whose cleanliness could bear on whether a migration ran.
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; id="${1:-}"; shift || true
+    reason=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason)
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      *) orchid_die "usage: orchid task prereq-ack <id> --reason \"...\"" ;;
+    esac; done
+    [ -n "$id" ] || orchid_die "usage: orchid task prereq-ack <id> --reason \"...\""
+    # Reserved-id + existence guards before any read of the task file, same
+    # rationale as `set`/`unblock` above.
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    [ -n "$reason" ] || orchid_die "task prereq-ack requires --reason (INV-08)"
+    prereq="$(fm_get "$f" operator_prerequisite)"
+    [ -n "$prereq" ] || \
+      orchid_die "$id declares no operator_prerequisite — nothing to acknowledge"
+    # `testing` and `merging`, and no other status. The line is not "wherever
+    # a candidate exists" but "wherever something actually READS this ack":
+    # `orchid verify` gates on it in `testing`, `orchid merge` gates on it in
+    # `merging` (both run the same suite against the same external store, so
+    # both refuse on the same predicate). Ack'ing anywhere else would stamp a
+    # field no verb consults from that state.
+    #
+    # Before `testing` it is not merely unread but meaningless: the candidate
+    # — and therefore the migration this claims to have applied — has not been
+    # written yet, so the ack would vouch for a file nobody has seen.
+    #
+    # `merging` is here because merge's own refusal has to be actionable.
+    # Without it the operator meets a `task-prerequisite` boundary they cannot
+    # clear from the state it was raised in: the only way back to an
+    # acknowledgeable status would be a trip through `rework`, spending a
+    # whole round — implementer dispatch, re-verify, re-review — to re-derive
+    # a candidate that was already fine. That is the cost F26 exists to
+    # remove, so the refusal must be clearable where it is raised.
+    from="$(fm_get "$f" status)"
+    case "$from" in
+      testing|merging) ;;
+      *)
+        echo "orchid: $id is not testing or merging (status: $from) — nothing reads a prerequisite acknowledgement from there" >&2
+        exit 3 ;;
+    esac
+    cand="$(fm_get "$f" candidate_sha)"
+    [ -n "$cand" ] || orchid_die "$id has no candidate_sha — nothing to bind the acknowledgement to"
+    # Journal-first (INV-08 discipline, as in infra-fail): the reason is
+    # recorded before the field it justifies is written.
+    journal --task "$id" --kind intervention \
+      "prerequisite acknowledged for candidate $cand ($prereq): $reason"
+    fm_set "$f" prerequisite_ack "$cand"; fm_set "$f" updated "$(now)"
+    echo "$id: prerequisite acknowledged for candidate $cand" ;;
   unblock)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
@@ -451,34 +2260,371 @@ case "$sub" in
     [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     [ "$(fm_get "$f" status)" = blocked ] || orchid_die "$id is not blocked"
+    # Read BEFORE anything is written: schedule_attempt_budget dies on a
+    # misconfigured `rework_max`, and a die between the journal entry and the
+    # status write would leave exactly the orphan-with-no-state-change this
+    # verb's ordering exists to avoid. Only the WARNING it feeds is deferred
+    # to the end (it belongs after the transition it is about).
+    ub_attempts="$(fm_get "$f" attempts)"; [ -n "$ub_attempts" ] || ub_attempts=0
+    ub_budget="$(schedule_attempt_budget "$repo" "$id")"
     journal --task "$id" --kind intervention "unblock: $reason"
-    { cat "$f"; printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"; } | atomic_write "$f"
+    # T025: the failing output itself, captured before the `rm -f` below
+    # destroys it -- the same composer the advance:rework arm calls, for the
+    # same reason it calls it. A task is blocked with BOTH its evidence logs
+    # intact (the `blocked` edge deletes nothing), so this verb is the one that
+    # destroys the evidence for the failure the operator is unblocking, and
+    # the next attempt would arrive with a brief pointing at a file this call
+    # removed. Not merely the locations (that is refresh_briefs, just below):
+    # the bytes, which is what an assertion diff has instead of locations.
+    # `blocked` is not `merging`, so the verify log is asked first and the
+    # merge log is the fallback -- which is the arm that matters for a task
+    # stopped by a red repo-wide `merge_gate`, whose verify log PASSED and
+    # whose only failing output is the merge log this call is about to remove.
+    capture_rework_evidence "$f" "$id" blocked
+    # T010: same rework brief the advance:rework arm appends, and for the same
+    # reason -- this is also an entry to rework, and the logs holding the
+    # failing gate's exact locations are deleted two lines below. The brief
+    # goes in FIRST and the operator's own guidance last, so the guidance
+    # reads as the final word on top of the evidence rather than being buried
+    # under it. Candidate-bound, as on the advance arm -- and briefs describing
+    # a candidate this task has replaced are aged out in the same pass.
+    #
+    # The two halves are ONE NAMED PRODUCER (T034 rework) rather than a `{ ; }`
+    # compound piped into the writer: fm_write_task_from has to be able to run
+    # the producer and read its status before anything is renamed, and a
+    # compound has no name to hand it. The status is what a pipe throws away.
+    fm_write_task_from "$f" refresh_briefs_with_guidance "$f" "$id" "$(now)" "$reason"
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
-    # with the advance:rework arm and orchid-merge's rebase-reset).
+    # with the advance:rework arm and orchid-merge's rebase-reset) -- and, on
+    # the same grounds, any operator hand-off recorded against the candidate
+    # this rework round is about to replace, and the prerequisite
+    # acknowledgement bound to it. Both guarded on non-empty, for the reason
+    # the advance arm gives: an unguarded clear APPENDS the key to task files
+    # that never carried it.
     rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
+    if [ -n "$(fm_get "$f" handoff_ack)" ]; then
+      fm_set "$f" handoff_ack ""
+    fi
+    if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+      fm_set "$f" verify_fail_pending ""
+    fi
+    if [ -n "$(fm_get "$f" prerequisite_ack)" ]; then
+      fm_set "$f" prerequisite_ack ""
+    fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
-    echo "$id: blocked -> rework" ;;
+    echo "$id: blocked -> rework"
+    # WHERE THE REASON WENT, said out loud (dogfood F28). It is delivered by
+    # being written into the task body above, which is what `pack_build`
+    # copies verbatim into the implementer's capsule as `task.md` -- so the
+    # next implementer really does read it. That was invisible from outside:
+    # a reason that was ignored and a reason that was never delivered looked
+    # identical, which is why an operator could not tell a disobedient engine
+    # from a broken channel.
+    echo "$id: guidance delivered to the task body (see \`orchid task show $id\`) — the implementer's capsule copies it verbatim"
+    # `unblock` deliberately does NOT raise the attempt budget: it is the
+    # "something changed, here is the guidance" verb, and a task that lands
+    # back in `rework` with its budget already spent will re-block on its
+    # very next verify failure. Say so here rather than letting the operator
+    # rediscover it one wasted engine invocation later.
+    if [ "$ub_attempts" -ge "$ub_budget" ]; then
+      echo "$id: WARNING — attempts $ub_attempts/$ub_budget, so the next verify failure re-blocks it immediately; grant more with: orchid task retry $id --reason \"...\" --attempts N" >&2
+    fi
+    # ...and the OTHER thing that re-blocks it before it ever gets that far.
+    warn_rework_nonconverged "$f" "$id" ;;
   retry)
     verb_lock_guard "$repo"
-    epoch_require "$repo"; id="$1"; shift
-    if [ "${1:-}" = "--reason" ]; then
-      [ -n "${2:-}" ] || orchid_die "--reason requires a value"
-      reason="$2"
-    else
-      orchid_die "retry requires --reason"
-    fi
+    epoch_require "$repo"; id="${1:-}"; shift || true
+    # `--attempts N` (T026, dogfood F28): the supported way to give a task a
+    # fresh budget. Before it existed, `retry` restored STATUS and nothing
+    # else -- it returned an attempts-exhausted task to `rework` with its
+    # counter untouched, so the very next verify failure re-blocked it. The
+    # observed shape of that trap: a precise operator diagnosis, one more
+    # engine invocation, a byte-identical failure, immediately re-blocked.
+    #
+    # Hence the DEFAULT grant of 1, not 0. F28 asks for both halves -- "let
+    # retry grant an attempt OR take --attempts N" -- and the bare form is
+    # the one an operator reaches for: "I have diagnosed it, try again" has
+    # to mean the task actually gets a try. A grant is only ever applied when
+    # the budget is genuinely spent (`attempts + grant > budget` below), so
+    # the ordinary mid-budget retry still changes nothing but status and
+    # guidance, and repeated bare retries never compound -- the second one
+    # wants the same number the first already granted.
+    reason=""; grant=1; grant_asked=0
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason) [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      --attempts) [ -n "${2:-}" ] || orchid_die "--attempts requires a value"
+        # Same positive-integer guard lib/schedule.sh applies to the budget
+        # itself: `--attempts 0` grants nothing (say so instead of silently
+        # doing nothing), and a non-numeric value must never reach the
+        # arithmetic below.
+        case "$2" in
+          ''|*[!0-9]*|0*) orchid_die "--attempts must be a positive integer (got '$2')" ;;
+        esac
+        grant="$2"; grant_asked=1; shift 2 ;;
+      *) orchid_die "usage: orchid task retry <id> --reason \"...\" [--attempts N]" ;;
+    esac; done
+    [ -n "$id" ] || orchid_die "usage: orchid task retry <id> --reason \"...\" [--attempts N]"
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    [ -n "$reason" ] || orchid_die "retry requires --reason"
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     from="$(fm_get "$f" status)"
     case "$from" in
       blocked|rework) ;;
       *) echo "orchid: illegal retry from $from" >&2; exit 3 ;;
     esac
+    # Read BEFORE anything is written, exactly as `unblock` above does it and
+    # for the same reason: schedule_attempt_budget dies on a misconfigured
+    # `rework_max` (or a hand-edited `attempt_budget`), and a die AFTER the
+    # journal entry and the guidance append would leave the operator's reason
+    # recorded and pasted into the task body for a retry that never happened.
+    # Everything this verb can refuse on is therefore asked here, before the
+    # first mutation; the journal-first discipline below then orders the
+    # writes among themselves (INV-08).
+    attempts="$(fm_get "$f" attempts)"; [ -n "$attempts" ] || attempts=0
+    budget="$(schedule_attempt_budget "$repo" "$id")"
+    want=$(( attempts + grant ))
+    # AN EXPLICIT `--attempts N` THAT WOULD CHANGE NOTHING IS REFUSED, NOT
+    # SWALLOWED (T026 rework). The grant only ever raises the cap, so on a task
+    # still inside its budget the flag is satisfied before it is typed -- and
+    # the verb would then print the same "budget unchanged" line it prints for
+    # a bare retry, having silently declined the one thing the operator asked
+    # for. A flag that quietly does nothing is trusted for exactly as long as it
+    # takes to be blamed: the next failure looks like the budget was granted and
+    # spent. The bare form is untouched -- it asks for a retry and takes
+    # whatever round that needs -- because only an explicit number can be
+    # contradicted by the budget already in force.
+    #
+    # Refused BEFORE the journal entry and the guidance append below, like every
+    # other refusal in this verb: a retry that did not happen must not leave the
+    # operator's reason recorded and pasted into the task body.
+    if [ "$grant_asked" -eq 1 ] && [ "$want" -le "$budget" ]; then
+      orchid_die "--attempts $grant would grant task $id nothing: its budget is already $budget with $attempts spent, so it has $(( budget - attempts )) round(s) left and a grant only ever raises the cap (never lowers it). Retry on the rounds it already has with 'orchid task retry $id --reason \"...\"', or ask for one beyond them with '--attempts $(( budget - attempts + 1 ))' or more."
+    fi
     journal --task "$id" --kind intervention "retry: $reason"
+    # T025: and the failing output itself, captured before the `rm -f` below.
+    # THIS is the edge the capture was missing most. `retry` is what an
+    # operator runs after `attempts exhausted`, and that stop advances the task
+    # to `blocked` -- a status whose edge captures nothing and deletes nothing,
+    # so the verify log of the run that spent the last attempt is still sitting
+    # on disk when this verb starts. Without this call the operator's own
+    # recovery verb is what destroys it, and the granted round begins with
+    # exactly the empty hand F27 is about. `from` is passed through rather than
+    # hard-coded; neither admitted origin (`blocked`, `rework`) is `merging`, so
+    # <id>-verify.log is asked FIRST -- but the `rm -f` below takes
+    # <id>-merge.log too, so the source falls back to it when the verify log
+    # answers nothing. That fallback is the merge_gate stop's whole recovery
+    # path: `orchid merge` blocks the task on the round that spends the gate
+    # budget, leaving a PASSING verify log from before the merge beside the
+    # failing merge log, and this verb is what deletes the second one. A merge
+    # log a `merging -> rework` advance already captured is refused as a
+    # duplicate by rework_evidence_recaptured rather than filed twice.
+    capture_rework_evidence "$f" "$id" "$from"
+    # T010: the same rework brief, lifted before the logs go (see the
+    # advance:rework arm). `retry` is the verb an operator reaches for after
+    # `attempts exhausted`, which is exactly the moment the last verify log's
+    # locations are most worth carrying forward -- if, and only if, that log
+    # is still bound to the candidate being retried -- and, in the same pass,
+    # the briefs already in the body that describe a candidate it is not.
+    fm_write_task_from "$f" refresh_briefs "$f" "$id"
+    # The reason is DELIVERED, not merely journaled -- the task body is the
+    # implementer's own input (pack_build copies this file into the capsule
+    # as task.md), and the journal is not. `unblock` has always written it
+    # here; `retry` did not, which meant "retry with a diagnosis attached"
+    # silently dropped the diagnosis on the floor and the next attempt
+    # repeated the same mistake with no way to tell why. Same shape as
+    # unblock's, so the two verbs deliver identically.
+    #
+    # A NAMED PRODUCER, as on the unblock arm and for the same reason -- and
+    # this is the site where a failed producer hides best: a `cat` that stops
+    # partway still emits both `---` delimiters and a resolvable `id`, so the
+    # fragment passes every shape check fm_write_task can apply while the body
+    # it truncated is the task's entire rework history. Only the producer's own
+    # status distinguishes that from a complete document, and only reading it
+    # before the rename makes the distinction worth anything.
+    fm_write_task_from "$f" append_guidance "$f" "$(now)" "$reason"
+    # Budget, journal-first (INV-08), and never a decrement of `attempts` --
+    # see schedule_attempt_budget's header for why winding the counter back
+    # would re-point this attempt at a previous attempt's envelopes. The
+    # grant only ever RAISES the cap: `attempts + grant` (read above, before
+    # the first write) can be lower than the budget already in force (a retry
+    # of a task that has spent nothing), and that must leave the existing
+    # budget alone rather than quietly shrinking it.
+    if [ "$want" -gt "$budget" ]; then
+      journal --task "$id" --kind intervention "retry: attempt budget $budget -> $want (granted $grant, attempts spent $attempts)"
+      fm_set "$f" attempt_budget "$want"
+      budget_note="attempt budget $budget -> $want (granted $grant, $attempts spent)"
+    else
+      budget_note="attempt budget unchanged at $budget ($attempts spent, $(( budget - attempts )) round(s) left)"
+    fi
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
-    # with the advance:rework arm and orchid-merge's rebase-reset).
+    # with the advance:rework arm and orchid-merge's rebase-reset) -- and any
+    # operator hand-off bound to the candidate being replaced, and the
+    # prerequisite acknowledgement bound to it. Both guarded on non-empty, for
+    # the reason the advance arm gives.
     rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
+    if [ -n "$(fm_get "$f" handoff_ack)" ]; then
+      fm_set "$f" handoff_ack ""
+    fi
+    if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+      fm_set "$f" verify_fail_pending ""
+    fi
+    if [ -n "$(fm_get "$f" prerequisite_ack)" ]; then
+      fm_set "$f" prerequisite_ack ""
+    fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
-    echo "$id: $from -> rework" ;;
+    echo "$id: $from -> rework"
+    echo "$id: guidance delivered to the task body (see \`orchid task show $id\`) — the implementer's capsule copies it verbatim"
+    echo "$id: $budget_note"
+    # A granted round the dispatch guard then withholds is not a granted round,
+    # and this is the verb whose entire promise is the round. Said here rather
+    # than discovered by watching the next pass do nothing.
+    warn_rework_nonconverged "$f" "$id" ;;
+  reverify)
+    # T026 (dogfood F28, and twice more on r-002's T013/T014): the supported
+    # "the tree is green, just re-run verification" edge.
+    #
+    # Without it, an operator holding a candidate that failed for a reason
+    # that was NOT the candidate's fault -- a flaky suite, a fixture the
+    # operator has since fixed by hand, an environment problem -- had exactly
+    # one way back to a verify run: push the task backwards through `rework`
+    # and let an implementer redo work nobody claims is wrong. That path
+    # spends an attempt, and it discards the candidate's own evidence, since
+    # the fresh candidate_sha unbinds every reconciled review envelope. What
+    # operators did instead was fix the tree in the task worktree, commit on
+    # the task branch by hand, and `retry` with "the tree is already green" --
+    # a real recovery procedure with no verb, no journal kind, and no name in
+    # the protocol.
+    #
+    # So: `blocked|rework -> testing`, no attempt consumed, the candidate
+    # re-stamped from the worktree the operator actually fixed. This is the
+    # operator-side twin of `orchid merge`'s own exit-5 rebase reset, which
+    # already returns a task to `testing` for an unconditional re-verify
+    # without touching `attempts` (INV-07).
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; export ORCHID_EPOCH
+    id="${1:-}"; shift || true
+    reason=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason) [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      *) orchid_die "usage: orchid task reverify <id> --reason \"...\"" ;;
+    esac; done
+    [ -n "$id" ] || orchid_die "usage: orchid task reverify <id> --reason \"...\""
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    [ -n "$reason" ] || orchid_die "reverify requires --reason"
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    from="$(fm_get "$f" status)"
+    case "$from" in
+      blocked|rework) ;;
+      *) echo "orchid: illegal reverify from $from (blocked or rework only)" >&2; exit 3 ;;
+    esac
+    # ---- EVERY refusal first, THEN the mutations -------------------------
+    # This verb writes candidate_sha and journals two entries, and it is the
+    # `task advance` call further down that owns the transition. So every
+    # condition that advance can refuse on is asked HERE, before the first
+    # write: an attempt at a dispatch the schedule forbids, or at a candidate
+    # the entry gate rejects, must leave the task exactly as it found it --
+    # not mutated and journalled into a move that never happened. Each check
+    # below is either the very function advance calls or advance's own
+    # extracted guard, so the two cannot drift apart.
+    #
+    # The archetype's edge is the first of them, for its own extra reason: an
+    # archetype that can never reach `testing` at all -- a report-outcome one,
+    # which by meta-contract has no such state -- has to be refused as data,
+    # not by a branch on its name (INV-05). The refusal is simply the absence
+    # of a declared edge.
+    rv_arch="$(fm_get "$f" archetype)"; [ -n "$rv_arch" ] || rv_arch=feature
+    if ! archetype_validate "$rv_arch" >/dev/null 2>&1; then
+      echo "orchid: archetype '$rv_arch' failed validation (rejected, fail closed)" >&2
+      exit 13
+    fi
+    legal "$from" testing "$rv_arch" || { echo "orchid: illegal $from -> testing" >&2; exit 3; }
+    # The candidate under test is whatever the operator's own fix left at the
+    # task worktree's HEAD, and the worktree has to be CLEAN to be certifiable
+    # at all. Both come from reverify_edge_gate, which is the same function
+    # `task advance` runs on this edge -- so the answer this verb pre-computes
+    # here is by construction the answer the advance below will reach, and
+    # neither route can certify a tree the other refuses.
+    rv_head="$(reverify_edge_gate "$f")" || exit 3
+    # The entry-to-`testing` gate, asked about the sha this verb is ABOUT to
+    # stamp rather than the stale one still in frontmatter -- advance would
+    # otherwise check the wrong candidate, or check the right one only after
+    # this verb had already written it.
+    rv_block="$(testing_entry_blocker "$f" "$rv_head")" || { echo "orchid: $rv_block" >&2; exit 3; }
+    # `testing` is an ACTIVE status and both source states are idle ones, so
+    # BOTH forms -- rework -> testing and blocked -> testing -- are dispatches
+    # and meet the ordinary dispatch gate (concurrency cap, exclusive/
+    # resources, deps). Deliberately: a re-verification runs the task's whole
+    # suite in its worktree, which is the contention that gate exists to
+    # bound. advance enforces it too, on the same schedule.sh predicate set;
+    # asking here as well is what keeps a cap/deps refusal from landing on a
+    # task this verb had already re-stamped and journalled.
+    rv_blockers="$(schedule_dispatch_blockers "$repo" "$id")"
+    if [ -n "$rv_blockers" ]; then
+      echo "orchid: dispatch refused for $id ($from -> testing):" >&2
+      printf '%s\n' "$rv_blockers" >&2
+      exit 3
+    fi
+    # ---- refusals are behind us; mutate ----------------------------------
+    # Re-stamped BEFORE the advance, because the evidence this edge exists to
+    # produce is sha-bound: `orchid verify` copies candidate_sha into its log
+    # and INV-11's testing -> reviewing gate compares the two, so a reverify
+    # that left a stale candidate_sha behind would produce a passing log that
+    # certifies the wrong tree. Journal-first within each write (INV-08).
+    rv_old="$(fm_get "$f" candidate_sha)"; rv_ack_note=""
+    journal --task "$id" --kind intervention "reverify: $reason"
+    if [ "$rv_head" != "$rv_old" ]; then
+      journal --task "$id" --kind intervention "reverify: candidate_sha ${rv_old:-none} -> $rv_head (HEAD of the task worktree)"
+      fm_set "$f" candidate_sha "$rv_head"
+      # AND THE HAND-OFF IS WITHDRAWN, NOT CARRIED (T026 rework). `handoff_ack`
+      # asserts one thing about one commit: that an OPERATOR looked at that tree
+      # and confirmed the mechanical steps it needed -- a mode bit on a new
+      # executable, a regenerated per-file artifact -- had been performed. The
+      # commit being re-stamped here is one no operator has said that about; it
+      # is, by construction, work committed since. Re-binding the ack onto it
+      # would make that assertion on their behalf about a tree they never saw,
+      # which is exactly the direction lib/handoff.sh exists to close: a HEAD
+      # that has moved past the ack reopens the pause.
+      #
+      # LINEAGE DOES NOT RESCUE IT. The gate above proved the new commit
+      # DESCENDS from the acknowledged one -- that the acknowledged work is
+      # still present. It proves nothing whatever about the commits stacked on
+      # top, and whether THOSE need mechanical steps is the only question the
+      # ack answers. Carrying it forward would buy a verification guaranteed to
+      # fail on the missing chmod, and charge a rework round for it.
+      #
+      # THIS STRANDS NOTHING. `reverify` leaves the task in `testing`, and
+      # `testing` is precisely the status `task handoff --ack` is legal from, so
+      # the boundary the next pass stops at costs the operator one command --
+      # the same one-command cost every other fail-closed axis on this field
+      # charges. Journalled and printed, because a withdrawal is an
+      # operator-visible consequence of the verb they just ran.
+      rv_ack="$(fm_get "$f" handoff_ack)"
+      if [ -n "$rv_ack" ]; then
+        journal --task "$id" --kind intervention "reverify: cleared the operator hand-off (bound to $rv_ack; the re-stamped candidate $rv_head is a commit no operator has acknowledged)"
+        fm_set "$f" handoff_ack ""
+        rv_ack_note="$id: the operator hand-off bound to $rv_ack was cleared — it says nothing about the re-stamped candidate $rv_head, so the hand-off reads outstanding again; acknowledge it with \`orchid task handoff $id --ack --reason \"...\"\` (legal from testing) once that commit's mechanical steps are done"
+      fi
+    fi
+    # Through `task advance`, never around it. The prechecks above make a
+    # refusal here vanishingly unlikely, but they do not make advance
+    # redundant: it is the single owner of the edge, and of everything that
+    # rides on it -- the transition write itself, the journal entry naming
+    # the reason, and the fresh `started_at` a dispatch into an active status
+    # gets (a re-verification is a new attempt-shaped unit of work, which is
+    # what the wall-clock anchor bounds). It re-checks the same predicates on
+    # its own account, so no future caller of this arm can walk past them.
+    # `set -e` propagates its exit code if it does refuse.
+    # That call is also what drops the stale verify evidence: the invalidation
+    # belongs to the EDGE (see advance's idle -> testing arm), not to this
+    # verb, so the raw-advance route gets it too and there is only ever one
+    # copy of it to keep in step.
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" task advance "$id" testing \
+      --reason "reverify: $reason" >/dev/null
+    echo "$id: $from -> testing (candidate $rv_head)"
+    echo "$id: no attempt consumed — the next pass re-runs verification (or run: orchid verify $id)"
+    [ -z "$rv_ack_note" ] || echo "$rv_ack_note" ;;
   infra-fail)
     # v0b2: the ONE owned path that may bump `infra_failures` — `task set`
     # denies it directly (see the `set` case's deny-list above) because this
@@ -511,5 +2657,5 @@ case "$sub" in
     else
       echo "$id: infra_failures $n/$max"
     fi ;;
-  *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|unblock|retry|infra-fail" ;;
+  *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|infra-fail" ;;
 esac

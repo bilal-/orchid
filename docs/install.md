@@ -75,6 +75,14 @@ from the source archive, avoiding a checksum self-reference.
 
 ### Release-day steps (operator, not automated)
 
+These steps begin only after run acceptance is complete: candidate-local CI
+has been recorded, the assembled tree has run the canonical suite from a
+checkout actually parked on the configured integration branch, and any
+required hosted CI has been observed after the operator pushed. A candidate
+cannot pre-claim either post-merge observation. Release-day formula pinning is
+later still and remains an integration/release operation, never a candidate
+hand-off.
+
 1. Update `release/metadata.conf`, `ORCHID_VERSION` in `lib/common.sh`, the
    two `ORCHID_INSTALL_*` assignments in `install.sh`, and the formula's
    version and URL. Commit the release payload while the tree is clean.
@@ -87,9 +95,15 @@ from the source archive, avoiding a checksum self-reference.
 2. Re-pin the formula checksum with the canonical tool (the same fixed
    mtime, prefix, and tree inputs the verifier uses — it snapshots current
    content through a disposable, config-isolated Git repository and rewrites
-   `Formula/orchid.rb` in place; `--check` verifies without rewriting, and the
-   test suite runs that check on every commit so a stale pin can never linger
-   unnoticed):
+   `Formula/orchid.rb` in place; `--check` verifies without rewriting).
+
+   Expect the pin to be stale when you arrive here, and re-pin on the
+   integration branch. That is deliberate: the checksum is derived from the
+   whole tree, so obliging every branch to re-pin would have every branch
+   rewrite the same line to a different value, and the second one to merge
+   would conflict with no way to resolve it unattended. Nothing upstream of
+   this step re-pins, and step 4's release gate is what refuses to ship if
+   you skip it — see [contributing.md](./contributing.md#release-rehearsal):
 
    ```sh
    /bin/bash scripts/pin-formula.sh
@@ -156,7 +170,19 @@ from the source archive, avoiding a checksum self-reference.
    tripwire fired, that no repository acquired a remote or a remote ref, that
    the source checkout is unchanged afterwards (working tree, file listing,
    `HEAD`, and remote refs), and that removing the root leaves the machine as
-   it found it. Qualify each candidate repository with
+   it found it.
+
+   Run it from the Git checkout you are tagging, which is what this step
+   assumes. The suite is runnable inside an unpacked release archive too, and
+   there the tree has no Git metadata at its root: the rehearsal detects that
+   context, compares the file listing only, and records the working-tree,
+   `HEAD` and remote-ref half of the claim above as `NOT-TESTED`. It is never
+   reported as a pass — three Git questions a tree cannot answer would
+   otherwise compare equal before and after whatever the run did. So a
+   rehearsal for release day has to happen in the checkout, or the isolation
+   claim you are relying on is one that run did not make.
+
+   Qualify each candidate repository with
    `scripts/beta-qualify.sh` and work through
    [beta-qualification.md](./beta-qualification.md)'s operator checklist before
    handing a build to anyone.

@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # INV-09: repo-local plugins never execute without an out-of-repo trust
 # record (docs/specs/kernel.md's Conformance invariants).
+#
+# RED: a repo-local engine is resolved below with no trust record at all,
+#      with a record for a DIFFERENT directory, after its bytes changed
+#      (digest mismatch), after a symlink inside it was repointed, and after
+#      revocation. Every one must refuse AND print no path -- a resolver that
+#      refuses while still emitting the path has handed the caller the
+#      executable anyway.
+# GREEN: the same engine, genuinely trusted and digest-matching, must resolve
+#      to its own run script; and a ~/.orchid user plugin and a built-in must
+#      resolve with no record at all, so the refusals above are the trust
+#      boundary and not a resolver that refuses everything.
 source "$(dirname "$0")/../helpers.sh"
 
 mk_engine() {  # dir id version -- a minimal valid engine plugin
@@ -45,7 +56,11 @@ HOME="$home" ORCHID_REPO="$repo" "$ORCHID_BIN" plugins trust "$plugin_dir" >/dev
 [ ! -e "$repo/.orchid/trust" ] || fail "INV-09: trust record must never appear under the repo, even after trusting"
 exe="$(resolve "$home" "$repo" inveng)"; rc=$?
 [ "$rc" -eq 0 ] || fail "INV-09: a genuinely trusted, digest-matching repo-local engine must resolve"
-echo "$exe" | grep -q "inveng/run$" || fail "INV-09: resolved path must point at the trusted repo-local run script"
+# Herestrings here and at the user-plugin check below, never `echo "$exe" |
+# grep -q` (T016/INV-15 section 5): `grep -q` exits at its first match and
+# SIGPIPEs `echo`, and helpers.sh's `set -o pipefail` makes that kill the
+# pipeline's status -- so the correct path can be read as the wrong one.
+grep -q "inveng/run$" <<<"$exe" || fail "INV-09: resolved path must point at the trusted repo-local run script"
 
 # 5) A digest mismatch (e.g. a repo pull mutating a tracked file) instantly
 # de-trusts it -- it must go back to never executing, with no operator
@@ -67,7 +82,7 @@ userhome="$WORK/userhome"; mkdir -p "$userhome/.orchid/plugins/engines/usereng"
 mk_engine "$userhome/.orchid/plugins/engines/usereng" acme/usereng 0.1.0
 exe="$(resolve "$userhome" "$repo" usereng)"; rc=$?
 [ "$rc" -eq 0 ] || fail "INV-09 must not spill over: a ~/.orchid user plugin needs no trust record"
-echo "$exe" | grep -q "usereng/run$" || fail "user-plugin resolution returned the wrong path"
+grep -q "usereng/run$" <<<"$exe" || fail "user-plugin resolution returned the wrong path"
 exe="$(resolve "$userhome" "$repo" claude)"; rc=$?
 [ "$rc" -eq 0 ] || fail "INV-09 must not spill over: a built-in engine needs no trust record"
 
@@ -85,7 +100,9 @@ HOME="$home" ORCHID_REPO="$symrepo" "$ORCHID_BIN" plugins trust "$symplugin" >/d
   || fail "setup: trust of the symlink-bearing plugin dir failed"
 exe="$(resolve "$home" "$symrepo" symeng)"; rc=$?
 [ "$rc" -eq 0 ] || fail "INV-09: freshly trusted symlink-bearing engine must resolve"
+green_case "a genuinely trusted, digest-matching repo-local engine RESOLVED, so the refusals around it are trust decisions rather than a resolver that refuses every repo-local plugin"
 rm "$symplugin/link"; ln -s targets/b "$symplugin/link"
 rc=0; exe="$(resolve "$home" "$symrepo" symeng)" || rc=$?
 [ "$rc" -ne 0 ] || fail "INV-09: repointing a symlink inside a trusted repo-local plugin must de-trust it (digest must cover symlinks)"
 [ -z "$exe" ] || fail "INV-09: resolve_engine_exe must not print a path after a symlink repoint de-trusts the plugin"
+red_case "an untrusted, wrongly-trusted, digest-mismatched, symlink-repointed and revoked repo-local engine each refused to resolve, while a genuinely trusted one resolved"

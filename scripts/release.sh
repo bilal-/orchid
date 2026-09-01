@@ -17,7 +17,9 @@ usage() {
 usage: scripts/release.sh --tag vX.Y.Z --output DIR [--bash /path/to/bash]
 
 Builds and fully verifies local artifacts from the exact clean tagged commit.
-It does not push, publish, upload, or modify the tag.
+Run it only after the whole-tree formula checksum has been pinned on the
+integration/release branch. It is not candidate acceptance and does not push,
+publish, upload, or modify the tag.
 EOF
 }
 cleanup() {
@@ -57,8 +59,13 @@ case "$TAG" in
   v[0-9]*.[0-9]*.[0-9]*) ;;
   *) die "tag must be an immutable semantic-version tag such as v1.2.3 or v1.2.3-beta.1 (moving refs such as main or HEAD are refused)" ;;
 esac
-printf '%s\n' "$TAG" \
-  | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$' \
+# HERESTRINGS for every matcher in this file, never `printf ... | grep -q`
+# (T016's sweep of the class T010 named): this script runs under `set -o
+# pipefail` (line 4), `grep -q` exits at its FIRST match, and the SIGPIPE that
+# lands on `printf` mid-write is promoted to the pipeline's status -- so a
+# match can be read as a failure to match. See the placeholder scan below for
+# the instance where that direction is fail-OPEN.
+grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$' <<<"$TAG" \
   || die "tag must be exactly vMAJOR.MINOR.PATCH with an optional semver prerelease suffix such as -beta.1"
 [ -x "$BASH_BIN" ] || die "Bash interpreter is not executable: $BASH_BIN"
 if ! "$BASH_BIN" -c '[ -n "${BASH_VERSION:-}" ] && (( BASH_VERSINFO[0] > 3 || (BASH_VERSINFO[0] == 3 && BASH_VERSINFO[1] >= 2) ))'; then
@@ -183,10 +190,21 @@ formula_sha="$(printf '%s\n' "$formula" | sed -n 's/^[[:space:]]*sha256 "\([0-9a
 expected_url="https://github.com/bilal-/orchid/releases/download/$TAG/$archive_name"
 [ "$formula_version" = "$version" ] || die "formula version mismatch: $formula_version vs $version"
 [ "$formula_url" = "$expected_url" ] || die "formula URL mismatch: $formula_url"
-printf '%s\n' "$formula_sha" | grep -Eq '^[0-9a-f]{64}$' || die "formula checksum is missing or a placeholder"
+grep -Eq '^[0-9a-f]{64}$' <<<"$formula_sha" || die "formula checksum is missing or a placeholder"
 
 surface="$(for path in README.md docs/install.md docs/quickstart.md Formula/orchid.rb install.sh release/metadata.conf; do git_file "$path"; done)"
-if printf '%s\n' "$surface" | grep -Eq 'VERSION-PLACEHOLDER|SHA256-PLACEHOLDER|<!--[[:space:]]*SCREENSHOT:'; then
+# THE FAIL-OPEN ONE, and the reason the whole class is worth sweeping rather
+# than fixing wherever it happens to be noticed. $surface is six whole files
+# concatenated -- tens of kilobytes -- and this arm DIES on a match. Written
+# as `printf '%s\n' "$surface" | grep -Eq ...` a placeholder near the top of
+# README.md would let `grep -Eq` exit almost immediately, SIGPIPE a `printf`
+# with most of its write still to do, and hand the `if` a non-zero status
+# through `pipefail`: the `die` skipped, and the release archive built WITH
+# the placeholder this gate exists to catch. Every other instance of the shape
+# in this tree failed closed and cost a spurious refusal; this one was the
+# fail-open direction, and its odds only got worse as the release-facing
+# surface grew.
+if grep -Eq 'VERSION-PLACEHOLDER|SHA256-PLACEHOLDER|<!--[[:space:]]*SCREENSHOT:' <<<"$surface"; then
   die "release-facing metadata still contains a placeholder"
 fi
 
@@ -225,7 +243,13 @@ sha256_file() {
 archive_sha="$(sha256_file "$archive_a")"
 rebuilt_sha="$(sha256_file "$archive_b")"
 [ "$archive_sha" = "$rebuilt_sha" ] || die "archive rebuild checksum mismatch"
-[ "$archive_sha" = "$formula_sha" ] || die "formula checksum mismatch: $formula_sha vs $archive_sha"
+# THE gate for the formula pin (T030). Nothing upstream of here checks it any
+# more: the pin is a derived artifact of the integration branch, not of any
+# one candidate, so no task's verification chain re-pins it and none of them
+# conflict over it. That makes this the single place a stale pin is caught,
+# which is why the message carries the remedy and the branch it belongs on
+# rather than just the two digests.
+[ "$archive_sha" = "$formula_sha" ] || die "formula checksum mismatch: pinned $formula_sha, archive $archive_sha -- Formula/orchid.rb was not re-pinned for this tag's content; run 'bash scripts/pin-formula.sh' on the integration branch, commit the formula-only change (Formula/ is export-ignored, so the archive bytes do not move), re-tag that commit and re-run this gate"
 
 list="$TMP_ROOT/archive.list"
 tar -tzf "$archive_a" > "$list"

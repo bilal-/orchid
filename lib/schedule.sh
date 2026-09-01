@@ -8,6 +8,11 @@
 # surface) call schedule_dispatch_blockers rather than each growing their own
 # copy.
 #
+# T026 adds the OTHER runaway cap to the same file, for the same reason:
+# schedule_attempt_budget (bottom) is the single home for the rework budget
+# the driver stops at, shared by `runners/orchid-drive` and by the operator
+# verbs that report and raise it.
+#
 # Source AFTER lib/common.sh (orchid_state, config_get), lib/frontmatter.sh
 # (fm_get), and lib/manifest.sh (_manifest_split_csv, reused here for
 # `resources` comma-list splitting -- same trimmed/empty-skipping behavior
@@ -38,6 +43,81 @@ _schedule_active_status() {  # status -> 0 iff it counts as "active"
 # destination status one that counts as active".
 schedule_is_active_status() {
   _schedule_active_status "$1"
+}
+
+# schedule_budget_pct <status> <started-epoch> <budget-s> <now-epoch> -- how
+# much of an ATTEMPT's wall-clock budget has been consumed, as a whole
+# percentage on stdout; exit 1 with no output when no budget applies to that
+# task right now.
+#
+# The ONE home for that "does a budget apply, and how far in is it" question
+# (T035). `orchid jobs check` reports `<task> budget-exceeded` off it, and
+# `orchid jobs ls`'s BUDGET column renders the same number continuously, so
+# the table can never disagree with the escalation signal an operator is
+# about to act on: the column reads >=100% for exactly the tasks `check`
+# reports, because both ask this function.
+#
+# A budget applies only while the task sits in an ACTIVE status. It bounds an
+# attempt, and a task parked in `rework` (after `task retry`/`task unblock`)
+# or already `blocked` has no attempt in flight -- reporting one there is what
+# made the recovery path unconvergent (webBooks L006: the operator's own retry
+# verb handed the task back to a `jobs check` that re-blocked it on the next
+# pass). Deliberately independent of any JOB's liveness: `started_at` is
+# re-anchored at each dispatch, so an alive job whose task is past its budget
+# is precisely the runaway attempt the backstop exists to catch.
+#
+# Pure arithmetic over already-read values -- it reads no file and parses no
+# timestamp, so the callers keep their own frontmatter reads and their own
+# ISO-to-epoch parse (this codebase deliberately duplicates that five-line
+# GNU/BSD `date` idiom rather than growing a shared helper for it; see
+# runners/orchid-pump's own note). A percentage is clamped at 0 rather than
+# going negative, so a clock skew that puts `started_at` in the future reads
+# as "no time consumed yet" instead of as a nonsense negative column.
+schedule_budget_pct() {
+  local st="$1" started="$2" budget="$3" now="$4" elapsed
+  _schedule_active_status "$st" || return 1
+  case "$started" in ''|*[!0-9]*) return 1 ;; esac
+  case "$budget" in ''|*[!0-9]*) return 1 ;; esac
+  case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$started" -gt 0 ] || return 1
+  [ "$budget" -gt 0 ] || return 1
+  elapsed=$(( now - started ))
+  [ "$elapsed" -gt 0 ] || elapsed=0
+  echo "$(( elapsed * 100 / budget ))"
+}
+
+# schedule_split_deps <value> -- the task ids in a `depends_on` frontmatter
+# value, one per line, split on COMMAS as well as whitespace, empty tokens
+# skipped. The single home for what separates two dependency ids: both the
+# reader below and `orchid task set`'s write-time existence check split with
+# this, so a value the writer accepted can never be re-read as a different
+# set of ids.
+#
+# Commas are here because of dogfood finding F30, and the bug it names is
+# the reason this is a function and not a bare `for d in $deps`. `depends_on:
+# T002,T003` read by word splitting alone is ONE token, "T002,T003"; the
+# reader then looks for `.orchid/tasks/T002,T003.md`, finds no file, reads no
+# status, and the dependency can never equal `done` -- the task waits
+# forever. What made it survive is the rendering: the unmet token joins back
+# into `waiting-deps (T002,T003)`, which reads exactly like a correct
+# two-dependency wait, so the predicate that was supposed to explain the
+# stall was the thing hiding it.
+#
+# Two `tr` invocations rather than one with a bracket expression: `tr
+# ',[:space:]' '\n'` relies on set2 being padded with its last character,
+# which is not portable enough to rest a scheduling predicate on. Splitting
+# is done by `tr` + `while read` rather than by unquoted word splitting so a
+# hand-edited id containing a glob character is never expanded against the
+# cwd.
+schedule_split_deps() {
+  local tok
+  while IFS= read -r tok; do
+    [ -n "$tok" ] && printf '%s\n' "$tok"
+  done < <(printf '%s\n' "$1" | tr ',' '\n' | tr ' \t' '\n\n')
+  # Same normalization lib/manifest.sh's _manifest_split_csv documents: a
+  # `while read` loop exits with its final (EOF-failing) read's status, so an
+  # empty `depends_on` would otherwise report failure to a caller that checks.
+  return 0
 }
 
 # schedule_active_tasks <repo> -- ids whose status is currently active
@@ -72,7 +152,12 @@ schedule_active_tasks() {
 #                                       line per (resource, active-id) pair.
 #   waiting-deps (<id> ...)         -- this task's `depends_on` ids that have
 #                                       not reached `done` yet, space-
-#                                       separated inside one predicate.
+#                                       separated inside one predicate,
+#                                       however the frontmatter value itself
+#                                       separated them (schedule_split_deps
+#                                       accepts commas and whitespace; the
+#                                       rendering is always space-separated,
+#                                       one id per space).
 #
 # <task> is a task ID, not a path (mirrors archetype_transitions <name>).
 schedule_dispatch_blockers() {
@@ -123,8 +208,62 @@ schedule_dispatch_blockers() {
 
   local deps d unmet=""
   deps="$(fm_get "$f" depends_on)"
-  for d in $deps; do
+  # Process substitution, never a pipe: a `while read` on the right-hand side
+  # of `|` runs in a subshell, and $unmet would be discarded with it.
+  while IFS= read -r d; do
     [ "$(fm_get "$state/tasks/$d.md" status 2>/dev/null)" = "done" ] || unmet="$unmet $d"
-  done
+  done < <(schedule_split_deps "$deps")
   [ -z "$unmet" ] || echo "waiting-deps ($(printf '%s' "${unmet# }"))"
+}
+
+# schedule_attempt_budget <repo> <task-id> -- the rework cap that applies to
+# THIS task right now: the number of `attempts` at which the driver stops
+# retrying and hands the task to a human. The SINGLE home for that number,
+# for the same reason schedule_dispatch_blockers is the single home for the
+# dispatch predicates: `runners/orchid-drive` enforces it on a verify failure,
+# `libexec/orchid-merge` enforces it on a `gate_failed` merge (T007 -- that one
+# verb owns the charge and the edge that follows it in a single transaction, so
+# it cannot hand the comparison back to the driver mid-way), and `orchid task
+# retry`/`orchid task unblock` report against it. Four callers, one number:
+# two copies of a cap drift the moment one of them is made configurable.
+#
+# Two layers, most specific first:
+#
+#   1. the task's own `attempt_budget` frontmatter grant, written ONLY by
+#      `orchid task retry --attempts N` (`task set` denies the key) -- the
+#      operator's recorded "this task gets more rounds";
+#   2. `rework_max` (config, default 3) -- the repo-wide budget, which used
+#      to be a literal `attempts >= 3` in the driver with no way to change
+#      it at all.
+#
+# WHY A BUDGET AND NOT A DECREMENT OF `attempts` (dogfood F28): the obvious
+# reading of "grant an attempt" is "give back one of the ones spent". It is
+# not available. `attempts` is the attempt NUMBER every per-attempt artifact
+# is keyed on -- `reviews/<id>-a<attempts+1>-{implementer,reviewer}*.json`,
+# read by `jobs prepare`, by both kernel envelope gates in `orchid task
+# advance`, by `lib/drive.sh`'s review policy and by the driver's own
+# implement-failure predicate. Winding it back would point the next attempt
+# at a PREVIOUS attempt's envelopes: a stale non-ok implement envelope would
+# read as this attempt's fresh failure, and a stale reviewer set as this
+# attempt's reviews. So `attempts` stays strictly monotonic and the CAP is
+# what moves.
+schedule_attempt_budget() {
+  local repo="$1" id="$2" state f v
+  state="$(orchid_state "$repo")"
+  f="$state/tasks/$id.md"
+  v=""
+  if [ -f "$f" ]; then
+    v="$(fm_get "$f" attempt_budget)"
+  fi
+  [ -n "$v" ] || v="$(config_get "$repo" rework_max 3)"
+  # Same fail-closed numeric guard, and the same `0*` rejection, the
+  # concurrency cap above documents: a hand-edited/misconfigured value must
+  # die cleanly here rather than feed a `-ge` comparison inside an unrelated
+  # caller, and a zero budget is never a legitimate rework budget (it blocks
+  # every task on its first verify failure) -- only a misconfiguration, with
+  # "00" being all-digits and so otherwise slipping past `*[!0-9]*`.
+  case "$v" in
+    ''|*[!0-9]*|0*) orchid_die "attempt budget must be a positive integer (got '$v')" ;;
+  esac
+  echo "$v"
 }

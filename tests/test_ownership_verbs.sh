@@ -59,11 +59,11 @@ assert_eq "$pre_wt_count" "$post_wt_count" "plan apply leaves no dangling temp w
 post_integ="$(git rev-parse "$integ")"
 [ "$post_integ" != "$pre_integ" ] || fail "plan apply must advance the integration branch"
 assert_eq "orchid: plan apply" "$(git log -1 --format=%s "$integ")" "plan apply commit message"
-git show "$integ:.orchid/roadmap.md" | grep -q "run_status: running" \
+grep -q "run_status: running" <<<"$(git show "$integ:.orchid/roadmap.md")" \
   || fail "plan apply transitions run_status planning->running in the same commit"
-git show "$integ:.orchid/requirements.md" | grep -q "REQ-1" \
+grep -q "REQ-1" <<<"$(git show "$integ:.orchid/requirements.md")" \
   || fail "plan apply commits the currently-imported requirements.md"
-git show "$integ:.orchid/journal.md" | grep -q "initial plan" \
+grep -q "initial plan" <<<"$(git show "$integ:.orchid/journal.md")" \
   || fail "plan apply's journal entry (with reason) rides in the commit"
 
 # Fix 3 (CAS discipline): both mutations are built into the temp
@@ -75,7 +75,7 @@ git show "$integ:.orchid/journal.md" | grep -q "initial plan" \
 # code did, and which is exactly what let a CAS failure leave local
 # claiming a transition the integration branch never received).
 grep -q "initial plan" .orchid/journal.md || fail "plan apply journals the reason in the working copy"
-fm_get .orchid/roadmap.md run_status | grep -q '^running$' \
+grep -q '^running$' <<<"$(fm_get .orchid/roadmap.md run_status)" \
   || fail "plan apply transitions the WORKING copy's run_status too"
 assert_eq "$(git show "$integ:.orchid/journal.md")" "$(cat .orchid/journal.md)" \
   "plan apply's local journal.md is byte-identical to the committed one (synced back post-CAS)"
@@ -106,12 +106,12 @@ assert_match "REQ-1" "$(cat .orchid/requirements.md)" "requirements.md untouched
 rc=0
 "$ORCHID_BIN" run advance complete --reason "skip ahead" >/dev/null 2>&1 || rc=$?
 assert_eq 3 "$rc" "running->complete is illegal (exit 3)"
-fm_get .orchid/roadmap.md run_status | grep -q '^running$' || fail "illegal transition leaves run_status unchanged"
+grep -q '^running$' <<<"$(fm_get .orchid/roadmap.md run_status)" || fail "illegal transition leaves run_status unchanged"
 
 # running->accepting is legal.
 "$ORCHID_BIN" run advance accepting --reason "moving to acceptance" >/dev/null \
   || fail "running->accepting must be legal"
-fm_get .orchid/roadmap.md run_status | grep -q '^accepting$' || fail "run_status now accepting"
+grep -q '^accepting$' <<<"$(fm_get .orchid/roadmap.md run_status)" || fail "run_status now accepting"
 grep -q "run_status running -> accepting" .orchid/journal.md || fail "run advance journals the transition"
 
 # accepting->planning is illegal (not in the table, and not ->blocked).
@@ -122,7 +122,7 @@ assert_eq 3 "$rc" "accepting->planning is illegal (exit 3)"
 # accepting->running is the legal rollback edge.
 "$ORCHID_BIN" run advance running --reason "not ready yet" >/dev/null \
   || fail "accepting->running (rollback) must be legal"
-fm_get .orchid/roadmap.md run_status | grep -q '^running$' || fail "run_status rolled back to running"
+grep -q '^running$' <<<"$(fm_get .orchid/roadmap.md run_status)" || fail "run_status rolled back to running"
 
 # --reason is required (INV-08).
 rc=0
@@ -132,7 +132,7 @@ rc=0
 # any->blocked is legal from any state, including `running`.
 "$ORCHID_BIN" run advance blocked --reason "operator halted the run" >/dev/null \
   || fail "running->blocked must be legal (any->blocked)"
-fm_get .orchid/roadmap.md run_status | grep -q '^blocked$' || fail "run_status now blocked"
+grep -q '^blocked$' <<<"$(fm_get .orchid/roadmap.md run_status)" || fail "run_status now blocked"
 grep -q "run_status running -> blocked" .orchid/journal.md || fail "blocked transition journaled"
 
 # ---------------------------------------------------------------------------
@@ -145,12 +145,12 @@ grep -q "run_status running -> blocked" .orchid/journal.md || fail "blocked tran
 rc=0
 "$ORCHID_BIN" run advance complete --reason "illegal from blocked" >/dev/null 2>&1 || rc=$?
 assert_eq 3 "$rc" "blocked->complete is illegal (exit 3)"
-fm_get .orchid/roadmap.md run_status | grep -q '^blocked$' || fail "illegal transition leaves run_status at blocked"
+grep -q '^blocked$' <<<"$(fm_get .orchid/roadmap.md run_status)" || fail "illegal transition leaves run_status at blocked"
 
 # blocked->running is legal: an operator can resume a blocked run.
 "$ORCHID_BIN" run advance running --reason "operator resumed the run" >/dev/null \
   || fail "blocked->running must be legal (recoverable block)"
-fm_get .orchid/roadmap.md run_status | grep -q '^running$' || fail "run_status recovered from blocked to running"
+grep -q '^running$' <<<"$(fm_get .orchid/roadmap.md run_status)" || fail "run_status recovered from blocked to running"
 grep -q "run_status blocked -> running" .orchid/journal.md || fail "blocked->running transition journaled"
 
 # ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ grep -q "run_status blocked -> running" .orchid/journal.md || fail "blocked->run
 rc=0
 "$ORCHID_BIN" run accept --reason "no evidence supplied" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "run accept without --evidence must be refused"
-fm_get .orchid/roadmap.md run_status | grep -q '^accepting$' || fail "run_status unchanged by refused accept"
+grep -q '^accepting$' <<<"$(fm_get .orchid/roadmap.md run_status)" || fail "run_status unchanged by refused accept"
 
 # accept refuses when run_status is not `accepting`.
 "$ORCHID_BIN" run advance running --reason "leave accepting for the guard check" >/dev/null
@@ -189,13 +189,13 @@ rc=0
 out_bypass="$("$ORCHID_BIN" run advance complete --reason "skip via advance" 2>&1)" || rc=$?
 assert_eq 3 "$rc" "advance ->complete is refused even from accepting (exit 3)"
 assert_match "use: orchid run accept --evidence" "$out_bypass" "advance ->complete points the operator at run accept"
-fm_get .orchid/roadmap.md run_status | grep -q '^accepting$' \
+grep -q '^accepting$' <<<"$(fm_get .orchid/roadmap.md run_status)" \
   || fail "refused advance->complete must leave run_status at accepting"
 
 # The legitimate path — run accept — still works from this same state.
 out_accept="$("$ORCHID_BIN" run accept --reason "all requirements covered" --evidence "$WORK/evidence.log")"
 assert_match "accepting -> complete" "$out_accept" "run accept prints the transition"
-fm_get .orchid/roadmap.md run_status | grep -q '^complete$' || fail "run_status now complete"
+grep -q '^complete$' <<<"$(fm_get .orchid/roadmap.md run_status)" || fail "run_status now complete"
 assert_eq "$(cat "$WORK/evidence.log")" "$(cat .orchid/reviews/acceptance.log)" \
   "evidence copied atomically to reviews/acceptance.log"
 grep -q "acceptance" .orchid/journal.md || fail "run accept journals kind acceptance"
@@ -214,9 +214,9 @@ post_accept_integ="$(git rev-parse "$integ")"
 [ "$post_accept_integ" != "$pre_integ" ] || fail "run accept must advance the integration branch"
 assert_eq "orchid: run accepted (r-001)" "$(git log -1 --format=%s "$integ")" \
   "run accept commit message names the run id"
-git show "$integ:.orchid/roadmap.md" | grep -q "run_status: complete" \
+grep -q "run_status: complete" <<<"$(git show "$integ:.orchid/roadmap.md")" \
   || fail "run accept's commit on the integration branch shows run_status complete"
-git show "$integ:.orchid/journal.md" | grep -q "all requirements covered" \
+grep -q "all requirements covered" <<<"$(git show "$integ:.orchid/journal.md")" \
   || fail "run accept's commit carries the acceptance journal entry"
 assert_eq "$(cat "$WORK/evidence.log")" "$(git show "$integ:.orchid/reviews/acceptance.log")" \
   "run accept's commit carries the evidence log"
@@ -265,7 +265,7 @@ ORCHID_REPO="$cas_wt" ORCHID_EPOCH="$cas_epoch" HOME="$WORK/home" \
   ORCHID_INTEGRATION_BRANCH="orchid/integration-does-not-exist" \
   "$ORCHID_BIN" run accept --reason "cas retry fixture" --evidence "$WORK/cas-evidence.log" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "the simulated first attempt must fail (commit never lands)"
-fm_get "$cas_wt/.orchid/roadmap.md" run_status | grep -q '^complete$' \
+grep -q '^complete$' <<<"$(fm_get "$cas_wt/.orchid/roadmap.md" run_status)" \
   || fail "the failed first attempt must still leave run_status: complete locally (state already set)"
 assert_eq "$pre_cas_integ" "$(git -C "$cas_bare" rev-parse orchid/integration)" \
   "the failed first attempt must not have advanced the real integration branch"
@@ -280,7 +280,7 @@ post_cas_integ="$(git -C "$cas_bare" rev-parse orchid/integration)"
 [ "$post_cas_integ" != "$pre_cas_integ" ] || fail "retried accept must advance the integration branch"
 assert_eq "orchid: run accepted (r-001)" "$(git -C "$cas_bare" log -1 --format=%s orchid/integration)" \
   "retried accept's commit carries the correct message"
-git -C "$cas_bare" show "orchid/integration:.orchid/roadmap.md" | grep -q "run_status: complete" \
+grep -q "run_status: complete" <<<"$(git -C "$cas_bare" show "orchid/integration:.orchid/roadmap.md")" \
   || fail "retried accept's commit shows run_status complete"
 grep -q "accept commit retried after CAS failure" "$cas_wt/.orchid/journal.md" \
   || fail "retried accept journals the retry as an intervention"

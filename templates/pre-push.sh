@@ -19,26 +19,346 @@
 # worktree, and a runtime grep for it would silently fall back to the
 # default name there -- exactly the gap this baked-in substitution closes.
 # If `integration_branch` is ever changed in `orchid.config`, re-run `orchid
-# init` to refresh the name baked in here (init never overwrites a
-# pre-existing pre-push hook otherwise -- see below).
+# start` to refresh the name baked in here: `orchid init` cannot be re-run on
+# an initialized repository (it dies with `branch <integ> exists`), so start's
+# existing-repository path is the door that re-renders this file. Once the run
+# has left `planning` that door is shut too -- start is a setup command and
+# refuses -- so the explicit route is `orchid start --refresh-push-guard`,
+# which re-renders this file and does nothing else, at any run_status.
 #
-# `orchid init` never overwrites a pre-existing user pre-push hook (checked
-# before this file is ever copied in) -- this file is only ever installed
-# into a hooks dir that had none.
+# The SECOND LINE of this file is LOAD-BEARING, not decoration:
+# lib/common.sh's orchid_install_push_guard recognizes its own installed hook
+# by line 2 STARTING with `# orchid pre-push guard`, and that is how a hook
+# written by an OLDER orchid gets upgraded to this one instead of being
+# mistaken for something the operator wrote. Any hook whose second line does
+# not start that way is a user's own and is left untouched -- never
+# overwritten, whatever it does, and however often it happens to mention
+# orchid elsewhere in its body. So do not move that header off line 2 or
+# reword its opening words without changing the marker with it; the rest of
+# line 2, after the header, is ordinary prose and free to change.
+#
+# SECOND leg (T037): refuse any OTHER branch-bound ref that would publish
+# orchid's own run state (`.orchid/`) where the remote does not already have
+# it -- carried on the tip, or carried by any commit the push makes newly
+# reachable. The two legs guard different things and neither covers the other.
+#
+# The refs blocked BY NAME above are orchid's own branches -- refusing them is
+# about who moves what. This leg is about a leak with no orchid branch in it
+# at all: on a real product repository 14 `.orchid/` files reached `main` by
+# riding the merge chain, integration branch -> feature branch -> MR, and were
+# approved because the diff was large and the paths look like tooling. By the
+# time that feature branch is pushed it is an ordinary branch with an ordinary
+# name; nothing above would look at it twice.
+#
+# Push is the right place for this leg, and a merge hook is not. Merging is
+# only one of the routes -- a squash, a cherry-pick and a rebase put the same
+# files on the same branch without ever creating a merge commit, and a hosted
+# MR is merged on the forge where no local hook runs at all. Everything that
+# reaches a forge is pushed first, so this is the last gate that sees every
+# route, and it is a gate that costs nothing to be wrong about: the state is
+# still local, and the override below is one variable.
+#
+# The exemption is what keeps this from being a nuisance: a ref whose remote
+# copy ALREADY carries run state is a repository that tracks it on purpose --
+# orchid's own, self-hosted, is exactly that -- and this push is not the one
+# that introduced it. Only a push that would put run state somewhere it is not
+# yet is refused. A remote sha of all zeros (a brand-new remote branch) has no
+# copy to exempt, and one whose object is not present locally cannot be read
+# to check: both fail CLOSED, since the cost is a message and a variable.
+#
+# BRANCH-BOUND REFS ONLY, and that bound is part of the design rather than an
+# omission. The leak this leg exists for is a leak along the merge chain: run
+# state rides a branch into a product's `main` and becomes part of its history.
+# A tag is a different object with a different job -- it names a commit that
+# is, by the time anyone tags it, already reachable from a branch that this leg
+# either passed or refused on its own merits -- so refusing `git push origin
+# v1.2.3` blocks nothing that is not decided elsewhere and breaks a release the
+# moment run state is anywhere in the tagged history. The same goes for
+# `refs/notes/*`. Every ref that is not branch-bound pushes exactly as plain
+# git would, run state or no run state. The NAME-BASED leg above is unaffected
+# and runs first: it already keys on `refs/heads/...` destinations of its own.
+#
+# GERRIT'S `refs/for/*` IS BRANCH-BOUND, and it is the one review ref this leg
+# must read as a branch rather than as "some other ref". On a Gerrit-hosted
+# project nobody pushes `refs/heads/main` at all -- the upload IS the push
+# (`git push origin HEAD:refs/for/main`), and the forge submits that change
+# onto `main` afterwards, where no local hook runs. Treating the magic ref as
+# a non-branch would mean the entire leak this leg exists for walks straight
+# past it on every Gerrit repository, which is the same false protection as an
+# inert hook. Both spellings git can be handed are matched -- `refs/for/<branch>`
+# and the fully-qualified `refs/for/refs/heads/<branch>` -- and so is a
+# push-option suffix (`%topic=x,r=someone,wip`), which Gerrit reads off the
+# refname and git carries into this hook verbatim.
+#
+# A REVIEW UPLOAD FAILS CLOSED: `refs/for/...` is Gerrit magic and is never a
+# ref the remote advertises, so the remote sha git hands this hook for it is
+# all zeros by construction and there is no remote copy that could exempt it.
+# The exemption below is therefore not merely absent here, it can never
+# arrive -- which is why the refusal says so instead of offering the
+# push-once-with-the-override recovery that the branch leg offers and that
+# would leave a Gerrit operator refused again on their very next upload.
+#
+# THE TIP IS NOT THE PUSH. A push publishes every commit it makes newly
+# reachable, not the one tree at the end of them, and `git rm -r .orchid &&
+# git commit` removes nothing from a history -- it appends a commit that
+# happens to have a smaller tree. So the shape a tip test reads as clean, and
+# the shape this leg would otherwise wave through, is the ordinary one: merge
+# the integration branch into a feature branch, notice the `.orchid/` paths in
+# the diff, delete them, push. Every file is still in the commits being sent,
+# still in the clone anybody makes of that branch afterwards, and still on its
+# way into whatever the branch is merged into -- which is the entire leak.
+# Both questions are therefore asked: the TIP TREE (the shape above), and
+# whether any commit this push makes NEWLY REACHABLE CARRIES `.orchid` in its
+# own tree. Carries, not touches: a deletion commit touches the path and
+# publishes nothing, so a ref whose remote copy already holds run state can be
+# cleaned up with exactly the commit the refusal asks for -- while the
+# add-then-delete history above still fails, on the commit that ADDED the
+# files, whose tree carries every one of them.
+#
+# "Newly reachable" is measured against WHAT THE REMOTE ALREADY HOLDS ON THE
+# DESTINATION REF, and against nothing else. That bound is the whole safety of
+# the exemption, so it is worth saying why the looser reading is wrong: an
+# earlier version excluded every remote-tracking ref of the remote
+# (`--remotes=<name>`), on the reasoning that a commit the remote is holding
+# somewhere is not introduced by this push. But ORCHID_ALLOW_PUSH=1 is a
+# deliberate publication of ONE ref -- a scratch branch, an archive, orchid's
+# own integration branch -- and it must exempt later pushes of THAT ref only.
+# Under the loose baseline, one override push parks the contaminated commits in
+# `refs/remotes/<name>/scratch`, and every later push of that identical history
+# to `main` walks through unrefused because the objects already exist on the
+# remote under another name -- which is precisely the leak, with the override
+# turned into a permanent repository-wide opt-out nobody asked for.
+#
+# So: for an ordinary branch push the baseline is the remote's own copy of the
+# ref being pushed -- the sha git hands this hook, authoritative and free. For a
+# Gerrit upload, where that sha is all zeros by construction, the baseline is
+# the remote-tracking ref for the TARGET branch the change would be submitted
+# onto (`refs/remotes/<name>/<target>`) and only that, when it is present
+# locally. With no baseline available -- a brand-new branch, an unfetched
+# target -- the whole history is walked, which fails closed.
 [ "${ORCHID_ALLOW_PUSH:-0}" = 1 ] && exit 0
 
 integ="__INTEGRATION_BRANCH__"
+# githooks(5): the hook is called with the remote's NAME and URL. The name is
+# what a Gerrit upload's baseline is spelled under (`refs/remotes/<name>/
+# <target>`); when the push names a URL instead of a configured remote there are
+# no tracking refs under it, the lookup fails, and the walk fails closed with no
+# baseline at all.
+remote_name="${1:-}"
+
+# Non-empty output when <commit-ish>'s tree carries durable run state.
+# `.orchid/runtime/` is gitignored and never enters a tree, so any `.orchid`
+# entry a commit carries is run state by construction.
+carries_run_state() {
+  [ -n "$(git ls-tree "$1" -- .orchid 2>/dev/null)" ]
+}
+
+# history_carries_run_state <tip> [<baseline>...] -- true when any commit
+# reachable from <tip> and NOT from any <baseline> CARRIES `.orchid` IN ITS
+# TREE. Every newly reachable commit is a candidate. The tree is what decides,
+# and the difference between those two questions is an entire class of false
+# refusal -- and an entire class of false allowance if the walk itself is
+# path-limited.
+#
+# TOUCHING THE PATH IS NOT PUBLISHING IT. `git rm -r .orchid && git commit`
+# touches `.orchid` and carries none of it: its tree is smaller than its
+# parent's. Ask only "did any new commit touch the path" and the CLEANUP push
+# -- a ref whose remote copy already holds run state, pushed a single deletion
+# commit to get rid of it -- is refused for doing the very thing the refusal
+# asks for, with no way through but the override. Asking the tree keeps both
+# answers: the deletion commit's tree is clean and passes, while an
+# ADD-THEN-DELETE history still fails on the commit that added them, whose
+# tree carries every file the push would publish.
+#
+# NOR MAY THE WALK ITSELF BE PATH-LIMITED. A newly reachable commit can inherit
+# `.orchid/` unchanged while adding ordinary product work, then a later commit
+# can delete the run state before the tip. `rev-list -- .orchid` shows only the
+# deletion in that suffix: it skips the inherited-state commit because that
+# commit did not touch the path. Testing the trees cannot repair a commit the
+# walk never returned, so enumerate the whole newly reachable range and test
+# every returned tree.
+#
+# The two readings meet exactly at the boundary, which is why this is a
+# correction and not a loosening: an immediate deletion commit whose parent is
+# in the baseline is clean and introduces no contaminated commit. If any
+# newly reachable commit first inherits that parent's dirty tree, however,
+# that commit is enumerated and refused even though it did not touch the path.
+# A brand-new branch has no baseline at all, so every ancestor is newly
+# reachable and the commit that added or inherited the files is among them.
+#
+# The walk is not capped at one commit -- the first candidate may be a
+# deletion -- but it must not fork one `git ls-tree` per candidate either. A
+# brand-new branch has no baseline and can make the whole product history newly
+# reachable; one process per commit would turn this default-installed pre-push
+# hook into minutes of startup latency on an ordinary large repository.
+# `rev-list` therefore emits each commit's tree as a `<tree>:.orchid` object
+# expression and ONE `cat-file --batch-check` process resolves the whole set.
+# A resolved object of any type means the commit carries the path; only an
+# explicit `missing` answer means it does not.
+#
+# PORTABLE OUTPUT, including rev-list's ordinary `commit <sha>` header before
+# each formatted tree line. `--no-commit-header` would suppress those headers,
+# but that option requires Git 2.33 and this hook must still run on older
+# supported hosts. Feeding the header to `cat-file --batch-check` is harmless:
+# `commit <sha>` is not an object expression, so it yields an explicit
+# `<input> missing` line that the reader already ignores; the following
+# `<tree>:.orchid` line is the authoritative query. This doubles cheap batch
+# records rather than raising the repository's Git floor or adding a filter
+# process.
+#
+# The batch is allowed to finish before its output is inspected. Besides
+# preserving either git process's failure status through `pipefail`, this
+# avoids the early-reader/SIGPIPE ambiguity that a `... | grep -q` shortcut
+# would introduce: every query is consumed, then the shell decides.
+#
+# `--not` is emitted only when there is something to exclude -- a bare `--not`
+# with an empty list is a nonsense command line, and this must never be the
+# reason a push dies.
+history_carries_run_state() {
+  local tip="$1" batch kind
+  shift
+  local -a range
+  range=("$tip")
+  [ "$#" -gt 0 ] && range+=(--not "$@")
+  if ! batch="$(
+    set -o pipefail
+    git rev-list --format='%T:.orchid' "${range[@]}" 2>/dev/null \
+      | git cat-file --batch-check='%(objecttype)' 2>/dev/null
+  )"; then
+    # A history/object query that cannot answer is not evidence of absence.
+    # Fail closed at the push boundary rather than publish on an unreadable
+    # range.
+    return 0
+  fi
+  while IFS= read -r kind; do
+    [ -n "$kind" ] || continue
+    case "$kind" in
+      *" missing") ;;
+      *) return 0 ;;
+    esac
+  done <<<"$batch"
+  return 1
+}
 
 blocked=0
-while read -r _local_ref _local_sha remote_ref _remote_sha; do
+blocked_ref=""
+leaked=0
+leaked_ref=""
+leaked_review=0
+leaked_target=""
+leaked_where=""
+while read -r _local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
-    refs/heads/task/*) blocked=1; blocked_ref="$remote_ref" ;;
-    "refs/heads/$integ") blocked=1; blocked_ref="$remote_ref" ;;
+    refs/heads/task/*) blocked=1; blocked_ref="$remote_ref"; continue ;;
+    "refs/heads/$integ") blocked=1; blocked_ref="$remote_ref"; continue ;;
   esac
+  # The run-state leg is scoped to branch-bound refs, and only AFTER the
+  # name-based checks above have had their say -- see the header. A tag, a
+  # note: normal git behaviour, whatever its commit carries.
+  review=0
+  target=""
+  case "$remote_ref" in
+    # A branch is bound to itself.
+    refs/heads/*) target="${remote_ref#refs/heads/}" ;;
+    refs/for/*)
+      # Gerrit, unwrapped in the order git hands it over: the push options
+      # first (everything from the first `%`; `[%]` rather than a bare `%`, so
+      # the pattern cannot be misread as another trim operator), then the magic
+      # prefix, then the optional fully-qualified spelling -- leaving the
+      # branch the change is uploaded FOR, which is where submitting it lands
+      # the tree.
+      review=1
+      target="${remote_ref%%[%]*}"
+      target="${target#refs/for/}"
+      target="${target#refs/heads/}"
+      ;;
+    *) continue ;;
+  esac
+  # A deletion (all-zero local sha) pushes no tree and can leak nothing.
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+
+  # What the remote already holds ON THIS DESTINATION, and therefore what this
+  # push does NOT publish. Built once here and used by the history walk below.
+  # Bound to the destination ref, never to the remote at large -- see the
+  # header: an unrelated ref's copy of the same objects is not this ref's
+  # exemption, or one override push exempts the whole repository forever.
+  #
+  #   * an ordinary branch push: the remote's own copy of the ref being pushed.
+  #     git hands the sha over, so it is both authoritative and free. Skipped
+  #     when it is all zeros (a brand-new branch has no copy) and when the
+  #     object is not present locally, where it cannot be walked -- both fail
+  #     closed onto a full-history walk.
+  #   * a Gerrit upload: `refs/for/...` is never advertised, so that sha is
+  #     always zeros and the only honest baseline is the remote-tracking ref for
+  #     the TARGET branch the change would be submitted onto. Used only when it
+  #     resolves locally; an unfetched target leaves no baseline and fails
+  #     closed. No other remote ref stands in for it.
+  base=()
+  if [ "$review" -eq 0 ]; then
+    case "$remote_sha" in
+      *[!0]*) git cat-file -e "$remote_sha" 2>/dev/null && base+=("$remote_sha") ;;
+    esac
+  elif [ -n "$remote_name" ] && [ -n "$target" ] && \
+       git rev-parse --verify --quiet "refs/remotes/$remote_name/$target^{commit}" >/dev/null 2>&1; then
+    base+=("refs/remotes/$remote_name/$target")
+  fi
+
+  if carries_run_state "$local_sha"; then
+    # A review upload has no remote copy to be exempt by: the remote never
+    # advertises `refs/for/...`, so this fails closed rather than reading the
+    # all-zero sha git supplies as "nothing to compare, carry on".
+    if [ "$review" -eq 0 ]; then
+      case "$remote_sha" in
+        *[!0]*)
+          if git cat-file -e "$remote_sha" 2>/dev/null && carries_run_state "$remote_sha"; then
+            continue
+          fi ;;
+      esac
+    fi
+    leaked=1; leaked_where="tip"
+  elif history_carries_run_state "$local_sha" "${base[@]}"; then
+    # The tip is clean and the history is not: somebody deleted the files and
+    # pushed the commits that carry them anyway. Reported separately because
+    # the remedy is a different one -- another deletion does not help.
+    leaked=1; leaked_where="history"
+  else
+    continue
+  fi
+  leaked_ref="$remote_ref"; leaked_review="$review"; leaked_target="$target"
 done
 
 if [ "$blocked" -eq 1 ]; then
   echo "orchid: push blocked -- '$blocked_ref' is orchid-managed (task branches and the integration branch, '$integ', are never pushed by the kernel itself; PROTOCOL.md: the operator alone moves anything to origin). Set ORCHID_ALLOW_PUSH=1 to override." >&2
+  exit 1
+fi
+
+if [ "$leaked" -eq 1 ]; then
+  # One composer, and the two things it has to vary independently.
+  #
+  # WHERE the state is decides the remedy: on the tip, deleting the paths is
+  # the fix; in the history, deleting them is what somebody already did and it
+  # is not a removal. Telling an operator whose tip is clean to "strip .orchid/
+  # before pushing" would send them to do again the thing that did not work.
+  #
+  # WHICH LEG decides the exemption. The branch leg's way out -- push it once
+  # with the override and never be asked again -- simply does not exist for a
+  # review upload, and offering it there would send an operator through the
+  # override only to be refused identically on their next upload.
+  if [ "$leaked_where" = history ]; then
+    where="in the HISTORY this push publishes -- its tip does not carry those paths any more, but a commit that carries them is among the commits being sent, and deleting a file is a further commit rather than a removal"
+    fix="Deleting the paths again changes nothing: rebuild the branch without the commits that carry them (an interactive rebase dropping them, a fresh branch cherry-picking only your own commits, or 'git filter-repo --path .orchid --invert-paths') before pushing."
+  else
+    where="on its tip"
+    fix="If it got there by merging the integration branch ('$integ') into this branch, strip .orchid/ from it before pushing."
+  fi
+  if [ "$leaked_review" -eq 1 ]; then
+    why="and it is a Gerrit review upload for branch '$leaked_target', so submitting it puts that state on '$leaked_target'"
+    tail_msg="A 'refs/for/...' ref is never advertised by the remote, so there is no copy of it to compare against and every upload carrying run state is refused."
+  else
+    why="and the remote does not already hold those commits"
+    tail_msg="If this repository tracks run state deliberately (orchid's own does), push it once with ORCHID_ALLOW_PUSH=1 and every later push of this ref is exempt automatically."
+  fi
+  echo "orchid: push blocked -- '$leaked_ref' carries orchid's own run state (.orchid/ -- roadmap, journal, BLOCKERS, plugins.lock, review envelopes) $where, $why. That state belongs to the run, not to your product: pushed here it becomes part of your project's history and, in a large diff, reads as tooling and is approved as tooling. $fix $tail_msg Set ORCHID_ALLOW_PUSH=1 to override." >&2
   exit 1
 fi
 exit 0

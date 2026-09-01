@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
+# fm_get: the page body below names the originating task's title and attempt
+# number, read from the task file's own frontmatter.
+source "$ORCHID_ROOT/lib/frontmatter.sh"
+# objection_seq / objection_authority_write: `--objection` mints the durable
+# record that lets an operator's answer to THIS page settle the objection it was
+# raised for. That file's header is where the format and the trust argument
+# live; it depends on nothing this tier-1 verb does not already source.
+source "$ORCHID_ROOT/lib/objection.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 
 # `orchid notify` is a plain mutating verb (INV-02): it writes durable
@@ -8,21 +16,148 @@ repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runti
 verb_lock_guard "$repo"
 epoch_require "$repo"
 
-task=""
-if [ "${1:-}" = "--task" ]; then
-  [ -n "${2:-}" ] || orchid_die "--task requires a value"
-  task="$2"; shift 2
-fi
-[ $# -gt 0 ] || orchid_die "usage: orchid notify [--task <id>] <text>"
+usage="usage: orchid notify [--task <id>] [--choice <value>]... [--objection] <text>"
+task=""; choices=""; objection_page=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --task)
+      [ -n "${2:-}" ] || orchid_die "--task requires a value"
+      task="$2"; shift 2 ;;
+    --objection)
+      # THE ONE ARGV FORM THAT MINTS AN OBJECTION AUTHORITY (T032, dogfood F33).
+      #
+      # A page raised with this flag gets a `runtime/answers/<qid>.objection`
+      # record beside its question, and that record is what lets `orchid task
+      # arbitrate` credit the operator's answer to this page when the actor
+      # running the verb is a woken orchestrator relaying their decision. See
+      # lib/objection.sh for the format and lib/review.sh's review_operator_relay
+      # for the reading.
+      #
+      # WHY A FLAG IS THE BOUNDARY. runners/orchid-orchestrator-command admits
+      # `notify [--task <id>] [--choice <value>]... <text>` and refuses anything
+      # else to this verb outright ("unexpected flag"), so the brokered surface a
+      # woken model reaches cannot raise a page that mints one -- while the
+      # deterministic driver, which is not on that surface at all, passes it at
+      # its single page site. The flag is not a claim the caller makes about
+      # itself; every FIELD of the record below is read out of durable task
+      # state, and a caller who reaches this flag can state nothing about the
+      # objection that the task file does not already say.
+      objection_page=1; shift ;;
+    --choice)
+      # Each --choice names ONE permitted answer (lesson L028 in the answer
+      # medium: a page must be able to LIST what `orchid answer` will
+      # accept, and `orchid answer` refuses anything outside a declared
+      # set). A value has to survive both as a single argv word of
+      # `orchid answer <qid> <choice>` and as one entry of the
+      # comma-joined `choices:` line recorded with the question, so
+      # whitespace and commas are refused outright, never escaped -- and so
+      # is everything else outside the word grammar below.
+      #
+      # REPRESENTABILITY, and it is why the guard below is a grammar rather
+      # than the comma/whitespace ban it started as: a declared answer that
+      # `orchid answer` cannot be GIVEN is worse than no declared set at all,
+      # because the set also refuses everything outside itself -- the question
+      # becomes unanswerable by any value. `-foo` is exactly that shape.
+      # libexec/orchid-answer parses its positional <choice> with a `-*)` arm
+      # that dies on usage, and offers no `--` terminator, so a leading dash
+      # can never reach the choice slot; minting one ships a page whose
+      # `choices:` line names something the reply command on the very next
+      # line cannot carry.
+      #
+      # The shape admitted here is therefore the identical one
+      # runners/orchid-orchestrator-command's `is_id` already enforces for
+      # this same flag (one [A-Za-z0-9_-] word, alphanumeric first, at most
+      # 64 characters). Same grammar at both doors on purpose: a woken
+      # orchestrator declaring a set through the broker and an operator
+      # declaring one straight at the verb must not disagree about what a
+      # choice is, or the brokered surface would be the only one that keeps
+      # the page honest. It is also the shape lib/drive.sh's boundary table
+      # already documents every kernel-declared answer as having, so nothing
+      # this repo declares is narrowed by it.
+      #
+      # Spelled as a `case` rather than as the broker's `grep -qE`, and the
+      # difference is not style: grep is LINE-oriented, so a value whose
+      # first line happens to be a word ("approve" followed by a newline and
+      # anything at all) matches `^...$` and would be admitted here, then
+      # forge extra lines in the `choices:` header and the CSV sidecar. The
+      # globs below see the whole argument, so a newline is just another
+      # character outside the class -- which is also how the whitespace ban
+      # this replaces caught it.
+      [ -n "${2:-}" ] || orchid_die "--choice requires a value"
+      choice_bad=""
+      case "$2" in
+        [!A-Za-z0-9]*|*[!A-Za-z0-9_-]*) choice_bad=1 ;;
+      esac
+      [ "${#2}" -le 64 ] || choice_bad=1
+      [ -z "$choice_bad" ] \
+        || orchid_die "--choice '$2' is not a valid choice value (one [A-Za-z0-9_-] word, alphanumeric first, at most 64 characters) — it has to survive as a single argument to \`orchid answer <qid> <choice>\`, which accepts no leading-dash value and has no \`--\` terminator"
+      choices="${choices:+$choices,}$2"; shift 2 ;;
+    -*) orchid_die "$usage" ;;
+    *) break ;;
+  esac
+done
+[ $# -gt 0 ] || orchid_die "$usage"
 text="$*"
+# Human-facing spelling of the set ("a | b | c") for BLOCKERS.md and the
+# channel page; the machine-facing CSV goes in the .question file.
+choices_display="${choices//,/ | }"
+
+# The objection instance this page is being raised for, READ HERE and refused
+# here -- ahead of the journal append and the BLOCKERS.md write below, so a
+# `--objection` that cannot be honoured raises no blocker at all rather than
+# leaving a page whose authority record silently never appeared. The values are
+# captured now and written after the question, so the record can only ever state
+# what the task said at the moment the operator was paged.
+objection_text=""; objection_instance=""; objection_cand=""; objection_ev=""
+if [ "$objection_page" -eq 1 ]; then
+  [ -n "$task" ] || orchid_die "--objection requires --task <id>: an objection authority is a record about one task's standing objection, and a page with no subject names none"
+  [ -f "$state/tasks/$task.md" ] || orchid_die "--objection names no such task: $task"
+  objection_text="$(fm_get "$state/tasks/$task.md" unresolved_objection)" || objection_text=""
+  [ -n "$objection_text" ] \
+    || orchid_die "$task carries no unresolved objection, so there is nothing for this page to authorise settling — raise the page without --objection"
+  objection_instance="$(objection_seq "$repo" "$task")"
+  # ...and THE ROUND THIS PAGE PRESENTS (T032, dogfood F33). The operator is
+  # being asked whether their objection was met by THIS round: this candidate,
+  # this attempt, the plan it was reviewed under and the reviews that came back.
+  # All of that can move without moving the objection or its instance, so the
+  # record states it and the relay recomputes and compares it. Read here, with
+  # the other two, so the record can only ever state what the task said at the
+  # moment the operator was paged.
+  objection_cand="$(objection_candidate "$repo" "$task")" \
+    || orchid_die "$task carries a standing objection but no candidate_sha, so this page would be about no diff at all and an answer to it could be spent against whatever arrives next — refusing rather than minting an authority bound to nothing. Settle the objection from the operator's own shell: orchid task arbitrate $task --result approve|request-changes --reason \"...\""
+  objection_ev="$(objection_evidence "$repo" "$task")" \
+    || orchid_die "$task: the review evidence this objection page would present could not be identified, so no answer to it could ever be bound to the round it was given about — refusing the page rather than raising one whose answer is relayable against a round that has since moved. Settle the objection from the operator's own shell: orchid task arbitrate $task --result approve|request-changes --reason \"...\""
+fi
 
 epoch="$(epoch_current "$repo")"
-suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
-qid="q-${epoch}-${suffix}"  # collision within one epoch is improbable (16 bits) and not currently guarded against
+
+# THE ID IS CLAIMED BEFORE ANYTHING IS FILED UNDER IT (T032, dogfood F33).
+#
+# This is the FIRST durable write this verb makes, and its position is the
+# whole point: everything below names the qid -- the journal line, the
+# BLOCKERS.md entry, the `.choices` sidecar, the `.question`, the `.objection`
+# authority record and the `runtime/outbox/<qid>` message -- and every one of
+# those writes is an `atomic_write`, which renames over whatever was there. The
+# suffix used to be sixteen bits of urandom taken and used, so a second page
+# that drew the same one silently replaced an earlier page's question and
+# authority record while leaving the operator's `.answer` beside them
+# untouched. lib/common.sh's block above `orchid_qid_reserve` has the full
+# argument for why that is this task's own defect and not a stray improbability.
+#
+# FAIL CLOSED, and note what the refusal costs. `orchid notify` is how a stop
+# reaches a human, so refusing to raise one is not free -- but a page filed
+# under an id already in use is worse than no page, because it destroys the
+# record of a stop that WAS raised and answered. Nothing swallows the refusal
+# either: this verb exits non-zero before writing anything, `orchid_blocker_once`
+# turns that into its own status 2 (write failed, never "already on record"),
+# and runners/orchid-drive runs under `set -e`, so the pass stops rather than
+# continuing as though a human had been paged.
+qid="$(orchid_qid_reserve "$repo" "$epoch")" \
+  || orchid_die "could not claim an unused question id in epoch $epoch after $ORCHID_QID_RESERVE_TRIES draws — refusing to raise this page rather than file it under an id whose question, answer, choices, objection authority or outbox message is already on record"
 
 # -- nonce (v1-m4 Task 7, review round: mint BEFORE any durable write) ------
-# Unrelated to the qid's own 16-bit collision-improbable suffix above: this
-# is what `orchid answer` now requires whenever `answer_allowlist` is
+# Unrelated to the qid's own 16-bit suffix above: this is what `orchid answer`
+# now requires whenever `answer_allowlist` is
 # configured (any caller, local or remote -- see libexec/orchid-answer),
 # and what a channel message echoes back so it can't be spoofed/replayed by
 # anyone who merely guesses or observes a qid.
@@ -84,17 +219,70 @@ header="## $qid"
   [ -f "$state/BLOCKERS.md" ] && cat "$state/BLOCKERS.md"
   echo; echo "$header"; echo "$text"
   echo "nonce: $nonce"
+  # The permitted answers ride next to the reply command for the same
+  # one-copy-paste reason the nonce does: `orchid answer` refuses a value
+  # outside a declared set, so the operator must be able to see the set
+  # right where the command is.
+  [ -z "$choices" ] || echo "choices: $choices_display"
   echo "reply: ORCHID_REPO=\"$repo\" orchid answer $qid <choice> --nonce $nonce"
 } | atomic_write "$state/BLOCKERS.md"
 
-# Runtime-only inbox marker (gitignored, like jobs/spool/etc.) — its mere
-# existence is what makes a qid "known" to `orchid answer`. First line
-# records the originating task (or "none"), so `orchid answer` can resolve
-# blocker_resolved back into the same task's journal view; second line is
-# the nonce above; this is an internal file format, not a public contract.
 mkdir -p "$rt/answers"
-{ printf 'task: %s\n' "${task:-none}"; printf 'nonce: %s\n' "$nonce"; printf '%s\n' "$text"; } \
+
+# The MACHINE-READABLE record of the declared set, in its own file, because
+# `orchid answer` gates free text on it and prose must not be able to switch
+# that gate on. The `choices:` line below sits at exactly the position the
+# free-text body would otherwise start at, and that body is arbitrary text an
+# orchestrator chose: a blocker reading "choices: rollback,retry" is
+# indistinguishable from a declared set by any line-matching rule, and reading
+# it as one would refuse the operator's legitimate free-text answer while
+# naming choices nobody ever declared. This file's mere EXISTENCE is the
+# declaration instead — a question minted without --choice has none, so
+# `orchid answer` accepts free text for it, and so does every question minted
+# before choice sets existed.
+#
+# WRITTEN FIRST, ahead of the .question file, and the order is the whole
+# point. These are two separate atomic writes, so there is a window between
+# them; the `.question` file's existence is what makes a qid ANSWERABLE and
+# the `.choices` file's existence is what GATES the answer. Question first
+# would put the gate's off-state inside that window: a notify interrupted
+# between the two writes (a killed verb, a full disk, a machine that went
+# down) leaves a question that is answerable and ungated, so the very value
+# the declaration existed to refuse is accepted silently — the fail-OPEN this
+# feature exists to close, in the one case it is least able to justify.
+# Sidecar first inverts it: the window can only ever hold a declared set whose
+# question was never minted, which `orchid answer` refuses at its first gate
+# ("unknown question") and nothing else reads. Fail closed, in the direction
+# the rest of this feature already fails.
+[ -z "$choices" ] || printf '%s\n' "$choices" | atomic_write "$rt/answers/$qid.choices"
+
+# Runtime-only inbox marker (gitignored, like jobs/spool/etc.) — its mere
+# existence is what makes a qid "known" to `orchid answer`, which is why it
+# is written LAST of the two. First line records the originating task (or
+# "none"), so `orchid answer` can resolve blocker_resolved back into the same
+# task's journal view; second line is the nonce above; a `choices:` line (CSV,
+# only when a set was declared) is the human-readable record of the permitted
+# answers, kept here so the question carries its own trace of what was
+# declared even if the sidecar is later lost; the free-text body follows. This
+# is an internal file format, not a public contract.
+{ printf 'task: %s\n' "${task:-none}"; printf 'nonce: %s\n' "$nonce"
+  [ -z "$choices" ] || printf 'choices: %s\n' "$choices"
+  printf '%s\n' "$text"; } \
   | atomic_write "$rt/answers/$qid.question"
+
+# ...and the AUTHORITY record, LAST of the three runtime writes, for the same
+# fail-closed reason the choices sidecar is written first. The question's
+# existence is what makes a qid answerable; this record's existence is what
+# makes an answer to it relayable by anyone but the operator. A notify
+# interrupted between the two leaves a page an operator can answer and nobody
+# can relay -- a stop they settle from their own shell, which is exactly where
+# the guarantee already stands. The other order would leave a record pointing at
+# a question that was never minted.
+if [ "$objection_page" -eq 1 ]; then
+  objection_authority_write "$repo" "$qid" "$task" "$objection_instance" "$objection_text" \
+    "$objection_cand" "$objection_ev" \
+    || orchid_die "$qid: the objection authority record could not be written — the page stands and the operator settles it from their own shell, which is the direction this fails in"
+fi
 
 # v1-m4 Task 7 (OUTBOX pattern, INV-01): `orchid notify` is tier-1 and must
 # NEVER spawn (INV-01) -- so when a channel is configured, this only WRITES
@@ -107,14 +295,70 @@ mkdir -p "$rt/answers"
 channel="$(config_get "$repo" notify.channel "")"
 if [ -n "$channel" ]; then
   mkdir -p "$rt/outbox"
+  # The page has a BODY, not just an id and a command. r-001 shipped
+  # twenty-seven boundaries whose page was one opaque line — answerable in
+  # principle, unanswerable in practice, because nothing on the phone said
+  # which task, which attempt, or what would be accepted. So: the line
+  # saying what is being decided first, then the task id AND title, the
+  # attempt number, the permitted answers, and the reply command last.
+  # Task context is best effort — nothing validates --task today
+  # (unchanged), so an unknown id just omits the lines it cannot fill.
+  #
   # The reply instruction embeds the repo binding so the command is complete
   # from ANY cwd — hero-demo F18: a channel-side agent reliably executes the
   # message's command verbatim, and a bare `orchid answer` run from the
   # agent's own cwd dies with "no such question". Never rely on the
-  # answering side knowing the repo out of band.
-  printf '%s: %s — reply: ORCHID_REPO="%s" orchid answer %s <choice> --nonce %s\n' \
-      "$qid" "$text" "$repo" "$qid" "$nonce" \
-    | atomic_write "$rt/outbox/$qid"
+  # answering side knowing the repo out of band. The qid and nonce ride
+  # verbatim — they are the security model; the body is what surrounds them.
+  task_title=""; task_attempt=""
+  if [ -n "$task" ] && [ -f "$state/tasks/$task.md" ]; then
+    task_title="$(fm_get "$state/tasks/$task.md" title)" || task_title=""
+    # THE ROUND BEING DECIDED IS `attempts` + 1, NEVER `attempts`. That
+    # frontmatter counter is the number of attempts already CHARGED, so a
+    # task raising its first boundary carries `attempts: 0` and this page
+    # said `attempt: 0` -- a round that does not exist. On the one line an
+    # operator uses to line the page on their phone up against the evidence
+    # in the repo, it was off by one against every artifact of the round it
+    # names: `jobs prepare` mints this round's job ids from `attempts + 1`,
+    # the reviewer envelopes are filed at `<task>-a<attempts+1>-<role>.json`,
+    # and the kernel's reviewing->arbitrating gate counts with the same
+    # formula. lib/review.sh's review_plan_attempt() is that formula written
+    # down, and it is deliberately NOT sourced here: it sits behind the whole
+    # manifest/roles/resolver/envelope/capsuite/ledger chain, and `orchid
+    # notify` is a tier-1 verb that sources two libraries.
+    #
+    # An ABSENT or garbled counter omits the line rather than rendering
+    # `attempt: 1` from nothing -- and this is where the page and
+    # review_plan_attempt() legitimately part company. That function must
+    # return a number because it NAMES A FILE, so it reads a garbled counter
+    # as 0 and answers 1. A page has a third option the filename does not:
+    # saying nothing. Inventing a round number for a task file that never
+    # stated one is precisely the unproven claim the rest of this page
+    # refuses to make.
+    task_attempt="$(fm_get "$state/tasks/$task.md" attempts)" || task_attempt=""
+    # `10#` because the guard above admits a leading zero: a counter written
+    # `08` is decimal eight everywhere else in the kernel, and bare arithmetic
+    # would read it as octal (and `09` as a fatal parse error inside the one
+    # verb whose job is to raise a blocker).
+    case "$task_attempt" in
+      ''|*[!0-9]*) task_attempt="" ;;
+      *) task_attempt=$(( 10#$task_attempt + 1 )) ;;
+    esac
+  fi
+  {
+    printf '%s: %s\n' "$qid" "$text"
+    if [ -n "$task" ]; then
+      if [ -n "$task_title" ]; then
+        printf 'task: %s — %s\n' "$task" "$task_title"
+      else
+        printf 'task: %s\n' "$task"
+      fi
+      [ -z "$task_attempt" ] || printf 'attempt: %s\n' "$task_attempt"
+    fi
+    [ -z "$choices" ] || printf 'choices: %s\n' "$choices_display"
+    printf 'reply: ORCHID_REPO="%s" orchid answer %s <choice> --nonce %s\n' \
+      "$repo" "$qid" "$nonce"
+  } | atomic_write "$rt/outbox/$qid"
 fi
 
 echo "$qid"

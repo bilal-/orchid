@@ -103,7 +103,7 @@ printf 'verify=true\n' > "$repoB/orchid.config"
 homeB="$WORK/homeB"; mkdir -p "$homeB/.orchid"
 out="$(HOME="$homeB" ORCHID_REPO="$repoB" "$bin2" doctor)"; rc=$?
 assert_eq 0 "$rc" "doctor passes when no plugins.lock exists at all"
-( echo "$out" | grep -q "plugin lock" ) && fail "doctor must not mention plugin lock when no lock file exists"
+grep -q "plugin lock" <<<"$out" && fail "doctor must not mention plugin lock when no lock file exists"
 
 # -- orchid-init writes an initial plugins.lock, committed on the
 # integration branch, recording the default builtin bindings (not just
@@ -146,18 +146,18 @@ EOF
 rc=0; out="$(runC plugins verify-lock 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "verify-lock must fail on a merge-conflict-markered lockfile, not report clean"
 assert_match "corrupt" "$out" "verify-lock names a merge-conflict-markered lock as corrupt"
-( echo "$out" | grep -qi "^clean" ) && fail "a corrupt lockfile must never be reported clean"
+grep -qi "^clean" <<<"$out" && fail "a corrupt lockfile must never be reported clean"
 
 # truncated JSON
 printf '[{"id":"orchid/claude","version":"0.1.0"' > "$lockfileC"
 rc=0; out="$(runC plugins verify-lock 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "verify-lock must fail on truncated-JSON lockfile, not report clean"
 assert_match "corrupt" "$out" "verify-lock names truncated JSON as corrupt"
-( echo "$out" | grep -qi "^clean" ) && fail "truncated JSON must never be reported clean"
+grep -qi "^clean" <<<"$out" && fail "truncated JSON must never be reported clean"
 
 # doctor treats a corrupt lock as a non-fatal WARNING naming it "corrupt", not "drift"
 printf 'verify=true\n' > "$repoCorrupt/orchid.config"
 docout="$(runC doctor 2>&1)"; rc=$?
 assert_eq 0 "$rc" "doctor stays exit 0 on a corrupt lock (v1-m1: non-fatal, like drift)"
 assert_match "WARN.*corrupt" "$docout" "doctor surfaces a corrupt lock as a distinct WARNing (not 'drift')"
-( echo "$docout" | grep -qi "WARN.*drift" ) && fail "doctor must not call a corrupt lock 'drift'"
+grep -qi "WARN.*drift" <<<"$docout" && fail "doctor must not call a corrupt lock 'drift'"

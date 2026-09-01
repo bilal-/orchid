@@ -42,6 +42,14 @@ assert_eq "reviewer requested changes" "$(printf '%s' "$shown" | jq -r '.reason'
 assert_eq "$ORCHID_EPOCH" "$(printf '%s' "$shown" | jq -r '.epoch')" "the record is stamped with the fencing epoch"
 assert_match "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" \
   "$(printf '%s' "$shown" | jq -r '.at')" "the record is timestamped"
+# The wake budget's counters, keyed by boundary identity rather than kept in
+# the one record slot -- see section 3's own RED case for what that buys.
+assert_eq 1 "$(printf '%s' "$shown" | jq -r '.passes')" \
+  "the record carries the pass counter the wake budget reads"
+assert_eq 1 "$(printf '%s' "$shown" | jq -r '.counters | length')" \
+  "and the per-boundary counter map it keeps that count in"
+assert_eq 1 "$(printf '%s' "$shown" | jq -r '[.counters[]] | add')" \
+  "whose one entry is this boundary's own count"
 
 # grep -c prints "0" AND exits 1 when nothing matches, so the count must be
 # captured with `|| true` rather than falling back to a second `echo`.
@@ -69,6 +77,86 @@ assert_eq 1 "$(journal_hits)" "an identical re-set does NOT journal a second tim
 "$ORCHID_BIN" run boundary set --kind review-conflict --task T001 \
   --reason "reviewer requested changes, and a high finding landed" >/dev/null
 assert_eq 2 "$(journal_hits)" "a changed reason is a new fact and IS journaled"
+
+# `passes` is the ONE field an unchanged re-set does move, and it lives here --
+# in the record's single writer -- rather than in runtime state of its own,
+# because its reset rule IS the content comparison this section is about. What
+# reads it is lib/drive.sh's wake budget, which needs to tell "an orchestrator
+# COULD settle this" (static: a kind, a task status, a command surface) from
+# "waking one has not settled it in N passes". This section pins the counter's
+# contract at the verb; the budget's own RED/GREEN pair lives in
+# tests/test_run.sh, driven end to end through the real pump.
+#
+# `// "absent"` rather than `// 0`: a record that lost the field entirely and
+# one that legitimately reads 0 are different failures, and jq's `//` treats
+# only null/false as absent, so a real 0 still prints 0.
+boundary_passes() {
+  printf '%s' "$("$ORCHID_BIN" run boundary show 2>/dev/null || true)" \
+    | jq -r '.passes // "absent"'
+}
+assert_eq 1 "$(boundary_passes)" \
+  "a boundary that differs by content restarts the counter at 1 -- the budget is per-boundary, never a latch"
+
+rc=0; out="$("$ORCHID_BIN" run boundary set --kind review-conflict --task T001 \
+  --reason "reviewer requested changes, and a high finding landed" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "re-setting that same boundary again exits 0"
+assert_eq 2 "$(boundary_passes)" "an identical re-set is what bumps the counter"
+assert_match "pass 2" "$out" "and the unchanged message names the pass it counted"
+assert_eq 2 "$(journal_hits)" "counting a pass is still not a new fact to journal"
+
+# `--no-count`. The caller is the one component positioned to know whether THIS
+# pass could have woken an orchestrator at all, so it says so here. What the
+# budget counts has to be WAKEUPS rather than wall passes, or a transient
+# engine outage -- or an operator debugging with `orchid drive` -- spends the
+# budget on a boundary no model was ever given a chance at.
+rc=0; out="$("$ORCHID_BIN" run boundary set --kind review-conflict --task T001 \
+  --reason "reviewer requested changes, and a high finding landed" --no-count 2>&1)" || rc=$?
+assert_eq 0 "$rc" "a --no-count re-set exits 0"
+assert_match "uncounted" "$out" "and reports itself uncounted rather than as a third pass"
+assert_eq 2 "$(boundary_passes)" \
+  "a pass on which nobody could be woken leaves the counter exactly where it stood"
+assert_eq 2 "$(journal_hits)" "and journals nothing either"
+
+# The same accounting applied to a boundary's FIRST pass: one first met during
+# an engine outage must not begin its life already a wakeup down.
+rc=0; "$ORCHID_BIN" run boundary set --kind operator-decision \
+  --reason "first met on a pass that could wake nobody" --no-count >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "a brand-new boundary may be recorded --no-count"
+assert_eq 0 "$(boundary_passes)" \
+  "a boundary first MET while no orchestrator was resolvable starts at 0, not at 1"
+
+# ...AND THE COUNT SURVIVES BEING DISPLACED. The record holds ONE boundary, but
+# a pass MEETS as many as it meets and the driver records the highest-ranked --
+# so the winner changes from pass to pass as tasks move. Counted in the record's
+# slot alone, a boundary that loses one pass to a higher-ranked stop and returns
+# on the next begins again at 1, which makes two boundaries taking turns both
+# immortal: neither ever reaches pump_wake_max, an orchestrator is woken for
+# each of them forever, and the blocker that reaches a human on the pass the
+# budget runs out never fires. That is the unbounded polling this counter exists
+# to end, reappearing whenever a run has more than one thing wrong with it.
+#
+# The operator-decision boundary above has just displaced this one. It comes
+# back having already spent two.
+"$ORCHID_BIN" run boundary set --kind review-conflict --task T001 \
+  --reason "reviewer requested changes, and a high finding landed" >/dev/null
+assert_eq 3 "$(boundary_passes)" \
+  "a boundary that comes back after another took the record resumes its own count, never restarting at 1"
+red_case "the wake budget survives a boundary being displaced for a pass"
+
+# GREEN, and the reason resuming is not the same as never resetting: a boundary
+# this run has genuinely never met still starts at 1.
+"$ORCHID_BIN" run boundary set --kind task-prerequisite --task T001 \
+  --reason "a stop this run has never met before" >/dev/null
+assert_eq 1 "$(boundary_passes)" \
+  "a boundary with no history of its own still starts its count at 1"
+green_case "an unseen boundary starts its own count at 1"
+
+# Back to the review-conflict record the sections below inherit -- 6 asserts
+# the kind it clears by name. Displaced a second time, resumed a second time.
+"$ORCHID_BIN" run boundary set --kind review-conflict --task T001 \
+  --reason "reviewer requested changes, and a high finding landed" >/dev/null
+assert_eq 4 "$(boundary_passes)" \
+  "and it keeps resuming: the count belongs to the boundary, not to the slot"
 
 # ===========================================================================
 # 4 -- refusals. An unknown kind, a missing reason, and an unknown task are
@@ -135,7 +223,7 @@ assert_eq "$before" "$(wc -l < .orchid/journal.md)" \
 # ===========================================================================
 # 7 -- every kernel-owned kind is accepted, and only those.
 # ===========================================================================
-for kind in planning blocked-task review-evidence review-conflict hook-failure worktree-conflict operator-decision; do
+for kind in planning blocked-task review-evidence review-conflict hook-failure worktree-conflict operator-handoff task-prerequisite operator-decision; do
   rc=0; "$ORCHID_BIN" run boundary set --kind "$kind" --reason "kind coverage" >/dev/null 2>&1 || rc=$?
   assert_eq 0 "$rc" "kernel-owned boundary kind '$kind' is accepted"
 done

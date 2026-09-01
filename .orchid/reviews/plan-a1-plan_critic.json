@@ -1,6 +1,6 @@
 {
   "contract": 1,
-  "job_id": "j-e0-plan-a1-1901",
+  "job_id": "j-e33-plan-a1-3c75",
   "task": "plan",
   "operation": "critique",
   "status": "ok",
@@ -12,35 +12,43 @@
   "findings": [
     {
       "severity": "high",
-      "title": "Every task verifies only `bash tests/run.sh`; no commands cover Bash 3.2 confirmation, focused tests, shipped-script syntax, ShellCheck, documentation, release negatives, or qualification rehearsal"
+      "title": "Mandatory formula re-pin, chmod, and lint operator hand-offs are optional or absent"
     },
     {
       "severity": "high",
-      "title": "T002 runs the deterministic driver “before” an LLM but does not require LLM invocation only after a named judgment boundary"
-    },
-    {
-      "severity": "medium",
-      "title": "T002 lacks structured decision inputs and explicit plan-drafting, blocker, and conflicting-review boundaries, leaving room for forbidden prose heuristics"
-    },
-    {
-      "severity": "medium",
-      "title": "T001 defines no actionable acknowledgement verb for existing repositories and does not explicitly test that read-only and planning commands remain ungated"
-    },
-    {
-      "severity": "medium",
-      "title": "T001 does not require explicit disclosure when vendor sandboxing or OS-level containment is unavailable"
-    },
-    {
-      "severity": "medium",
-      "title": "T003 omits explicit full preflight, repo-local configuration validation, and the guarantee never to overwrite user files"
+      "title": "T002 and T013 assign command execution to the non-executing implementer"
     },
     {
       "severity": "high",
-      "title": "T004 omits explicit failures for placeholder versions, dirty archives, moving release references, installer-behavior mismatches, and undocumented ShellCheck exceptions"
+      "title": "T007 can land before T010 makes its lint failures actionable"
+    },
+    {
+      "severity": "high",
+      "title": "T007 does not require a failing candidate gate to prevent ref advancement"
     },
     {
       "severity": "medium",
-      "title": "T005 does not explicitly require anonymized concise evidence, and its end-to-end rehearsal omits the beta-qualification step"
+      "title": "Every task redundantly runs tests/run.sh after ci-local already runs the full suite"
+    },
+    {
+      "severity": "medium",
+      "title": "T003 lacks focused coverage for the obsolete soft-surface prompt path"
+    },
+    {
+      "severity": "medium",
+      "title": "T005 lacks a deterministic focused test for prompt echo and plausible hallucination"
+    },
+    {
+      "severity": "medium",
+      "title": "T006 lacks explicit dirty-checkout and durable-state preservation cases"
+    },
+    {
+      "severity": "medium",
+      "title": "T009 does not explicitly test doctor's no-inbound-probe result"
+    },
+    {
+      "severity": "medium",
+      "title": "Cross-cutting documentation and final run-level acceptance have no owning task"
     }
   ]
 }

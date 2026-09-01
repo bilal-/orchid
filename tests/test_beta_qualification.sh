@@ -123,6 +123,24 @@ a_after="$(repo_fingerprint "$A_REPO")"
 assert_eq 0 "$a_rc" "a repository this build can drive qualifies and exits 0: $a_stdout"
 assert_eq "$a_before" "$a_after" "the harness must not write anything inside the target repository"
 
+# THE IN-BAND DISCLOSURE. The in-place verify= run is the one thing this harness
+# executes inside the target, and it asks for no acknowledgement before doing it
+# -- deliberately. docs/specs/operations.md records that decision and the two
+# alternatives rejected with it, and the notice printed AT THE MOMENT OF
+# EXECUTION is the mitigation that decision leans on: a header comment and a
+# --help page are read by whoever goes looking, and the operator who does not
+# look is the one who needed telling. Asserted against what the harness actually
+# PRINTS, never against the file's bytes -- a promise moved into a comment, or
+# into a branch no run reaches, would still satisfy a grep over the source.
+case "$a_stdout" in
+  *"IN PLACE inside --repo"*) ;;
+  *) fail "the harness ran the target's verify= command without saying in band that it was about to: $a_stdout" ;;
+esac
+case "$a_stdout" in
+  *"does not sandbox it"*) ;;
+  *) fail "the in-place notice must say plainly that this harness does not make that command safe: $a_stdout" ;;
+esac
+
 A_JSON="$A_OUT/qualification.json"
 A_TEXT="$A_OUT/qualification.txt"
 [ -f "$A_JSON" ] || fail "no JSON evidence emitted"
@@ -360,13 +378,81 @@ run_refusal "missing repo" "--repo is required" --output "$W/out-norepo"
 # --no-run-verify must degrade to an explicit not-tested, never to a silent
 # pass: the timing fact it skips is the most load-bearing one in the report.
 C_OUT="$W/out-noverify"
-"$BASH" "$QUALIFY" --repo "$A_REPO" --output "$C_OUT" --label skipped \
-  --bash "$BASH" --no-run-verify >/dev/null 2>&1 || true
+c_stdout="$("$BASH" "$QUALIFY" --repo "$A_REPO" --output "$C_OUT" --label skipped \
+  --bash "$BASH" --no-run-verify 2>&1)" || true
 C_JSON="$C_OUT/qualification.json"
 [ -f "$C_JSON" ] || fail "--no-run-verify still has to emit evidence"
 assert_eq not-tested "$(jq_probe "$C_JSON" verify-duration outcome)" \
   "a skipped verify run is recorded as not-tested, never as a pass"
 assert_match "not executed" "$(jq_probe "$C_JSON" verify-duration result)" \
   "the skipped verify run says plainly that nothing was executed"
+
+# ...and the notice fires ONLY where the exposure is. A warning printed on a run
+# that executed nothing in the target is a warning an operator learns to skip,
+# and the one it teaches them to skip is the one that matters.
+case "$c_stdout" in
+  *"IN PLACE inside --repo"*)
+    fail "--no-run-verify executed nothing inside the target, so the in-place notice must not be printed: $c_stdout" ;;
+esac
+# Both lines of it, not just the first. The notice is two printfs, and the
+# second is the one carrying the warning; a run that skipped the execution must
+# not warn about the privileges of a command it never ran.
+case "$c_stdout" in
+  *"does not sandbox it"*)
+    fail "--no-run-verify executed nothing inside the target, so the sandboxing warning must not be printed either: $c_stdout" ;;
+esac
+
+# ...and it goes to STDERR, which is not decoration. The last thing this harness
+# writes to stdout is the verdict line and the two `evidence:` paths, and that is
+# the stream a caller pipes or captures. A disclosure printed to stdout would be
+# spliced into it -- and BOTH assertions above would still pass, because each of
+# them captures `2>&1` and so cannot tell the two streams apart. Splitting them
+# here is what turns "the notice exists" into "the notice is on the stream the
+# operator reads and off the stream a program parses"; the design note at the
+# printf in scripts/beta-qualify.sh states that placement, and until now nothing
+# held it. Same fixture as run A, fresh --output because the harness refuses to
+# overwrite existing evidence.
+D_OUT="$W/out-streams"
+D_ERR="$W/streams-stderr.txt"
+d_stdout="$("$BASH" "$QUALIFY" --repo "$A_REPO" --output "$D_OUT" --label streams \
+  --bash "$BASH" --verify-timeout-s 60 2>"$D_ERR")" || true
+assert_present "IN PLACE inside --repo" "$D_ERR" \
+  "the in-place notice must be announced on stderr"
+
+# The notice is TWO lines, and the stream split has to hold for both. The first
+# says what is about to happen; the second is the one that says it is the
+# operator's own repository's code, running with the operator's privileges, and
+# that nothing here makes it safe. That second line is the whole reason the
+# decision in docs/specs/operations.md can rest on a notice instead of a gate,
+# so pinning only the first would leave the load-bearing half free to drift onto
+# stdout -- where it would be spliced into the verdict a caller parses, and
+# where the run-A assertions above could not see it, because they capture
+# `2>&1`.
+assert_present "does not sandbox it" "$D_ERR" \
+  "the notice's sandboxing warning must be on stderr too, not only its first line"
+
+# ...and it names NO PATH. `_scrub_guard` refuses to leave the target, output,
+# home or scratch paths in either evidence FILE, and the design note at the
+# printf states plainly that stderr is out of that guard's reach. On a run that
+# qualifies, `die` and `usage` never fire, so these two lines are the whole of
+# what this harness writes to stderr -- the guard's own rule is held here by
+# hand or it is not held on this stream at all. That matters most on exactly the
+# run the notice exists for: the operator being warned is pointing the harness
+# at a repository they cannot show anyone, and stderr is the stream they are
+# likeliest to tee into a log and paste. Non-vacuous by construction -- the
+# assertion just above proves $D_ERR is not empty.
+assert_absent "$A_REPO" "$D_ERR" \
+  "the in-place notice must not name the target repository path"
+assert_absent "$D_OUT" "$D_ERR" \
+  "the in-place notice must not name the evidence output path"
+
+case "$d_stdout" in
+  *"IN PLACE inside --repo"*)
+    fail "the in-place notice reached stdout, the stream that carries the verdict and the evidence paths a caller parses: $d_stdout" ;;
+esac
+case "$d_stdout" in
+  *"does not sandbox it"*)
+    fail "the notice's sandboxing warning reached stdout, the stream that carries the verdict and the evidence paths a caller parses: $d_stdout" ;;
+esac
 
 exit 0

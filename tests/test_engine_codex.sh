@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/envelope.sh"
+source "$REPO_ROOT/lib/common.sh"   # file_mtime (portable BSD/GNU stat mtime)
 ADAPTER="$REPO_ROOT/plugins/engines/codex/run"
 
 # v1-m3 final review (CRITICAL 1): the orchestrate branch's own instructions=
@@ -216,6 +217,24 @@ assert_eq "tick complete" "$(jq -r .summary "$d/out/envelope.json")" "orchestrat
 stdin_content="$(cat "$WORK/orchone.stdin")"
 assert_match "ORCHID-ACTION: <command>" "$stdin_content" "orchestrate one-action stub: the fixed instruction block arrives on stdin"
 
+# T009: the notify form these instructions hand the model DECLARES ITS ANSWER
+# SET. runners/orchid-drive already does this for every boundary kind that has
+# one (lib/drive.sh's drive_boundary_choices, pinned in tests/test_drive.sh),
+# but a boundary the driver routes to a woken model and the model then judges
+# to be a human's after all is paged from HERE, not from the driver. Left out
+# of this block, exactly the pages a model escalates keep the shape r-001
+# shipped twenty-seven of: `orchid answer <qid> <choice> --nonce <n>` with
+# nothing saying what `<choice>` may be. Asserted on the prompt the engine
+# actually received rather than on the adapter's source line, because a source
+# line is only an instruction once it reaches the engine.
+assert_match "notify --task <id> \\[--choice <value>\\]" "$stdin_content" \
+  "orchestrate one-action stub: the notify form the instructions hand the model carries the declared-choice flag"
+# THE OTHER EDGE, in the same block, because a set that is always demanded is
+# its own defect: a boundary whose honest answer is a sentence must not be
+# gated on a menu, so the instructions have to say when NOT to declare one.
+assert_match "omit --choice entirely when the honest answer is prose" "$stdin_content" \
+  "orchestrate one-action stub: ...and say plainly when to declare no set at all"
+
 # --- 7d. orchestrate stub prints NO ORCHID-ACTION lines, exits 0 ->
 # actions == [] and status is STILL ok (never a crash). Regression test for a
 # real bug: under `set -euo pipefail`, `grep '^ORCHID-ACTION: '` on zero
@@ -372,14 +391,23 @@ assert_eq "false" "$(jq -r 'has("summary")' "$d/out/envelope.json")" "noreason s
 # bash variable, with nothing written to its own stdout/stderr -- which is
 # what a launcher/tick redirect actually captures into the job log). The fix
 # tees the CLI's stdout to the adapter's own stderr as it arrives. Simulate
-# the launcher's redirect here (`>> log 2>&1`) around a stub codex that
-# sleeps between lines, and assert the log has grown partway through the
-# run -- not just after the adapter exits. ----------------------------------
+# the launcher's redirect here (`>> log 2>&1`) around a stub codex, and
+# assert the log has grown partway through the run -- not just after the
+# adapter exits. ------------------------------------------------------------
+#
+# T019 (lesson L020): one of eight sites that used to answer that question by
+# sleeping a fixed 0.2s and reading the log ONCE. That is a deadline, not a
+# liveness check, and a loaded machine misses it -- eight tasks in r-002 were
+# stranded and charged a rework attempt for a scheduling artifact. The
+# sampler now waits, bounded, for what it samples, and the stub is held open
+# until it has, so "still running" is a fact rather than a race. All the
+# edges of the shared helpers are pinned in tests/test_engine_agy.sh (12b, 12c
+# and 12d, which is why heartbeat lines do not count as growth here);
+# tests/helpers.sh carries the full narrative.
 d="$(build_request streaming implement '#!/usr/bin/env bash
 echo "line one"
-sleep 0.7
+'"$(stub_hold_until "$WORK/streaming.release")"'
 echo "line two"
-sleep 0.7
 echo "did the work" > streamed.txt
 git add streamed.txt
 git -c user.email=test@orchid.local -c user.name="Orchid Test" commit -q -m "stub commit"
@@ -387,11 +415,13 @@ echo "Implemented with streaming."')"
 joblog="$d/out/job.log"; : > "$joblog"
 (run_adapter "$d" >>"$joblog" 2>&1) &
 adapter_pid=$!
-sleep 0.2
+midrun_grew=no
+await_log_growth "$joblog" "$adapter_pid" && midrun_grew=yes
 midrun_size="$(wc -c <"$joblog" | tr -d ' ')"
+release_stub "$WORK/streaming.release"   # only now may the stub run to completion
 wait "$adapter_pid" || fail "streaming stub: adapter should exit 0"
 final_size="$(wc -c <"$joblog" | tr -d ' ')"
-[ "$midrun_size" -gt 0 ] || fail "streaming stub: job log must have grown WHILE the adapter was still running (was $midrun_size bytes at the midpoint) -- this is the stall-detector's liveness signal"
+assert_eq "yes" "$midrun_grew" "streaming stub: bounded growth wait must observe live stream bytes before adapter exit -- this is the stall-detector's liveness signal"
 [ "$final_size" -ge "$midrun_size" ] || fail "streaming stub: job log must not shrink after the adapter exits"
 assert_match "line one" "$(cat "$joblog")" "streaming stub: the CLI's early output reached the job log"
 envelope_validate "$d/out/envelope.json" || fail "streaming stub: envelope invalid"
@@ -426,22 +456,26 @@ assert_eq '["orchid task advance T001 implementing --reason tick"]' "$(jq -c .ac
 # never leak into actions[]/summary parsing (they're on stderr, structurally
 # separate from the stub's real stdout -- $stdout is filled purely from the
 # FIFO-relayed stdout content -- but pinned here rather than left implicit).
+#
+# T019 (lesson L020): the heartbeat half of the same family as case 16 above.
+# It used to sleep 1.3s and count `[hb ` lines at that instant, which makes a
+# deadline out of a liveness property; same fix, same shared helpers.
 d="$(build_request heartbeat orchestrate '#!/usr/bin/env bash
-sleep 2.2
+'"$(stub_hold_until "$WORK/heartbeat.release")"'
 echo "ORCHID-ACTION: orchid task advance T001 implementing --reason tick"
 echo "tick complete"')"
 joblog="$d/out/job.log"; : > "$joblog"
-initial_mtime="$(stat -f %m "$joblog" 2>/dev/null || stat -c %Y "$joblog" 2>/dev/null)"
+initial_mtime="$(file_mtime "$joblog")"
 ( ORCHID_HB_INTERVAL_S=1 run_adapter "$d" >>"$joblog" 2>&1 ) &
 adapter_pid=$!
-# Sampled at 1.3s: comfortably after the first heartbeat (fires once the
-# 1s ORCHID_HB_INTERVAL_S override elapses) and comfortably before the
-# stub's own 2.2s exit -- genuinely mid-run on both sides.
-sleep 1.3
+midrun_hb=no
+await_log_heartbeat "$joblog" "$adapter_pid" && midrun_hb=yes
 midrun_hb_count="$(grep -c '^\[hb ' "$joblog" 2>/dev/null || true)"; midrun_hb_count="${midrun_hb_count:-0}"
-midrun_mtime="$(stat -f %m "$joblog" 2>/dev/null || stat -c %Y "$joblog" 2>/dev/null)"
+midrun_mtime="$(file_mtime "$joblog")"
+release_stub "$WORK/heartbeat.release"   # only now may the stub run to completion
 wait "$adapter_pid" || fail "heartbeat stub: adapter should exit 0"
-[ "$midrun_hb_count" -ge 1 ] || fail "heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
+assert_eq "yes" "$midrun_hb" "heartbeat stub: a [hb line must appear WHILE the adapter is still running -- waited for, not sampled at one instant"
+[ "$midrun_hb_count" -ge 1 ] || fail "heartbeat stub: bounded heartbeat wait must leave at least one persisted [hb line before adapter exit -- this is the liveness signal the stall detector depends on"
 [ "$midrun_mtime" -ge "$initial_mtime" ] || fail "heartbeat stub: job log mtime must have advanced mid-run (initial=$initial_mtime midrun=$midrun_mtime)"
 envelope_validate "$d/out/envelope.json" || fail "heartbeat stub: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "heartbeat stub: status ok"
@@ -504,3 +538,43 @@ assert_match "Draft roadmap:" "$captured" "plan prompt: roadmap section present"
 assert_match "Build the widget." "$captured" "plan prompt: tasks.md body present"
 case "$captured" in *"Diff:"*) fail "plan prompt: must never contain the diff-based review prompt shape" ;; esac
 assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "plan prompt stub: approve-only reply still yields empty findings[]"
+
+# --- T025: a REWORK attempt's pack carries rework.md -- the verbatim output of
+# the run that failed last time, plus whether that failure has repeated
+# unchanged -- and this adapter is the LAST link in that chain. Capturing the
+# failure before the kernel invalidates it (lib/rework.sh) and budgeting it
+# into the pack (lib/pack.sh) both leave it sitting in a file the engine never
+# reads unless the implement prompt splices it in. Delete that one line and
+# every other assertion in this tree still passes while the loop goes on being
+# handed exactly the brief it was handed last time -- which IS dogfood finding
+# F27, not a proxy for it. Reuses test 11's stdin-capture stub, so this also
+# proves the brief travels on STDIN with the rest of the prompt (F2's argv
+# leading-dash hazard applies to every byte of it).
+d="$(build_request implrework implement "$codex_stdin_stub"$'\necho "engine edit" > rework_edit.txt\necho "Implemented the feature end to end."')"
+printf '%s\n' \
+  '# Previous attempt (rework round 2) - what it actually failed on' '' \
+  '- failure signature: 9f1c2ab34d55' \
+  '- **this signature has now repeated 2 times in a row, unchanged.**' '' \
+  '## The failing run, verbatim' '' \
+  'FAIL OrderTest::testRoundTrip assertSame array order differs' \
+  'exit: 1' > "$d/pack/rework.md"
+run_adapter "$d" || fail "rework-brief stub: adapter should exit 0"
+captured="$(cat "$d/out/stdin_capture.txt")"
+assert_match "FAIL OrderTest::testRoundTrip assertSame array order differs" "$captured" \
+  "implement prompt: rework.md's previous failing output reaches the engine VERBATIM"
+assert_match "repeated 2 times in a row" "$captured" \
+  "implement prompt: and the convergence fact with it -- the one thing a re-reading implementer cannot derive for itself"
+assert_match "Do the thing." "$captured" "implement prompt: the task spec is still there alongside the brief"
+assert_match "never touch any .orchid/ path" "$captured" \
+  "implement prompt: the rules still come last, so the brief reads as the most recent fact about the task rather than as the final instruction"
+
+# A FIRST attempt has no rework.md at all (pack.sh omits it rather than
+# shipping an empty one), so the prompt must be exactly what it always was --
+# no orphaned heading, nothing claiming a previous round that never happened.
+d="$(build_request implnorework implement "$codex_stdin_stub"$'\necho "engine edit" > norework_edit.txt\necho "Implemented the feature end to end."')"
+run_adapter "$d" || fail "no-rework stub: adapter should exit 0"
+captured="$(cat "$d/out/stdin_capture.txt")"
+assert_match "Do the thing." "$captured" "first-attempt prompt: the spec is still delivered"
+case "$captured" in
+  *"rework round"*) fail "first-attempt prompt: must not mention a rework round it never had" ;;
+esac

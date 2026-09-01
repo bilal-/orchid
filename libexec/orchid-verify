@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/drive.sh"
+source "$ORCHID_ROOT/lib/handoff.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 epoch_require "$repo"
 
@@ -8,6 +10,44 @@ id="${1:-}"
 [ -n "$id" ] || orchid_die "usage: orchid verify <task-id>"
 tf="$state/tasks/$id.md"
 [ -f "$tf" ] || orchid_die "no task $id"
+
+# T024 (dogfood F26): an OPERATOR PREREQUISITE this task declared and nobody
+# has acknowledged for this candidate. Refused here, before the command runs
+# and before one byte of evidence is written — a suite run against a store the
+# candidate's own migration has not been applied to produces a log that reads
+# like a defect in the candidate ("Call to a member function execute() on
+# bool", because prepare() found no such column), and that log is exactly the
+# artifact a reviewer, a rework round and an attempt would then be spent on.
+#
+# The exit code is 16, the judgment-boundary code, NOT verify's own FAIL code
+# 1: the whole point is that this is not a failing candidate, and no caller
+# reading an exit status should have to guess which one it is. The
+# deterministic driver checks the same predicate a step earlier and never
+# reaches here; this gate is what makes the convention hold for the
+# hand-executed walk (PROTOCOL.md's `testing` step) and for an operator typing
+# `orchid verify <id>` at a terminal, rather than being driver policy alone.
+#
+# The OPERATOR HAND-OFF (T010, lib/handoff.sh) is the other stop at this point
+# in the procedure and is deliberately NOT enforced here: it is a repository
+# POLICY about who performs mechanical work inside the candidate, held by the
+# driver and reported by `orchid status`, and an operator who types `orchid
+# verify` by hand has by that act taken the decision it exists to route. This
+# gate is different in kind — the suite would run against a store its own
+# migration never reached, so the run produces a log that is wrong about the
+# candidate no matter who asked for it.
+if handoff_prereq_unmet "$tf"; then
+  echo "orchid: $id declares an operator prerequisite not acknowledged for this candidate: $(fm_get "$tf" operator_prerequisite)" >&2
+  # A stale ack is the confusing case, so it is named: the frontmatter DOES
+  # carry a `prerequisite_ack`, and an operator reading "not acknowledged"
+  # beside it would reasonably conclude the gate is broken rather than that
+  # the candidate moved underneath the acknowledgement (canonically merge's
+  # rebase-reset). Say which candidate it was for, and which one is current.
+  if handoff_prereq_stale "$tf"; then
+    echo "orchid: the acknowledgement on file is for candidate $(fm_get "$tf" prerequisite_ack), superseded by $(fm_get "$tf" candidate_sha) — the step must be re-taken and re-acknowledged for the current candidate" >&2
+  fi
+  echo "orchid: do that, then record it: orchid task prereq-ack $id --reason \"...\"" >&2
+  exit 16
+fi
 
 # Command source: task frontmatter first, config fallback second; neither
 # present is a hard error (there is nothing deterministic to run).
@@ -19,7 +59,29 @@ cmd="$(fm_get "$tf" verification_commands)"
 wt="$(fm_get "$tf" worktree)"
 cwd="$repo"; [ -z "$wt" ] || cwd="$wt"
 
-sha="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || echo none)"
+# ORCHID_REPO_ROOT — this repository's own canonical path, handed to the
+# verification command exactly as `worktree_prepare` hands it to a prepare
+# command (lib/common.sh states the variable's full contract, including why
+# it is not spelled ORCHID_REPO).
+#
+# The prepare step alone is not enough, and the motivating case is the one
+# that named this feature: a suite that needs gitignored build state the
+# checkout cannot hold reaches back for it through this variable. Some of
+# that reaching is not one-time setup — a symlink whose target the suite
+# re-points, a cache directory a test writes into, a fixture path computed
+# per run — so the verification command needs the same portable handle. The
+# alternative is an absolute path hardcoded into committed config, which is
+# the thing this variable exists to make unnecessary. `cwd` above is why:
+# it is a sibling worktree of this repository, never this repository, so
+# nothing relative in the suite reaches back on its own.
+#
+# ORCHID_WORKTREE and ORCHID_TASK are deliberately NOT set here. Both
+# describe the checkout being PREPARED, and a verification command is not
+# handed a checkout to operate on: it is already standing in one (`cwd`),
+# and it is evidence about a candidate rather than setup for an environment.
+root="$(orchid_physical_dir "$repo")" || root=""
+[ -n "$root" ] || root="$repo"
+
 # v0b2: sha-binding. Recorded straight from frontmatter at run time so the
 # evidence log carries its own claim about which candidate it verified —
 # `task advance testing->reviewing`'s INV-11 gate cross-checks this against
@@ -27,8 +89,100 @@ sha="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || echo none)"
 # when nothing rm'd the log (see orchid-task).
 cand="$(fm_get "$tf" candidate_sha)"; [ -n "$cand" ] || cand=none
 
+# Capture classifier evidence before the candidate-controlled command runs.
+# The verifier writes it into the final log only after that command exits, so
+# removing ignored dependencies, stripping an exec bit, dirtying release
+# inputs until the pin check turns stale, moving integration HEAD onto a
+# candidate-authored flaky register, or rewriting the task's base_sha to make
+# that register appear unchanged during verification cannot manufacture a
+# waiver from post-run state.
+prestate_headers="$(drive_verify_prestate_headers "$repo" "$tf")"
+
 mkdir -p "$state/reviews"
 log="$state/reviews/$id-verify.log"
+
+# ---------------------------------------------------------------------------
+# T031 (INV-11, defeated from the inside on r-002): the tree that RUNS must be
+# the tree the evidence NAMES.
+#
+# `runners/orchid-drive` captures candidate_sha by reading the task worktree's
+# HEAD at the moment it reconciles the implementer envelope; this verb then
+# runs the suite in that same LIVE worktree, at whatever HEAD it holds when
+# the command actually starts. Those are not the same instant. On T013 they
+# diverged by 19 minutes: drive recorded 4bb8d03, the implementer job was
+# still alive and committed 680cfc0, and the verification exercised 680cfc0
+# while writing `sha: 4bb8d03` into its own header. INV-11's testing ->
+# reviewing gate compares the evidence's `candidate:` line to the task's
+# CURRENT candidate_sha — both 4bb8d03 — so a PASS would have been admitted
+# on the strength of executing a DIFFERENT commit. It failed only by luck.
+#
+# So verification refuses a tree that is not the recorded candidate, naming
+# both SHAs, and re-reads HEAD afterwards so a tree that moved DURING the run
+# (the same live-worktree race, just later) can never be reported as a clean
+# pass either. Exit 20 — kernel exit-code registry: 14 no eligible engine, 15
+# hook handler failure, 16 judgment boundary, 17 brokered command refused, 18
+# slot already holds an unlaunched manifest, 20 verification refused (the tree
+# is not the candidate). Distinct from FAIL
+# (exit 1) on purpose: a drifted worktree is a boundary for a human, not a
+# rework round for the implementer.
+#
+# `candidate: none` is NOT drift. Nothing has claimed a candidate yet, the
+# evidence says so, and INV-11's gate already refuses a vacuous none-to-none
+# match outright — refusing here too would only break `orchid verify` as an
+# ordinary pre-dispatch smoke check.
+#
+# WHERE THE BINDING IS TAKEN IS PART OF THE FIX, not an implementation detail
+# (attempt-6 rework). `sha` is this verb's whole claim about what ran: the
+# header line an INV-11 reader compares, and the left-hand end of the
+# `head_after:` comparison that decides whether the run describes one tree at
+# all. A HEAD read near the top of the file and quoted at the bottom is not
+# that claim — it is a claim about the tree as it stood before the frontmatter
+# was parsed, before `drive_verify_prestate_headers` walked the repository,
+# and before a temp file was minted, all of which take real time in a worktree
+# an implementer may still own. The gate would then be asking its question of
+# a tree nobody is about to run, and the header would name it.
+#
+# So the binding is REBOUND IMMEDIATELY BEFORE THE EXEC and nothing is allowed
+# in between but the comparison itself: read HEAD, compare it to the recorded
+# candidate, run. `tests/inv/test_INV-11_verify_evidence.sh` pins that adjacency
+# on this file's source, because it is an ordering property no fixture can
+# stage. What remains between the read and the `bash -c` is one string compare
+# with no I/O in it, and `head_after:` closes even that: a tree that moved at
+# any point from the bind to the last line of the suite is refused, so the pair
+# of reads brackets the entire execution rather than sampling near it.
+#
+# WHAT THE BRACKET STILL CANNOT SEE, stated so nobody has to rediscover it: a
+# HEAD that moves away and comes BACK inside the bracket reads identically at
+# both ends. Only running against a tree that cannot move at all — a detached
+# checkout of the candidate, rather than the live worktree — would close that,
+# and it is a different and much larger change than this one, with its own cost
+# (a suite that needs the worktree's ignored build state would no longer find
+# it). It is also not the observed defect: T013's implementer committed
+# forward and stayed there, which is what an engine finishing a round does. The
+# bracket covers that shape exactly.
+# ---------------------------------------------------------------------------
+verify_refuse() {
+  local why="$1"
+  {
+    echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "sha: $sha"
+    # Same field, same meaning, same place as on a run that really executed:
+    # the tree this verb was looking at when it stopped. Nothing ran, so
+    # nothing could have moved HEAD, and saying that explicitly is what keeps
+    # `head_after:` a field a reader can compare against `sha:` unconditionally
+    # rather than one it has to branch on the presence of.
+    echo "head_after: $sha"
+    echo "candidate: $cand"
+    echo "cwd: $cwd"
+    echo "command: $cmd"
+    echo "---"
+    echo "refused: $why"
+  } | atomic_write "$log"
+  echo "orchid: verify refused for $id: $why" >&2
+  echo "REFUSED"
+  exit 20
+}
+
 out_tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-verify.XXXXXX")"
 trap 'rm -f "$out_tmp"' EXIT
 
@@ -36,19 +190,62 @@ trap 'rm -f "$out_tmp"' EXIT
 # combining stdout+stderr. This is the test command itself, executed via
 # bash -c in the foreground — not an engine spawn (INV-01 only forbids
 # backgrounding/detaching and invoking engine CLIs from tier-1 verbs).
+#
+# `</dev/null` is not cosmetic (same reasoning as lib/common.sh's
+# _worktree_prepare_run, which documents the case at length). This verb runs
+# from inside runners/orchid-drive's task walk, whose own stdin is the
+# worklist it is iterating — `< <("$ORCHID_BIN" task list | sort)`. Only
+# stdout is redirected below, so without this the suite inherits that pipe,
+# and a verification command that reads stdin eats the tasks the driver has
+# not reached yet: the walk ends early, work is skipped, and no error is
+# reported anywhere. A test suite has no operator to prompt either, so
+# closing stdin costs a correct command nothing.
 rc=0
-( cd "$cwd" && bash -c "$cmd" ) >"$out_tmp" 2>&1 || rc=$?
+
+# THE BINDING (T031). Read here, and nowhere earlier, for the reason the header
+# block above gives at length: `sha` is what the evidence will CLAIM ran, so it
+# is taken at the last instant before anything runs. Everything between this
+# read and the `bash -c` below is the comparison that read exists for — one
+# string test, no I/O — and `head_after:` brackets the far end. Nothing else may
+# be inserted here; tests/inv/test_INV-11_verify_evidence.sh fails if anything
+# is.
+sha="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || echo none)"
+if [ "$cand" != none ] && [ "$sha" != "$cand" ]; then
+  verify_refuse "$cwd is at HEAD $sha, but the task's recorded candidate_sha is $cand — the tree is not the candidate, so nothing was run"
+fi
+( cd "$cwd" && ORCHID_REPO_ROOT="$root" bash -c "$cmd" ) >"$out_tmp" 2>&1 </dev/null || rc=$?
+
+# The tree that ACTUALLY ran, read back after the suite finished. A worktree
+# still owned by a live implementer can move under a running suite, in which
+# case no single SHA describes what was exercised and the evidence must say
+# exactly that rather than pick one.
+sha_after="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || echo none)"
+drifted=0
+[ "$sha" = "$sha_after" ] || drifted=1
 
 {
   echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "sha: $sha"
+  echo "head_after: $sha_after"
   echo "candidate: $cand"
   echo "cwd: $cwd"
   echo "command: $cmd"
+  printf '%s\n' "$prestate_headers"
   echo "---"
   cat "$out_tmp"
   echo "exit: $rc"
+  # Last line, deliberately: INV-11's gate admits evidence only when
+  # `tail -n1` is exactly `exit: 0`, so a run whose tree moved underneath it
+  # is inadmissible by construction, whatever the suite's own exit code said.
+  [ "$drifted" -eq 0 ] || \
+    echo "refused: $cwd moved from $sha to $sha_after WHILE the suite ran — this evidence describes no single tree"
 } | atomic_write "$log"
+
+if [ "$drifted" -eq 1 ]; then
+  echo "orchid: verify refused for $id: $cwd moved from $sha to $sha_after while the suite ran" >&2
+  echo "REFUSED"
+  exit 20
+fi
 
 if [ "$rc" -eq 0 ]; then
   echo "PASS"

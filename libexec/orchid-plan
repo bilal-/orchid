@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+# lessons.sh before plancheck.sh: the cross-check's "this run started here"
+# boundary IS `lessons consolidate`'s, and there must be exactly one of them.
+source "$ORCHID_ROOT/lib/lessons.sh"; source "$ORCHID_ROOT/lib/plancheck.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 epoch_require "$repo"
 export ORCHID_EPOCH
@@ -48,6 +51,74 @@ case "$sub" in
     integ="$(config_get "$repo" integration_branch orchid/integration)"
     git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
       || orchid_die "integration branch '$integ' does not exist"
+
+    # T021: the carry-forward cross-check, run HERE -- after the cheap
+    # structural refusals, before anything is committed -- because this is
+    # the last moment at which a plan can still be changed for free. r-002's
+    # requirements omitted a defect r-001 had already found and journaled,
+    # and it blocked a task hours into the run; the information existed and
+    # nothing forced its use (lesson L016, applied to knowledge). So the
+    # refusal is the point: an operator may cover a carried item with a task
+    # or `orchid plan defer` it with a reason, but may not leave it
+    # UNCONSIDERED. Read-only -- it never mutates .orchid/ and never
+    # touches the integration branch -- so exiting here under the EXIT trap
+    # armed above releases the verb lock and leaves nothing behind.
+    crosscheck_rc=0
+    plancheck_report "$state" || crosscheck_rc=$?
+    if [ "$crosscheck_rc" -ne 0 ]; then
+      # The refusal is on the VERB, in every run_status -- not scoped to
+      # `planning`. It was scoped once, and that scoping was the last bypass
+      # left in this gate: `plan apply` is a legal verb after planning too
+      # (it commits whatever durable `.orchid/` state is current, journaling
+      # `plan_revision`), so a revision that DELETES the one task covering a
+      # carried item -- or that lands the moment the run leaves planning by
+      # any route -- committed the item out of consideration with a printed
+      # warning and exit 0. A gate that reports rather than refuses on the
+      # very edit that uncovers an item is enforcing nothing about that
+      # edit; it is enforcing something about when the operator happens to
+      # make it.
+      #
+      # It is not the dead end the brief rules out, because the remedy moved
+      # with it: `orchid plan defer` is legal in the same set of statuses
+      # this verb is (see the defer arm -- the run_status precondition it
+      # used to carry was removed in the same change, for exactly this
+      # reason). At every refusal here, both ways out are open -- cover the
+      # item with a task in the plan being applied, or record the decision
+      # not to -- so the operator is never between two closed doors. Pairing
+      # the two is the whole point: a refusal is only a gate if the state it
+      # fires in still admits its own remedy.
+      #
+      # `orchid run accept` also commits durable `.orchid/` state and is
+      # deliberately NOT gated: it refuses unless run_status is `accepting`,
+      # so it can neither apply a plan nor take a run out of `planning`, and
+      # a carried item still standing at acceptance is carried into the NEXT
+      # run's cross-check by `run new` rather than lost. Gating the run's own
+      # closing commit would stop a finished run from being recorded, which
+      # buys nothing here.
+      #
+      # Exit 4 is the cross-check saying it could not READ the previous run's
+      # record at all (a missing archive, a missing archived journal, a
+      # roadmap that cannot say which run this is). It gets its own sentence
+      # because neither remedy below applies to it: there is no item to cover
+      # and none to defer, and telling an operator to do either -- under a
+      # report that listed nothing -- is the same misdirection as passing the
+      # plan would have been.
+      #
+      # Exit 5 is the same shape one level further down: the cross-check
+      # could not build its own workspace (no scratch directory under
+      # TMPDIR), so it listed nothing for a reason that has nothing to do
+      # with this plan or with the previous run. Its own sentence for its own
+      # repair -- naming the previous run's record here would send an
+      # operator to restore an archive that is sitting there intact.
+      if [ "$crosscheck_rc" -eq 5 ]; then
+        echo "orchid: plan apply refused — the carry-forward cross-check could not run (above); give it a writable TMPDIR, then re-run (orchid plan crosscheck re-reports without committing)" >&2
+      elif [ "$crosscheck_rc" -eq 4 ]; then
+        echo "orchid: plan apply refused — the carry-forward cross-check could not be answered (above); repair the previous run's record, then re-run (orchid plan crosscheck re-reports without committing)" >&2
+      else
+        echo "orchid: plan apply refused — cover the item(s) above with a task in this plan, or record the decision (orchid plan defer <id> --reason \"...\"), then re-run (orchid plan crosscheck re-reports without committing)" >&2
+      fi
+      exit "$crosscheck_rc"
+    fi
 
     # v1-m4 Task 1: the temp-worktree + CAS + sync-back mechanics below (once
     # this arm's own inline code) now live in lib/common.sh's
@@ -97,5 +168,110 @@ case "$sub" in
 
     echo "applied: $integ -> $ORCHID_COMMIT_DURABLE_SHA"
     ;;
-  *) orchid_die "usage: orchid plan apply --reason \"...\"" ;;
+  crosscheck)
+    # T021: the same report `plan apply` refuses on, run on its own so the
+    # critique loop of PROTOCOL.md PLANNING step 2 can consult it while the
+    # draft is still cheap to change. Read-only: no lock (it mutates
+    # nothing, and holding one would refuse a concurrent read for no
+    # reason), no journal entry, no commit. Exit 3 -- not 1 -- when items
+    # are left unconsidered, so a wrapper can tell "the plan is not ready"
+    # apart from "the command failed".
+    crosscheck_rc=0
+    plancheck_report "$state" || crosscheck_rc=$?
+    exit "$crosscheck_rc"
+    ;;
+  defer)
+    # T021: record the operator's explicit decision NOT to cover a
+    # carried-forward item in this plan. This is the release valve that
+    # keeps the cross-check from being a hard refusal on work someone has
+    # genuinely chosen to postpone -- and it is a decision with a name and a
+    # reason attached, journaled before it counts for anything, rather than
+    # a --force flag that erases the whole question in one word.
+    verb_lock_guard "$repo"
+    id="${1:-}"; shift || true
+    reason=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason)
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      *) shift ;;
+    esac; done
+    # A flag in the item-id position means the id was omitted, not that a
+    # flag is a valid id: without this the next refusal would be the
+    # confusing "requires --reason" for a command that supplied one.
+    case "${id:-}" in -*) id="" ;; esac
+    [ -n "$id" ] || orchid_die "usage: orchid plan defer <item-id> --reason \"...\""
+    # An item id is one token of a one-line report (`L<nnn>` or `<run>#<n>`),
+    # so whitespace in it is a caller that scraped too much -- and it must be
+    # refused HERE, not left to the membership check below. `grep -qxF`
+    # matches a multi-line pattern LINE BY LINE, so a doubled id passes as
+    # "known"; the deferral then journals as two lines ("deferred <line1>",
+    # then "<line2>: <reason>"), and plancheck_deferral -- which matches the
+    # single line "deferred <id>: " -- finds nothing. The operator is told the
+    # decision was recorded while the item stays unconsidered, which is the
+    # precise silent pass this whole cross-check exists to close.
+    case "$id" in
+      *[[:space:]]*) orchid_die "item id must not contain whitespace: '$(printf '%s' "$id" | tr -s '[:space:]' ' ')'" ;;
+    esac
+    [ -n "$reason" ] || orchid_die "plan defer requires --reason (INV-08)"
+    # journal.md is line-oriented and this entry is matched back by its
+    # first line; a reason carrying its own newline could forge a second
+    # deferral line, so it is refused here rather than silently truncated
+    # (same guard, same wording, as `orchid lessons add`'s _no_newline).
+    case "$reason" in
+      *$'\n'*) orchid_die "--reason must not contain embedded newlines (the deferral is one journal line -- flatten it first)" ;;
+    esac
+
+    roadmap="$state/roadmap.md"
+    [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
+    # NO run_status precondition, deliberately. This verb once required
+    # `planning`, on the reasoning that a deferral is a decision about a plan
+    # and that after `plan apply` the way to pick an item up is a task. That
+    # reasoning is still the ADVICE -- a task is the better answer once the
+    # run is moving -- but as a REFUSAL it was what forced `plan apply` to
+    # stop gating after planning: the one remedy for a mid-run revision that
+    # uncovers an item was closed, so refusing that revision would have
+    # stranded the operator, and the gate was scoped away instead. Only one
+    # of the two could keep its restriction, and the gate is worth more than
+    # the advice. `plan apply` is legal in every status; a carried item can
+    # therefore be uncovered in every status; so the decision that answers
+    # for one has to be recordable in every status too. Everything that made
+    # a deferral trustworthy is untouched: it names one id, that id must be
+    # genuinely carried forward, it carries a reason, it is journaled under a
+    # kind the brokered surface refuses, and it comes back next run.
+
+    # An id that is not on the carried-forward list is refused, never
+    # recorded: a typo'd deferral would otherwise read as a decision while
+    # leaving the real item unconsidered -- the silent pass this whole check
+    # exists to close. The known ids are printed so the next attempt is a
+    # copy-paste.
+    #
+    # An UNANSWERABLE carry-forward question (exit 4 -- no archive for the
+    # run this one carries from, no journal inside it, no readable run_id) is
+    # refused here on its own terms rather than read as an empty list. The
+    # empty list's message is "nothing is carried forward into this plan, so
+    # there is nothing to defer", which in that state is a statement the
+    # command cannot support: it did not find an empty ledger, it failed to
+    # find the ledger. plancheck_item_ids has already printed WHICH record it
+    # could not read.
+    known=""; ids_rc=0
+    known="$(plancheck_item_ids "$state")" || ids_rc=$?
+    if [ "$ids_rc" -ne 0 ]; then
+      orchid_die "the carried-forward list could not be built (see above), so '$id' cannot be checked against it — a deferral names one item of that list; repair the previous run's record, then re-run (orchid plan crosscheck)"
+    fi
+    if ! grep -qxF "$id" <<<"$known"; then
+      if [ -z "$known" ]; then
+        orchid_die "nothing is carried forward into this plan, so there is nothing to defer (orchid plan crosscheck)"
+      fi
+      orchid_die "'$id' is not a carried-forward item of this plan — known ids: $(printf '%s' "$known" | tr '\n' ' ')"
+    fi
+    if plancheck_deferral "$state/journal.md" "$id" >/dev/null; then
+      orchid_die "$id is already deferred — the decision is journaled (orchid journal tail); revisit it by covering the item with a task instead"
+    fi
+
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind plan_deferral \
+      "deferred $id: $reason"
+    echo "$id: deferred (this plan does not cover it)"
+    ;;
+  *) orchid_die "usage: orchid plan apply --reason \"...\" | orchid plan crosscheck | orchid plan defer <item-id> --reason \"...\"" ;;
 esac

@@ -1609,10 +1609,17 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_RECORDED_POLICY_VERSION="$rec_policy"
   ORCHID_UNATTENDED_RECORD_LOADED=1
 
+  # A HERESTRING, never `printf ... | grep -q` (T016's sweep of the class T010
+  # named): `grep -q` exits at its FIRST match -- here the reason's first
+  # non-blank character, so almost immediately -- which SIGPIPEs `printf`
+  # mid-write, and under `set -o pipefail` that kill-by-signal status becomes
+  # the pipeline's. A reason long enough that `printf` is still writing then
+  # reads as blank, and the operator's own recorded acknowledgement loses its
+  # provenance for the length of what they typed.
   if [ -n "$ORCHID_UNATTENDED_ACKNOWLEDGED_AT" ] \
      && [ -n "$ORCHID_UNATTENDED_RECORDED_REPO" ] \
      && [ -n "$ORCHID_UNATTENDED_RECORDED_COMMON_DIR" ] \
-     && printf '%s' "$ORCHID_UNATTENDED_REASON" | LC_ALL=C grep -q '[^[:space:]]'; then
+     && LC_ALL=C grep -q '[^[:space:]]' <<<"$ORCHID_UNATTENDED_REASON"; then
     provenance_valid=1
   fi
 
@@ -1728,9 +1735,27 @@ unattended_trust_summary_loaded() {
   fi
 }
 
+# unattended_trust_show <repo> -- inspect, then render.
+#
+# Split in two for the same reason unattended_trust_summary_loaded is separate
+# from the inspection that fills it: a caller which is ITSELF a trust boundary
+# has to be able to put something between the two halves. `orchid trust show`
+# is that caller. When the repository it was asked about is the self-hosted
+# Orchid checkout, ORCHID_REPO and ORCHID_ROOT are one directory, so the
+# stale-root gate's index comparison IS a query against the target -- and the
+# unattended-trust contract forbids that before an acknowledgement for the
+# target has been looked for. So that arm calls the inspection first, fires
+# the gate, and only then renders. Neither half moves for any other caller.
 unattended_trust_show() {
-  local trust_label root_display
   unattended_trust_inspect "$1"
+  unattended_trust_show_loaded
+}
+
+# unattended_trust_show_loaded -- render the report from the ORCHID_UNATTENDED_*
+# globals an earlier unattended_trust_inspect already resolved. Prints
+# everything; decides nothing.
+unattended_trust_show_loaded() {
+  local trust_label root_display
   root_display="${ORCHID_UNATTENDED_ROOT_COMMIT:-${ORCHID_UNATTENDED_ROOT_STATUS:-unavailable}}"
   trust_label="$ORCHID_UNATTENDED_STATE"
   [ "$trust_label" = trusted ] || trust_label=untrusted
@@ -1816,7 +1841,11 @@ _unattended_trust_acknowledgement_verify() {
 
 unattended_trust_acknowledge() {
   local repo="$1" reason="$2" acknowledged_at dir trust_dir_after
-  printf '%s' "$reason" | LC_ALL=C grep -q '[^[:space:]]' \
+  # A herestring, for the reason the provenance check above carries in full:
+  # a `--reason` long enough to still be writing when `grep -q` exits on its
+  # first non-blank character is refused as empty, and the operator is told
+  # their non-empty reason is missing.
+  LC_ALL=C grep -q '[^[:space:]]' <<<"$reason" \
     || orchid_die "unattended trust requires a non-empty --reason"
   _unattended_jq_available \
     || orchid_die "unattended trust requires jq to author the machine-local acknowledgement record; install jq (Orchid's kernel is bash + git + jq) and retry"
@@ -1897,11 +1926,44 @@ unattended_trust_acknowledge() {
 # Git command, walks no history, reads no object, and creates no scratch file,
 # so an unrelated record cannot be selected and repository state cannot make
 # removal expensive. Trust-granting decisions keep their full verification.
+#
+# SPLIT IN TWO for the reason unattended_trust_show is split from
+# unattended_trust_show_loaded: a caller which is ITSELF a trust boundary has
+# to be able to put something between the machine-local decision and the thing
+# that decision authorizes. `orchid trust revoke` is that caller, and what it
+# puts between them is the stale-root gate -- whose index comparison, when the
+# target is the self-hosted Orchid checkout this verb was invoked out of, is a
+# query against the target repository. The composed function below is
+# unchanged for every other caller.
 unattended_trust_revoke() {
-  local repo="$1" removed=0
-  _unattended_trust_reset
-  _unattended_trust_identity_discover "$repo" \
+  unattended_trust_revoke_resolve "$1" \
     || orchid_die "cannot revoke unattended trust: $ORCHID_UNATTENDED_DETAIL"
+  unattended_trust_revoke_loaded
+}
+
+# unattended_trust_revoke_resolve <repo> -- decide WHICH record is this
+# repository's, and nothing else. Returns non-zero with
+# ORCHID_UNATTENDED_DETAIL set when no identity can be derived safely; the
+# caller owns whether that becomes a diagnosis or is held behind a gate.
+#
+# This is the whole of revocation's machine-local decision, and it really is a
+# decision rather than a formality: it resolves the trust store, the
+# common-directory device/inode key, and therefore the exact record path the
+# removal below will unlink. It spends no Git, reads no object and creates no
+# scratch file (tests/test_unattended_trust.sh's fast-guard fence measures
+# exactly that), which is what lets it run ahead of a gate that must not query
+# the target before an acknowledgement has been looked for.
+unattended_trust_revoke_resolve() {
+  _unattended_trust_reset
+  _unattended_trust_identity_discover "$1"
+}
+
+# unattended_trust_revoke_loaded -- remove the record and anchor a preceding
+# unattended_trust_revoke_resolve named. Returns zero when something was
+# removed and non-zero when there was nothing to remove, so an idempotent
+# revocation can say which it was. This is the durable half.
+unattended_trust_revoke_loaded() {
+  local removed=0
 
   # Only the outside link is Orchid state. Removing it leaves Git's existing
   # common-directory witness and its contents untouched.
@@ -1930,10 +1992,26 @@ unattended_trust_revoke() {
 # gate — so without a machine-local copy the operator sees a service that runs
 # on time and silently does nothing. Interactive callers already print the same
 # text to the caller's terminal and do not write the log.
+#
+# Split from unattended_trust_require_loaded for the reason the show and
+# revoke pairs are split: an entry point that is itself a trust boundary has to
+# be able to put its own stale-root gate between the machine-local decision and
+# what that decision authorizes -- and a scheduled runner must not pay for the
+# root walk twice to get it. Callers with nothing to interleave keep using this
+# one.
 unattended_trust_require() {
+  unattended_trust_inspect "$1"
+  unattended_trust_require_loaded "$@"
+}
+
+# unattended_trust_require_loaded <repo> <surface> [scheduled] -- the deciding
+# and reporting half, for a caller that has already run
+# unattended_trust_inspect on the same repository and has not written to the
+# machine-local store since. <repo> is still taken, because the refusal names
+# the target the operator would have to acknowledge.
+unattended_trust_require_loaded() {
   local repo="$1" surface="${2:-unattended execution}" scheduled="${3:-}"
   local repo_q refusal_log=""
-  unattended_trust_inspect "$repo"
   [ "$ORCHID_UNATTENDED_STATE" = trusted ] && return 0
   if [ "$scheduled" = scheduled ]; then
     _unattended_capture_line refusal_log \

@@ -57,6 +57,16 @@ source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/heartbeat.sh"
 
+# The stale-root gate, fired explicitly (INV-15). An engine adapter lives
+# outside bin/, libexec/ and runners/, so lib/common.sh's source-time fire does
+# not cover this path: loading the library above ARMED the guard and left the
+# firing to this file. It is worth the line because an adapter executes
+# $ORCHID_ROOT's own libraries and role profiles, so a stale installation root
+# is precisely the stale-adapter shape lesson L018 records. Idempotent, and a
+# no-op for every root not parked on its configured integration branch, so an
+# ordinary run pays nothing for it.
+orchid_root_stale_gate
+
 req="${1:?usage: run <request.json>}"
 job_id="$(jq -r .job_id "$req")";         task="$(jq -r .task "$req")"
 operation="$(jq -r .operation "$req")";   worktree="$(jq -r .worktree "$req")"
@@ -73,11 +83,22 @@ write_envelope() {  # status extra-json
     | atomic_write "$output"
 }
 classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
-  if printf '%s' "$1" | grep -qiE 'rate limit|usage limit|429'; then echo rate_limited
-  elif printf '%s' "$1" | grep -qiE 'login|auth|unauthorized'; then echo auth
+  # Herestrings, for the reason plugins/engines/claude/run's classify carries
+  # in full (T016's sweep of the class T010 named): a `printf | grep -q` on a
+  # whole vendor transcript can be decided by which process the scheduler ran
+  # last, and misclassifies a rate limit as a plain failure.
+  if grep -qiE 'rate limit|usage limit|429' <<<"$1"; then echo rate_limited
+  elif grep -qiE 'login|auth|unauthorized' <<<"$1"; then echo auth
   else echo failed
   fi
 }
+# Capability-refusal marker, identical in meaning and wording to
+# plugins/engines/agy/run's (see that file's comment): the two refusal sites
+# below -- an operation outside review|critique, a diff over hermes_max_bytes
+# -- are this adapter working as designed, so `lib/ledger.sh` must not charge
+# them toward engine_fail_threshold. Genuine faults (nonzero rc, unparseable
+# reply) never carry it.
+REFUSAL='{"failure_kind":"capability"}'
 
 # Operation gate precedes DRYRUN (mirrors agy/codex/claude symmetry): an
 # unsupported operation fails the same way whether or not ORCHID_DRYRUN is
@@ -87,7 +108,7 @@ case "$operation" in
   review|critique) ;;
   *)
     echo "orchid/hermes: unsupported operation '$operation' (review|critique only -- see docs/engines/hermes.md)" >&2
-    write_envelope failed '{}'
+    write_envelope failed "$REFUSAL"
     exit 1 ;;
 esac
 
@@ -119,12 +140,23 @@ if [ -f "$input_pack/task.md" ]; then
   max_bytes="$(config_get "$worktree" hermes_max_bytes 100000)"
   if [ "$diff_bytes" -gt "$max_bytes" ]; then
     echo "orchid/hermes: diff.patch is $diff_bytes bytes (> hermes_max_bytes=$max_bytes); route to a worktree-capable reviewer" >&2
-    write_envelope failed '{}'
+    write_envelope failed "$REFUSAL"
     exit 1
   fi
 
   ac="$(fm_get "$input_pack/task.md" acceptance_criteria)"
   stop="$(fm_get "$input_pack/task.md" stop_condition)"
+  # T032, dogfood F33: an arbitration the reviewer cannot re-derive from the
+  # pack. Read from the pack's own task.md (lib/pack.sh copies it whole), empty
+  # on any task no arbiter has rejected, and appended below only when set. See
+  # plugins/engines/claude/run's own note, and lib/review.sh, for why every
+  # review adapter carries it rather than the one that happens to be routed.
+  objection="$(fm_get "$input_pack/task.md" unresolved_objection)"
+  # ...and the class of arbiter who raised it, so the prompt never describes
+  # this run's own orchestrator as a human or a human as a model. Defaulted to
+  # the stricter reading on an absent field, as the kernel's own gate is.
+  objection_by="$(fm_get "$input_pack/task.md" unresolved_objection_by)"
+  [ -n "$objection_by" ] || objection_by=operator
   manifest_line="$(jq -r '"pack manifest: " +
     ([.items[] | .name + "(" + (.bytes|tostring) + "b,truncated:" + (.truncated|tostring) + ")"] | join(" "))' \
     "$input_pack/pack.json")"
@@ -140,6 +172,16 @@ Do not use any tools. Do not run any commands. Judge from the diff text alone.
 Reply with exactly two lines:
 VERDICT: approve OR request-changes
 REASON: one sentence"
+  [ -z "$objection" ] || prompt="$prompt
+
+AN ARBITER REJECTED AN EARLIER ROUND OF THIS TASK and that objection is still
+recorded as unresolved. It was raised by: $objection_by (operator = the human
+running this repository; orchestrator = this run's own arbiter). The objection:
+  $objection
+Judge this round on whether that objection was addressed, before anything
+else, and say which in your REASON line. If it was not addressed, withhold
+approval -- do not re-form an opinion from scratch and do not approve around
+it because the rest of the diff looks right."
 else
   # Plan pack: requirements.md + roadmap.md (non-truncatable) + tasks.md,
   # plus lessons.md when present -- same fields lib/pack.sh's
@@ -207,8 +249,10 @@ fi
 # idiom as plugins/engines/{agy,codex,claude}/run.
 verdict_line="$(printf '%s\n' "$stdout" | grep -iE '^VERDICT:[[:space:]]*(approve|request-changes)[[:space:]]*$' | tail -n1 || true)"
 verdict=""
-if printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$'; then verdict=approve
-elif printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$'; then verdict=request-changes
+# Herestrings, same rule as classify above (T016's sweep of the class T010
+# named); plugins/engines/claude/run carries the argument in full.
+if grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$' <<<"$verdict_line"; then verdict=approve
+elif grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$' <<<"$verdict_line"; then verdict=request-changes
 fi
 if [ -z "$verdict" ]; then
   # No output ever reaches the launcher's job log otherwise: `stdout` here is

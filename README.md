@@ -124,7 +124,9 @@ flowchart TD
     OP["Operator<br/>terminal + phone"]
     PUMP["runners/orchid-pump<br/>launchd/cron heartbeat, short-lived"]
     TICK["runners/orchid-tick<br/>one bounded tick"]
-    ORCH["Orchestrator engine - claude by default<br/>one power: run orchid verbs in a bash shell"]
+    DRIVE["orchid drive<br/>one deterministic full-task pass"]
+    BOUNDARY{"named judgment boundary<br/>settleable by admitted verb?"}
+    ORCH["Orchestrator engine - claude by default<br/>judgment only when the boundary is settleable"]
     VERBS["Tier-1 verbs - libexec/<br/>orchid task / run / jobs / verify / merge / notify"]
     LAUNCH["runners/orchid-launch<br/>tier 2 - the ONE engine spawner"]
     subgraph ENGINES["Engine adapters - siblings, one role per job, launched per job"]
@@ -142,7 +144,12 @@ flowchart TD
     OP -->|"orchid run start - interactive session"| ORCH
     OP -->|"orchid service install"| PUMP
     PUMP -->|"lease stale? wake the run"| TICK
-    TICK -->|"orchestrate request"| ORCH
+    TICK -->|"always run mechanics first"| DRIVE
+    DRIVE -->|"exit 16 after walking every task"| BOUNDARY
+    BOUNDARY -->|"yes - one bounded orchestrate request"| ORCH
+    BOUNDARY -->|"no - one durable blocker"| OUTBOX
+    DRIVE -->|"structured fields only"| VERBS
+    DRIVE -->|"dispatch eligible jobs"| LAUNCH
     ORCH -->|"verbs only - never hand-edits state"| VERBS
     ORCH -->|"asks the kernel to launch"| LAUNCH
     LAUNCH -->|"request document"| COD
@@ -155,6 +162,7 @@ flowchart TD
     CLA -->|"result envelope"| SPOOL
     SPOOL -->|"orchid jobs reconcile"| VERBS
     VERBS -->|"epoch-fenced git commits"| STATE
+    STATE -.->|"accepting/complete leaves an installed schedule firing"| PUMP
     VERBS -->|"orchid notify writes the question"| OUTBOX
     OUTBOX -->|"pump drains, spawns send"| CHAN
     CHAN --> PHONE
@@ -180,25 +188,37 @@ the integration branch, so a crash anywhere resumes from files.
 
 <!-- Source of truth: PROTOCOL.md "THE TICK - 3. State-machine walk" (the
      feature archetype's walk) and docs/specs/kernel.md "Task lifecycle"
-     (the canonical transition table). Every state and edge below appears
-     in that table; none is invented here. -->
+     (the canonical transition table). State-changing edges come from that
+     table; self-edges below show driver refusals/boundaries that intentionally
+     leave the state unchanged. -->
 ```mermaid
 stateDiagram-v2
     [*] --> pending
     pending --> implementing: deps done - worktree created, base_sha recorded
-    implementing --> testing: implementer envelope ok - candidate_sha set, no commit touches .orchid/
+    implementing --> testing: ok envelope AND a candidate exists - new HEAD, or recorded candidate ahead of base
+    implementing --> implementing: ok envelope + clean unchanged base - refuse, infra-fail, mark, relaunch
+    implementing --> blocked: repeated no-candidate delivery reaches infra_max
+    implementing --> implementing: dirty tree - operator boundary; unreadable - conflict; no attempt
     testing --> reviewing: orchid verify PASS - the evidence log is the only gate (INV-11)
-    testing --> rework: verify FAIL - consumes an attempt
+    testing --> testing: verify REFUSED - HEAD differs from candidate or moves; no attempt
+    testing --> rework: verify FAIL - consumes an attempt, and the failing output is captured for the next one
     reviewing --> arbitrating: every required review envelope reconciled for this candidate
     arbitrating --> merging: approve - journaled reason required
+    arbitrating --> arbitrating: unresolved objection persists until equal authority clears it
     arbitrating --> rework: request-changes - journaled reason required
     merging --> done: orchid merge re-runs the suite in a temp worktree, then advances the ref
     merging --> rework: validation failed
     merging --> testing: base moved - rebase, then re-verify and re-review (INV-07)
     rework --> implementing: rework spec written (3 attempts max)
     testing --> blocked: attempts exhausted - a human is pinged
+    rework --> blocked: the same failure signature repeating unchanged - the loop is not converging, so a human is pinged
     blocked --> rework: answer arrives - orchid task unblock or retry, reason recorded
     done --> [*]
+    note left of done
+        task done is not run accepted;
+        candidate-local, post-merge integration-branch,
+        and remote-CI evidence are separate facts
+    end note
     note right of blocked
         blocked is legal from any status
         (infra failures, budget, operator call).
@@ -206,6 +226,12 @@ stateDiagram-v2
         orchid notify - the round trip below.
     end note
 ```
+
+This overview deliberately collapses the infrastructure ladder, verify-failure
+classification, and review-slot routing into their resulting edges; PROTOCOL.md
+is the ordered procedure. It does not collapse the r-002 refusal paths: those
+self-edges are exactly where a superficially successful envelope or suite run
+establishes nothing and the state must not advance.
 
 The same walk, in verbs:
 
@@ -216,15 +242,25 @@ The same walk, in verbs:
    engines never need commit capability, only edit capability
    (`docs/dogfood-notes.md`'s F3 finding, why every implementer adapter
    works this way).
-3. `orchid verify T001` runs your real test command against the candidate
-   commit — deterministic, evidence-logged.
+3. `orchid verify T001` runs your real test command against the recorded
+   candidate commit — deterministic and evidence-logged. It refuses, without
+   spending an attempt, if the checkout is not already at that SHA or moves
+   while the suite runs.
 4. `orchid task advance T001 reviewing` launches the resolved reviewer
    chain (one or two engines, by risk tier); each writes a verdict envelope
    nobody hand-edits.
-5. Agreement → `orchid task advance T001 merging` → `orchid merge T001`
+5. Agreement → `orchid task arbitrate T001 --result approve --reason "..."`
+   (the one verb that records an arbitration result, and the only public route
+   onto the edges a result takes out of `arbitrating`) → `orchid merge T001`
    re-verifies in a temp worktree and advances the integration branch.
    Disagreement → the orchestrator (inline, ≤10 lines of judgment) reads
-   the diff and arbitrates.
+   the diff and arbitrates. An arbitration that asks for changes is recorded
+   on the task and stands until an arbitration approves it: no later round
+   is approved deterministically past it, settling it takes an arbiter of at
+   least the authority that raised it — an operator's objection, only the
+   operator, or a model relaying that operator's own recorded `orchid answer`
+   to the page for it — and the next round's reviewers are shown what the
+   arbiter said.
 6. `done`. Repeat, up to `concurrency` tasks in flight at once, until the
    roadmap is complete.
 
@@ -349,11 +385,28 @@ Concretely, today's built-in engines sort like this:
 worktree-capable engine for depth, one engine-independent for diversity.
 With only two engines actually installed, the second reviewer often can't
 be BOTH worktree-capable and a third distinct vendor — that's "degraded
-independence": `medium` accepts a labeled session-independent fallback
-(same vendor, fresh session); `high` instead queues, waiting for a genuinely
-engine-independent reviewer to become available, rather than silently
-accepting the weaker guarantee. Never silent either way — always labeled
-and journaled.
+independence", and `medium` and `high` handle it the same way: both accept
+a labeled session-independent fallback (same vendor, fresh session) rather
+than withhold a slot. Routing never queues waiting for a better reviewer to
+appear — a slot that cannot be filled independently is filled and labeled.
+Never silent either way: the label is printed in the routing table and
+journaled before that slot is dispatched.
+
+**Depth is a second axis.** Independence asks who the reviewer is *not*;
+depth asks what it can *see*. An inline reviewer (`agy`, `hermes`) judges
+the diff text alone and cannot open a file the diff never showed it; a
+worktree-capable one (`codex-review`, `codex`, `claude`) can. So at
+`medium`/`high` a deterministic approval needs at least one review from a
+`worktree` slot as well as the tier's count: without one, `orchid drive`
+reports unproven review depth and hands the decision to an arbiter instead
+of approving on its own authority. The slot is read from the attempt's
+pinned plan, which records both the depth and the engine identity it was
+dispatched to, so what a review is credited never changes after it is filed —
+not when an engine is uninstalled, and not when a name is rebound to another
+publisher's engine. No slot is ever refused for being inline — an install
+whose only reviewers are inline still reviews every task; what it does not
+get is an approval no human read. (The decision, and the alternatives
+rejected with it, are recorded in `docs/specs/kernel.md`, "Review depth".)
 
 **Worked example — swapping the implementer:**
 
@@ -401,6 +454,27 @@ orchid service status
 orchid service uninstall
 ```
 
+Nothing removes that schedule for you — not the last task merging, not
+`orchid run accept`, not a `complete` run. When you tear the working checkout
+down, uninstall the service FIRST and remove the worktree second — as one
+command, so a refused uninstall cannot be followed by a removal that goes
+ahead anyway:
+
+```sh
+orchid service teardown --repo /path/to/project-orchid
+```
+
+That uninstalls the schedule and removes that worktree only if the uninstall
+succeeded, and it finds the main checkout for itself; run raw, the two must be
+chained and run from that main checkout (`orchid service uninstall --repo
+<path> && git worktree remove <path>`), since orchid cannot refuse a `git
+worktree remove` you type on its own. Reversed, you leave
+a scheduler waking on a timer against a deleted directory. `orchid service
+install` records what it bound itself to; `orchid doctor` reports any binding
+whose repository is gone; the pump refuses loudly rather than waking against a
+missing path. See [PROTOCOL.md's COMPLETION](./PROTOCOL.md#completion) for the
+ordering.
+
 `orchid trust show "$PWD"` displays the machine-local acknowledgement and
 its identity/root/policy provenance; without an identity-keyed record it
 reports root verification as pending and returns denied without walking
@@ -426,7 +500,9 @@ frontmatter), `reviews/` (envelopes + verify/merge evidence), `journal.md`
 **Guardrails:** rate limits pause one engine, never the run; a dead job is
 detected by pgid+start-time liveness, a hung one by log-mtime/size
 stalling, a spinning one by a false-positive-guarded duplicate-line check;
-three rework attempts exhausts to `blocked`; no tier-1 verb ever spawns a
+the rework budget (`rework_max`, default 3) exhausts to `blocked`, and an
+operator can grant one task more with `orchid task retry --attempts N`; no
+tier-1 verb ever spawns a
 long-lived process (INV-01). Orchid's deterministic verbs provide no push,
 deploy, or publish operation, and PROTOCOL.md instructs engines to treat
 external mutation as a blocker. The absent verb is Orchid's enforced
@@ -447,10 +523,30 @@ repo) the broker script included, so "never hand-edit `.orchid/`" remains
 prompt policy.
 
 **Operator verbs** (no hand-editing `.orchid/` ever needed):
-`orchid task unblock/retry <id> --reason "..."`, `orchid answer <qid>
-<choice>`, `orchid config commit --reason "..."`, `orchid run
-release-lease`, `orchid jobs gc --reap-prepared`. Full incident-by-incident
-detail: [troubleshooting.md](./docs/troubleshooting.md).
+`orchid task unblock/retry <id> --reason "..."` (`retry --attempts N` also
+grants a task more rework rounds), `orchid task reverify <id> --reason
+"..."` (the tree is already green — re-run verification, no implementation
+pass, no attempt spent; commit your fix on the task branch first, an
+uncommitted worktree is refused, as is a HEAD that is not this task's own —
+it must descend from the current candidate and sit on the branch the record
+names), `orchid answer <qid> <choice>`, `orchid config
+commit --reason "..."`, `orchid run release-lease`, `orchid jobs gc
+--older-than-s 0` (zero means zero: a manifest you have identified as an
+orphan is cleared, whether its job never started or died without an
+envelope). Full incident-by-incident detail:
+[troubleshooting.md](./docs/troubleshooting.md).
+
+**Watching a run:** `orchid jobs ls` (also `orchid status --jobs`) is the
+process table — one row per outstanding job with its job id, task, role,
+operation, attempt, engine, pid, state, age, elapsed, budget consumed,
+launcher and log path; `--watch` polls it, `--all` adds the jobs that already
+finished. Liveness there is always computed, never read off the manifest: a
+stamped job whose process is gone reads `dead`; `pid: 0` with no log reads
+`never-started`, with a fresh log reads `prepared`, and with a log silent past
+`stall_minutes` reads `unstamped`. Jobs that are dead with no envelope,
+never-started past the threshold, unstamped, or running but silent past the
+threshold print a `WARNING:` line that `orchid status` shows in every mode,
+with no flag.
 
 ## Before you point it at someone else's repo
 

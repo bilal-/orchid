@@ -12,6 +12,13 @@ Two things live here, and they answer different questions.
 Neither is a release, and neither is a third-party beta run. Both of those are
 operator-owned and are listed as such at the end of this page.
 
+They are also not the run-level acceptance record. That record distinguishes a
+candidate-local canonical CI run, a post-merge run from a checkout actually on
+the configured integration branch, and hosted CI observed only after an
+operator pushes. The r-002 candidate leaves the last two as operator steps
+rather than claiming a tree or remote workflow it could not see; see
+[r-002-acceptance-evidence.md](./r-002-acceptance-evidence.md).
+
 ## What the harness records, and what it refuses to record
 
 Evidence is **anonymized by construction**. The harness never copies subprocess
@@ -69,6 +76,16 @@ operator, and running it is what makes the timing probe real rather than a
 guess. Pass `--no-run-verify` to skip it — the timing probe is then recorded as
 `not-tested`, never as a pass.
 
+That run is announced on stderr as it starts — a notice, not a gate, and it
+stands in place of one. Qualification requires **no unattended
+trust and no acknowledgement of its own**, deliberately: the acknowledgement is
+what you make *after* a repository qualifies, so requiring it first would invert
+the order and leave the headless gate open on a repository that then failed to
+qualify. The reasoning, and the two alternatives that were rejected — a narrower
+qualification-scoped acknowledgement, and making `--no-run-verify` the default —
+are recorded in
+[specs/operations.md](./specs/operations.md#qualification-runs-the-target-verify-command-and-takes-no-acknowledgement).
+
 ## The probes, and the defects each one exists to catch
 
 | Probe | Blocking | What it does |
@@ -79,7 +96,7 @@ guess. Pass `--no-run-verify` to skip it — the timing probe is then recorded a
 | `implementer-shell` | yes | Resolves `role.implementer` and reads the winning plugin's declared `capabilities=`. No `shell` means running a repository script and changing a file mode are operator hand-offs no in-loop actor can perform — a headless deadlock. |
 | `implementer-command-execution` | no (`not-tested`) | Whether the adapter *actually grants* command execution, which is a different fact from the manifest declaration. See below. |
 | `verify-duration` | yes | Times one real `verify=` run against `pump_stale_s`. The driver holds no lease refresh across a synchronous verification and the merge re-verifies after its rebase, so one pass costs roughly twice the verify duration with the lease untouched. |
-| `merge-rebase-regeneration` | yes | The merge rebase invalidates any committed artifact derived from the tree's exact content (a checksum pin, a lockfile, a generated file). Regenerating one needs an actor that can run a command. |
+| `merge-rebase-regeneration` | yes | The merge rebase can invalidate a committed candidate-local artifact (a lockfile or generated file). Regenerating one needs an actor that can run a command; whole-tree release pins are excluded because they belong on integration at release time. |
 | `stale-run-lock-visibility` | no | Plants a dead-owner run lock in the harness's own disposable scratch repository and checks whether a read-only command reports it. Recorded as `not-tested` — not as a gap — if the scratch repository could not be created or `orchid status --explain` never returned a report, because a check that could not run is not evidence that the behaviour is missing. |
 | `notify-return-leg` | no (`not-tested`) | Records whether an outbound channel is *configured*; never that it works. See below. |
 
@@ -96,6 +113,15 @@ commands, and warnings across nine files accumulated behind a gate that existed
 and worked the whole time. So qualify a gate the way you qualify a repository —
 confirm it rejects a change you know it must reject, *and* confirm the command
 that runs it sits in the path every change travels.
+
+Orchid's own answer to the second half is the `merge_gate` key
+(docs/configuration.md): one command, named once for the repository, that
+`orchid merge` runs on every merged tree before it advances the integration
+branch, with no task asked to opt in and no task frontmatter able to switch it
+off. Treat it as a qualification step about a candidate repository's
+*configuration* rather than about orchid itself: an unset `merge_gate` means
+that repository has no floor, and a repository with no floor reads, in every
+report, exactly like one whose floor is simply never failing.
 
 ### Why two probes for one implementer question
 
@@ -116,12 +142,31 @@ Nothing reads the manifest's `shell` atom on that path. (The same
 adapter's *orchestrate* path does pass `--allowedTools`, scoped to the brokered
 command surface. That is a different launch, and an implementer never reaches
 it.) A `claude` implementer therefore edits files happily and cannot run one
-command — so `scripts/pin-formula.sh` and `chmod +x` on a new `libexec` verb are
-both silent, recurring operator hand-offs on that profile.
+command — so `chmod +x` on a new `libexec` verb and applying a linter's own fix
+are both silent, recurring operator hand-offs on that profile. (Re-pinning
+`Formula/orchid.rb` is *not* one of them: that checksum is derived from the
+whole tree, so it is regenerated on the integration branch at release time
+rather than in any candidate — see [contributing.md](./contributing.md).)
 
 That asymmetry is why `implementer-shell` is only a floor: a *missing* `shell`
 declaration is decisive, because the profile certainly cannot run commands, while
-a *present* one settles nothing. Proving the grant needs a live vendor round trip
+a *present* one settles nothing.
+
+The kernel now acts on the decisive half rather than only reporting it
+(INV-16, `lib/capability.sh`): a step whose declared requirements the resolved
+actor does not cover is refused at `orchid jobs prepare` (exit 19) instead of
+being dispatched. Note what that does *not* buy an operator here. A missing
+`shell` on an implementer was already decisive at the ROLE gate —
+`roles/implementer.role` requires it, so such an engine is refused the role
+(exit 14) before it can build a candidate — and the profile this probe is about
+is the opposite case: `claude` *declares* `shell`. Nothing in INV-16 sees that,
+so `handoff_before_verify` stays the operator's to set for it. It acts on the
+decisive half ONLY. Nothing derives a
+runtime permission from a *present* atom, and no gate anywhere reads one as
+grounds to skip another — which is why this probe's verdict on a declaring
+profile is still `pass` with the caveat attached rather than a clean bill, and
+why `implementer-command-execution` below remains the fact neither this harness
+nor that rule can settle. Proving the grant needs a live vendor round trip
 with real quota, which this harness will neither spend nor contact, so
 `implementer-command-execution` is recorded as `not-tested` with the manual
 procedure attached. **Do that manual step once per implementer profile** (see the
@@ -161,7 +206,8 @@ repository. Then, per candidate repository and per implementer profile:
       running unattended.
 - [ ] **Unattended trust.** Acknowledge deliberately, with a real reason:
       `orchid trust unattended <repo> --reason "<why>"`. Nothing else opens that
-      gate, and this harness never does.
+      gate, and this harness never does. It is last on this list on purpose:
+      running the harness needs none of it.
 
 ## The local release rehearsal
 
@@ -213,7 +259,13 @@ under an outer run that writes its own state as the tests execute:
 - The source checkout is compared on its working tree (with `.orchid`, the
   outer run's live state, excluded), its file listing, its `HEAD`, and its
   **remote** refs. Local branches are shared with every other worktree of the
-  same checkout and move through no act of the rehearsal's.
+  same checkout and move through no act of the rehearsal's. All but the file
+  listing are Git questions, and the suite is also runnable inside an unpacked
+  release archive, which has no Git metadata at its root — so the rehearsal
+  establishes that context first and, outside a checkout, records those three
+  as `NOT-TESTED` rather than comparing three empty answers and calling the
+  tree untouched. Run the rehearsal from the checkout when you need the whole
+  claim.
 - Machine-local state is compared path by path, at names the rehearsal writes
   down in advance — the skill symlinks `install.sh` wires, the entry point it
   links into its default prefix, the per-user config and data directories, the
@@ -247,9 +299,20 @@ Run it directly:
 - **Publication** of any kind: pushing a tag, uploading an archive, updating a
   tap, or announcing a release. The release gate builds and verifies locally and
   stops there ([install.md](./install.md)).
-- **Re-pinning `Formula/orchid.rb`** after any change to shipped bytes, and
-  **`chmod +x`** on any newly added `libexec` verb. Both are hand-offs on a
-  no-shell implementer profile.
+- **Re-pinning `Formula/orchid.rb` once on the integration branch at release
+  time**, immediately before the local release gate. This is release
+  preparation, never a candidate hand-off. **`chmod +x`** on a newly added
+  `libexec` verb remains a candidate hand-off on a no-shell implementer
+  profile.
+- **The post-merge integration-branch suite and hosted CI.** A candidate may
+  supply the commands and leave explicit open rows, but only the operator can
+  run the assembled tree, push it, and observe the workflow. Completed rows
+  are an operator acceptance policy, not a condition enforced by the verb.
+  `orchid run accept` checks that `run_status` is `accepting` and that
+  `--evidence` names an existing file; it does not parse or validate checklist
+  row content. The operator must therefore complete every required row before
+  invoking it. An open row is not a pass; operator policy treats it as
+  blocking even though the verb cannot detect it.
 
 ## See also
 

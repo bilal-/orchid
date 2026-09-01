@@ -1,139 +1,216 @@
-# Orchid self-hosting hardening run
+# Orchid r-002 — close the gaps r-001 deferred
 
 ## Goal
 
-Turn Orchid from a strong private-dogfood prototype into a safer, simpler,
-release-ready beta by implementing the three improvement tracks identified in
-the repository assessment:
+Run r-001 hardened the unattended boundary, built the deterministic driver
+and the release gate, and shipped `1.0.0-beta.1`. It also deliberately
+deferred a set of defects and structural gaps, each recorded with an
+arbitration entry. This run closes them, in three tracks:
 
-1. harden the unattended orchestrator boundary and state its trust assumptions
-   precisely;
-2. move routine tick mechanics into deterministic code and collapse setup into
-   a single onboarding command;
-3. add cross-platform CI, a clean static-analysis gate, pinned-release tooling,
-   and a reproducible external-beta qualification path.
+1. fix the correctness defects that shipped knowingly;
+2. make the guarantees SELF-ENFORCING — every one of r-001's worst findings
+   was a mechanism that existed and that nothing made fire;
+3. settle two design questions r-001 raised but could not answer at the end
+   of itself.
 
 ## Constraints
 
 - Preserve Orchid's core architecture: Bash 3.2+, Git, and jq; no daemon,
   database, hosted service, Node/Python runtime, or API-key proxy.
-- Preserve engine neutrality and plugin contracts. Kernel code must not branch
-  on engine names.
-- Never push, publish, deploy, contact a remote, or mutate data outside this
-  local repository and disposable local test repositories.
-- Keep existing CLI behavior backward compatible unless a documented security
-  gate intentionally fails closed for unattended operation.
+- Preserve engine neutrality and plugin contracts. Kernel code must not
+  branch on engine names (INV-05, INV-14) and the driver must not reference
+  a plugin path (INV-13).
+- Never push, publish, deploy, tag, contact a remote, or mutate anything
+  outside this local repository and disposable local test repositories.
+- Keep existing CLI behavior backward compatible unless a documented gate
+  intentionally fails closed.
 - All durable Orchid run state must be mutated through Orchid verbs.
-- Every code change must pass the full existing test suite on Bash 3.2.
+- Every change must pass `bash scripts/ci-local.sh --bash /bin/bash`, which
+  includes the full suite, Bash 3.2 syntax, the docs checks, and ShellCheck
+  at zero warnings.
 - New behavior needs focused tests, documentation, and honest labels for what
   is enforced, advisory, locally proven, or still awaiting external proof.
+- **The implementer profile cannot execute anything** (lesson L017): no
+  `bash`, no `bash -n`, no `shellcheck`, no writing git, and any command
+  whose text contains `$`, `;`, `( )` or `<( )` is refused. Task briefs must
+  therefore never instruct an implementer to self-verify, and must carry
+  exact `file:line: RULE: message` text for any lint finding. Formula
+  re-pinning, `chmod`, and lint fixes are operator hand-offs.
 
-## Track 1 — unattended trust boundary
+## Bootstrap safety — operator procedure while the safeguards do not yet exist
 
-### Required outcomes
+The first tasks in this run execute BEFORE the protections this run adds. Until
+T001 (duplicate concurrent implementers), T006 (a stale checkout running
+pre-merge code) and T010 (unactionable rework) have landed, the run itself is
+exposed to precisely the failures it exists to remove. That is unavoidable —
+they cannot protect their own construction — so it is handled by procedure
+instead, and the procedure is part of this run's requirements rather than
+operator folklore:
 
-- Treat target-repository content as potentially prompt-injecting input in the
-  threat model, including the special risk of an orchestrator that can invoke
-  shell commands.
-- Add a deterministic, per-repository acknowledgement gate before unattended
-  headless ticks or service installation may run. The acknowledgement must be
-  operator-authored machine-local state outside the repository, bound to the
-  repository's local Git identity so cloned content cannot arrive
-  pre-acknowledged. Interactive/manual operation must remain available without
-  silently opting into unattended trust.
-- `orchid doctor` and `orchid status --explain` must report whether unattended
-  execution is acknowledged and why a headless run is gated.
-- Tighten the headless command surface where the supported vendor CLI permits
-  enforceable command restrictions. Where OS/vendor containment is unavailable,
-  say so explicitly rather than describing prompt instructions as structural
-  enforcement.
-- Reword claims such as "structurally impossible" wherever current enforcement
-  proves only kernel mediation or source-level conformance.
-- Add regression tests for the gate and for the documented trust semantics.
+- After EVERY merge, and before any further verb, refresh the integration
+  checkout with `git checkout HEAD -- . ':(exclude).orchid'`. The exclude is
+  mandatory: a bare refresh would clobber uncommitted durable run state, which
+  is the r-001 journal-loss incident.
+- Before each dispatch, confirm `orchid jobs check` reports no outstanding job
+  for that task, so a relaunch cannot produce a second concurrent implementer
+  into the same worktree.
+- Perform the mechanical hand-offs — the `Formula/orchid.rb` re-pin, any
+  `chmod` on a new executable, and any lint fix — after the implementer's
+  envelope reconciles and BEFORE `orchid verify` runs, and journal each one.
+- Carry the exact `file:line: RULE: message` text into any rework brief by
+  hand until T010 automates it.
 
-### Acceptance criteria
+Once T001, T006 and T010 have merged, these steps are enforced by the code and
+the procedure becomes a fallback rather than the only guard.
 
-- A fresh repo cannot run `runners/orchid-tick` or install the background
-  service until the operator explicitly acknowledges unattended trust through
-  an out-of-repository, machine-local trust record for that repository.
-- The refusal is actionable and does not affect ordinary read-only commands,
-  planning, or an explicitly interactive Orchid session.
-- Documentation clearly distinguishes environment hygiene, vendor sandboxing,
-  prompt policy, and OS-level containment.
+**This procedure must be auditable, not remembered.** A procedure with no
+record is indistinguishable from one nobody followed — which is how r-001's
+release gate went unenforced for eight tasks. For every task dispatched before
+T001, T006 and T010 have merged, the operator journals one entry per pass
+naming which of the four steps above were performed and their outcome (the
+refresh, the outstanding-job check, each mechanical hand-off, and whether lint
+locations had to be carried by hand). T015's acceptance includes reading those
+entries back and reporting any dispatch that has none, so a skipped step is
+visible in the run's own record rather than inferred later from a defect.
 
-## Track 2 — deterministic drive and one-command setup
-
-### Required outcomes
-
-- Add a deterministic driver for routine tick work: lease refresh,
-  reconcile/check/gc ordering, safe dispatch, implementer reconciliation,
-  verification, reviewer routing/reconciliation, deterministic approval when
-  policy is unambiguous, serialized merge, status regeneration, and final lease
-  refresh.
-- The driver must never make free-form judgment. It must stop or delegate only
-  at explicit judgment boundaries such as conflicting review evidence,
-  required plan drafting, or a genuine blocker.
-- The unattended pump must prefer the deterministic driver and invoke an LLM
-  orchestrator only for a named judgment boundary that deterministic policy
-  cannot resolve.
-- Add `orchid start <requirements-file>` (with explicit options where needed)
-  to perform the mechanical existing-repo setup in one command: preflight,
-  repo-local configuration validation, initialization, integration-worktree
-  creation, epoch setup/import, and clear handoff into plan drafting. It must
-  never guess a verification command or overwrite user files.
-- Preserve the lower-level verbs and documented manual workflow.
-
-### Acceptance criteria
-
-- A fixture can progress through the ordinary happy path using the
-  deterministic driver without feeding the full PROTOCOL.md to an LLM.
-- Conflicting/blocking reviews stop at a clearly reported judgment boundary;
-  no heuristic prose parsing decides the outcome.
-- `orchid start` is idempotent or fails safely with recovery instructions and
-  reduces the current worktree/epoch/import setup to one invocation.
-- Crash fencing, evidence binding, review independence, and merge revalidation
-  invariants remain green.
-
-## Track 3 — beta release gate
+## Track 1 — the deferred correctness defects
 
 ### Required outcomes
 
-- Add CI for Linux and macOS. It must exercise Bash syntax, the full test suite,
-  invariant tests, documentation checks, and ShellCheck.
-- Establish a clean, reviewed ShellCheck baseline. Intentional exceptions must
-  be narrow and documented; fix unsafe or ambiguous findings, including the
-  FIFO creation pattern that currently uses `mktemp -u`.
-- Add release tooling that builds/checks a version-pinned archive and validates
-  that version metadata, tag name, installer behavior, and Homebrew formula
-  inputs agree. Do not publish or push anything.
-- Make the installer support an immutable version/ref path while retaining an
-  explicitly labeled development-channel option.
-- Add a reproducible beta qualification harness/checklist that can be run
-  against multiple operator-supplied repositories and records anonymized,
-  local evidence without copying proprietary repository content.
-- Replace release-facing screenshot placeholders with either checked-in
-  terminal fixtures/assets generated from local deterministic data or explicit
-  non-placeholder documentation that does not claim missing media exists.
+- `drive_implementing` must carry the same `drive_job_outstanding` liveness
+  guard its sibling arms already have (hook, dispatch and review paths).
+  Today a failed implementer re-escalates on every pass, spawning duplicate
+  concurrent implementers into the same worktree on the same branch and
+  walking `infra_failures` to the cap while several are still writing to that
+  checkout. `libexec/orchid-jobs` has no duplicate-job guard in `prepare` to
+  catch it either; decide whether the guard belongs in one place or both.
+- `orchid start` must be idempotent or fail safely with recovery
+  instructions, as its own acceptance criteria already require. A reported
+  `.orchid/tasks/` idempotence break is outstanding; reproduce it first, then
+  fix it, and add the case to `tests/test_start.sh`.
+- A soft-surface orchestrator must not be woken with the pre-v1.1 prompt, and
+  a boundary it cannot resolve must not suppress the operator `notify`.
+  `drive_surface_admits` currently treats `soft` as admitting every verb,
+  which reintroduces on that path the never-told-the-human failure the
+  brokered path was fixed to remove.
+- The release rehearsal must not pass vacuously. `tests/run.sh` globs
+  `test_*.sh`, so `tests/test_e2e_release_rehearsal.sh` is part of the suite,
+  and the suite is explicitly designed to be runnable inside an extracted
+  release archive (`tests/test_ci_release.sh` skips its Git-dependent checks
+  there by design). In that context the rehearsal's source-checkout snapshots
+  compare a tree that was never at risk, so they pass without proving
+  anything — and `docs/install.md:150` prescribes running the rehearsal as a
+  release-day step. Either detect the extracted-archive context and record
+  the snapshot as not-tested there, or make it meaningful. Note
+  `scripts/release.sh` does NOT itself run the suite; the exposure is the
+  documented release-day procedure plus the archive-runnable suite, not the
+  release script.
+- `tests/probes/probe-claude-tick.sh` must stop feeding the expected `orchid
+  version` string into the prompt and then grepping the reply for that same
+  string: that half of its "real output, not a hallucinated marker" evidence
+  is satisfiable by echoing the prompt back. Only the independent
+  `integration_branch` check currently discriminates.
 
 ### Acceptance criteria
 
-- CI configuration is valid and has Linux/macOS jobs with no repository secrets
-  required for the deterministic suite.
-- The local CI-equivalent command passes on this machine under Bash 3.2.
-- Release checks fail on placeholder versions, mismatched metadata, a dirty
-  archive, or a moving unpinned release reference.
-- The beta harness can qualify at least two disposable local fixture repos and
-  emits a concise evidence summary.
-- Genuine third-party beta runs and public release remain explicitly
-  operator-owned follow-up work; the repository must not claim they occurred.
+- A focused test proves a failed implementer does not produce a second
+  concurrent implementer for the same task, and that `infra_failures` climbs
+  only on genuine repeat failures.
+- A focused test proves `orchid start` run twice leaves the same state and
+  reports what it re-used, or refuses with actionable recovery.
+- A focused test proves a soft-surface boundary that no admitted verb can
+  settle raises an operator blocker.
+- The rehearsal's evidence is either genuine in the archive context or
+  explicitly recorded as not-tested there; a vacuous pass is not acceptable.
+
+## Track 2 — make the guarantees self-enforcing
+
+Every one of r-001's most expensive findings was a mechanism that existed and
+that nothing caused to run. This track is about closing that class, not
+individual instances.
+
+### Required outcomes
+
+- **A stale checkout must not silently run pre-merge code** (lesson L018).
+  `bin/orchid` resolves `ORCHID_ROOT` from its own location, so every verb,
+  lib, runner and engine adapter comes from the working tree. When `orchid
+  merge` advances the branch with `update-ref` alone, other checkouts keep
+  executing the old code indefinitely while every merge appears to succeed —
+  which cost r-001 a full day of its own merged improvements. Choose and
+  implement one: refuse to run from a checkout whose working tree does not
+  match HEAD; resolve `ORCHID_ROOT` from HEAD; or have `orchid merge` refresh
+  the other checkouts of the branch it just advanced. Whichever is chosen,
+  the warning must stop being advisory-only.
+- **The CI gate must run without each task remembering to ask** (lesson
+  L016). `scripts/ci-local.sh` existed for the whole of r-001 and only two of
+  eight tasks invoked it, so seventeen findings accumulated behind a green
+  suite. Put it in the merge path, in a shared verification fragment, or in
+  the plan-time task template — anywhere that does not depend on an author
+  choosing to include it.
+- **A capability refusal must not be recorded as an engine fault.** When
+  `agy` declines a diff over `agy_max_bytes` it is doing exactly what its
+  adapter is designed to do, yet `ledger_mark` counts it toward
+  `engine_fail_threshold`, so an engine that reviews small diffs perfectly
+  would eventually be disqualified from everything. Distinguish the two.
+- **`orchid doctor` must be able to say whether a notify reply can actually
+  arrive** (lesson L011). Outbound needs only a CLI; inbound needs a
+  persistent agent, and an operator currently gets no signal when that agent
+  is gone — r-001 lost a real phone answer to exactly this. T006 added an
+  `inbound_probe` manifest key and `plugins/notify/openclaw/plugin.conf`
+  declares one; `plugins/notify/hermes/plugin.conf` does NOT, even though
+  `hermes gateway status` reports exactly that fact and is the channel r-001
+  actually delivered on. Give hermes a probe, and make sure "cannot
+  determine" is reported as such rather than as health.
+- **A lint gate the implementer cannot see must not be routed to the
+  implementer** (lesson L017). Make the rework path carry exact
+  `file:line: RULE: message` text, or make lint fixes an explicit operator
+  hand-off in the protocol rather than a convention.
+
+### Acceptance criteria
+
+- A focused test proves a verb refuses, or self-corrects, when the working
+  tree does not match HEAD.
+- A task dispatched without `scripts/ci-local.sh` in its own
+  `verification_commands` is still gated by it before merge.
+- A focused test proves a capability refusal leaves
+  `consecutive_failures` unchanged while a genuine engine fault increments
+  it.
+- `orchid doctor` reports the notify return leg from a plugin's own probe
+  where one exists, and says plainly that it cannot tell where none does.
+
+## Track 3 — settle two open design questions
+
+### Required outcomes
+
+- **Does qualification need its own trust step?** `scripts/beta-qualify.sh`
+  executes the target repository's configured `verify=` by default with no
+  acknowledgement. That is repository content reaching execution, which is
+  Track 1 of r-001's threat model — but requiring `orchid trust unattended`
+  first would invert the documented order (qualify BEFORE acknowledging).
+  Decide, implement the decision, and write down the reasoning either way.
+  `--no-run-verify` already exists as the opt-out.
+- **Should review policy require a worktree-capable slot?** (lesson L010.)
+  Across r-001, `agy` returned four generic one-sentence approves with no
+  findings, including on a task whose central acceptance criterion was unmet,
+  while the session-independent slot found every real defect. Its
+  independence is real and worth keeping; its depth is bounded by what a diff
+  shows. Decide whether `review.<tier>` should require at least one
+  worktree-capable reviewer when a task's criteria involve interaction with
+  existing kernel behaviour, and implement or explicitly reject it.
+
+### Acceptance criteria
+
+- Each question has a written decision in `docs/specs/`, with the reasoning
+  and the rejected alternative recorded, not just the outcome.
+- Any behaviour change is covered by a focused test.
 
 ## Run-level acceptance
 
-- `bash tests/run.sh` passes.
+- `bash scripts/ci-local.sh --bash /bin/bash` passes on the merged tree.
 - All new focused tests pass independently.
-- `bash -n` passes for every shipped shell script under Bash 3.2.
-- The configured ShellCheck gate passes.
 - Documentation and CLI help agree with implemented behavior.
-- A local end-to-end rehearsal demonstrates the unattended trust refusal,
-  acknowledged deterministic drive, one-command setup, and beta qualification
-  path without any network or external mutation.
+- No lesson from r-001 is contradicted without an explicit, recorded decision
+  to supersede it.
+- Genuine third-party beta runs and public release remain explicitly
+  operator-owned follow-up work; this repository must not claim they
+  occurred, and the version must not advance past `1.0.0-beta.x` in this run.

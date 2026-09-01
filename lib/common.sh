@@ -17,8 +17,28 @@ orchid_die() { echo "orchid: $*" >&2; exit 1; }
 # __orchid_entry_defer_restore=1 before sourcing this file and calls the helper
 # only after its authorization decision when later work genuinely needs the
 # operator PATH.
+#
+# IT IS ALSO WHERE THE STALE-ROOT GATE FIRES for such an entry point (T016).
+# Declared here, ahead of the function, because the function is CALLED on the
+# line below its definition -- long before the gate at the bottom of this file
+# has armed anything -- and `0` is what keeps that early call from reaching
+# functions that are not defined yet. See the gate's own block at the end of
+# this file for why the git half may not run at source time at all.
+_ORCHID_ROOT_STALE_ARMED=0
 _orchid_entry_restore_operator_path() {
   [ "${__orchid_entry_context:-}" = 1 ] || return 0
+  # A trust-boundary entry point calls this the moment its authorization
+  # decision is made and later work needs the operator PATH -- which is
+  # exactly the first moment the unattended-trust contract permits this
+  # process to touch a repository with `git`. Fired BEFORE the PATH is
+  # restored, so the gate's own git comes off the fixed entry PATH the caller
+  # is still holding rather than off an operator PATH a target repository
+  # could have contributed to. Disarmed first, so a second call cannot fire
+  # it twice.
+  if [ "${_ORCHID_ROOT_STALE_ARMED:-0}" = 1 ] && _orchid_kernel_entry_point; then
+    _ORCHID_ROOT_STALE_ARMED=0
+    _orchid_root_stale_fire
+  fi
   if [ "${__orchid_entry_path_was_set:-}" = x ]; then
     PATH="${__orchid_entry_operator_path-}"
     export PATH
@@ -64,6 +84,42 @@ orchid_list_dir() (
     printf '%s\n' "${entry##*/}"
   done
 )
+
+# file_mtime <path> [fallback] -- <path>'s mtime as whole seconds since the
+# epoch, portably across BSD (`stat -f %m`) and GNU (`stat -c %Y`) stat.
+#
+# The obvious spelling of this, which this repo carried at six sites, is
+# `stat -f %m PATH 2>/dev/null || stat -c %Y PATH`. That selects the platform
+# on EXIT STATUS, and it is wrong on Linux. GNU's `-f` is `--file-system` and
+# takes no argument, so `%m` is parsed as a second FILE operand: GNU stat then
+# fails on `%m`, SUCCEEDS on PATH, and prints PATH's default filesystem block
+# -- whose first line begins `File:` -- on stdout. Both commands' stdout lands
+# in the one command substitution, so the caller's `mt` becomes that block
+# with a number glued to the end, and the arithmetic that follows reads `File`
+# as a variable name. Under `set -u` that is fatal, and it took down
+# lock_acquire (and with it every durable verb) on ubuntu-latest:
+#   lib/common.sh: line 466: File: unbound variable
+#
+# So select on the RESULT, not the exit status: a run of digits is an mtime
+# and anything else -- empty, `?`, a filesystem block, a permission error's
+# leftovers -- is not, no matter what the exit status claimed.
+#
+# <fallback> is what a wholly unreadable mtime yields, and callers genuinely
+# differ on it, so it is a parameter rather than a baked-in 0: an age check
+# that must fail CLOSED wants 0 ("age unknown, refuse"), while a liveness
+# check that must fail SAFE wants the current time ("assume just touched, i.e.
+# still live"). Defaults to 0.
+file_mtime() {
+  local path="$1" fallback="${2:-0}" mt
+  mt="$(stat -f %m "$path" 2>/dev/null || true)"
+  case "$mt" in
+    ''|*[!0-9]*) mt="$(stat -c %Y "$path" 2>/dev/null || true)" ;;
+  esac
+  case "$mt" in
+    ''|*[!0-9]*) mt="$fallback" ;;
+  esac
+  printf '%s\n' "$mt"
+}
 
 # commit_subject_from_output <stdout-text> <fallback-title> -- turns a
 # model reply's own text into a sane git-commit-subject fragment. Shared by
@@ -159,6 +215,2280 @@ orchid_stale_checkout() {
   git -C "$repo" diff --cached --name-status 2>/dev/null | awk '$1 == "D" { found=1 } END { exit !found }'
 }
 
+# orchid_stale_checkout_remedy -- the ONE copy of what an operator is told to
+# do about the state above. `orchid doctor` and `orchid status` both print it,
+# and until dogfood finding F31 they printed it as two separately maintained
+# string literals; what that duplication bought was the same WRONG text in two
+# places, which is why it lives here now.
+#
+# What was wrong with it. The printed recovery was `git checkout HEAD -- .
+# ':(exclude).orchid'` and nothing else, and an operator who ran exactly that,
+# character for character, watched the warning survive it. The exclusion is the
+# reason, and it is not a defect in the exclusion: `git checkout` never touches
+# an index entry for a path its own pathspec excluded, so every `.orchid/` path
+# the new HEAD carries and the stale index does not is left exactly as it was --
+# staged for deletion. Those staged deletions ARE the signature
+# orchid_stale_checkout reads. The remedy cleared the half it was allowed to
+# reach and left the half the check looks at, so the check went on firing, and
+# the operator was left with a warning that survived its own documented fix.
+#
+# So the remedy is BOTH halves:
+#
+#     git checkout HEAD -- . ':(exclude).orchid'   # the working tree, minus run state
+#     git reset                                    # the index, all of it
+#
+# THE ORDER IS PART OF IT, for the operator who runs the first command and then
+# stops -- reads a message, gets interrupted, loses the shell. Both orders end
+# in the same place; the two intermediate states are not equally safe. Checkout
+# first leaves fresh code under a warning that is still displayed: honest, and
+# the remaining step is still in front of them. Reset first leaves PRE-MERGE
+# code under a checkout that now looks healthy to every check there is -- L018
+# (a merged fix inert for two further rounds because the launcher kept
+# executing the stale tree) with its one alarm switched off. So: reset LAST.
+#
+# And the exclusion is narrower than it reads, which is the other half of F31
+# and cost that operator a file. `:(exclude).orchid` protects uncommitted
+# DURABLE RUN STATE. It protects nothing else -- the checkout half restores
+# every OTHER tracked path from HEAD, so an uncommitted edit anywhere outside
+# `.orchid/` is overwritten, with no reflog to recover it from, and
+# `requirements.md` being revised at the repository root is precisely the file
+# an operator has an uncommitted edit to while driving a run. Naming that here
+# is the difference between a remedy that can be run and one that can be run
+# safely.
+#
+# A single-quoted heredoc, so the pathspec's own quoting reaches the operator
+# verbatim and nothing in the prose is ever evaluated. First line is the
+# headline (the caller prefixes its own `FAIL:`/`WARNING:`); the rest is the
+# argument for why it is two commands and what each one costs.
+orchid_stale_checkout_remedy() {
+  cat <<'ORCHID_STALE_CHECKOUT_REMEDY'
+integration checkout is stale — refresh with "git checkout HEAD -- . ':(exclude).orchid' && git reset" before committing anything here
+  BOTH commands, in that order: the checkout restores the code this checkout fell behind on, and the bare "git reset" is what CLEARS this warning. A checkout never touches an index entry its own pathspec excluded, so the .orchid/ paths HEAD carries and this stale index does not stay staged for deletion — and those staged deletions are what this check reads. The checkout alone leaves it firing (dogfood finding F31).
+  The reset writes no file and deletes no file: it brings the index to HEAD, and the live .orchid/ run state on disk is left exactly as it was. Whatever "git status" still shows under .orchid/ afterwards is this run's own working state — leave it to the run rather than hand-committing it.
+  The checkout is the half that can cost you something: ':(exclude).orchid' protects uncommitted durable run state and NOTHING else, so any other uncommitted edit in this checkout — a requirements.md being revised at the repository root is the one this has already cost an operator — is overwritten from HEAD with no reflog to recover it from. Commit or stash those first ("git status --short" names them).
+ORCHID_STALE_CHECKOUT_REMEDY
+}
+
+# ORCHID_KERNEL_PATHS -- what a run EXECUTES out of $ORCHID_ROOT. Eight
+# directories: the verb, the libraries it sources, the runner it hands off to,
+# the engine adapter that runner spawns, the role profile and prompt template
+# given to that engine. ONE list, because three separate consumers have to
+# agree on it or the guard below and the refresh that clears it drift apart
+# (lesson L016): orchid_root_stale asks whether this checkout's INDEX still
+# matches HEAD for these paths, orchid_kernel_clean asks whether anything local
+# would be lost by restoring them, and orchid_refresh_kernel restores exactly
+# them. docs/specs/kernel.md quotes the same list a fourth time, in prose, and
+# has to be edited with it.
+#
+# And ONE file, PROTOCOL.md, which is not code and is executed all the same.
+# The skills under skills/ carry no procedure of their own: each one tells the
+# driving engine to `cat "$ORCHID_ROOT/PROTOCOL.md"` and follow the section it
+# names, so the protocol on disk in this checkout IS the instruction stream a
+# tick runs. Leaving it out reproduced this guard's own failure class on the
+# one file that defines the procedure: a merge that changed only the protocol
+# neither refused nor refreshed, every verb kept working, and the run went on
+# executing the PRE-MERGE procedure with nothing anywhere saying so -- exactly
+# the stale-adapter shape of L018, one layer up. It is restored by the same
+# write-then-reset as any other path (a pathspec is a pathspec; nothing in the
+# refresh assumes a directory).
+#
+# What is deliberately NOT here is as load-bearing as what is. `.orchid/`
+# above all -- uncommitted durable run state is never inspected, never
+# compared and never written by any of the three -- but also `orchid.config`
+# (an operator edit awaiting `orchid config commit` is legitimate and
+# uncommitted by definition), README/docs other than the protocol itself, and
+# test fixtures. None of them changes what the launcher executes, so none of
+# them can refuse a command and none of them is ever restored out from under
+# an operator. requirements.md is the sharpest of those exclusions: it is an
+# operator's working document, edited uncommitted for long stretches, and
+# dogfood finding F31 is what happens when a refresh reaches one path further
+# than it must.
+#
+# `orchid.config`'s exclusion from THIS list is not the same statement as "no
+# code ever writes it" (T007). It is READ by every verb -- `merge_gate` lives
+# in it -- so a self-hosted merge that lands a config change leaves this
+# checkout resolving pre-merge values, and orchid_refresh_config below exists
+# for exactly that. What keeps the exclusion honest is its precondition: that
+# function writes only where the file is byte-equal to HEAD in both the tree
+# and the index, so an operator's pending edit still refuses it and is still
+# reported rather than restored. Membership HERE would mean something this
+# file must never mean -- that a pending config edit makes the checkout stale
+# and refuses every verb.
+ORCHID_KERNEL_PATHS=(bin lib libexec runners plugins roles skills templates PROTOCOL.md)
+
+# _orchid_head_branch_ondisk <dir> -- the short branch name <dir>'s HEAD points
+# at, or non-zero when there is none: a detached HEAD, a directory that is not
+# a work tree at all, or an admin directory this process cannot read. It reads
+# Git's OWN on-disk files and never spawns `git`.
+#
+# Why not `git -C <dir> symbolic-ref --short -q HEAD`, which is exactly what
+# this replaces and answers the identical question. The refusal at the bottom
+# of this file runs at SOURCE time -- ahead of every verb's own code, and so
+# ahead of lib/trust.sh's unattended gate, which rests on the invariant that
+# orchid touches NO repository in ANY way until an acknowledgement for it has
+# been found and the Git-version refusal has been cleared. Spawning `git` is
+# touching, and a source-time `git` is the FIRST process of the run, so it
+# lands in front of the acknowledgement lookup no matter how the gate is
+# written. `orchid_root_stale` asks about $ORCHID_ROOT -- orchid's own
+# installation, whose code is already executing -- rather than about a target
+# repository, but the honest fix is not to argue the distinction from inside
+# the process that is already running: it is to not need the subprocess.
+# Reading two files answers precisely what was asked, and leaves the one
+# remaining `git` below reachable only for a checkout PARKED ON THE
+# INTEGRATION BRANCH, i.e. only for $ORCHID_ROOT and never for a repository
+# the run was merely pointed at.
+#
+# Both layouts Git writes are handled, because the live run and the fixtures
+# use both. An ordinary checkout has a `.git` DIRECTORY holding HEAD. A linked
+# worktree -- `git worktree add`, which is how every task checkout in a run is
+# made, and how this guard's own fixtures build the stale root -- has a `.git`
+# FILE holding a single `gitdir: <path>` pointer to a per-worktree admin
+# directory that carries that worktree's own HEAD; the pointer is resolved
+# relative to <dir> when it is not absolute. Anything else (no `.git`, a
+# pointer that does not parse, an unreadable or empty HEAD) reports no branch,
+# which is the same fail-OPEN answer `symbolic-ref -q` gave for the ordinary
+# `brew`/`install.sh` prefix. A HEAD that is not `ref: refs/heads/...` is a
+# detached HEAD and likewise reports nothing, exactly as before.
+#
+# One deliberate difference from the subprocess: git resolves a work tree by
+# walking UP from <dir>, this does not. That only matters when $ORCHID_ROOT is
+# a plain subdirectory nested inside some UNRELATED repository's work tree, in
+# which case the old call reported that outer repository's branch and this
+# reports none. Reporting none is the better answer -- the outer repository is
+# not the one `orchid merge` advances -- and it is fail-open either way.
+_orchid_head_branch_ondisk() {
+  local dir="$1" gitdir line=""
+  gitdir="$dir/.git"
+  if [ -f "$gitdir" ]; then
+    [ -r "$gitdir" ] || return 1
+    # `read` reports failure at an EOF it reached without a newline, having
+    # nonetheless filled $line. Both files here normally end in one, but a
+    # hand-repaired pointer or HEAD may not, and treating that as "no branch"
+    # would silently disarm the guard -- so the status is only fatal when
+    # nothing was read.
+    read -r line 2>/dev/null < "$gitdir" || [ -n "$line" ] || return 1
+    case "$line" in
+      'gitdir: '*) gitdir="${line#gitdir: }" ;;
+      *) return 1 ;;
+    esac
+    case "$gitdir" in /*) ;; *) gitdir="$dir/$gitdir" ;; esac
+  fi
+  [ -d "$gitdir" ] && [ -r "$gitdir/HEAD" ] || return 1
+  line=""
+  read -r line 2>/dev/null < "$gitdir/HEAD" || [ -n "$line" ] || return 1
+  case "$line" in
+    'ref: refs/heads/'*) printf '%s\n' "${line#ref: refs/heads/}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# orchid_root_stale [root] -- lesson L018, and the counterpart to orchid_
+# stale_checkout above. That helper asks whether the checkout holding a run's
+# DURABLE STATE has fallen behind its branch; this one asks whether the
+# checkout holding orchid's own CODE has.
+#
+# bin/orchid resolves $ORCHID_ROOT from its own location, so every verb, every
+# lib/*.sh, every runners/* and every plugins/engines/*/run it executes is
+# read from that checkout's WORKING TREE -- never from the branch head.
+# `orchid merge` advances the integration branch with `update-ref` alone, and
+# deliberately so: it must not reach into any other checkout's index or
+# working tree. The consequence is that a checkout parked on that branch goes
+# on running PRE-MERGE code indefinitely while every merge reports success.
+# Observed live on 2026-08-06: a merged review-adapter fix stayed inert for
+# two further rounds, reviewer findings[] empty the whole time, because the
+# launcher kept executing the pre-merge adapter from a stale working tree.
+#
+# TWO conditions, and both are load-bearing:
+#
+#   1. This checkout is PARKED ON THE INTEGRATION BRANCH -- the same gate
+#      orchid_stale_checkout uses. Development happens on `main`, on a feature
+#      branch, in a task worktree; none of them is the branch a run merges
+#      onto, so none of them can be advanced by `orchid merge` behind anyone's
+#      back and none of them is ever asked about here, however dirty it is.
+#
+#      It is also, deliberately, the CHEAP condition and therefore the first
+#      one: it is answered from Git's on-disk HEAD alone (_orchid_head_branch_
+#      ondisk above), so NO `git` runs for a root that is not parked on that
+#      branch -- which is every root in an ordinary run. That is not an
+#      optimisation, it is the ordering this check owes the unattended-trust
+#      gate; the helper's own comment has the argument.
+#
+#      Said exactly, because "costs nothing" is the sort of claim that rots:
+#      a root with no branch at all (an install prefix, a detached HEAD)
+#      leaves this function having spawned nothing whatever, while a root that
+#      HAS a branch pays config_get's own text-processing subshells -- tr,
+#      sed, grep, tail, cut -- to learn the integration branch's name before
+#      the comparison on the line below can be made. Those read
+#      $ORCHID_ROOT/orchid.config and $HOME/.orchid/config, which are files,
+#      not repositories, and that is the distinction the ordering actually
+#      turns on: what the unattended gate forbids ahead of an acknowledgement
+#      is TOUCHING A REPOSITORY, and `git` is the only thing here that would.
+#      tests/test_stale_root.sh check 11 fences precisely that, and fences
+#      nothing about subshell count.
+#
+#      THIS FUNCTION IS NOW THE BRANCH HALF ALONE, and that split is T016's
+#      fix (lesson L036). The paragraph above argued that the content half
+#      was safe because it "is reachable only for a checkout parked on the
+#      integration branch, which is orchid's own root and never a repository
+#      a run was pointed at". That argument is wrong, and it was wrong for
+#      the one checkout orchid is actually developed and self-hosted in:
+#      $ORCHID_ROOT IS parked on the integration branch there, so the content
+#      half ran -- at SOURCE time, ahead of every verb's own code and
+#      therefore ahead of lib/trust.sh's gate -- and spent a `git` before any
+#      acknowledgement had been found. tests/test_unattended_trust.sh's
+#      fast-guard shim fails on ANY git or mktemp before an acknowledgement,
+#      and it did: the identical commit was green on every branch name but
+#      that one, which is exactly why nothing caught it. A revalidation
+#      environment that differs from the deployed environment in the one
+#      dimension under test converts a real failure into a silent pass.
+#
+#      So the content half moved OUT of source time (orchid_root_stale_
+#      content plus _orchid_root_stale_fire below). Nothing about WHAT is
+#      compared changed -- the index, the same pathspec, the same fail-open
+#      -- only WHEN it may be asked, and the answer is: not until the process
+#      is past the point where it could still be looking for an
+#      acknowledgement.
+#   2. This checkout's INDEX does not match HEAD for the kernel paths.
+#
+#      THE INDEX, not the working tree, and that is the difference between a
+#      usable tool and one that refuses to run in the checkout it is developed
+#      in. The earlier version compared the WORKING TREE to HEAD, which made
+#      every uncommitted kernel edit on this branch a refusal -- and orchid is
+#      developed in a checkout of its own integration branch, so "edit
+#      lib/common.sh, run orchid" was exactly the thing it refused. Exempting
+#      every OTHER branch does not save it: the one checkout the exemption
+#      cannot reach is the self-hosted one, which is the only checkout this
+#      guard ever fires in at all.
+#
+#      The index is also where the hazard actually leaves its mark, so this is
+#      not a trade of safety for convenience. `git update-ref` moves the
+#      branch and touches neither the index nor the working tree, so a
+#      checkout parked on the advanced branch is left with an index still
+#      describing the commit the branch moved OFF. That IS "this checkout fell
+#      behind", stated in the only place the fall is recorded. An operator
+#      editing kernel files leaves the index alone, so ordinary dirty
+#      development is silent here.
+#
+#      What that gives up, said plainly rather than discovered later: a
+#      checkout that fell behind and then had `git reset` run in it -- index
+#      resynced to HEAD, working tree still carrying the old code -- is not
+#      detected. From here it is byte-for-byte an operator with uncommitted
+#      edits, and refusing on that shape is the defect above. Nothing else
+#      covers it either: orchid_stale_checkout keys on a staged DELETION,
+#      which a reset has just cleared. It is a state only a deliberate `git
+#      reset` in the integration checkout produces, and the cost of catching
+#      it is refusing every ordinary edit, which is not a trade worth making.
+#
+# Fails OPEN on anything it cannot establish: no git on PATH, an $ORCHID_ROOT
+# that is not a work tree at all (the ordinary `brew`/`install.sh` prefix,
+# where there is no branch and no ref for anyone to advance), or a detached
+# HEAD. A guard that refused on "cannot tell" would brick installs that were
+# never at risk in the first place.
+#
+# L018 offered three structural remedies and this is the first of them. Why
+# not the other two:
+#
+#   * Resolve $ORCHID_ROOT from HEAD instead of the working tree. It would
+#     make the tool undevelopable -- an edit to lib/*.sh would have no effect
+#     until committed, so every iteration becomes a commit -- and it does not
+#     remove the hazard so much as invert it: `orchid` would then silently
+#     ignore the very working tree the operator is reading. It also needs a
+#     materialized copy of HEAD somewhere on disk to exec from (git cannot
+#     exec a blob), which is a second, cache-shaped source of staleness.
+#   * Have `orchid merge` refresh the other checkouts of the branch it
+#     advanced. It cannot know what those checkouts are (`git worktree list`
+#     is not the whole answer -- clones exist), and writing into a checkout
+#     the merging process does not own is the r-001 journal-loss incident's
+#     exact shape: the refresh that would have to run there is the one that
+#     clobbers uncommitted durable state. Refusing instead puts the decision
+#     in front of the operator standing in the affected checkout, who is the
+#     only party who knows what is uncommitted in it.
+#
+# What it publishes are OBSERVATIONS, never a verdict on what caused them,
+# and that distinction is the whole of this round's rework. TWO different
+# things produce an index that does not match HEAD, they are byte-for-byte
+# identical from here, and every attempt to tell them apart has instead
+# produced a confident wrong answer:
+#
+#   * `orchid merge` advanced the branch with `update-ref`, leaving the index
+#     describing the commit the branch moved off. Restoring costs nothing.
+#   * Someone ran `git add` on a kernel edit here. The index carries bytes
+#     that exist nowhere else, and restoring destroys them.
+#
+# `git diff --cached HEAD` reports both as an index that differs from HEAD.
+# Name-status does not separate them either (a merge that only modified files
+# gives M rows; a staged deletion gives D rows). `update-ref` leaves no
+# fingerprint distinguishing an advance made from this checkout's own process
+# from one made elsewhere. The reflog is not a proof either: it is optional,
+# expirable, and reading a cause out of it is the same guess wearing a
+# citation.
+#
+# So this function reports what it saw and the refusal below prints no
+# command that could discard work. That is a deliberate trade of helpfulness
+# for safety, made twice over: an earlier round diagnosed a HAND-EDITED kernel
+# as "behind" and prescribed `git checkout HEAD -- <kernel paths>`, and the
+# round after that did the identical thing to a STAGED-ONLY edit. Dogfood
+# finding F31 is that same shape costing a requirements.md edit. A refusal
+# that is merely unhelpful is one the operator recovers from in a minute; a
+# confident wrong diagnosis carrying a lossy remedy is not recoverable at all.
+#
+# The unstaged half is published alongside it as CONTEXT, not as a cause --
+# it never contributes to the decision to refuse (see condition 2 above), and
+# it is reported only so the operator reading the refusal knows the whole
+# state of the checkout before choosing what to do. It fails CLOSED to the
+# literal `?`, spelled out rather than printed raw by the refusal.
+#
+# Read-only: it only ever inspects, exactly like orchid_stale_checkout. The
+# branch it found is published so the refusal below can name it.
+orchid_root_stale() {
+  local root="${1:-${ORCHID_ROOT:-}}" integ cur
+  # config_get reads "$HOME/.orchid/config" unguarded, and this is the one
+  # caller that runs at SOURCE time -- ahead of any verb's own environment
+  # setup, and in a headless context (launchd, cron) where HOME can genuinely
+  # be unset. A `local` shadow is dynamically scoped, so config_get below sees
+  # it and nothing outside this function does: an unset HOME becomes "no user
+  # config layer" here rather than an `unbound variable` abort in every verb.
+  local HOME="${HOME:-}"
+  [ -n "$root" ] || return 1
+  # Condition 1 FIRST, and answered WITHOUT a subprocess: see _orchid_head_
+  # branch_ondisk above for why this may not be `git symbolic-ref`. Every root
+  # that is not parked on the integration branch -- an install prefix, a
+  # development checkout, a task worktree, every root in an ordinary run --
+  # leaves this function having executed nothing but file reads.
+  cur="$(_orchid_head_branch_ondisk "$root")" || return 1
+  [ -n "$cur" ] || return 1
+  integ="$(config_get "$root" integration_branch orchid/integration)"
+  [ "$cur" = "$integ" ] || return 1
+  ORCHID_ROOT_STALE_BRANCH="$cur"
+}
+
+# orchid_root_stale_content [root] -- condition 2, the half that needs `git`.
+# True (exit 0) when this checkout's INDEX does not match HEAD for the kernel
+# paths, having published what it saw; false when it matches, when git cannot
+# answer, or when there is no root.
+#
+# SPLIT OUT OF orchid_root_stale SO IT CANNOT RUN AT SOURCE TIME. Its caller
+# is _orchid_root_stale_fire below, and the only two moments that call THAT
+# are past the unattended-trust contract's boundary. Nothing else in the
+# kernel calls it, and a caller that wants the whole question asks the two in
+# order the way the gate at the bottom of this file does.
+orchid_root_stale_content() {
+  local root="${1:-${ORCHID_ROOT:-}}" staged unstaged
+  [ -n "$root" ] || return 1
+  # ORCHID_KERNEL_PATHS, never a literal list repeated here: see its own
+  # comment above for what is deliberately outside it, and orchid_refresh_
+  # kernel below for the restore that has to agree with it path for path. A
+  # `git diff` pathspec that matches nothing is not an error, so a root
+  # missing one of those directories is simply judged on the ones it has.
+  #
+  # Fails OPEN (`|| true`, an empty answer, no refusal) for the same reason
+  # the branch half does: a `git` that cannot answer must not brick an
+  # installation that was never at risk.
+  staged="$(git -C "$root" diff --cached --name-only HEAD -- \
+    "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null || true)"
+  [ -n "$staged" ] || return 1
+  # Only now, with a refusal already certain, is the context worth a second
+  # subprocess -- so this never runs for a root that was going to be allowed.
+  unstaged="$(git -C "$root" diff --name-only -- \
+    "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null || echo '?')"
+  ORCHID_ROOT_STALE_INDEX="$staged"
+  ORCHID_ROOT_STALE_UNSTAGED="$unstaged"
+}
+
+# _orchid_kernel_refresh_inflight <root> -- true while an `orchid merge`
+# running out of <root> is inside its own advance-then-refresh window.
+#
+# The window is real and unavoidable. `orchid merge` advances the integration
+# branch (`update-ref`) and then restores this checkout's kernel paths to the
+# new HEAD; between those two steps the index legitimately does not match
+# HEAD, which is precisely what orchid_root_stale reports. The merging process
+# shields its OWN children with ORCHID_ALLOW_STALE_ROOT=1; nothing reaches any
+# other verb started from this root in that window -- an operator's `orchid
+# status`, a heartbeat, a notify hook.
+#
+# WHAT THIS DOES NOT DO, and the whole of this round's rework: it does not let
+# those verbs RUN. An earlier version stood the refusal down while the window
+# was open, which meant a concurrent verb executed the pre-merge working tree
+# for the duration -- the exact failure L018 names, reintroduced by the
+# tolerance built to make the fix for L018 comfortable. The window is short,
+# but "short" is not a property the executed code has: an `orchid tick` that
+# starts in it runs a whole pass of pre-merge kernel, and the stale-adapter
+# incident this task exists for is what that costs.
+#
+# Waiting is not the remedy either, and the reason is structural rather than a
+# matter of taste. By the time this line is reached, the process has ALREADY
+# read this file -- and its verb, and every lib it sourced -- off the
+# pre-merge tree. Sleeping until the restore lands would leave it executing
+# the old bytes it is already holding, with only the illusion of currency. The
+# one correct action for a process that finds itself holding pre-merge code is
+# to stop, so that the NEXT invocation reads the refreshed tree from its first
+# byte.
+#
+# So this predicate no longer decides WHETHER to refuse. It decides WHICH
+# refusal is printed, and that is worth a file because the two are not the
+# same message at all: "a repair is in flight, nothing ran, retry in a moment"
+# sends the operator back to their prompt, while the full report sends them to
+# `git diff --cached` and a decision about their own uncommitted bytes. Told
+# the wrong one, an operator either goes diagnosing a condition that repaired
+# itself while they read, or retries forever against a merge that died. The
+# refusal is unconditional; only its accuracy depends on this file.
+#
+# IDENTITY, not a bare PID, and that is the second half of the rework. The
+# marker records the same triple lock_acquire writes into owner.json -- pid,
+# `_pid_start` and hostname -- and all three must still match for the marker
+# to be believed. A bare PID cannot survive its own writer: a merge SIGKILLed
+# mid-window leaves the file behind (an EXIT trap does not run on -9), the
+# kernel eventually hands that number to an unrelated process, and from then
+# on the marker names something alive. Under the old tolerance that silently
+# disarmed the refusal outright; even now it would mean an operator told
+# "retry in a moment" about a merge that died hours ago. A start time pins the
+# process the number was borrowed from, and the hostname keeps a runtime
+# directory that turns out to be shared from letting one host's PID answer
+# for another's -- the identical argument lock_acquire makes, and deliberately
+# the identical fields, so there is one notion of "that process is still
+# there" in this file rather than two that can drift.
+#
+# LIVENESS being the predicate is also what means nothing has to reap this
+# file. A marker and a separate garbage collector that disagreed about when it
+# had expired would be two predicates, and the gap between them is where a
+# stale marker starts speaking for a process that no longer exists. Every
+# failure here -- dead PID, recycled PID, foreign host, truncated file, no
+# file -- falls through to the full report, which is the answer that is never
+# unsafe. `.orchid/runtime/` is local-only and ephemeral by contract, so a
+# leftover marker is inert litter, not state.
+#
+# "Falls through to the full report" is only worth anything because the RESTORE
+# leaves something to report. A merge killed mid-restore is exactly the case
+# this predicate cannot cover -- its writer is gone, so the marker stops being
+# believed at the instant the repair stops happening -- and what keeps that
+# from becoming silence is orchid_refresh_kernel's ordering: it never lets a
+# path's index entry match HEAD before that path's working tree does, so a
+# half-done restore is still a stale index and still a refusal. Were it the
+# other way round, this file would be the only thing standing between a killed
+# merge and a run executing the pre-merge tree, and it is expressly not built
+# to be that.
+#
+# It is not a bypass, and now cannot become one: an operator (or a hostile
+# repository) who writes this file changes the TEXT of a refusal and nothing
+# else. ORCHID_ALLOW_STALE_ROOT=1 remains the one documented way to actually
+# run.
+#
+# Cost: two builtin file reads, `kill -0`, and -- only once those have passed
+# -- `hostname` and the `ps` inside _pid_start. It is evaluated only after
+# orchid_root_stale_content has already said yes, i.e. only when a refusal is
+# certain and a `git` has already run -- and that content half is itself
+# reached only from _orchid_root_stale_fire, past the point where an
+# acknowledgement could still be pending. It reads only under $ORCHID_ROOT -- orchid's
+# own installation, never a repository a run was merely pointed at -- so it
+# adds nothing in front of the unattended-trust gate. It deliberately does not
+# call orchid_runtime, which would `mkdir` on a read-only question.
+_orchid_kernel_refresh_inflight() {
+  local root="$1" marker pid="" pstart="" host=""
+  [ -n "$root" ] || return 1
+  marker="$root/.orchid/runtime/kernel-refresh"
+  [ -r "$marker" ] || return 1
+  # Three lines, one open. A marker truncated to fewer -- or written by a
+  # version of orchid that published only a PID -- leaves the later fields
+  # empty, and every field is required below, so the old one-line format reads
+  # as "cannot establish" rather than as a match. `read` reports failure at an
+  # EOF it reached without a newline having nonetheless filled the variable,
+  # so the group's status is discarded and content is what gets tested.
+  { read -r pid; read -r pstart; read -r host; } < "$marker" 2>/dev/null || true
+  # A non-numeric or empty PID is a truncated or hand-mangled marker: believe
+  # nothing, print the full report. Same direction as a dead PID.
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$pstart" ] || return 1
+  [ -n "$host" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ "$host" = "$(hostname 2>/dev/null || true)" ] || return 1
+  # The one that decides it, and last because the two checks above it are
+  # cheaper (only this and the `hostname` on the line before spawn anything):
+  # the PID is alive AND it is the same process that wrote the marker, not a
+  # later tenant of the number. An unanswerable `ps` yields an empty string
+  # here, which does not equal a recorded start, so "cannot tell" reports
+  # not-in-flight.
+  [ "$(_pid_start "$pid")" = "$pstart" ]
+}
+
+# orchid_kernel_refresh_open <root> / _close <root> -- the writer half of the
+# marker above, called by libexec/orchid-merge around its advance-and-refresh.
+#
+# `_open` is best-effort: a runtime directory that cannot be written costs the
+# accuracy of one refusal's wording, never the merge. It declines outright
+# rather than publish an identity it cannot prove -- an empty `_pid_start`
+# (a container with no `ps`) or an empty hostname would write a marker whose
+# fields the reader must reject anyway, and writing one is strictly worse than
+# writing none, since the file outlives this process and the next reader has
+# no way to know it was born unusable.
+#
+# Written through atomic_write, so a reader can never catch a half-written
+# marker: `>` truncates in place and would give a concurrent verb an empty
+# file, which is merely the safe answer rather than the true one.
+orchid_kernel_refresh_open() {
+  local rt start host
+  start="$(_pid_start "$$")"
+  [ -n "$start" ] || return 1
+  host="$(hostname 2>/dev/null || true)"
+  [ -n "$host" ] || return 1
+  rt="$(orchid_runtime "$1" 2>/dev/null)" || return 1
+  printf '%s\n%s\n%s\n' "$$" "$start" "$host" \
+    | atomic_write "$rt/kernel-refresh" 2>/dev/null || return 1
+}
+orchid_kernel_refresh_close() {
+  rm -f "$1/.orchid/runtime/kernel-refresh" 2>/dev/null || true
+}
+
+# orchid_kernel_clean <root> -- true when <root>'s kernel paths match HEAD in
+# BOTH the working tree and the index, i.e. when restoring them to HEAD would
+# destroy nothing an operator has not committed. It is the PRECONDITION
+# orchid_refresh_kernel is only ever called under, and it must be evaluated
+# BEFORE the ref that HEAD follows is advanced -- afterwards every path looks
+# drifted and the two cases (this checkout fell behind / someone is editing
+# the kernel here) are no longer distinguishable.
+#
+# Both halves are needed. `diff HEAD` compares the WORKING TREE to HEAD and so
+# misses a change that was staged and then reverted on disk; `diff --cached`
+# compares the INDEX to HEAD and catches exactly that. Untracked files are not
+# compared at all, so a local scratch file under plugins/ does not veto a
+# refresh -- and is not harmed by one either, because orchid_refresh_kernel
+# declines any path it would have to overwrite an untracked file to restore.
+# That has to be enforced there rather than here: whether an untracked file
+# collides with the branch is not knowable until after the ref has moved,
+# which is precisely when this precondition is no longer askable.
+#
+# Fails CLOSED, unlike orchid_root_stale: a git invocation that cannot answer
+# yields the literal `?`, which is not empty, so "cannot tell" reports dirty
+# and the refresh is declined. The cost of declining is a refusal the operator
+# clears by hand; the cost of a wrong "clean" is uncommitted work destroyed.
+orchid_kernel_clean() {
+  local root="$1"
+  [ -z "$(git -C "$root" diff --name-only HEAD -- \
+    "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null || echo '?')" ] || return 1
+  [ -z "$(git -C "$root" diff --cached --name-only HEAD -- \
+    "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null || echo '?')" ] || return 1
+}
+
+# orchid_refresh_kernel <root> [<base>] -- bring <root>'s kernel paths to HEAD,
+# so a checkout that fell behind its own branch runs the code that branch now
+# carries. The ONLY writer in this family; every other helper here inspects.
+#
+# <base> is the commit <root>'s HEAD was on at the moment orchid_kernel_clean
+# passed, i.e. before the ref advance. Callers that know it SHOULD pass it: it
+# is the snapshot every per-write safety check below is asked against, and
+# _orchid_kernel_writable says why a snapshot rather than the live index is
+# what that check needs. Omitting it falls back to the index, which differs
+# only when something stages a kernel edit inside the window.
+#
+# Callers MUST have established orchid_kernel_clean first (see above). Under
+# that precondition every path this touches was, moments earlier, byte-equal
+# to the commit HEAD has just moved off, so nothing uncommitted exists for it
+# to destroy. Nothing outside ORCHID_KERNEL_PATHS is read or written at all --
+# `.orchid/` run state and a pending `orchid.config` edit are not merely
+# preserved, they are never named. (orchid_refresh_config is a separate
+# function, asked a separate question by the same caller, and reaches
+# `orchid.config` only under its own precondition; this one still names
+# nothing outside the list.)
+#
+# THE ORDER IS THE SAFETY PROPERTY, and it is why this is not three lines of
+# `git`. orchid_root_stale reads the INDEX, so the index is the thing that
+# makes this checkout look current to every other process on the machine. It
+# is therefore written LAST, one path at a time, and only after that path's
+# WORKING TREE already carries HEAD's bytes:
+#
+#   working tree first (installed by rename), verified, index last.
+#
+# Nothing that makes the guard look satisfied may happen before the thing the
+# guard stands for is actually true. A refresh that dies at any instant --
+# SIGKILL, a full disk, a machine going down -- therefore leaves every path it
+# has not finished with an index entry still describing the commit the branch
+# moved off, which is exactly the state the refusal fires on. An interrupted
+# refresh REFUSES; it never permits.
+#
+# The version this replaces reset the index first and checked the file out
+# second, and an interruption between those two left a CURRENT INDEX over a
+# PRE-MERGE WORKING TREE -- which the guard reads as healthy and lets the run
+# execute. That is L018 reproduced inside the fix for L018, reachable by
+# nothing more exotic than ^C, and with no marker to save it: the in-flight
+# marker below is believed only while its writer is alive, so the merge dying
+# is precisely the case it cannot cover.
+#
+# Why not `git checkout HEAD -- <path>`, which writes the working tree and the
+# index in one command. Two reasons, and the first decides it: the order in
+# which it commits those two is an INTERNAL detail of git rather than a
+# documented guarantee, so the property above would hold only for as long as
+# another project's implementation happened not to change, and could not be
+# checked by reading this file. The second is the one earlier rounds hit: it
+# restores modified and missing files, but does NOT remove a file the new HEAD
+# no longer carries. That path stays in the index, `git diff HEAD` keeps
+# reporting it, and the refusal the refresh was supposed to clear survives the
+# remedy -- an operator following the instruction verbatim and watching it not
+# work. Both shapes are handled below in the one order: the tree first, then
+# `git reset` to bring the index to HEAD, which is also what DROPS the entry
+# for a path HEAD no longer has.
+#
+# THE PRECONDITION IS RE-ASKED PER WRITE, and that is the second safety
+# property. orchid_kernel_clean is evaluated by the caller BEFORE the ref
+# advance; the writes below happen after it, and an editor saving a kernel file
+# in between would have its bytes silently overwritten by a refresh that had
+# already been told the tree was clean. Passing a check once is not the
+# requirement -- not losing an edit is -- so every write here is preceded,
+# immediately, by _orchid_kernel_writable on the one path it is about to touch.
+# A path whose file has changed under the check is DECLINED, and the refusal
+# the operator then meets is the correct outcome: their bytes are still on
+# disk. That check is asked against <base> rather than against the index for
+# the reason spelled out there -- `git add` in the window moves the index and
+# the file together, so the index cannot serve as the record of what was here
+# when the precondition passed. What remains is the rename itself, which no
+# check can get inside; the window this closes is the whole advance-and-walk,
+# and what is left is one `mv`.
+#
+# Returns non-zero if any path could not be restored, leaving the refusal in
+# place for the operator rather than reporting a refresh that did not happen.
+orchid_refresh_kernel() {
+  local root="$1" base="${2:-}" p q seen rc=0 top top_phys root_phys
+  # `kernel_drift` rather than the obvious `drift`, and the prefix is load-
+  # bearing rather than taste. ci-local lints every shell file in ONE
+  # `shellcheck` invocation, which makes each sourced library visible to the
+  # files that source it -- so an array declared here is an array in the
+  # linter's model of every verb in libexec/, `local` or not. ShellCheck does
+  # not model bash's function scoping across a `source` boundary. Plain
+  # `drift` collided with the scalar of that name in libexec/orchid-plugins'
+  # `plugins drift` arm and charged THAT file three SC2178s and an SC2128 for
+  # a line it does not contain and an author who never touched it. Names
+  # introduced in this library are effectively global to the gate; keep them
+  # specific enough not to land on someone else's local.
+  local -a kernel_drift=()
+  # `git diff --name-only` prints paths relative to the REPOSITORY ROOT while
+  # the pathspecs below are read relative to `-C "$root"`. Those agree only
+  # when <root> IS the repository root, so that is required rather than
+  # assumed -- a root that is some repository's subdirectory would otherwise
+  # have each drifted path re-rooted one level down and quietly miss. Both
+  # sides must resolve to a non-empty physical path: a failed `cd` on each
+  # would compare equal as empty strings.
+  top="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$top" ] || return 1
+  top_phys="$(cd "$top" 2>/dev/null && pwd -P || true)"
+  root_phys="$(cd "$root" 2>/dev/null && pwd -P || true)"
+  [ -n "$top_phys" ] || return 1
+  [ "$top_phys" = "$root_phys" ] || return 1
+  # BOTH sides, unioned, because the two halves of a path's restore land at
+  # different moments and a refresh has to be able to finish one that was
+  # interrupted between them. `diff HEAD` names what the WORKING TREE still
+  # gets wrong; `diff --cached HEAD` names what the INDEX does -- and a path
+  # whose file was already written by a killed refresh appears only in the
+  # second. Listing the working tree alone would make this function a no-op
+  # against precisely the state it exists to repair, leaving a refusal that
+  # nothing but an operator's own `git reset` could clear.
+  #
+  # The index half is also what the guard itself reads, so this is the set of
+  # paths that have to be dealt with for the refusal to lift -- stated once,
+  # here, rather than inferred from a comparison that answers a neighbouring
+  # question.
+  #
+  # `-z` and a NUL-delimited read, never the newline-separated default. Without
+  # it `git diff --name-only` C-QUOTES any path holding a space, a quote, a
+  # backslash or a non-ASCII byte -- it prints `"roles/my role.md"`, quotes and
+  # all, or `"templates/caf\303\251.md"` -- and every consumer below would then
+  # be handed a name no file has: `cat-file -e HEAD:<that>` misses, the restore
+  # declines, and the refresh reports failure over a path it never looked at.
+  # `-z` disables the quoting entirely and terminates each name with a NUL, the
+  # one byte a path cannot contain, so the walk is exact for every name git can
+  # store. It also rules out `$(...)`, which strips NULs, hence the redirect.
+  #
+  # A path in both halves is deduped here rather than by `sort -u`, which has
+  # no portable NUL-delimited spelling; the list is at most a few dozen entries
+  # long, so the linear scan costs nothing and spawns nothing.
+  while IFS= read -r -d '' p; do
+    [ -n "$p" ] || continue
+    seen=0
+    if [ "${#kernel_drift[@]}" -gt 0 ]; then
+      for q in "${kernel_drift[@]}"; do
+        [ "$q" = "$p" ] || continue
+        seen=1
+        break
+      done
+    fi
+    [ "$seen" -eq 1 ] || kernel_drift+=("$p")
+  done < <(git -C "$root" diff -z --name-only HEAD -- \
+             "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null
+           git -C "$root" diff -z --cached --name-only HEAD -- \
+             "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null)
+  # No early return on an empty list, and that is the fail-CLOSED half a
+  # process substitution cannot carry in its exit status: a `git` that could
+  # not answer produces no output, which is indistinguishable here from "no
+  # drift". Falling through to the verification at the bottom -- which fails
+  # closed on that same broken `git` -- is what keeps "it printed nothing" from
+  # being reported as "refreshed".
+  if [ "${#kernel_drift[@]}" -gt 0 ]; then
+    for p in "${kernel_drift[@]}"; do
+      _orchid_refresh_one_path "$root" "$p" "$base" || rc=1
+    done
+  fi
+  # Success has to mean the thing its caller announces. A per-path failure
+  # already yields non-zero above; this catches the rest -- a drift list that
+  # did not name everything that drifted, anything that changed underneath the
+  # loop -- and fails CLOSED on a `git` that cannot answer, because the cost of
+  # a wrong "refreshed" is a run executing a tree nobody has looked at.
+  #
+  # BOTH halves, and for the caller's sake rather than this loop's: the working
+  # tree is what the next process EXECUTES, the index is what the guard READS,
+  # and a refresh that leaves either one behind has cleared nothing whatever
+  # its per-path steps returned.
+  if [ "$rc" -eq 0 ] \
+     && { ! git -C "$root" diff --quiet HEAD -- \
+            "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null \
+          || ! git -C "$root" diff --quiet --cached HEAD -- \
+            "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null; }; then
+    rc=1
+  fi
+  return "$rc"
+}
+
+# _orchid_refresh_one_path <root> <path> [<base>] -- bring ONE path to HEAD:
+# its WORKING TREE first, verified, and its index entry only afterwards.
+#
+# This is the body of the walk above, in a function because there is now a
+# SECOND caller (orchid_refresh_config below) and that order is the safety
+# property rather than an implementation detail. Two copies of an order are how
+# two copies come to disagree, and the copy that drifts is the one that leaves
+# a current index over a pre-merge file -- precisely the state the stale-root
+# guard reads as healthy and lets a run execute.
+#
+# The `kernel` in the two helpers it calls names the family, not a restriction:
+# both take a path and neither consults ORCHID_KERNEL_PATHS. WHICH paths may be
+# written, and on what evidence, is the caller's question; this one answers only
+# how.
+_orchid_refresh_one_path() {
+  local root="$1" p="$2" base="${3:-}"
+  if git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null; then
+    # _orchid_restore_kernel_file asks _orchid_kernel_writable itself,
+    # immediately before its rename, so nothing about this path is decided
+    # here at a distance from the write it decides.
+    _orchid_restore_kernel_file "$root" "$p" "$base" || return 1
+  else
+    # HEAD has dropped this path. The FILE goes first here too, and for the
+    # same reason: a verb or library still on disk after the branch removed
+    # it is pre-merge code that still executes, and an index entry dropped
+    # ahead of it would tell the guard otherwise. Nothing is lost so long
+    # as these bytes are still the ones the caller's precondition saw, which is
+    # exactly what the line below re-establishes at the moment of the
+    # removal rather than inheriting from a check made before the advance.
+    _orchid_kernel_writable "$root" "$p" "$base" || return 1
+    rm -f "$root/$p" || return 1
+    [ ! -e "$root/$p" ] || return 1
+  fi
+  # Only now: this path's working tree matches HEAD, so the index may say so.
+  git -C "$root" reset -q HEAD -- "$p" >/dev/null 2>&1 || return 1
+}
+
+# orchid_config_committed_clean <root> -- true when <root>/orchid.config holds
+# exactly what HEAD carries, in the WORKING TREE and the INDEX both, with no
+# untracked file sitting at that path.
+#
+# `orchid.config` is deliberately NOT in ORCHID_KERNEL_PATHS and must not
+# become a member of it: an edit awaiting `orchid config commit` is legitimate
+# and uncommitted by definition, so a checkout carrying one may neither be
+# refused nor have that edit restored out from under it. What this answers is
+# the narrower question `orchid merge` asks before it writes -- is there any
+# edit here at all to lose -- so that the committed configuration can be made
+# live in the one case where making it live costs nobody anything.
+#
+# Fails CLOSED, like orchid_kernel_clean and by the same `|| echo '?'`: a git
+# that cannot answer reports an edit, so "cannot tell" keeps the operator's
+# file and the caller says so instead of overwriting it.
+#
+# `--others` WITHOUT `--exclude-standard`, on purpose. An ignored orchid.config
+# is still somebody's file; the cost of treating it as one is a warning nobody
+# needed, and the cost of the other reading is their only copy.
+#
+# THAT CHOICE BINDS THE CALLER'S REPORT TOO. A caller that refuses here and
+# then describes what it refused over must be able to see the same file: a
+# plain `git status --porcelain` is silent about an ignored path, so the one
+# case this line was widened to catch would be the one the operator is told
+# nothing about. `orchid merge` passes `--ignored` for that reason. Widening
+# what counts as an edit and leaving the report where it was is how a
+# preserved file becomes an unfindable one.
+orchid_config_committed_clean() {
+  local root="$1"
+  [ -z "$(git -C "$root" diff --name-only HEAD -- orchid.config 2>/dev/null || echo '?')" ] || return 1
+  [ -z "$(git -C "$root" diff --cached --name-only HEAD -- orchid.config 2>/dev/null || echo '?')" ] || return 1
+  [ -z "$(git -C "$root" ls-files --others -- orchid.config 2>/dev/null || echo '?')" ] || return 1
+}
+
+# orchid_refresh_config <root> [<base>] -- make the committed orchid.config the
+# LIVE one in <root>: HEAD's bytes into the working tree, then the index, by
+# exactly the same write order the kernel refresh uses.
+#
+# Callers MUST have established orchid_config_committed_clean BEFORE the ref
+# advance that made this necessary (see `orchid merge`, which is the only
+# caller and asks it beside its own kernel question). Under that precondition
+# every byte replaced here is already in the object store. The per-write check
+# inside _orchid_refresh_one_path is re-asked against <base> regardless, so an
+# operator who saves this file inside the window is DECLINED rather than
+# overwritten, and the caller reports a refresh that did not happen as one that
+# did not happen.
+orchid_refresh_config() {
+  local root="$1" base="${2:-}"
+  _orchid_refresh_one_path "$root" orchid.config "$base"
+}
+
+# _orchid_file_is_commit_blob <root> <rev> <path> -- true when the file on disk
+# at <root>/<path> holds exactly the bytes <rev> carries for <path>, whatever
+# the index says about either. `git hash-object` applies the same clean filter
+# git would, so the comparison is the one git itself would make, and both sides
+# fail CLOSED: an unreadable file, a <rev> that does not carry <path>, a <rev>
+# that does not resolve at all, or a `git` that cannot answer is "not
+# established", never "equal".
+_orchid_file_is_commit_blob() {
+  local root="$1" rev="$2" p="$3" want got
+  want="$(git -C "$root" rev-parse --quiet --verify "$rev:$p" 2>/dev/null || true)"
+  [ -n "$want" ] || return 1
+  got="$(git -C "$root" hash-object -- "$p" 2>/dev/null || true)"
+  [ -n "$got" ] && [ "$got" = "$want" ]
+}
+
+# _orchid_file_is_head_blob <root> <path> -- the same question against the
+# commit this checkout is parked on right now.
+_orchid_file_is_head_blob() {
+  _orchid_file_is_commit_blob "$1" HEAD "$2"
+}
+
+# _orchid_file_is_index_blob <root> <path> -- the same question against the
+# INDEX rather than HEAD: does the file on disk still hold exactly the bytes
+# this checkout's index entry names? Fails CLOSED in every direction an answer
+# is unavailable, including the two that matter -- a path with no stage-0 entry
+# (untracked here, or unmerged) and a `git` that cannot answer -- both of which
+# report "not established" rather than "equal".
+_orchid_file_is_index_blob() {
+  local root="$1" p="$2" want got
+  want="$(git -C "$root" rev-parse --quiet --verify ":0:$p" 2>/dev/null || true)"
+  [ -n "$want" ] || return 1
+  got="$(git -C "$root" hash-object -- "$p" 2>/dev/null || true)"
+  [ -n "$got" ] && [ "$got" = "$want" ]
+}
+
+# _orchid_kernel_writable <root> <path> [<base>] -- true when putting HEAD's
+# bytes at <root>/<path>, or removing it, can destroy nothing. Asked by
+# orchid_refresh_kernel immediately before each of its two writes, and it is
+# the whole of what stands between a refresh and an operator's uncommitted
+# work.
+#
+# <base> is the commit this checkout's HEAD was on when orchid_kernel_clean
+# passed -- for `orchid merge`, the branch sha its CAS names as the expected
+# old value. Given it, the question below is asked against a SNAPSHOT, and
+# that is what makes the answer trustworthy rather than merely current.
+#
+# Three states are safe, and nothing else is:
+#
+#   * NO FILE THERE. Whatever the index or HEAD says, there are no bytes on
+#     disk to lose.
+#   * THE FILE STILL HOLDS THE BYTES THE PRECONDITION SAW. This is what closes
+#     the window the caller's precondition cannot. orchid_kernel_clean
+#     established working tree == index == <base> for these paths BEFORE the
+#     ref advance, so a file still equal to <base>'s blob has not been edited
+#     since. One that is not was written in the window -- an editor saving, a
+#     script, a second operator -- and its bytes exist here and nowhere else.
+#
+#     WHY <base> AND NOT THE INDEX, which holds those same bytes and needs no
+#     argument passed for it. Because the index is not a snapshot: `git add` in
+#     the window moves it and the file TOGETHER, so an operator who edits and
+#     stages a kernel file between the precondition and the write leaves a file
+#     that matches its index entry perfectly and is nonetheless the only copy
+#     of their work. Read against the index that state is indistinguishable
+#     from an untouched checkout and gets overwritten; read against <base> it
+#     is exactly what it is. The record has to be one the racing writer cannot
+#     also move, and only a commit is that. Callers with no <base> to offer
+#     fall back to the index, which is the same answer in every case but that
+#     one.
+#   * THE FILE ALREADY HOLDS HEAD'S BYTES. Nothing to lose either, and this
+#     arm is load-bearing rather than an optimisation: a refresh killed after
+#     it wrote a path the branch ADDED, but before that path's index entry
+#     landed, leaves an untracked file carrying HEAD's own content. Declining
+#     there would leave a refusal that no further refresh could ever clear.
+#
+# What that adds up to for the case the whole helper exists for: an untracked
+# file of the operator's at a name the branch has since added a tracked file
+# under matches neither <base> (which does not carry the path) nor HEAD (its
+# content is the operator's), so it is DECLINED and survives. That is the
+# r-001 journal-loss shape one directory over, and asking the question as
+# "would writing here destroy the only copy of something?" rather than as "is
+# this path tracked?" is what gets both it and the killed-refresh state right
+# at once.
+#
+# A <base> that does not resolve -- a caller passing something that is not a
+# commit -- makes the first arm unanswerable rather than true, so the file
+# falls through to the HEAD comparison and an ordinary path is DECLINED. The
+# failure mode of a bad argument is a refusal, never a write.
+#
+# Declining costs a refusal the operator clears by hand, having seen the file.
+# Overwriting costs a file only they had a copy of.
+_orchid_kernel_writable() {
+  local root="$1" p="$2" base="${3:-}"
+  [ -e "$root/$p" ] || return 0
+  if [ -n "$base" ]; then
+    if _orchid_file_is_commit_blob "$root" "$base" "$p"; then return 0; fi
+  elif _orchid_file_is_index_blob "$root" "$p"; then
+    return 0
+  fi
+  _orchid_file_is_head_blob "$root" "$p"
+}
+
+# _orchid_restore_kernel_file <root> <path> [<base>] -- put HEAD's bytes for
+# <path> into <root>'s WORKING TREE, touching the index not at all. <path>
+# exists in HEAD; the caller has established that. What the caller may NOT
+# establish on this function's behalf is that writing there is safe:
+# _orchid_kernel_writable is asked here, on the line above the rename, because
+# a precondition checked before the ref advance cannot speak for a file saved
+# since. <base> is passed straight through to it and means what it means
+# there.
+#
+# Written from the blob rather than checked out because the index must not move
+# yet (see the order in orchid_refresh_kernel above), and installed with a
+# RENAME so the file some concurrently-executing verb may be reading is
+# replaced whole: no instant exists in which a kernel file on disk holds half
+# of each version.
+#
+# The mode comes from HEAD's tree entry, because a rename brings the temporary
+# file's own mode with it -- and it is applied with `chmod +rw` / `+x` rather
+# than a literal 644/755 so that the operator's umask is respected exactly as
+# `git checkout` would respect it (symbolic modes with no `who` are masked by
+# it; numeric ones are not). Restoring the mode is what makes a newly merged
+# libexec verb executable rather than a file bin/orchid reports as an unknown
+# command. Anything that is not an ordinary file in HEAD -- a symlink, a
+# submodule -- is DECLINED rather than approximated, and the caller turns that
+# into a refusal an operator resolves.
+#
+# The last line is a verification, and it is not ceremony: the guard's promise
+# is that the index only ever says "current" over a working tree that IS
+# current, and this is where that becomes a checked fact instead of an
+# assumption -- the same question _orchid_file_is_head_blob answers above the
+# write, asked again below it. It cannot be `git diff HEAD -- <path>`: that
+# reads the INDEX for what exists, so a path the branch ADDED -- no index entry
+# here yet -- reports as deleted however faithfully the working tree now
+# carries it.
+_orchid_restore_kernel_file() {
+  local root="$1" p="$2" base="${3:-}" entry mode want dir tmp rc=0
+  entry="$(git -C "$root" ls-tree -r HEAD -- "$p" 2>/dev/null || true)"
+  [ -n "$entry" ] || return 1
+  # "<mode> SP <type> SP <object> TAB <path>" -- the default IFS splits on both
+  # the spaces and the tab, and the path is deliberately discarded: it is the
+  # one field git may quote and escape.
+  read -r mode _ want _ <<< "$entry"
+  case "$mode" in 100644|100755) ;; *) return 1 ;; esac
+  [ -n "$want" ] || return 1
+  dir="$root/$p"; dir="${dir%/*}"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  # Beside the destination, so installing it is a rename WITHIN one filesystem
+  # and therefore atomic. Dot-prefixed and named for what it is: one left
+  # behind by a killed refresh is untracked, is not a name bin/orchid can
+  # dispatch as a verb, and `git clean` clears it.
+  tmp="$(mktemp "$dir/.orchid-refresh.XXXXXX" 2>/dev/null)" || return 1
+  git -C "$root" cat-file blob "$want" > "$tmp" 2>/dev/null || rc=1
+  [ "$rc" -ne 0 ] || chmod +rw "$tmp" 2>/dev/null || rc=1
+  if [ "$rc" -eq 0 ] && [ "$mode" = 100755 ]; then
+    chmod +x "$tmp" 2>/dev/null || rc=1
+  fi
+  # THE LAST THING BEFORE THE WRITE, and deliberately after the blob, the mode
+  # and the temporary file are already in hand: everything above this line is
+  # preparation that touches nothing at the destination, so putting the check
+  # here leaves the `mv` on the next line as the entire remaining window. The
+  # caller's orchid_kernel_clean was asked before the ref advance and cannot
+  # speak for what happened since -- an editor saving this very file while the
+  # merge walked its drift list would otherwise be overwritten by a refresh
+  # that had been told, truthfully but no longer accurately, that the tree was
+  # clean. Declining leaves the operator's bytes on disk and the stale-root
+  # refusal standing, which is the outcome they can act on.
+  if [ "$rc" -eq 0 ] && ! _orchid_kernel_writable "$root" "$p" "$base"; then rc=1; fi
+  [ "$rc" -ne 0 ] || mv -f "$tmp" "$root/$p" 2>/dev/null || rc=1
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  _orchid_file_is_head_blob "$root" "$p"
+}
+
+# ---------------------------------------------------------------------------
+# THE PUMP SERVICE BINDING
+# ---------------------------------------------------------------------------
+# `orchid service install` schedules runners/orchid-pump against ONE checkout,
+# and nothing else in this kernel knows that happened. Both halves of the
+# live-run finding are that gap: the agent keeps firing after the run's last
+# task merges, and it keeps firing after the checkout it points at has been
+# removed -- a launchd agent waking on a schedule against a deleted directory,
+# with the ordering that avoids it ("uninstall the service before removing the
+# worktree") written down nowhere.
+#
+# So install records what it bound itself TO, in two places, because the two
+# answer different questions:
+#
+#   <repo>/.orchid/runtime/service.json  -- travels WITH the checkout. Any
+#     path about to REMOVE that checkout can see the schedule still pointing
+#     at it (orchid_service_removal_guard below) without consulting anything
+#     machine-global.
+#   $HOME/.orchid/services/<label>.json  -- OUTLIVES the checkout. Once the
+#     worktree is gone its own copy went with it, and this is the only thing
+#     left that can name which `orchid service uninstall` is still owed;
+#     `orchid doctor` reads it and says so.
+#
+# Both are runtime/machine-local state, never durable run state: a binding is
+# a fact about THIS machine's scheduler, not about the run, so it is never
+# committed, never carried across a clone, and never archived by `run new`.
+
+# The repo-local half. Deliberately under runtime/ (gitignored) and not beside
+# roadmap.md: a clone of an integration branch must not inherit a claim that
+# some other machine's launchd has a job pointed at it.
+orchid_service_repo_record() { echo "$1/.orchid/runtime/service.json"; }
+
+# THE ONE DERIVATION, and it lives here rather than in the runner that installs
+# with it. `orchid service install` names a schedule by hashing the canonical
+# repo path; every reader that has to decide whether a RECORDED name is one
+# install could have produced has to compute the same thing, and a second
+# spelling of it beside them is a rule that agrees with the writer until the day
+# it does not. So the runner derives through these (runners/orchid-service) and
+# so does the validation below: one function, asked two questions.
+#
+# sha256sum is preferred (near-universal on Linux); shasum -a 256 is the
+# fallback (macOS's always-available Perl-based tool, which typically lacks
+# sha256sum). Both are asked for the same digest of the same bytes, so which
+# one answers cannot change the label.
+orchid_service_hash12() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -c1-12
+  else
+    printf '%s' "$1" | shasum -a 256 | cut -c1-12
+  fi
+}
+
+# orchid_service_derive_label <repo> -- the label a schedule installed against
+# <repo> is named by. <repo> is the CANONICAL path (the runner resolves it with
+# `pwd -P` before anything derives from it), because that is what install hashed.
+orchid_service_derive_label() {
+  echo "com.orchid.pump.$(orchid_service_hash12 "$1")"
+}
+
+# orchid_service_cron_record_path <repo> -- where the linux (cron) branch keeps
+# the local record of the crontab line it installed. Here for the same reason
+# the label derivation is: install writes exactly this path and the artifact
+# validation below holds a record's claim to exactly this path, and those two
+# must be one statement rather than two that match today.
+orchid_service_cron_record_path() { echo "$1/.orchid/runtime/pump.cron"; }
+
+# THE REPO-LOCAL RECORD IS UNTRUSTED INPUT, and the predicates below are
+# what makes reading it safe. It lives inside the checkout a run is driven in --
+# under `runtime/`, which is gitignored and writable by every engine the run
+# spawns -- and every removing verb builds PATHS out of what it says: the
+# machine-local twin to open and delete, the refusal note to clear, the plist to
+# hand `launchctl unload` and then `rm -f`. Taken at face value those are two
+# arbitrary-path primitives wearing a schedule's clothes:
+#
+#   a LABEL is a path COMPONENT. `../../../../tmp/x` resolves the machine-local
+#     record to $HOME/.orchid/services/../../../../tmp/x.json -- outside the
+#     service store entirely -- and `uninstall` deletes exactly that file, plus
+#     its `.refusal` sibling, and unloads/removes the plist the same label
+#     derives under ~/Library/LaunchAgents.
+#   an ARTIFACT is a whole path, and uninstall's darwin arm runs `launchctl
+#     unload` on it and then `rm -f`s it. Recorded as an operator's own file,
+#     that is a delete of something orchid never wrote.
+#
+# So neither is believed because it is written down. Both are checked against
+# what `orchid service install` COULD HAVE PRODUCED FOR THE CHECKOUT THE RECORD
+# ITSELF NAMES -- the label against orchid_service_derive_label of that path,
+# the artifact against the one path that platform's install writes for that
+# schedule -- and anything else is refused before a single path built from it is
+# opened, probed, cleared or deleted.
+#
+# STRICTER THAN "CONTAINS NO TRAVERSAL", deliberately. A containment test admits
+# every other name a hand-edit could invent and leaves the next reader deciding
+# which of them are safe; matching the derivation admits exactly the set install
+# can write and needs no such judgment. The cost is that a record orchid did not
+# write is unusable rather than merely suspicious, which is why the refusal that
+# reports it names the record's own path: deleting that file by hand is the
+# recovery, and it is the same recovery the twins-disagree refusal already names.
+#
+# AND "MATCHING THE DERIVATION" MEANS COMPUTING IT, NOT RECOGNISING ITS SHAPE.
+# An earlier revision held the label to `com.orchid.pump.` plus twelve hex
+# characters, which is the CONTAINMENT rule -- it is what proves the label
+# cannot leave the store it is joined into, and that is all it proves. There are
+# 2^48 names of that shape and install can produce exactly one of them for a
+# given checkout, so a hand-edited record naming any other still resolved, still
+# had a machine-local record path and a plist path and a refusal path built from
+# it, and still reached `launchctl unload` and `rm -f` -- against whatever
+# schedule that other name happens to belong to, which on a machine driving more
+# than one run is another checkout's live agent. The shape test is kept, and
+# kept where a label becomes a path with no repo in hand to derive from
+# (orchid_service_machine_record, orchid_service_refusal_path, the store walk);
+# the IDENTITY question is orchid_service_label_derived below, and every
+# resolution asks that one.
+orchid_service_label_valid() {
+  local label="${1-}" hex
+  case "$label" in
+    com.orchid.pump.*) hex="${label#com.orchid.pump.}" ;;
+    *) return 1 ;;
+  esac
+  [ "${#hex}" -eq 12 ] || return 1
+  case "$hex" in
+    *[!0-9a-f]*) return 1 ;;
+  esac
+  return 0
+}
+
+# orchid_service_label_derived <label> <repo> -- 0 iff <label> is THE label
+# `orchid service install` derives for <repo>, and not merely a name shaped like
+# one. This is the identity question; orchid_service_label_valid above is the
+# containment one, and they are both asked because they fail differently: a
+# label that fails the shape test can escape the store, while a label that
+# passes it and fails this one names a REAL OTHER SCHEDULE -- the one whose
+# canonical path happens to hash to it.
+#
+# BOTH ARGUMENTS COME OUT OF THE SAME RECORD, which is worth being explicit
+# about: a forger who controls the file controls both fields and can always make
+# them agree by recording the victim checkout's path alongside the victim's
+# label. That is not what this predicate is for and it is not left unanswered --
+# it is a record naming a checkout that is not the caller, which is
+# orchid_service_binding_owned's question, asked by every removing caller
+# immediately after this one. What this rules out is the other half: a record
+# that names THIS checkout while pointing the removal at some other schedule.
+#
+# An empty <repo> is not derivable from and so is not a match. That is a record
+# with no `repo` field at all -- something neither install nor any orchid
+# version wrote -- and the refusal names the file, which is the recovery.
+orchid_service_label_derived() {
+  local label="${1-}" repo="${2-}"
+  orchid_service_label_valid "$label" || return 1
+  [ -n "$repo" ] || return 1
+  [ "$label" = "$(orchid_service_derive_label "$repo")" ]
+}
+
+# orchid_service_artifact_valid <label> <platform> <artifact> <repo> -- 0 iff
+# <artifact> is THE path `orchid service install` writes for that schedule on
+# that platform, for the checkout <repo> the record names. An EMPTY artifact is
+# valid: it is the "no claim" answer (an install predating the field, or a
+# machine-only resolution with no record to read), and the caller derives the
+# path for itself exactly as it always has.
+#
+# THE TWO PLATFORMS ARE CHECKED DIFFERENTLY BECAUSE THEIR ARTIFACTS LIVE IN
+# DIFFERENT PLACES (see runners/orchid-service's _svc_artifact). The launchd
+# plist is machine-local and named by the label; the cron record travels INSIDE
+# the checkout and so is named by the repo. Either way there is exactly ONE path
+# install could have written and equality is the test.
+#
+# THE LINUX ARM USED TO BE A SUFFIX TEST -- any absolute path ending
+# `/.orchid/runtime/pump.cron` -- on the reasoning that the record's directory
+# moves with the checkout and so cannot be pinned. It can: it is pinned to the
+# repo THE RECORD ITSELF NAMES, which is the pre-move path and is exactly what
+# install wrote. The suffix test admitted every other checkout's cron record on
+# the machine, and uninstall's linux arm removes that path -- so a record
+# naming a sibling run's `pump.cron` had this delete the file that sibling's
+# `uninstall` and `status` reason from, leaving its crontab line installed with
+# nothing local left describing it.
+#
+# AND THE MOVE IS STILL SERVED, because the equality is against the RECORDED
+# path rather than the caller's. After `git worktree move` the recorded artifact
+# is a file that no longer exists, which validates here and then loses to the
+# caller's own derivation in _svc_artifact -- whose preference is guarded on
+# `-f` precisely so a repo-local artifact that travelled with the checkout is
+# found under its new directory. Nothing about that changes; what changes is
+# that the recorded path is now held to one location instead of a family.
+orchid_service_artifact_valid() {
+  local label="${1-}" plat="${2-}" artifact="${3-}" repo="${4-}"
+  [ -n "$artifact" ] || return 0
+  case "$artifact" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  # No traversal component, at either end or in the middle. Redundant under both
+  # equality tests below, and kept as the statement that a recorded artifact is
+  # never a path that has to be normalised before it means anything.
+  case "$artifact" in
+    */../*|*/..) return 1 ;;
+  esac
+  case "$plat" in
+    darwin)
+      orchid_service_label_valid "$label" || return 1
+      [ -n "${HOME:-}" ] || return 1
+      [ "$artifact" = "$HOME/Library/LaunchAgents/$label.plist" ]
+      ;;
+    linux)
+      # The record's own repo, through install's own path builder. Empty is not
+      # a checkout to derive against, and so is not a match.
+      [ -n "$repo" ] || return 1
+      [ "$artifact" = "$(orchid_service_cron_record_path "$repo")" ]
+      ;;
+    # No platform, or one this kernel does not install for: there is no location
+    # to hold the artifact to, so a non-empty claim cannot be honoured.
+    *) return 1 ;;
+  esac
+}
+
+# The machine-local half. Fails (rather than resolving to /.orchid/services)
+# when HOME is unset or empty, so a detached scheduler invocation with no HOME
+# writes nothing instead of writing to the filesystem root.
+orchid_service_machine_dir() {
+  [ -n "${HOME:-}" ] || return 1
+  echo "$HOME/.orchid/services"
+}
+
+# orchid_service_machine_record <label> -- where that half lives, nonzero when
+# there is no machine-local store at all (see the accessor above). The
+# counterpart of orchid_service_repo_record, and introduced for the same reason
+# that one exists: the writer, `uninstall`'s removal, and the presence test all
+# have to name this file, and a second literal `$mdir/$label.json` spelled out
+# beside them is where one of them goes quietly blind the day the record moves.
+#
+# AND IT IS WHERE A LABEL BECOMES A PATH, so it is one of the two places the
+# derivation is enforced rather than assumed (orchid_service_refusal_path is the
+# other). Callers resolve their label from the repo-local record, which anything
+# with write access to the checkout can edit, and a label is joined in here as a
+# path component: nonzero for anything install could not have derived means no
+# caller can be handed a path outside the store to open, delete or unload, even
+# one that skipped the validation upstream.
+orchid_service_machine_record() {
+  local mdir
+  orchid_service_label_valid "$1" || return 1
+  mdir="$(orchid_service_machine_dir)" || return 1
+  echo "$mdir/$1.json"
+}
+
+# orchid_service_machine_bound <label> -- 0 iff the machine-local half of that
+# binding is on disk. The counterpart of orchid_service_bound, and the same
+# plain `-f`: this is the test orchid_service_bindings applies to every entry
+# it walks, so anything that walk would skip is not a binding here either.
+orchid_service_machine_bound() {
+  local f; f="$(orchid_service_machine_record "$1")" || return 1
+  [ -f "$f" ]
+}
+
+# orchid_service_uninstall_command <repo> -- the exact command that reverses
+# an install for <repo>, shell-quoted so an operator can paste it verbatim
+# even when the path contains a space. Centralized because refusals, warnings
+# and no-op notices across the service runner, the pump, the driver-facing
+# removal guard, `orchid doctor` and `orchid start` all name it, and a refusal
+# that names the wrong command is worse than one that names none.
+orchid_service_uninstall_command() {
+  local q; printf -v q '%q' "$1"
+  echo "orchid service uninstall --repo $q"
+}
+
+# orchid_service_teardown_command <repo> -- the command to name wherever an
+# operator is told to end a schedule AND remove the checkout it drives. One
+# command, not two, and that is the whole of this function.
+#
+# WHY THE ORDERING COULD NOT BE LEFT AS TWO LINES. Every surface that stated it
+# stated it as a pair -- uninstall first, `git worktree remove` second -- and a
+# pair of independent lines is exactly what a shell runs independently. The
+# uninstall REFUSES, by design, whenever it cannot prove the scheduler let the
+# job go: a `launchctl unload` that failed while launchd still holds the job, a
+# plist already gone with the job still loaded, a `launchctl list` that never
+# reached launchd at all. Pasted as two lines, that refusal is a message
+# scrolling past above a removal that runs anyway -- and what the removal then
+# destroys is the checkout, the repo-local binding inside it, and every path by
+# which the still-firing agent could have been found. The refusal has to be
+# load-bearing rather than advisory, so the removal is expressed as the SUCCESS
+# BRANCH of the uninstall (`orchid service teardown`, runners/orchid-service)
+# rather than as a step that follows it.
+#
+# ORCHID CANNOT INTERCEPT A RAW `git worktree remove` OR `rm -rf`, and nothing
+# here pretends otherwise. An operator who types one reaches no orchid code at
+# all; the only removals orchid can refuse are the ones it performs itself
+# (orchid_service_removal_guard, below). What this changes is the command an
+# operator is GIVEN, in every place they are given one, so that running what
+# they were told to run cannot reach the removal without the uninstall having
+# succeeded first.
+#
+# THE REMOVAL HALF IS OMITTED WHERE THERE IS NOTHING TO REMOVE. `git worktree
+# remove` applies only to a LINKED worktree -- which is what `orchid start`
+# creates for a run, and what the teardown ordering has always been about --
+# and a `.git` FILE is precisely what distinguishes one from an ordinary
+# checkout (orchid_checkout_git_alive above reads the same two shapes for the
+# same reason). Against a main checkout, or a path that is already gone, the
+# only thing orchid is owed is the uninstall, so that is all this names: a
+# `teardown` there would refuse, and naming a command that cannot apply is
+# worse than naming none.
+#
+# That test is a STAT and nothing more, which is what makes this callable from
+# runners/orchid-pump's finished-run and awaiting-acceptance lines -- both of
+# which are printed AHEAD of the unattended trust gate. Nothing target-
+# controlled may execute there and no path inside the target may be opened; a
+# `[ -f ]` neither opens nor executes, and the same arm already asks
+# orchid_checkout_git_alive, which reads a line out of that very file.
+orchid_service_teardown_command() {
+  local repo="$1" q
+  if [ -f "$repo/.git" ]; then
+    printf -v q '%q' "$repo"
+    echo "orchid service teardown --repo $q"
+  else
+    orchid_service_uninstall_command "$repo"
+  fi
+}
+
+# orchid_service_binding_write <repo> <label> <platform> <artifact> <interval_s>
+# Records both halves, or neither. Nonzero when either could not be written --
+# and never with a residue worse than a repo-local record whose schedule is not
+# there, which is the state `uninstall` exists to clear and the removal guard
+# is deliberately strict about.
+#
+# THE INVARIANT IS STATED IN THE READERS' TERMS, NOT THIS FUNCTION'S: a 0 from
+# here means orchid_service_bound answers yes for <repo> AND, wherever a
+# machine-local store resolves at all, orchid_service_machine_bound answers yes
+# for <label>. Returning 0 while either predicate answers no is the outcome the
+# whole binding exists to prevent -- the first is a live schedule the removal
+# guard waves the checkout through, the second is a live schedule with nothing
+# left to name it once that checkout goes -- so for EACH destination both the
+# obstruction check before the first byte and the postcondition after its commit
+# ask that exact predicate rather than trusting a syscall's exit status to imply
+# it. `mv` is the reason: it reports success while depositing a file INSIDE a
+# directory standing where the record belongs, at either path.
+#
+# WHY BOTH ARE REQUIRED. An earlier revision made the machine-local copy best
+# effort, on the reasoning that the schedule is installed either way. That has
+# the priority backwards: the copy inside the checkout dies WITH the checkout,
+# and the machine-local one is the only thing that can name a leftover schedule
+# afterwards -- which is the entire failure this binding exists to catch. A
+# `service install` that quietly recorded only the half that cannot survive
+# would report success while re-creating the invisible leftover.
+#
+# WHY IT IS PREPARE-THEN-COMMIT. Two files cannot be renamed as one operation,
+# so both are staged as temp files and only committed once BOTH have been
+# produced. A jq failure, a full disk, an unwritable HOME: any of them aborts
+# before either record exists, and the caller refuses the install with nothing
+# to clean up. The remaining window is the two renames themselves, and it is
+# ordered so the residue is the safe one -- see the commit block below.
+#
+# THE CALLER MUST CALL THIS BEFORE IT TOUCHES THE SCHEDULER. That ordering is
+# the other half of the atomicity, and it cannot be enforced from here, so it
+# is stated here: a record with no schedule is harmless (the removal guard is
+# merely conservative, `orchid doctor` names it, and `uninstall` clears it), a
+# schedule with no record is the invisible leftover. Write the intent, then
+# install; uninstall reverses both in the mirror order.
+orchid_service_binding_write() {
+  local repo="$1" label="$2" plat="$3" artifact="$4" interval="$5"
+  local rec rtmp mrec="" mtmp="" stamp
+  # The label this install derived, held to the same shape every READER now
+  # holds a recorded one to (orchid_service_label_valid). `install` always hands
+  # over its own derivation, so this cannot fire in practice -- it is here so the
+  # `|| mrec=""` below can mean ONE thing. Without it, a label the path builder
+  # rejected would resolve no machine-local record, and this function would
+  # quietly write only the half that dies with the checkout while returning 0:
+  # precisely the "recorded only the half that cannot survive" outcome the
+  # WHY BOTH ARE REQUIRED note above refuses to allow.
+  if ! orchid_service_label_valid "$label"; then
+    echo "orchid: '$label' is not a service label orchid derives — refusing to record a binding no removal could name" >&2
+    return 1
+  fi
+  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  rec="$(orchid_service_repo_record "$repo")"
+  # BOTH destinations are resolved before anything is written, because both are
+  # obstruction-checked below and that check has to happen before the first
+  # byte. Empty is the one accepted "there is no machine-local store" answer (an
+  # unresolvable HOME); the staging block below skips that half accordingly.
+  mrec="$(orchid_service_machine_record "$label")" || mrec=""
+  mkdir -p "$(dirname "$rec")" || return 1
+  # FAIL CLOSED WHEN THE RECORD PATH IS OBSTRUCTED BY A NON-REGULAR FILE, and
+  # a DIRECTORY there is the case that matters. `mv file dir` does not fail --
+  # it deposits the file INSIDE, exits 0, and leaves the record path still a
+  # directory. Every commit check below would pass, this function would return
+  # 0, and the caller would go on to install a live schedule -- while
+  # orchid_service_bound, whose whole test is `[ -f ]`, reports false. That is
+  # the one combination the binding exists to make impossible: a schedule
+  # firing on its interval and a removal guard waving the checkout through, so
+  # the operator deletes the target out from under a live agent and the only
+  # record naming it goes with the directory.
+  #
+  # Tested with the SAME `-f` the readers use, so this cannot drift away from
+  # them: anything orchid_service_bound would refuse to call a record is
+  # refused here, before a single byte is written and long before the
+  # scheduler is touched. A path that does not exist at all is the normal case
+  # and passes; so does a symlink to a regular file, which `mv` replaces
+  # outright rather than following.
+  #
+  # It says WHICH path, on stderr, before the caller's own refusal. This is the
+  # one failure here an operator can fix in a second and cannot otherwise
+  # diagnose: the caller's message names the repo and the obligation, and an
+  # obstruction inside `.orchid/runtime/` is invisible from it.
+  if [ -e "$rec" ] && [ ! -f "$rec" ]; then
+    echo "orchid: $rec is not a regular file — a binding recorded there would be invisible to every removal guard" >&2
+    return 1
+  fi
+  # THE SAME RULE FOR THE OTHER DESTINATION, because `mv file dir` behaves the
+  # same way at $mrec and because the two halves answer different questions: an
+  # obstruction here is invisible to a DIFFERENT set of readers, not to fewer.
+  # The machine-local copy is the one that outlives the checkout, so if it is
+  # not a file orchid_service_bindings will walk, then once the worktree is
+  # removed there is nothing anywhere naming the schedule -- `orchid doctor` has
+  # no binding to report and `orchid service uninstall` has no label to take.
+  # That is this task's original finding exactly: an agent waking on its
+  # interval against a deleted path, with no record left to name it.
+  #
+  # Refused BEFORE the repo-local temp is produced, not between the two commits,
+  # so the outcome is a failed install with nothing on disk at all rather than
+  # the conservative residue the commit block settles for. Nothing has been
+  # written and the caller has not reached the scheduler, which is the cheapest
+  # possible place to fail.
+  if [ -n "$mrec" ] && [ -e "$mrec" ] && [ ! -f "$mrec" ]; then
+    echo "orchid: $mrec is not a regular file — a binding recorded there could not name this schedule once the checkout is gone" >&2
+    return 1
+  fi
+  # Temp-then-rename by hand rather than `jq ... | atomic_write`: a producer
+  # that dies mid-pipe still lands its (empty) output through a pipeline, and
+  # a zero-byte service.json reads to every consumer below as "a service IS
+  # installed here" while naming nothing. Write the temp file first, check jq
+  # actually succeeded, and only then let it become the record.
+  rtmp="$rec.tmp.$$"
+  if ! jq -n --arg l "$label" --arg p "$plat" --arg r "$repo" --arg a "$artifact" \
+             --arg i "$interval" --arg at "$stamp" \
+        '{schema:1, label:$l, platform:$p, repo:$r, artifact:$a,
+          interval_s:($i|tonumber? // 0), installed_at:$at}' > "$rtmp" 2>/dev/null \
+     || [ ! -s "$rtmp" ]; then
+    rm -f "$rtmp" 2>/dev/null || true
+    return 1
+  fi
+
+  # The machine-local half is staged from the repo-local temp, so the two are
+  # byte-identical by construction rather than by two producers agreeing.
+  # A HOME that does not resolve at all is the one accepted exception: there is
+  # no machine-local store to write to, and refusing would break a cron install
+  # in an environment that never had one. Everything else -- an unwritable
+  # store, a failed copy -- aborts.
+  if [ -n "$mrec" ]; then
+    mtmp="$mrec.tmp.$$"
+    if ! ( umask 077; mkdir -p "$(dirname "$mrec")" && cp "$rtmp" "$mtmp" ) 2>/dev/null; then
+      rm -f "$rtmp" "$mtmp" 2>/dev/null || true
+      return 1
+    fi
+  fi
+  # COMMIT. Each cleanup below skips an unset machine-local temp rather than
+  # passing it as an empty argument -- `rm -f ""` is a portability question
+  # nobody should have to answer while cleaning up a failed write, and unlike
+  # the staging block above, `$mtmp` really can be empty here.
+  #
+  # The repo-local record goes first: it is what the removal guard
+  # reads, so if the process dies between these two renames the residue is a
+  # checkout that refuses to be removed (recoverable, and recoverable in the
+  # safe direction) rather than one that is removable while its schedule is
+  # live. A failed second rename is reported like any other failure and leaves
+  # that same conservative residue behind rather than unwinding into the unsafe
+  # one -- see the rollback's own note below.
+  if ! mv "$rtmp" "$rec" 2>/dev/null; then
+    rm -f "$rtmp" 2>/dev/null || true
+    [ -z "$mtmp" ] || rm -f "$mtmp" 2>/dev/null || true
+    return 1
+  fi
+  # AND THE RENAME'S OWN 0 IS NOT THE POSTCONDITION. The guard above rejects
+  # the obstruction this function can see coming; this asks the readers'
+  # question directly, of the file that actually landed, so a rename that
+  # "succeeded" into anything orchid_service_bound will not recognise is
+  # reported as the failure it is rather than as an install. It is the same
+  # predicate, called -- not a third spelling of `[ -f ]` to keep in step.
+  #
+  # The stray this recovers is the deposit a directory at $rec would have
+  # swallowed; naming it from $rtmp rather than re-deriving it means the
+  # cleanup cannot delete something this call did not write. Returning nonzero
+  # here costs the caller a refused install with no schedule behind it (the
+  # write happens BEFORE the scheduler is touched), which is the cheap side.
+  if ! orchid_service_bound "$repo"; then
+    [ ! -d "$rec" ] || rm -f "$rec/${rtmp##*/}" 2>/dev/null || true
+    [ -z "$mtmp" ] || rm -f "$mtmp" 2>/dev/null || true
+    return 1
+  fi
+  if [ -n "$mtmp" ] && ! mv "$mtmp" "$mrec" 2>/dev/null; then
+    # THE REPO-LOCAL RECORD IS LEFT STANDING, and that is the correction to an
+    # earlier revision that removed it here to keep "nonzero means nothing was
+    # recorded" literally true. It bought that sentence with the one outcome
+    # this whole mechanism exists to prevent: on a RE-install -- the same
+    # checkout, a schedule already live from the previous one -- the record it
+    # deleted was the PREVIOUS binding, not this call's. The operator was left
+    # with a running launchd agent, a removal guard that waves the checkout
+    # through, and nothing anywhere naming the schedule.
+    #
+    # Leaving it is the conservative residue the block above already commits
+    # to: a repo-local record with no fresh schedule behind it is the harmless,
+    # self-correcting state (the guard is merely strict about this checkout,
+    # `uninstall` clears it, and it needs no artifact to do so). $mrec is
+    # untouched by a failed `mv`, so a prior install's machine-local half also
+    # survives and `orchid doctor` still names it.
+    rm -f "$mtmp" 2>/dev/null || true
+    return 1
+  fi
+  # AND THIS RENAME'S 0 IS NOT ITS POSTCONDITION EITHER, for the same reason the
+  # repo-local one's is not: the guard at the top rejects the obstruction this
+  # call can see coming, and this asks the readers' own question of what
+  # actually landed. Same predicate, called -- not a third spelling of `[ -f ]`.
+  # The stray recovered is the deposit a directory at $mrec would have
+  # swallowed, named from $mtmp so the cleanup cannot delete anything this call
+  # did not write.
+  #
+  # The repo-local record is left standing here for exactly the reason the
+  # failed-rename arm above leaves it: on a re-install it is the PREVIOUS
+  # binding, and deleting it would hand the operator a live schedule with a
+  # removal guard that waves the checkout through -- the outcome this whole
+  # mechanism exists to prevent. Nonzero still means no install: the caller
+  # refuses before it touches the scheduler.
+  if [ -n "$mtmp" ] && ! orchid_service_machine_bound "$label"; then
+    [ ! -d "$mrec" ] || rm -f "$mrec/${mtmp##*/}" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
+# orchid_service_binding_remove <repo> <label> -- reverses the above. Both
+# removals are unconditional and quiet: `uninstall` has already established
+# that something was installed, and a binding record that was never written
+# (an older install, a HOME that does not resolve) must not make uninstall
+# fail.
+#
+# MIRROR ORDER: the machine-local copy goes first, so the record left behind by
+# an interrupted uninstall is the repo-local one -- the same conservative
+# residue the write commits to, a checkout that refuses removal until the
+# operator re-runs a verb that is idempotent anyway. Removing the repo-local
+# copy first would leave the opposite: `orchid doctor` reporting a schedule
+# that is already gone while the guard waves the checkout through.
+orchid_service_binding_remove() {
+  local repo="$1" label="$2" mrec
+  if mrec="$(orchid_service_machine_record "$label")"; then
+    rm -f "$mrec" 2>/dev/null || true
+    # The refusal a scheduled pump left beside it goes too: it describes a
+    # schedule that no longer exists, and left behind it would have `orchid
+    # doctor` reporting a failure nobody can act on. Through the shared clearer,
+    # not a second spelling of the removal (see orchid_service_refusal_clear's
+    # own note): install and the pump retire the same evidence for their own
+    # reasons, and three copies of `rm -f <path>.refusal` is where one of them
+    # keeps a path the other two have moved.
+    orchid_service_refusal_clear "$label"
+  fi
+  rm -f "$(orchid_service_repo_record "$repo")" 2>/dev/null || true
+  return 0
+}
+
+# orchid_service_binding_present <repo> <label> -- 0 iff EITHER half of the
+# binding is on disk. This is what `uninstall` asks before refusing, and the
+# reason it asks at all is the prepare-then-commit ordering above: a record is
+# written before the scheduler is touched, so an install that failed at the
+# scheduler leaves a record with no artifact. That record makes the removal
+# guard refuse the checkout, so the only verb that can clear it must not itself
+# require the artifact to be there.
+#
+# WHICH IS NOT THE SAME AS CLEARING IT BLIND. A missing artifact is not proof
+# that nothing is loaded -- removing a plist unloads nothing -- so the darwin
+# branch asks the scheduler before removing anything (runners/orchid-service,
+# _svc_orphan_darwin) and holds this record when the answer is "still loaded":
+# with the artifact already gone, it is the only name that agent has left.
+orchid_service_binding_present() {
+  local repo="$1" label="$2"
+  [ ! -f "$(orchid_service_repo_record "$repo")" ] || return 0
+  orchid_service_machine_bound "$label"
+}
+
+# orchid_run_status_terminal <run_status> -- 0 iff the value names a run state
+# that a run never leaves on its own. Today that is `complete` alone: PROTOCOL's
+# COMPLETION makes `orchid run accept --reason --evidence` the only path into
+# it, and nothing at all leads out, so every scheduled wake against a run in
+# this state is a certain no-op rather than a poll that a later pass might find
+# resolved.
+#
+# A PREDICATE, TAKING THE VALUE. The three surfaces that report a schedule with
+# nothing left to do all ask it: runners/orchid-pump, on the wake itself;
+# `orchid doctor`, about every binding on this machine, which is what an
+# operator can actually read once that wake's output has gone to the
+# scheduler's /dev/null; and `orchid service status`, the verb somebody runs to
+# ask whether a schedule is still needed. They must agree, or one of them keeps
+# a checkout under a schedule another has already called finished. It takes the
+# STRING rather than the repo so this file needs nothing from
+# lib/frontmatter.sh: each caller already reads run_status its own way and
+# simply hands the value over.
+#
+# Scoped to the SERVICE lifetime question deliberately. Other run_status tests
+# in this tree (`run new`'s rollover guard, the driver's run-complete boundary)
+# ask narrower questions of their own and are not folded in here.
+orchid_run_status_terminal() { [ "${1:-}" = complete ]; }
+
+# orchid_run_status_awaits_operator <run_status> -- 0 iff the run has stopped
+# somewhere only a HUMAN can move it from, without having stopped for good.
+# Today that is `accepting` alone.
+#
+# THIS IS THE STATE THE LIVE FINDING ACTUALLY OBSERVED, and reporting only
+# `complete` missed it entirely. `runners/orchid-drive` takes the mechanical
+# half of COMPLETION itself: the pass that finds every task `done` runs `run
+# advance accepting` and then stops at a `run-complete` boundary, because the
+# acceptance evidence and `orchid run accept` are judgment work no verb decides.
+# From that pass onward the run sits in `accepting` -- six tasks done, the work
+# merged and released -- and every scheduled wake re-derives the same boundary,
+# declines to wake anybody for it, and exits 0. The schedule costs a full
+# deterministic pass every interval and can never produce anything again until
+# an operator types a command no scheduler is able to type.
+#
+# DELIBERATELY NOT FOLDED INTO orchid_run_status_terminal, which several
+# surfaces phrase as "nothing here will ever change again". That sentence is
+# false here: `accepting -> running` is a legal edge (libexec/orchid-run's
+# transition table), so this run is parked rather than finished, and a report
+# that called it finished would be telling an operator to tear down a checkout
+# they may be about to accept from. The two predicates answer different
+# questions and every caller asks both.
+orchid_run_status_awaits_operator() { [ "${1:-}" = accepting ]; }
+
+# orchid_run_accept_command <repo> -- the verb that moves an `accepting` run,
+# spelled for a reader who is not standing in <repo> (`orchid doctor` reports
+# on every binding this machine has, and is usually run from none of them).
+# Centralized for the same reason orchid_service_uninstall_command is: three
+# surfaces name it, and a hand-off naming a command that does not exist is
+# worse than one naming none. The placeholders are left as placeholders --
+# `--reason` is the operator's own words and `--evidence` is a file only they
+# can produce (INV-08), so there is no full command line to paste.
+orchid_run_accept_command() {
+  local q; printf -v q '%q' "$1"
+  echo "cd $q && orchid run accept --reason \"<why>\" --evidence <acceptance evidence file>"
+}
+
+# orchid_checkout_git_alive <path> -- 0 iff <path> is still a git checkout with
+# a repository behind it. The other half of "does the target still exist": a
+# directory can outlive its repository, which is exactly what `git worktree
+# remove`, `git worktree prune`, or a deleted main checkout leaves behind, and
+# the very first thing the deterministic driver does is read a ref.
+#
+# ANSWERED FROM THE FILESYSTEM ALONE -- no `git` is run. That is not an
+# optimization. runners/orchid-pump asks this BEFORE the unattended trust gate
+# (a schedule must not poll a dead path forever waiting for a gate that will
+# never be reached), and nothing target-controlled may execute ahead of that
+# gate. A `.git` DIRECTORY is an ordinary checkout; a `.git` FILE is a linked
+# worktree whose `gitdir:` line is what a pruned registration leaves dangling;
+# anything else is not a checkout at all. Reading that one line with the
+# shell's own `read` executes nothing from the target.
+#
+# SHARED, because the pump's refusal goes to the scheduler's /dev/null and the
+# surfaces that make it readable -- `orchid doctor`'s binding walk and `orchid
+# service status` -- have to call a dead target dead on exactly the same
+# evidence. Two spellings of this test is one of them going quietly blind.
+orchid_checkout_git_alive() {
+  local path="$1" line gitdir
+  # An `if`, not `[ -d ... ] && return 0`: a caller running under `set -e`
+  # would abort on an AND-list whose left side fails.
+  if [ -d "$path/.git" ]; then return 0; fi
+  [ -f "$path/.git" ] || return 1
+  IFS= read -r line < "$path/.git" 2>/dev/null || line=""
+  case "$line" in
+    "gitdir: "*) gitdir="${line#gitdir: }" ;;
+    *) return 1 ;;
+  esac
+  gitdir="${gitdir%$'\r'}"
+  [ -n "$gitdir" ] || return 1
+  case "$gitdir" in
+    /*) ;;
+    *) gitdir="$path/$gitdir" ;;
+  esac
+  [ -e "$gitdir" ]
+}
+
+# orchid_checkout_registered_path <path> -- the checkout path GIT ITSELF has
+# registered for the linked worktree at <path>, canonicalized; nonzero (and
+# nothing on stdout) when <path> is not a linked worktree, or its registration
+# cannot be read, or the path it names is not there.
+#
+# THE ADMINISTRATIVE DIRECTORY POINTS BACK, and that back-pointer is the one
+# thing on disk a `cp -R` of a checkout does not reproduce. A linked worktree's
+# `.git` FILE names `<common-dir>/worktrees/<id>`, and that directory's own
+# `gitdir` file names the worktree's `.git` file in return
+# (gitrepository-layout(5)). `git worktree move` rewrites the back-pointer --
+# that is most of what the verb does -- and `git worktree repair` exists to
+# rewrite it after a move somebody made by hand. A COPY rewrites neither: the
+# copy's `.git` file names the SAME administrative directory, whose `gitdir`
+# still names the ORIGINAL checkout. So "the registration names SOMEBODY ELSE"
+# is exactly "I am a duplicate of that checkout", which no comparison of record
+# CONTENT can establish (a copy carries byte-identical records) and which is
+# half of what orchid_service_binding_owned below has to decide.
+#
+# ONLY HALF, AND THE HALF THAT REFUSES. The converse does not follow: every
+# linked worktree is registered at its own path, so "the registration names me"
+# is true of a worktree added five minutes ago that was never bound to
+# anything. Read as a proof of ownership it let such a worktree act on a
+# neighbour's binding record; see the paragraph on it in
+# orchid_service_binding_owned.
+#
+# READ, NEVER RUN, for the same reason orchid_checkout_git_alive directly above
+# reads rather than runs: this is asked on a refusal path, where a `git` that
+# could itself fail is a worse answer than the one bit being asked for, and
+# where the target must not be given an execution. Both file reads use the
+# shell's own `read`.
+#
+# The registered value is canonicalized (`cd` + `pwd -P`) rather than compared
+# as text: every path this kernel records is physically resolved, and git's own
+# is whatever was current when the worktree was added or moved -- on a macOS
+# `/var/folders` tree those are two spellings of one directory, and comparing
+# them literally would call a genuine worktree a copy.
+orchid_checkout_registered_path() {
+  local path="$1" line="" gitdir="" reg=""
+  [ -f "$path/.git" ] || return 1
+  # `|| true`, never `|| return 1`: `read` reports FAILURE at end-of-file, which
+  # is what a final line with no trailing newline looks like -- and it has
+  # already assigned what it read. Treating that status as an error would make
+  # this predicate answer "not registered" for a perfectly good pointer file
+  # somebody wrote with `printf '%s'`. Emptiness is the real failure, and it is
+  # what is tested instead, on both reads.
+  IFS= read -r line < "$path/.git" 2>/dev/null || true
+  case "$line" in
+    "gitdir: "*) gitdir="${line#gitdir: }" ;;
+    *) return 1 ;;
+  esac
+  gitdir="${gitdir%$'\r'}"
+  [ -n "$gitdir" ] || return 1
+  case "$gitdir" in
+    /*) ;;
+    *) gitdir="$path/$gitdir" ;;
+  esac
+  [ -f "$gitdir/gitdir" ] || return 1
+  IFS= read -r reg < "$gitdir/gitdir" 2>/dev/null || true
+  reg="${reg%$'\r'}"
+  # The recorded value is the `.git` FILE's path; the checkout is its directory.
+  # Stripped with a suffix removal rather than a `dirname` so a value that does
+  # NOT end that way is left alone and simply fails the `-d` below, instead of
+  # being silently turned into its parent directory and compared as if it had
+  # been understood.
+  reg="${reg%/.git}"
+  [ -n "$reg" ] || return 1
+  [ -d "$reg" ] || return 1
+  ( cd "$reg" 2>/dev/null && pwd -P ) || return 1
+}
+
+# NO COMBINED "is this target alive" WRAPPER, deliberately. Every caller of the
+# predicate above has already asked `[ -d ... ]` for itself and has a DIFFERENT
+# thing to say about each answer -- the pump refuses with one message for a
+# deleted directory and another for a dead repository, and `orchid doctor`
+# warns in the same two ways -- so a helper folding the two together would be
+# used by nobody and read as the shared predicate while being neither.
+
+# orchid_service_bound <path> -- 0 iff a pump service records itself as
+# installed against that exact checkout. A plain file test on purpose: this is
+# asked from EXIT traps and from refusal paths, where anything that could
+# itself fail (a git call, a jq parse) would be a worse answer than the one
+# bit being asked for.
+#
+# The path comes from orchid_service_repo_record rather than being spelled out
+# again here. That accessor is an `echo` and cannot fail, so it costs the
+# paragraph above nothing -- and a second literal spelling of the record's
+# location would be a place for the guard to go quietly blind the day the
+# record moves, which is the one failure this predicate must not have.
+orchid_service_bound() { [ -f "$(orchid_service_repo_record "$1")" ]; }
+
+# orchid_service_removal_guard <path> -- 0 when <path> is safe to remove, 1
+# (naming the uninstall command on stderr) when a pump service is still
+# installed against it.
+#
+# THE ORDERING THIS ENCODES: uninstall the service, THEN remove the checkout.
+# Reversed, the scheduler keeps waking against a path that is no longer there,
+# and the record that would have named the leftover schedule was inside the
+# directory that was just deleted. Every path in this kernel that removes a
+# checkout asks this first, so the rule holds wherever a removal is added
+# later rather than only where one exists today.
+#
+# The command it names comes from orchid_service_teardown_command above, not
+# from the uninstall composer: the operator reading this refusal is mid-removal,
+# so handing them the uninstall alone puts them back at the two independent
+# steps -- and it is a pure `[ -f ]` and an echo, so it costs this predicate
+# none of the "nothing here may itself fail" property its callers depend on.
+orchid_service_removal_guard() {
+  local path="$1"
+  [ -n "$path" ] || return 0
+  orchid_service_bound "$path" || return 0
+  echo "orchid: refusing to remove $path: a pump service is still installed against it" >&2
+  echo "orchid: uninstall the schedule FIRST, then remove the checkout, as one operation -- $(orchid_service_teardown_command "$path")" >&2
+  return 1
+}
+
+# orchid_service_bindings -- one "<label><TAB><repo>" line per machine-local
+# binding record. Silent and successful when the store does not exist: an
+# operator who never installed a service has no bindings, which is not a
+# finding.
+orchid_service_bindings() {
+  local mdir f label repo
+  mdir="$(orchid_service_machine_dir)" || return 0
+  [ -d "$mdir" ] || return 0
+  for f in "$mdir"/*.json; do
+    [ -f "$f" ] || continue
+    label="$(jq -r '.label // ""' "$f" 2>/dev/null || echo "")"
+    repo="$(jq -r '.repo // ""' "$f" 2>/dev/null || echo "")"
+    [ -n "$label" ] || continue
+    [ -n "$repo" ] || continue
+    # A label reaches every reader of this walk as a PATH COMPONENT -- `orchid
+    # doctor` reads the refusal note beside it, `uninstall` resolves the record
+    # to delete -- so what is emitted here is held to install's own derivation
+    # exactly as the repo-local record's label is (orchid_service_label_valid).
+    # The `.label` FIELD is what is checked rather than the filename it was
+    # found under, because the field is what every one of those readers uses.
+    orchid_service_label_valid "$label" || continue
+    printf '%s\t%s\n' "$label" "$repo"
+  done
+}
+
+# orchid_service_binding_label_for <repo> -- the label of the machine-local
+# binding installed against exactly <repo>, nonzero when nothing names it.
+#
+# EXACT STRING MATCH, never a resolution: the label is a hash of the canonical
+# path, `pwd -P` cannot resolve a directory that no longer exists, and the whole
+# reason to look a binding up by path is that its checkout may be gone. The
+# recorded value is also what `orchid doctor` prints back at the operator, so
+# matching it literally is matching what they were told.
+orchid_service_binding_label_for() {
+  local want="$1" label repo
+  [ -n "$want" ] || return 1
+  while IFS="$(printf '\t')" read -r label repo; do
+    [ -n "$label" ] || continue
+    if [ "$repo" = "$want" ]; then
+      printf '%s\n' "$label"
+      return 0
+    fi
+  done < <(orchid_service_bindings)
+  return 1
+}
+
+# orchid_service_binding_field <record> <key> -- one field out of a binding
+# record as a plain string; nonzero (and nothing on stdout) when the record is
+# not there or does not parse. `tostring` because `interval_s` is written as a
+# NUMBER and every caller here compares strings.
+orchid_service_binding_field() {
+  local f="$1" k="$2"
+  [ -f "$f" ] || return 1
+  jq -r --arg k "$k" '(.[$k] // "") | tostring' "$f" 2>/dev/null || return 1
+}
+
+# The facts orchid_service_identity resolves -- three about the SCHEDULE, one
+# about the CALLER, and its account of where they came from. Globals rather than
+# a composed stdout line: `artifact` is a path that may contain anything, and a
+# caller splitting a joined line back apart is a second parser to keep in step
+# with the writer.
+#
+# ShellCheck rationale for the SC2034 directives here and on orchid_service_identity
+# below: these are the library's public results, written here and read by
+# runners/orchid-service after the sourced function returns, so nothing in this file
+# reads them. They are marked at BOTH ends because ShellCheck reports an unused name
+# once, at a single one of its assignments, and every one of these names is assigned
+# both at its declaration and again in each of the resolver's arms.
+# ShellCheck rationale: this public result is read by runners/orchid-service after sourcing this library.
+# shellcheck disable=SC2034
+ORCHID_SERVICE_ID_LABEL=""
+# ShellCheck rationale: this public result is read by runners/orchid-service after sourcing this library.
+# shellcheck disable=SC2034
+ORCHID_SERVICE_ID_ARTIFACT=""
+# ShellCheck rationale: this public result is read by runners/orchid-service after sourcing this library.
+# shellcheck disable=SC2034
+ORCHID_SERVICE_ID_PLATFORM=""
+# ShellCheck rationale: this public result is read by runners/orchid-service after sourcing this library.
+# shellcheck disable=SC2034
+ORCHID_SERVICE_ID_SOURCE=""
+# The checkout path the resolved binding says it was INSTALLED AGAINST. Not one
+# of the three facts about the schedule -- it is the fact about the CALLER that
+# orchid_service_binding_owned below is asked of, and it is exposed rather than
+# re-read because the caller must not open the record a second time and get a
+# different answer from the one this resolution was made on.
+# ShellCheck rationale: this public result is read by runners/orchid-service after sourcing this library.
+# shellcheck disable=SC2034
+ORCHID_SERVICE_ID_REPO=""
+# WHY a record was rejected as something install could not have written -- one
+# sentence naming the field, the value and the record it came from. The caller
+# prints it above its own refusal: "this record is not usable" is not actionable
+# on its own, and the recovery (repair or delete that file) needs the path.
+# ShellCheck rationale: this public result is read by runners/orchid-service after sourcing this library.
+# shellcheck disable=SC2034
+ORCHID_SERVICE_ID_REJECTED=""
+
+# THE FIELDS THAT ARE A SCHEDULE'S IDENTITY, spelled once because two different
+# questions are asked of exactly this set and their answers only compose while
+# the sets are the same one. _orchid_service_record_usable below reads all four
+# to decide whether ONE record is something install could have written;
+# orchid_service_identity's twins walk compares all four to decide whether TWO
+# records name one schedule. That the second list is the first is what lets the
+# walk carry the rule from a validated repo-local half to its twin -- add a
+# field to the rule and not to the walk, and a twin could differ in something
+# the rule cares about while still being called agreeing.
+#
+# NOT `installed_at` and NOT `interval_s`: neither is part of which schedule this
+# is, both legitimately differ between the halves (a re-install whose second
+# rename failed, an install re-run with a new interval), and comparing either
+# would turn a recoverable residue into a checkout nothing can clear.
+ORCHID_SERVICE_ID_FIELDS="label platform repo artifact"
+
+# _orchid_service_record_usable <record-path> <label> <platform> <artifact>
+# <repo> -- 0 iff those fields, read out of that record, are ones `orchid
+# service install` could have written together; 1 having set
+# ORCHID_SERVICE_ID_REJECTED to the sentence that says which one was not.
+#
+# ONE FUNCTION BECAUSE THERE ARE THREE PLACES A RECORD IS RESOLVED FROM -- the
+# repo-local half, its machine-local twin, and the machine-local store alone
+# when the checkout's own record is gone -- and each of them goes on to build
+# paths that are opened, probed, unloaded and deleted. Three copies of the rule
+# is three chances for one of them to be the lenient one, and the lenient one is
+# the whole vulnerability: it takes a single reachable resolution that skips the
+# check to make every check upstream of it decorative.
+#
+# THE FIELDS ARE PASSED IN RATHER THAN RE-READ. The caller has to act on exactly
+# the values that were checked, and a function that opened the record a second
+# time would be checking one read while its caller acted on another -- which is
+# a race against anything still writing into that checkout, and the file is
+# writable by every engine the run spawns.
+_orchid_service_record_usable() {
+  local rec="$1" label="$2" plat="$3" art="$4" repo="$5"
+  if ! orchid_service_label_derived "$label" "$repo"; then
+    ORCHID_SERVICE_ID_REJECTED="the label recorded in $rec ('$label') is not one 'orchid service install' derives for the checkout that same record names ('$repo') — a label IS com.orchid.pump.<the first 12 hex of that path's sha256> and nothing else, and every plist, binding and refusal path a removal touches is built from it"
+    return 1
+  fi
+  if ! orchid_service_artifact_valid "$label" "$plat" "$art" "$repo"; then
+    ORCHID_SERVICE_ID_REJECTED="the artifact recorded in $rec ('$art') is not a path 'orchid service install' writes for a $plat schedule under label $label bound to '$repo', and a removal would unload and delete exactly that path"
+    return 1
+  fi
+  return 0
+}
+
+# orchid_service_identity <repo> -- WHICH SCHEDULE IS BOUND TO THIS CHECKOUT.
+# Sets the globals above and returns 0; returns 1, setting nothing, when the two
+# binding records disagree about the schedule they name; returns 2, setting
+# ORCHID_SERVICE_ID_REJECTED alone, when a record's own contents are not a
+# schedule identity `orchid service install` could have produced.
+#
+# THE THIRD ANSWER IS ABOUT THE RECORD, NOT ABOUT THE SCHEDULE, and it is
+# separate from 1 because the two are fixed differently: twins that disagree are
+# reconciled against each other, while a label or artifact orchid never derives
+# has nothing to reconcile WITH. It is also checked FIRST, and first is the whole
+# of it -- the label read out of the repo-local record is what the machine-local
+# twin is opened by, so a validation placed after that lookup would already have
+# resolved a path outside the service store. See orchid_service_label_valid.
+#
+# IT DOES NOT ANSWER WHETHER <repo> MAY ACT ON WHAT IT RESOLVED. That is a
+# separate question with a separate answer, because the records travel with the
+# checkout and a copy of the checkout carries them unchanged --
+# orchid_service_binding_owned below, which every removing caller asks next.
+#
+# WHY THIS IS NOT THE PATH HASH. `orchid service install` derives its launchd
+# label / cron marker by hashing the canonical repo path, and for an INSTALL
+# that is the same thing as "the schedule for this checkout". For a REMOVAL it
+# is not, and `git worktree move` is the ordinary way the two come apart: the
+# repo-local record travels INSIDE the checkout and the machine-local one never
+# moves at all, while the path they were hashed from is now somebody else's. A
+# removal that re-hashed the current path asked about a schedule that was never
+# installed -- it found no plist and no binding under that label and reported
+# `no service installed`, for a launchd agent still firing every interval, whose
+# records it then left behind with no verb able to name them. That is this
+# task's own finding reached through a rename instead of through a deletion.
+#
+# AND THE VALIDATION IS NOT THE PATH HASH EITHER, for the same reason. What a
+# record's label is checked against is the derivation of THE PATH THAT RECORD
+# ITSELF NAMES, never of <repo>: a moved checkout's record is honest about the
+# schedule and honest about where it was installed, and holding it to the hash
+# of where the checkout has ARRIVED would refuse every legitimate move -- which
+# is the very leftover the paragraph above exists to prevent, reintroduced by
+# the check meant to make removals safe. Binding the label to the recorded path
+# rules out the other thing, which is the record pointing this removal at a
+# schedule belonging to some other checkout on the machine; whether the caller
+# is entitled to the checkout that record names is the next question down.
+#
+# THE TWINS ARE RESOLVED AS TWINS. The repo-local record names the label; the
+# machine-local half is then looked up BY THAT LABEL, never by path -- looking
+# it up by path is the same mistake one indirection further along, since the
+# `repo` it recorded is the pre-move one. Both halves are written from one
+# staged file (orchid_service_binding_write), so where both are present they
+# must agree, and where they do not the answer is a refusal rather than a guess:
+# a record edited by hand, or a checkout COPIED rather than moved, would
+# otherwise have this unload an agent belonging to a different checkout, or
+# clear the last name the one here has.
+#
+# The compared fields are $ORCHID_SERVICE_ID_FIELDS -- the IDENTITY of the
+# schedule and deliberately not the whole record, and deliberately the same four
+# the usability rule reads. See that constant's own note for both halves of why.
+#
+# AN EMPTY LABEL IS AN ANSWER, NOT A FAILURE: no record names a schedule here at
+# all, which is what an install predating the binding record leaves, and the
+# caller falls back to the path hash for it. It is returned as 0 with an empty
+# ORCHID_SERVICE_ID_LABEL -- "I could not ask" and "the answer is no" must not
+# arrive as the same value.
+#
+# THE TWO NONZEROS ARE TWO DIFFERENT FINDINGS, and no caller may collapse them.
+# 1 is about the records TOGETHER (they name different schedules; reconcile them
+# against each other). 2 is about ONE record's own contents (it says something
+# install could not have written; repair or delete that file). Reported alike,
+# the second would send an operator hunting for a disagreement between two halves
+# that agree perfectly.
+#
+# ShellCheck rationale: every ORCHID_SERVICE_ID_* assignment below writes one of the
+# public results declared above, which this file never reads. See their declaration
+# for why the SC2034 directive is at both ends rather than on one assignment.
+# ShellCheck rationale: assignments in this resolver publish results consumed by runners/orchid-service.
+# shellcheck disable=SC2034
+orchid_service_identity() {
+  local repo="$1" rrec mrec="" rlabel="" mlabel="" k a b rart="" rplat="" rrepo=""
+  ORCHID_SERVICE_ID_LABEL=""; ORCHID_SERVICE_ID_ARTIFACT=""
+  ORCHID_SERVICE_ID_PLATFORM=""; ORCHID_SERVICE_ID_SOURCE=""
+  ORCHID_SERVICE_ID_REPO=""; ORCHID_SERVICE_ID_REJECTED=""
+  rrec="$(orchid_service_repo_record "$repo")"
+  if [ -f "$rrec" ]; then
+    rlabel="$(orchid_service_binding_field "$rrec" label)" || rlabel=""
+  fi
+  if [ -n "$rlabel" ]; then
+    # ALL FOUR FIELDS ARE READ BEFORE ANY OF THEM IS BELIEVED, and the check
+    # below sits BEFORE THE TWIN IS LOOKED UP, because that lookup is
+    # `$HOME/.orchid/services/$rlabel.json` and a label is a path component.
+    # Everything after this line -- the twin's path, the plist, the refusal
+    # note, the removals -- is built from values already held to install's own
+    # derivation. Reading `repo` here is not acting on it: it is a string
+    # compared against, never joined into a path, until it has been.
+    rrepo="$(orchid_service_binding_field "$rrec" repo)" || rrepo=""
+    rart="$(orchid_service_binding_field "$rrec" artifact)" || rart=""
+    rplat="$(orchid_service_binding_field "$rrec" platform)" || rplat=""
+    _orchid_service_record_usable "$rrec" "$rlabel" "$rplat" "$rart" "$rrepo" \
+      || return 2
+    mrec="$(orchid_service_machine_record "$rlabel")" || mrec=""
+    if [ -n "$mrec" ] && [ -f "$mrec" ]; then
+      # AND THE TWIN IS HELD TO THE SAME RULE, by this walk rather than by a
+      # second call, because the walk compares EVERY FIELD THE RULE READS.
+      # $ORCHID_SERVICE_ID_FIELDS is that list, spelled once and used by both,
+      # so a twin that reaches the resolution below has the same label, the same
+      # platform, the same repo and the same artifact as a record already held
+      # to install's derivation -- and one that does not is refused here.
+      #
+      # A SEPARATE CHECK PLACED AHEAD OF THIS WALK WOULD BE THE WRONG ANSWER,
+      # not a redundant one: a twin whose fields fail the rule fails them by
+      # differing from the repo-local half that passed it, and that is the
+      # RECORDS-DISAGREE finding (1: reconcile the two against each other), not
+      # the record-unusable one (2: repair or delete this file). Reported as the
+      # second, an operator with two perfectly parseable halves is sent hunting
+      # for a malformed one. Placed AFTER the walk it would be unreachable.
+      #
+      # Nothing the twin says is ever acted on, which is the other half of why
+      # this is enough: the resolution below is set from the repo-local values,
+      # and the only twin-derived path in this function is $mrec itself, built
+      # from the label the rule has already passed.
+      for k in $ORCHID_SERVICE_ID_FIELDS; do
+        a="$(orchid_service_binding_field "$rrec" "$k")" || a=""
+        b="$(orchid_service_binding_field "$mrec" "$k")" || b=""
+        [ "$a" = "$b" ] || return 1
+      done
+      ORCHID_SERVICE_ID_SOURCE="twins"
+    else
+      # The machine-local half is missing, which is the residue an install that
+      # failed between its two renames leaves -- and it never reached the
+      # scheduler, so the record here is both the only evidence and a harmless
+      # one. It must stay usable or the removal guard is wedged by a record no
+      # verb can clear.
+      #
+      # QUOTED, like every other value this global takes: `repo-only` and
+      # `machine-only` are single words to bash, but an unquoted hyphen in an
+      # assignment reads as arithmetic to ShellCheck (SC2100), and these are
+      # fixed tokens rather than sums.
+      ORCHID_SERVICE_ID_SOURCE="repo-only"
+    fi
+    ORCHID_SERVICE_ID_LABEL="$rlabel"
+    # The values validated above, not a second read of the same fields: a
+    # re-read is a second chance for the file to say something else, and what
+    # the caller acts on must be exactly what was checked.
+    ORCHID_SERVICE_ID_ARTIFACT="$rart"
+    ORCHID_SERVICE_ID_PLATFORM="$rplat"
+    # The `repo` the label and artifact were validated AGAINST, for the same
+    # reason: the ownership question the caller asks next must be about the
+    # same recorded checkout this resolution was made on.
+    ORCHID_SERVICE_ID_REPO="$rrepo"
+    return 0
+  fi
+  # No repo-local half. Either the checkout is already gone -- the case a
+  # leftover schedule is uninstalled in -- or the record inside it was removed
+  # by hand; the machine-local store is then the only thing that can name the
+  # schedule, and it is searched by the path it RECORDED (an exact string, since
+  # a directory that no longer exists cannot be resolved).
+  if mlabel="$(orchid_service_binding_label_for "$repo")"; then
+    ORCHID_SERVICE_ID_LABEL="$mlabel"
+    # That lookup matched the recorded path EXACTLY against <repo>, so this is
+    # <repo> by construction. Set anyway rather than left empty: the ownership
+    # question below is asked of every resolution, and a field that is filled on
+    # some paths and not others is where the caller learns to skip the check.
+    ORCHID_SERVICE_ID_REPO="$repo"
+    if mrec="$(orchid_service_machine_record "$mlabel")"; then
+      rart="$(orchid_service_binding_field "$mrec" artifact)" || rart=""
+      rplat="$(orchid_service_binding_field "$mrec" platform)" || rplat=""
+      # THE SAME RULE, ON THE SAME FOUR FIELDS. The machine-local store is not
+      # the checkout's to write, but the label it names is joined into the
+      # refusal and record paths and the artifact it names is still handed to
+      # `launchctl unload` and `rm -f` -- and the rule for what a removal may
+      # touch cannot be one thing here and another one indirection away.
+      #
+      # DERIVED AGAINST <repo>, WHICH IS THE RECORDED PATH ON THIS ARM: the
+      # lookup above matched a record's `repo` field EXACTLY against it, so
+      # "the path the record names" and "the path asked about" are one string
+      # here, unlike on the repo-local arm where a move separates them.
+      #
+      # And that is also what keeps the indirection honest. `mrec` is resolved
+      # from the `.label` FIELD of whatever record matched, which is not obliged
+      # to be the filename it was found under -- so the file opened here can be
+      # a DIFFERENT record, naming a different checkout's schedule. Held to
+      # <repo>'s own derivation, such a label is refused rather than followed,
+      # and no removal reached through this arm can act on a label that is not
+      # the one <repo> would have been installed under.
+      if ! _orchid_service_record_usable "$mrec" "$mlabel" "$rplat" "$rart" "$repo"; then
+        ORCHID_SERVICE_ID_LABEL=""; ORCHID_SERVICE_ID_REPO=""
+        return 2
+      fi
+      ORCHID_SERVICE_ID_ARTIFACT="$rart"
+      ORCHID_SERVICE_ID_PLATFORM="$rplat"
+    fi
+    ORCHID_SERVICE_ID_SOURCE="machine-only"
+    return 0
+  fi
+  ORCHID_SERVICE_ID_SOURCE="none"
+  return 0
+}
+
+# orchid_service_binding_owned <repo> <recorded-repo> -- 0 iff <repo> really is
+# the checkout the resolved binding was installed against; 1 when it is a
+# DUPLICATE of that checkout rather than that checkout.
+#
+# MATCHING RECORDS ARE NOT OWNERSHIP, and that is the whole of this predicate.
+# orchid_service_identity above proves the two binding halves NAME THE SAME
+# SCHEDULE; it cannot prove that the process asking is entitled to end it,
+# because a checkout copied with `cp -R` carries the repo-local record inside it
+# byte for byte. Both halves then agree, the identity resolves to the ORIGINAL
+# checkout's label, and a removal run in the copy unloads the agent the original
+# is still being driven by, deletes both records and leaves the original bound to
+# a schedule that no longer exists -- reached by an operator doing nothing worse
+# than tearing down a backup.
+#
+# THE CHEAP ANSWER FIRST. A record naming exactly this path is owned by
+# definition (two checkouts cannot occupy one canonical path), so the ordinary
+# case -- every unmoved checkout, every main checkout, every uninstall of a
+# leftover schedule reached through the machine-local store -- asks nothing
+# further and reads no file. Only a record naming a DIFFERENT path has anything
+# to prove.
+#
+# AND THERE IS EXACTLY ONE FACT ON DISK THAT PROVES IT: THE RECORDED PATH IS
+# GONE. A checkout cannot show that it used to be somewhere else -- nothing is
+# written down when a directory changes name -- so what is asked instead is
+# whether anybody else is still standing there to be harmed. `git worktree move`
+# leaves nothing behind, a plain rename leaves nothing behind, and a `cp -R`
+# leaves the original exactly where the record says it is. That single test
+# accepts every honest move and refuses every duplicate whose original is alive,
+# and where it is generous -- a copy whose original has since been deleted -- it
+# is generous deliberately: there is then no other checkout for the removal to
+# harm, the schedule's only remaining claimant is the caller, and refusing would
+# strand the leftover this whole mechanism exists to make removable (a record a
+# refusal leaves behind has to stay clearable, or a checkout is wedged by a file
+# no verb can take).
+#
+# WHERE IT IS STRICT it stays recoverable, which is what makes the strictness
+# affordable: a checkout moved off a path that has since been RE-CREATED is
+# refused here, and the refusal names the recorded path to re-run against --
+# where there is no repo-local record any more, so the machine-local store
+# answers by that exact path and the removal proceeds from the cheap arm above.
+#
+# GIT'S REGISTRATION IS THE OTHER HALF, AND IT ONLY EVER REFUSES. It used to
+# stand as an alternative PROOF -- "`git worktree move` re-registers the
+# worktree at its new path, so a registration naming the caller is the thing a
+# copy cannot manufacture" -- and that reasoning does not survive contact with a
+# second worktree. Every linked worktree git knows about is registered at its
+# own path, including one added yesterday that was never installed against
+# anything: `reg = caller` says "I am not a copy of somebody", not "I am the
+# checkout this record names". So a worktree added beside the bound one and
+# given that checkout's record -- copied out of it, or written by an engine with
+# the run's own tree to write in -- answered the question with its own
+# registration and went on to unload the bound checkout's agent and delete both
+# of its records, while that checkout stood there being driven. The registration
+# is therefore asked in the one direction it can answer soundly: a caller git
+# registers as SOME OTHER existing checkout is a duplicate of it and is refused
+# outright, ahead of the test above and regardless of what the record names.
+# Unreadable, pruned, or naming a path that is itself gone, it says nothing and
+# the recorded-path test decides alone -- which is what keeps a copy of a linked
+# worktree able to clear the leftover record of an original that has since been
+# torn down.
+#
+# AN EMPTY RECORDED PATH IS OWNED, deliberately. That is the identity source
+# `none` -- an install predating the binding record, where the label is the
+# caller's own path hash and there is no claim to disagree with. Refusing it
+# would make a pre-binding schedule unremovable by the only verb that can
+# remove it.
+orchid_service_binding_owned() {
+  local repo="$1" recorded="$2" reg
+  [ -n "$recorded" ] || return 0
+  [ "$recorded" != "$repo" ] || return 0
+  if reg="$(orchid_checkout_registered_path "$repo")" && [ "$reg" != "$repo" ]; then
+    return 1
+  fi
+  [ ! -e "$recorded" ]
+}
+
+# orchid_service_refusal_path <label> -- where a scheduled pump leaves the
+# reason it refused to run. Beside the machine-local binding it belongs to, so
+# it survives the checkout exactly as that record does.
+#
+# Same enforcement as orchid_service_machine_record directly above, for the same
+# reason: this is the other place a label is joined into a path, and `uninstall`
+# `rm -f`s what it returns.
+orchid_service_refusal_path() {
+  local mdir
+  orchid_service_label_valid "$1" || return 1
+  mdir="$(orchid_service_machine_dir)" || return 1
+  echo "$mdir/$1.refusal"
+}
+
+# orchid_service_refusal_record <repo> <text> -- record, machine-locally, that
+# the schedule bound to <repo> woke and refused, and why.
+#
+# WHY A FILE AND NOT THE SCHEDULER'S OWN STREAMS. A pump that finds its target
+# gone exits nonzero and says so on stderr -- and the artifacts `orchid service
+# install` renders send both streams to /dev/null, deliberately: nothing may
+# open a target-controlled path before the unattended trust gate, and a
+# scheduler-owned log that a refusing schedule appends to every interval grows
+# without bound for as long as nobody looks at it. So the loud failure is loud
+# to nobody, which is the same silence the finished-run half of this finding
+# had. The pump therefore writes ONE line, to a machine-local path derived from
+# the binding rather than from anything the target controls, overwritten (never
+# appended) so a schedule refusing every 240s costs one line forever. `orchid
+# doctor` reads it back, which is where an operator can actually see that the
+# schedule is not merely stale but actively failing.
+#
+# BEST EFFORT, ALWAYS 0. It is called from the pump's refusal path, where the
+# refusal itself is the point: a store that cannot be written must not turn a
+# clear diagnosis into an unrelated error. No binding names this repo -- a
+# hand-run pump against a stale ORCHID_REPO -- writes nothing at all.
+orchid_service_refusal_record() {
+  local repo="$1" text="$2" label f
+  label="$(orchid_service_binding_label_for "$repo")" || return 0
+  f="$(orchid_service_refusal_path "$label")" || return 0
+  [ -d "$(dirname "$f")" ] || return 0
+  printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$text" > "$f" 2>/dev/null || true
+  return 0
+}
+
+# orchid_service_refusal_read <label> -- the recorded refusal for that binding,
+# or nothing at all. Nonzero when there is none, so a caller can say nothing
+# rather than say "(none)".
+orchid_service_refusal_read() {
+  local f; f="$(orchid_service_refusal_path "$1")" || return 1
+  [ -s "$f" ] || return 1
+  cat "$f" 2>/dev/null || return 1
+}
+
+# orchid_service_refusal_clear <label> -- forget the recorded refusal for that
+# binding. Best effort, always 0: nothing here may turn a caller's own outcome
+# into a failure, and a store that was never written has nothing to clear.
+#
+# A REFUSAL IS EVIDENCE ABOUT THE LAST WAKE, NOT A PROPERTY OF THE LABEL, and
+# nothing used to say so. The record is written once and overwritten, never
+# appended, precisely so a schedule refusing every 240s costs one line -- but
+# with removal as the only way out, that line then outlived the condition it
+# described. An operator who restored the checkout, or re-installed the schedule
+# over it, kept reading `the schedule last woke and refused: ... does not exist`
+# under `orchid doctor`'s own `ok:` line for a service that was demonstrably
+# healthy. Two contradictory sentences about one binding is worse than neither:
+# it teaches the operator to discount the surface that carries the real finding.
+#
+# THREE CALLERS, and between them they cover every way the evidence stops being
+# true. `orchid service uninstall` (through orchid_service_binding_remove, which
+# is the mirror of the write) removes the schedule the refusal is about;
+# `orchid service install` replaces it with a freshly loaded one -- but only a
+# REAL install, since a `--dry-run` makes no scheduler call and so leaves
+# running the very schedule that refused; and runners/orchid-pump clears it on a
+# wake that both found the target healthy AND ended successfully, which is the
+# one thing that positively disproves a recorded refusal rather than merely
+# post-dating it. A refused or failed wake changes nothing, so the evidence an
+# operator is about to act on is always this schedule's most recent.
+orchid_service_refusal_clear() {
+  local f
+  f="$(orchid_service_refusal_path "$1")" || return 0
+  rm -f "$f" 2>/dev/null || true
+  return 0
+}
+
 # _ocd_cleanup_wt <wt> <repo> -- removes a temp detached worktree (used by
 # orchid_commit_durable below). A standalone function, not a closure, taking
 # both paths as explicit STRING ARGUMENTS baked into the trap command at
@@ -169,6 +2499,16 @@ orchid_stale_checkout() {
 _ocd_cleanup_wt() {
   local wt="$1" repo="$2"
   if [ -n "$wt" ]; then
+    # A temp worktree built by this function never carries a runtime/ dir (the
+    # durable copy skips it), so this guard is expected never to fire here.
+    # It is asked anyway: this is one of the three places orchid removes a
+    # checkout, the rule is "no removal walks past a live schedule", and a
+    # rule enforced only where it currently matters is a rule the next
+    # removal site forgets. Skip-and-warn, never a failure: an EXIT trap that
+    # can die takes the verb's real exit code with it.
+    if ! orchid_service_removal_guard "$wt"; then
+      return 0
+    fi
     git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
     rm -rf "$wt" 2>/dev/null || true
     git -C "$repo" worktree prune >/dev/null 2>&1 || true
@@ -321,7 +2661,58 @@ orchid_commit_durable() {
     "$ORCHID_COMMIT_DURABLE_HOOK" "$wt"
   fi
 
-  git -C "$wt" add -- "$@"
+  # Staging, and the ONE place `-f` is legitimate (T037, dogfood F21 + the
+  # webBooks run-state leak). Two different kinds of path reach this helper
+  # and they get two different answers, deliberately:
+  #
+  #   * `.orchid/` is ORCHID'S OWN run state. Nobody authored it; `orchid
+  #     init` created it, committed it, and wrote the one gitignore line it
+  #     needs (`.orchid/runtime/`). The run's whole durability contract is
+  #     that this state lives in commits on the integration branch -- a
+  #     roadmap that exists only in one checkout's working tree is gone on
+  #     the next task worktree, the next machine, the next headless pump.
+  #     So when an operator's .gitignore excludes `.orchid/`, a plain `git
+  #     add` fails (git refuses an ignored pathspec) and every durable verb
+  #     -- `plan apply` first, since it is the first one an operator meets
+  #     -- dies with git's raw error and no way forward that does not
+  #     involve editing THEIR .gitignore. `-f` is the right answer for this
+  #     path because it overrides nothing the operator owns: these bytes are
+  #     orchid's, they were already tracked before the ignore rule was
+  #     written, and half-tracking them (old files tracked, new ones
+  #     silently skipped) is a corrupt run, not a respected preference.
+  #
+  #   * `orchid.config` is the OPERATOR'S file, and gets no `-f` -- see
+  #     libexec/orchid-start's _start_require_committable_config, which
+  #     refuses with an actionable message rather than force-committing a
+  #     file its owner excluded. That stance is unchanged and is why this is
+  #     a per-path decision instead of one `-f` on the whole argument list:
+  #     whether repository configuration belongs in history is a judgment
+  #     about the operator's own work; whether orchid's bookkeeping is
+  #     committed is not a judgment at all, it is what makes the run exist.
+  #
+  # And the reason `-f` here is not simply the F21 reporter's fix applied
+  # wholesale: force-adding makes the file TRACKED, and a tracked file rides
+  # the merge chain into whatever the integration branch is merged into.
+  # That leak is a separate problem with a separate answer (orchid-merge's
+  # containment warning + templates/pre-push.sh's run-state leg); `-f` is
+  # only safe here BECAUSE that answer ships alongside it.
+  #
+  # `.orchid/runtime` is excluded EXPLICITLY, and that exclusion is the price
+  # of `-f`: the ignore rule that normally keeps lease.json, the epoch, the
+  # lock and pump.log out of every durable commit is precisely what `-f`
+  # switches off. The copy-in step above already drops `runtime` (see
+  # _ocd_copy_path), so today this exclusion never has anything to do -- it is
+  # here because "never rides into a commit" must be true at the WRITE, not
+  # only true of the one caller that happens to prepare the worktree
+  # correctly. A future caller that leaves a runtime dir behind gets an
+  # exclusion, not a committed lock file.
+  local ocd_p
+  for ocd_p in "$@"; do
+    case "$ocd_p" in
+      .orchid|.orchid/*) git -C "$wt" add -f -- "$ocd_p" ':(exclude).orchid/runtime' ;;
+      *) git -C "$wt" add -- "$ocd_p" ;;
+    esac
+  done
   if git -C "$wt" diff --cached --quiet -- "$@"; then
     orchid_die "orchid_commit_durable: nothing to commit -- no changes in: $*"
   fi
@@ -356,6 +2747,916 @@ orchid_commit_durable() {
   # ShellCheck rationale: this public result is read by callers after this sourced function returns.
   # shellcheck disable=SC2034
   ORCHID_COMMIT_DURABLE_SHA="$new_sha"
+}
+
+# -- Recording an operator-facing fact exactly once --------------------------
+#
+# Two thin wrappers over the two verbs that make a refusal durable. They exist
+# because every condition worth recording this way PERSISTS UNTIL A HUMAN ACTS,
+# so a later pass re-reaches it: a writer that appends unconditionally buries the
+# run's history under one unchanging fact, and a writer that skips
+# unconditionally loses the record entirely. Each therefore asks the RECEIPT the
+# previous write left behind -- the journal entry, the BLOCKERS.md line -- never
+# a mark made ahead of one, which a process felled in between would turn into
+# "already reported" about a report nobody made.
+#
+# THEY LIVE HERE, and not beside the policy that composes the line they record,
+# because lib/drive.sh, lib/handoff.sh, lib/findings.sh and lib/capability.sh are
+# the driver's read-only policy libraries: INV-13 forbids all four from reaching
+# for a verb, precisely so a mutation cannot hide behind a function call the
+# driver's own audit cannot see. Their callers are runners -- tier-2, effectful,
+# and every one of them already sources this file.
+#
+# ONE IMPLEMENTATION EACH, BECAUSE EACH HAS TWO WRITERS. The task-scoped journal
+# line is written by runners/orchid-launch (synchronously, on `orchid jobs
+# prepare`'s exit 19) and by runners/orchid-drive (on the passes where the driver
+# is what ran that launcher); the run-scoped blocker is written by
+# runners/orchid-pump's pre-wake probe and by runners/orchid-tick, which is an
+# unattended entry point in its own right and cannot assume the pump ever ran.
+# Two copies of a dedup rule is two places for it to drift into a writer that
+# never matches the other's record.
+
+# orchid_journal_once <repo> <task> <line> -- append <line> to <task>'s journal
+# unless that exact text is already in the task's own index. 0 whether it wrote
+# or found it already there; nonzero only when the write itself failed.
+#
+# `journal show --task` reads a BOUNDED tail of that index (libexec/orchid-journal
+# keeps 40 entries), so a task whose history has churned far past this entry may
+# record it a second time. That is an honest re-statement after a long gap, not a
+# line per pass, and the alternative -- scanning the whole journal for every
+# candidate line -- makes the cost of the check grow with the run.
+orchid_journal_once() {
+  local repo="$1" task="$2" line="$3" prior
+  prior="$(ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal show --task "$task" 2>/dev/null || true)"
+  case "$prior" in
+    *"$line"*) return 0 ;;
+  esac
+  ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --task "$task" "$line" >/dev/null
+}
+
+# _orchid_blocker_open <blockers-file> <answers-dir> <line> -- 0 iff some
+# BLOCKERS.md entry carries <line> AND that entry's question is still open.
+#
+# PARSED RATHER THAN GREPPED, because the answer needs the entry's QID and a
+# match alone does not carry one. libexec/orchid-notify writes each entry as a
+# `## <qid>` header (or `## <qid> (task: <id>)`) followed by the text, so the
+# header last seen above a matching body line is the qid that text was recorded
+# under. Pure bash, like every other reader here: no subprocess per pass, and
+# nothing to quote a sentence full of apostrophes and em dashes through.
+#
+# THE WALK DOES NOT STOP AT THE FIRST COPY. A line recorded, answered and
+# recorded again has two entries, and it is the LATER one that decides -- so an
+# answered entry only clears the qid and the loop keeps looking for a copy
+# nobody has settled.
+_orchid_blocker_open() {
+  local file="$1" answers="$2" line="$3"
+  local qid="" body
+  while IFS= read -r body || [ -n "$body" ]; do
+    case "$body" in
+      '## '*)
+        qid="${body:3}"
+        qid="${qid%% *}"
+        ;;
+      *"$line"*)
+        [ -n "$qid" ] || continue
+        [ -f "$answers/$qid.answer" ] || return 0
+        qid=""
+        ;;
+    esac
+  done < "$file"
+  return 1
+}
+
+# orchid_blocker_once <repo> <epoch> <line> -- raise <line> for an operator
+# unless an UNRESOLVED blocker already carries it. Three outcomes, and a caller
+# must read the status: 0 recorded now, 1 already on record, 2 the write failed.
+#
+# ONE VERB, WHICH IS BOTH HALVES. `orchid notify` journals the text (kind
+# `blocker`) BEFORE it appends to BLOCKERS.md (libexec/orchid-notify's INV-08
+# ordering note), so a single call produces the durable journal record AND the
+# operator surface, in that order, epoch-fenced and verb-locked like every other
+# durable write. One dedup therefore governs both halves: a caller that skips
+# the call adds neither, and a dedup that let the call through twice would file
+# a duplicate journal line as well as a duplicate blocker.
+#
+# DEDUPED ON BLOCKERS.md, which is the RECEIPT that call leaves: if the entry is
+# there the notify happened, and if the notify died before it the entry is absent
+# and the next pass re-raises. The WHOLE file is searched rather than a bounded
+# tail -- this condition persists across arbitrarily many passes, and a window
+# that scrolled past would start one blocker per pass.
+#
+# BUT THE RECEIPT IS SCOPED TO AN INCIDENT, NOT TO ALL TIME, and that is what
+# reading it alone got wrong. BLOCKERS.md is append-only -- notify only ever
+# concatenates -- so a line recorded once is in that file for the rest of the
+# repository's life, and a dedup that asked the file and nothing else answered
+# "already on record" forever. That is exactly right while nobody has dealt with
+# the condition, which is the case it was written for: the same shortfall met on
+# a hundred passes is ONE fact and must be raised once. It is wrong the moment
+# somebody HAS dealt with it. An operator who answers the question, binds a
+# capable engine and moves on has settled that incident; if the same shortfall
+# comes back -- a manifest edited, a role rebound to an engine short the atom,
+# a chain restored from an older config -- it is a NEW fact about a repository
+# somebody already believes they fixed, and the one surface that would tell them
+# stayed silent because a resolved entry was still sitting in the file. The
+# permanence of the condition is the reason to raise it again, not a reason to
+# stay quiet.
+#
+# SO THE RECEIPT IS READ TOGETHER WITH ITS RESOLUTION, in the terms this kernel
+# already has for one. `orchid notify` mints `runtime/answers/<qid>.question`
+# beside the BLOCKERS.md entry and `orchid answer` mints `<qid>.answer` beside
+# that, and a question with no answer is precisely what libexec/orchid-status
+# already lists as an OPEN blocker -- so this asks that same pair rather than
+# inventing a second notion of settled. An entry carrying this line whose qid
+# has no answer is the incident still standing, and there is nothing to add;
+# once every recorded copy has been answered, the next occurrence raises a fresh
+# blocker and a fresh journal line, mints a fresh qid, and every pass after it
+# dedups against THAT one. One entry per incident: never one per pass, and never
+# one for all time.
+#
+# RESOLUTION IS SHOWN, NEVER ASSUMED, which is the direction this must fail in.
+# Only a recorded `.answer` re-arms the raise. An entry whose runtime record is
+# gone entirely -- runtime/ is gitignored and rebuildable, and a state copy drops
+# it (libexec/orchid-run) -- proves nothing about a human having acted on
+# anything, so it reads as STILL OPEN and stays quiet. The failure this dedup
+# exists to prevent is one unchanging fact restated once per pass forever, and
+# "I cannot tell whether it was settled" must never be the thing that starts
+# that up again.
+#
+# <epoch> is passed rather than read here because `orchid notify` is epoch-fenced
+# (INV-02) and the fence must carry the epoch the CALLER's pass is inside.
+# Sampled at the moment of the write, it would be vacuous: whatever epoch is
+# current always satisfies `epoch_require`, so a session that fenced a fresh one
+# while this pass ran would have its epoch silently borrowed.
+orchid_blocker_once() {
+  local repo="$1" epoch="$2" line="$3" blockers answers
+  blockers="$(orchid_state "$repo")/BLOCKERS.md"
+  answers="$(orchid_runtime "$repo")/answers"
+  if [ -f "$blockers" ] && _orchid_blocker_open "$blockers" "$answers" "$line"; then
+    return 1
+  fi
+  ORCHID_REPO="$repo" ORCHID_EPOCH="$epoch" \
+    "$ORCHID_ROOT/bin/orchid" notify "$line" >/dev/null 2>&1 || return 2
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# THE QUESTION ID, AND WHY IT IS CLAIMED BEFORE ANYTHING IS FILED UNDER IT
+# (T032, dogfood F33 -- convergence after the attempt-6 arbitration).
+#
+# A qid is `q-<epoch>-<four hex>`, and the suffix used to be sixteen bits of
+# /dev/urandom taken and used, with the collision written off in a comment as
+# "improbable and not currently guarded against". Everything an operator
+# boundary owns is then FILED UNDER THAT NAME: the BLOCKERS.md entry,
+# `runtime/answers/<qid>.question`, the `.choices` sidecar, the operator's
+# `.answer`, the `.objection` authority record (lib/objection.sh) and
+# `runtime/outbox/<qid>`. A second page that drew the same suffix did not
+# fail -- it OVERWROTE them, because every one of those writes is an
+# `atomic_write`, and an atomic write is a rename over whatever was there.
+#
+# AND THE CASE THAT BITES IS NOT A RACE. `orchid notify` holds the verb lock, so
+# two pages rarely overlap; what collides is a page raised NOW against a page
+# raised an hour ago, since nothing ever retired the older id. Sixteen bits and
+# a birthday bound mean a repository that raises a hundred boundaries inside one
+# epoch is already several percent likely to have handed the same name out
+# twice, and an epoch spans a whole run.
+#
+# WHAT THAT COSTS IS THE GUARANTEE THIS TASK EXISTS FOR. A page raised for
+# objection instance 1, answered `approve` by the operator and not yet relayed,
+# leaves a `.question`, an `.answer` saying `approve`, and an authority record
+# naming instance 1. Let a page raised later for instance 2 draw the same
+# suffix: it replaces the question and mints a FRESH authority record naming
+# instance 2 -- beside the older answer, which nothing rewrote and which still
+# says `approve`. `review_operator_relay` then finds a record for the objection
+# standing NOW, a question whose subject matches, and an operator's `approve`,
+# and clears an objection the operator answered nothing about. The instance
+# counter that exists precisely to separate those two objections is defeated,
+# because the collision rewrote the record the instance is stored in.
+#
+# So the id is CLAIMED, and the claim is the first durable thing a page does --
+# ahead of the journal line, the BLOCKERS.md entry, the choices sidecar, the
+# question, the authority record and the outbox message, every one of which
+# names it. A claim is never released: `objection_authority_consume` spends the
+# authority record and `orchid answer` may leave a question answered years ago,
+# but neither frees the id, because "nothing is filed here any more" and "this
+# id was never used" have to stay different facts.
+
+# The suffix a claim is filed under, beside the `.question`, `.choices`,
+# `.answer` and `.objection` files a qid may accumulate. One constant because
+# the writer composes exactly this and the reader below globs everything.
+ORCHID_QID_RESERVATION_EXT=reserved
+
+# How many candidates `orchid_qid_reserve` draws before failing closed. Sixteen
+# bits of suffix and a per-epoch namespace make one draw enough in practice;
+# this bounds the loop so an exhausted namespace refuses to publish instead of
+# spinning forever.
+ORCHID_QID_RESERVE_TRIES=64
+
+# _orchid_qid_taken <repo> <qid> -- 0 iff anything has ever been filed under
+# this id.
+#
+# THE RUNTIME TEST IS A GLOB, NOT A LIST OF SUFFIXES. `answers/<qid>.*` matches
+# the claim, the question, the choices sidecar, the answer and the objection
+# authority in one predicate, and it matches the next artifact somebody files
+# beside them without this reader having to be taught about it. An enumeration
+# would go stale exactly once -- silently, and in the direction of handing out
+# an id that is already in use.
+#
+# ...AND BLOCKERS.md, which is the DURABLE half. Everything under `runtime/` is
+# gitignored and sweepable, and the epoch counter a qid is namespaced by lives
+# in that same directory -- so a wipe rewinds the epoch and forgets every claim
+# in one move, and the very next page would start handing out ids that already
+# name entries an operator can still read. BLOCKERS.md is committed and
+# append-only, so it remembers across the wipe. A qid is free only when NEITHER
+# half has heard of it.
+_orchid_qid_taken() {
+  local repo="$1" qid="$2" f blockers line
+  # Composed rather than taken from `orchid_runtime`, which mkdir -p's what it
+  # returns: this is a read, and lib/objection.sh's readers compose the same
+  # path the same way for the same reason.
+  for f in "$repo/.orchid/runtime/answers/$qid".*; do
+    # The glob matching nothing yields the pattern itself under bash's default
+    # nullglob-off, which is not a file.
+    [ -e "$f" ] || continue
+    return 0
+  done
+  [ ! -e "$repo/.orchid/runtime/outbox/$qid" ] || return 0
+  blockers="$(orchid_state "$repo")/BLOCKERS.md"
+  [ -f "$blockers" ] || return 1
+  # libexec/orchid-notify's two header spellings, `## <qid>` and
+  # `## <qid> (task: <id>)`, matched as whole headers rather than as a
+  # substring: a body line quoting an id must not retire it, and a header must
+  # not be missed because it carries a task.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "## $qid"|"## $qid "*) return 0 ;;
+    esac
+  done < "$blockers"
+  return 1
+}
+
+# _orchid_qid_suffix <draw> -- four lowercase hex characters.
+#
+# ENTROPY DECIDES HOW MANY DRAWS THE LOOP TAKES, NEVER WHETHER AN ID IS REUSED.
+# That is the claim's job, and the claim holds against a generator that returned
+# the same four characters every time. So the weak fallback survives -- a
+# machine with neither `xxd` nor `od` able to read /dev/urandom still raises its
+# blockers, exactly as before this guard existed -- but it VARIES WITH THE DRAW
+# NUMBER, because a fallback that did not would make the loop below re-offer one
+# candidate sixty-four times and fail closed on a repository holding a single
+# taken id.
+_orchid_qid_suffix() {
+  local draw="$1" raw s now
+  raw="$(xxd -p -l2 /dev/urandom 2>/dev/null || true)"
+  s="$(printf '%s' "$raw" | tr -cd '0-9a-f')"
+  if [ "${#s}" -lt 4 ]; then
+    raw="$(od -An -tx1 -N2 /dev/urandom 2>/dev/null || true)"
+    s="$(printf '%s' "$raw" | tr -cd '0-9a-f')"
+  fi
+  if [ "${#s}" -lt 4 ]; then
+    now="$(date +%s 2>/dev/null || true)"
+    case "$now" in ''|*[!0-9]*) now=0 ;; esac
+    s="$(printf '%04x' "$(( (now * 65599 + $$ * 7919 + draw * 104729) % 65536 ))")"
+  fi
+  printf '%s\n' "${s:0:4}"
+}
+
+# orchid_qid_reserve <repo> <epoch> -- draw an id nothing has ever been filed
+# under, claim it, and print it. Nonzero with nothing on stdout when no free id
+# could be claimed, which the caller MUST treat as a refusal to publish rather
+# than as permission to fall back to an unclaimed id.
+orchid_qid_reserve() {
+  local repo="$1" epoch="$2" answers qid draw=0
+  [ -n "$repo" ] && [ -n "$epoch" ] || return 1
+  answers="$(orchid_runtime "$repo")/answers"
+  mkdir -p "$answers" || return 1
+  while [ "$draw" -lt "$ORCHID_QID_RESERVE_TRIES" ]; do
+    draw=$(( draw + 1 ))
+    qid="q-${epoch}-$(_orchid_qid_suffix "$draw")"
+    # Cheap first, and it covers the one thing the claim below cannot: an
+    # artifact whose claim is gone. A page raised before claims existed, or one
+    # whose `runtime/` was swept while BLOCKERS.md kept the entry, has a name in
+    # use and no directory saying so.
+    if _orchid_qid_taken "$repo" "$qid"; then continue; fi
+    # ...and THIS is the allocation. `mkdir` is the kernel's exclusive-create
+    # primitive -- `verb_lock_acquire` takes the verb lock with the same call
+    # for the same reason: it is ONE filesystem operation that either creates
+    # the name or fails because somebody already holds it. The test above and
+    # the create are two operations with a window between them, and the create
+    # is what closes it: two allocations that drew the same suffix while both
+    # believed it free cannot both leave here owning it. `orchid notify` does
+    # hold the verb lock, so that overlap is not the ordinary case -- but the
+    # verb lock is breakable by design (see verb_lock_acquire's stale-owner
+    # arm), and a claim that were only as strong as a lock somebody else may
+    # break is not a claim.
+    #
+    # Crash-safe in the only direction that matters: the directory exists from
+    # the moment the call returns, so a notify killed anywhere after this line
+    # leaves the id RETIRED rather than free. An id burned by a crash costs one
+    # draw out of sixty-five thousand; an id handed out twice costs the
+    # operator's answer.
+    mkdir "$answers/$qid.$ORCHID_QID_RESERVATION_EXT" 2>/dev/null || continue
+    printf '%s\n' "$qid"
+    return 0
+  done
+  return 1
+}
+
+# --- run-state containment (T037) -----------------------------------------
+#
+# THE LEAK, observed on a real product repository: 14 `.orchid/` files --
+# roadmap, journal, BLOCKERS, plugins.lock, review envelopes -- sitting on
+# that project's `main`. Nobody force-added them there. They rode the merge
+# chain, integration branch -> feature branch -> main, and passed review
+# because the MR was large and the paths look like tooling.
+#
+# It is not a mistake anybody made. Committing run state IS the design (it is
+# what `orchid_commit_durable` above exists to do, and what makes a run
+# survive a fresh checkout), so in ANY product repository that state rides
+# whatever the integration branch is merged into, by default, forever. The
+# kernel cannot stop the operator's own `git merge` -- it never runs it, and
+# PROTOCOL.md is explicit that the operator alone moves anything anywhere --
+# so what it can do is SEE the shape and say so, which is what these two
+# helpers are for. The refusal half, at the boundary where run state would
+# actually leave the machine, lives in templates/pre-push.sh.
+#
+# "Outside the run" is asked from the run's own records, never from a branch
+# NAME: the integration branch is whatever `integration_branch` says, and a
+# task branch is whatever that task's frontmatter `branch:` says. Guessing
+# `task/*` would miss a renamed one and, worse, would silently exempt an
+# operator branch that happened to match.
+#
+# ARCHIVED runs count, and that is not a nicety. `orchid run new` moves
+# `tasks/` wholesale to `runs/<old_run_id>/tasks/` and starts a fresh empty
+# `tasks/` (libexec/orchid-run), but nothing in the kernel ever deletes a
+# branch -- `git branch -D` appears exactly once in the whole tree, in
+# orchid-init's own failure cleanup. So on a repository's second run every
+# previous run's task branch is still sitting there, and each one carries
+# `.orchid/` because it was cut from the integration branch. Reading only the
+# live `tasks/` would class all of them as "outside the run" and the one
+# warning that is supposed to name a product leak would instead recite
+# orchid's own history -- which is how an operator learns to stop reading it,
+# and how the real leak goes past unnoticed among the noise.
+_orchid_in_run_branches() {
+  local repo="$1" integ="$2" state tf
+  state="$(orchid_state "$repo")"
+  printf '%s\n' "$integ"
+  for tf in "$state"/tasks/*.md "$state"/runs/*/tasks/*.md; do
+    [ -f "$tf" ] || continue
+    grep -m1 '^branch: ' "$tf" 2>/dev/null | cut -d' ' -f2- || true
+  done
+}
+
+# _orchid_self_hosted_checkout <repo> -- true when the repository being managed
+# IS the checkout orchid is running out of. That is the one repository where
+# run state on a branch outside the run is not a leak at all: orchid's own
+# `main` carries `.orchid/` on purpose, and the advisory below would name it on
+# every single merge of orchid's own dogfood run -- a warning that fires every
+# time is a warning an operator learns to scroll past, which is precisely how
+# the real leak it exists to catch gets missed.
+#
+# PHYSICAL IDENTITY, and nothing weaker. Two tempting shortcuts are both wrong
+# and are deliberately not used:
+#
+#   * the repository's NAME. A product repository may be called `orchid`, and a
+#     self-hosted checkout may be called anything at all; a name is not a fact
+#     about which tree this process is executing from.
+#   * `.orchid/` ALREADY being on a product branch. That is the leak itself.
+#     Reading it as consent would mean the advisory switches itself off the
+#     moment the thing it reports has happened once -- the one shape where it
+#     must still speak.
+#
+# So the question asked is whether ORCHID_ROOT and the repository's own top
+# level are the same directory -- through orchid_physical_dir, this library's
+# own canonicalizer, so macOS reaching $TMPDIR through `/var` -> `/private/var`
+# (or an operator who installed orchid behind a symlink) cannot make one
+# checkout look like two. ORCHID_ROOT is compared against the top level rather
+# than merely being inside it, so an orchid VENDORED into a product repository
+# (`<product>/tools/orchid`) is correctly NOT self-hosted: that tree is the
+# product's, and run state committed there leaks exactly as it always did.
+#
+# Fails closed -- an unreadable repo, an unset or non-existent ORCHID_ROOT, a
+# path that cannot be resolved -- so an uncertain answer keeps the warning
+# rather than silencing it.
+_orchid_self_hosted_checkout() {
+  local repo="$1" root top
+  root="${ORCHID_ROOT:-}"
+  [ -n "$root" ] || return 1
+  top="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ -n "$top" ] || return 1
+  top="$(orchid_physical_dir "$top")" || return 1
+  root="$(orchid_physical_dir "$root")" || return 1
+  [ -n "$top" ] && [ -n "$root" ] && [ "$top" = "$root" ]
+}
+
+# orchid_leaked_run_state_branches <repo> <integ> -- print, one per line,
+# every LOCAL branch outside this run that carries durable run state, in its
+# tip tree or anywhere in its history. Empty output (the healthy shape) means
+# the run's bookkeeping is still confined to the run's own branches -- and it
+# is also the whole answer in a SELF-HOSTED checkout, where there is no product
+# to leak into (_orchid_self_hosted_checkout).
+#
+# The question is asked of each branch's TREE and of its HISTORY, never of its
+# ancestry relative to the integration branch: a squash merge, a cherry-pick and
+# a `git merge` all put the same files on the same branch, and only one of them
+# leaves the integration branch as an ancestor.
+#
+# THE HISTORY HALF IS NOT BELT-AND-BRACES. A tree test alone answers "is run
+# state in the working files of this branch right now", and the answer to that
+# is `no` the moment somebody notices the paths and commits a deletion -- while
+# every one of those files is still sitting in the branch's history, still
+# published by every push and clone of it, and still riding on into whatever
+# that branch is merged into. `git rm -r .orchid && git commit` does not remove
+# anything from a history; it appends. So a branch is named here when ANY commit
+# it can reach touched `.orchid` at all, which is exactly the add-then-delete
+# shape a tree test reads as clean.
+#
+# `.orchid/runtime/` is gitignored and so is never in a tree at all -- any
+# `.orchid/` path a commit carries is durable run state by construction.
+#
+# BOTH tests are kept, and the tree test runs first, because neither strictly
+# contains the other: in a SHALLOW clone the commit that introduced `.orchid/`
+# can be behind the graft point, where the tree still carries the files and the
+# path-limited walk has nothing to find.
+#
+# `--full-history` because the default walk simplifies merges away: a branch
+# that took run state in from one side of a merge and whose tip matches its
+# first parent is the leak, and plain history simplification is entitled to
+# prune exactly that commit out of the answer.
+orchid_leaked_run_state_branches() {
+  local repo="$1" integ="$2" in_run b
+  # The one repository where none of this is a leak: orchid's own. Asked before
+  # any ref is read, and asked of the filesystem rather than of the run's
+  # records -- see _orchid_self_hosted_checkout for why neither the name nor
+  # the presence of `.orchid/` may answer it.
+  if _orchid_self_hosted_checkout "$repo"; then return 0; fi
+  in_run="$(_orchid_in_run_branches "$repo" "$integ")"
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    # A HERESTRING, never `printf ... | grep -Fxq`: this library is sourced
+    # into scripts running under `set -o pipefail`, where `grep -q` exiting
+    # at its first match SIGPIPEs the upstream printf and pipefail promotes
+    # that 141 to the pipeline's status -- the same size-dependent coin flip
+    # tests/helpers.sh's assert_match documents.
+    if grep -Fxq -- "$b" <<<"$in_run"; then continue; fi
+    if [ -n "$(git -C "$repo" ls-tree "refs/heads/$b" -- .orchid 2>/dev/null)" ]; then
+      printf '%s\n' "$b"
+      continue
+    fi
+    if [ -n "$(git -C "$repo" rev-list --full-history --max-count=1 \
+                 "refs/heads/$b" -- .orchid 2>/dev/null)" ]; then
+      printf '%s\n' "$b"
+    fi
+  done <<<"$(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true)"
+}
+
+# orchid_install_push_guard <repo> <integ> -- render templates/pre-push.sh
+# with the run's integration branch baked in and install it at the repository's
+# SHARED hooks dir, INSTALLING it where there is none and UPGRADING one this
+# function itself wrote. Prints what it did (one line, or nothing when the
+# installed hook is already current). Never fails the caller.
+#
+# Lifted out of `orchid init` verbatim (T037) for one reason: the hook is the
+# only refusal orchid has at the boundary where run state actually leaves the
+# machine, and `orchid init` runs EXACTLY ONCE in a repository's life. It dies
+# on its second run -- `branch $integ exists` -- so every repository initialized
+# by an older orchid keeps the hook that shipped that day, forever. The leak
+# this task exists for was found on a repository like that: an upgrade an
+# operator never gets is not a fix, so the guard is installed from `orchid
+# start`'s existing-repository path too (libexec/orchid-start), which is the
+# supported door back into an initialized repo.
+#
+# THREE cases, and the middle one is the new one:
+#
+#   * No hook at all -> install, and say so. Unchanged from init's original.
+#   * A hook this function wrote (recognized by the marker below) that no
+#     longer matches what the template renders to -> overwrite it, and say so.
+#     The comparison is byte-for-byte against a fresh render, so a changed
+#     `integration_branch` refreshes the baked-in name by the same path a new
+#     template leg arrives -- and an already-current hook is rewritten never
+#     and reported never, so a repeat `orchid start` stays quiet.
+#   * ANY other hook -> leave it untouched and say so. The operator's own hook
+#     is authoritative regardless of what it does, exactly as before; this
+#     function must never be the reason a hook somebody wrote is lost.
+#
+# The marker is `templates/pre-push.sh`'s own second line, which has BEGUN with
+# `# orchid pre-push guard` since the hook first shipped (v1-m4) -- that is what
+# makes an OLD installed hook recognizable as orchid's own today, and it is why
+# that header is load-bearing and pinned by the template's own comment.
+# Recognizing orchid's hook by its content, not by a receipt written somewhere
+# at install time, is deliberate: a receipt would say "orchid wrote this" about
+# a file the operator has since replaced by hand.
+#
+# POSITION AND ANCHOR ARE THE WHOLE TEST, and both halves are load-bearing.
+# This used to be `grep -Fq` over the entire file, which asks a much weaker
+# question: does this file MENTION the phrase anywhere. A hook of the
+# operator's own that merely talks about orchid -- `# runs before the orchid
+# pre-push guard`, an `echo` naming it in a diagnostic, a dispatcher that
+# execs orchid's hook and says so in a comment -- answers yes to that and was
+# OVERWRITTEN, which is exactly the loss the never-overwrite rule exists to
+# prevent, and it lands on the operator most likely to have written a
+# deliberate hook. Read line 2 and require it to START with the header: a
+# mention is text somewhere in a file, a header is the second line and nothing
+# else, and only orchid's own renderer puts it there.
+#
+# A PREFIX of line 2, not the whole line: the text that FOLLOWS the header on
+# that line is ordinary prose and may be reworded, and pinning the whole line
+# would silently un-recognize the legacy hooks this upgrade exists for the
+# first time anyone edits it. The header itself is the contract.
+ORCHID_PUSH_GUARD_MARKER='# orchid pre-push guard'
+
+# orchid_push_guard_path <repo> -- the absolute path of the pre-push hook GIT
+# ITSELF will run for <repo>. Prints it; returns nonzero only when git cannot
+# answer for <repo> at all.
+#
+# `git rev-parse --git-path hooks/pre-push`, and nothing hand-rolled, because
+# that is the SAME resolver git's own `find_hook()` reaches: `git_path()` sends
+# any `hooks/...` argument through `adjust_git_path()`, which substitutes
+# `core.hooksPath` when one is configured and otherwise maps `hooks/` onto the
+# COMMON git dir. Both legs matter here, and only the second used to be
+# handled:
+#
+#   * `core.hooksPath` -- absolute or relative -- relocates every hook in the
+#     repository. This code used to compute `<git-common-dir>/hooks` by hand,
+#     so against a repository that sets the key (a shared team hooks
+#     directory, a `.githooks/` checked into the tree, anything Husky-shaped)
+#     orchid wrote its guard into `.git/hooks/`, which git no longer reads,
+#     and then REPORTED it as installed. That is worse than installing
+#     nothing: an inert file at a path nobody runs reads, to the operator and
+#     to `ls`, exactly like protection.
+#   * a linked worktree shares the main checkout's hooks. `--git-path` maps
+#     `hooks/` onto the common dir for precisely that reason, so this answers
+#     correctly from a task worktree without the caller having to know it is
+#     in one -- the property the old `--git-common-dir` spelling had, kept.
+#
+# RELATIVE ANSWERS, of two different kinds, both anchored the same way:
+#
+#   * with no `core.hooksPath`, git prints `.git/hooks/pre-push` when its cwd
+#     is the top of the working tree, and an absolute path otherwise.
+#   * with a RELATIVE `core.hooksPath`, git prints the configured value
+#     verbatim -- `adjust_git_path` substitutes the config string and never
+#     absolutizes it -- and git's own rule for reading that value is
+#     githooks(5)'s: relative to the directory the hooks are RUN from, which
+#     is the top level of the working tree.
+#
+# So a relative answer is resolved against the top level, which is what the
+# second kind requires and is identical to $repo for the first whenever $repo
+# is the top level. The bare git dir is the fallback anchor because that is
+# where git runs hooks for a bare repository, and $repo the last one, so this
+# is total: every caller gets a path, and the callers that cannot fail (a hook
+# install must never take a verb down) get one without a special case.
+#
+# THAT ANCHORING IS PER-WORKTREE, AND IT IS WHY THE SECOND KIND IS NOT
+# INSTALLABLE. See orchid_push_guard_hooks_mode below: this function answers
+# for the ONE checkout it was handed, which for a relative `core.hooksPath` is
+# not the same file as the answer for any other checkout of the same
+# repository. Callers that install must classify first; this one only resolves.
+orchid_push_guard_path() {
+  local repo="$1" p anchor
+  p="$(cd "$repo" 2>/dev/null && git rev-parse --git-path hooks/pre-push 2>/dev/null)" || return 1
+  [ -n "$p" ] || return 1
+  case "$p" in /*) printf '%s\n' "$p"; return 0 ;; esac
+  anchor="$(cd "$repo" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$anchor" ] \
+    || anchor="$(cd "$repo" 2>/dev/null && git rev-parse --absolute-git-dir 2>/dev/null || true)"
+  [ -n "$anchor" ] || anchor="$repo"
+  printf '%s/%s\n' "${anchor%/}" "$p"
+}
+
+# orchid_push_guard_git_common_dir <repo> -- <repo>'s git COMMON directory as a
+# canonical absolute path, or `<repo>/.git` when git cannot answer. The common
+# dir, never `--git-dir`: a linked worktree has a `.git` directory of its own
+# and shares the main checkout's hooks, which is the same reason
+# orchid_push_guard_path leans on `--git-path`.
+#
+# `git rev-parse --git-common-dir` prints a path relative to the cwd it ran in
+# whenever it can, so it is resolved against the directory this ran from --
+# $repo -- and then canonicalized, because it is about to be compared against
+# another canonical path and macOS reaches $TMPDIR through a symlink.
+orchid_push_guard_git_common_dir() {
+  local repo="$1" common phys
+  common="$(cd "$repo" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null || true)"
+  [ -n "$common" ] || { printf '%s\n' "${repo%/}/.git"; return 0; }
+  case "$common" in /*) ;; *) common="${repo%/}/$common" ;; esac
+  phys="$(orchid_physical_dir "$common" 2>/dev/null || true)"
+  if [ -n "$phys" ]; then common="$phys"; fi
+  printf '%s\n' "${common%/}"
+}
+
+# _orchid_physical_path <absolute-path> -- <path> canonicalized as far as it
+# EXISTS, with whatever is missing appended verbatim.
+#
+# orchid_physical_dir answers nothing at all for a directory that is not there
+# yet, and the directory this is used on -- a configured `core.hooksPath` --
+# routinely is not: git creates nothing for the key, and orchid's own installer
+# `mkdir -p`s it. Classifying an absent hooks directory as "cannot tell" would
+# make the very first `orchid init` on a fresh clone answer differently from
+# the second, so walk up to the first existing ancestor, canonicalize THAT
+# (which is what resolves a symlinked prefix such as macOS's /var), and put the
+# missing tail back on.
+_orchid_physical_path() {
+  local p="$1" tail="" head base
+  while [ ! -d "$p" ]; do
+    head="$(dirname "$p")"
+    [ "$head" != "$p" ] || break
+    base="$(basename "$p")"
+    tail="$base${tail:+/$tail}"
+    p="$head"
+  done
+  p="$(orchid_physical_dir "$p" 2>/dev/null || true)"
+  [ -n "$p" ] || return 1
+  printf '%s\n' "${p%/}${tail:+/$tail}"
+}
+
+# orchid_push_guard_hooks_mode <repo> -- how `core.hooksPath` is configured for
+# <repo>, as one word: `default` (the key is unset), `absolute`, `external`, or
+# `relative`. Never fails; an unreadable repository answers `default`, which is
+# the shape every other caller already handles.
+#
+# THE DISTINCTION EXISTS BECAUSE ONLY TWO OF THE FOUR CAN BE GUARDED
+# REPOSITORY-WIDE -- `default` and a repo-contained `absolute` -- and getting
+# that wrong is the failure this whole guard is supposed to prevent: a file
+# that reads like protection and is not.
+#
+# git's rule for the key, from githooks(5) and config's `core.hooksPath`: a
+# relative value is resolved against the directory hooks are RUN from, which is
+# the top level of the working tree (or `$GIT_DIR` for a bare repository). The
+# key itself lives in the SHARED config, so every worktree of the repository
+# reads the same string -- and then resolves it against its OWN top level. One
+# `core.hooksPath=.githooks` is therefore N different files: `<main>/.githooks/
+# pre-push` for the main checkout, `<wt>/.githooks/pre-push` for each linked
+# worktree. Orchid creates a linked worktree per task and one for the
+# integration branch, so those are the checkouts an operator actually pushes
+# from, and not one of them is covered by a hook written into the main
+# checkout's copy.
+#
+# Installing into the one path this process can see and reporting `installed`
+# would be precisely the lie this task removed from the derived-`.git/hooks`
+# case: repository-wide protection claimed from a per-worktree file. So a
+# relative `core.hooksPath` is UNSUPPORTED for the repository-wide guard and is
+# reported as such, loudly, at every door -- rather than half-installed.
+#
+# The alternative was to install into every existing worktree and every future
+# orchid-created one, with a doctor check for the uncovered ones. That is a
+# real design, and it is a lifecycle promise this bounded change cannot keep:
+# nothing here can cover a worktree an operator adds by hand tomorrow, and a
+# guard that covers all-but-one checkout is read as covering the repository.
+# Say "not supported, here is how to make it supportable" instead.
+#
+# AN ABSOLUTE VALUE IS ONLY GUARDABLE WHEN IT IS THIS REPOSITORY'S OWN, and
+# `absolute` alone does not say that. The key relocates hooks to a directory,
+# and a directory named by an absolute path is as easily SHARED as it is
+# private: `~/.githooks`, `/usr/local/share/git-hooks`, a team directory on a
+# network mount, the value a dotfiles repository sets in `--global` config for
+# every repository on the machine at once. Nothing about the string says which,
+# and orchid installing into it gets both readings wrong at the same time:
+#
+#   * it writes a guard carrying THIS repository's integration branch name in
+#     front of every OTHER repository that reads the same directory, refusing
+#     their pushes for a run they have nothing to do with;
+#   * it overwrites -- or is overwritten by -- whatever another repository, or
+#     the operator's own dotfiles, put there for the same reason, and orchid's
+#     own never-overwrite rule cannot help, because a hook orchid wrote for
+#     repository A is recognized as orchid's own in repository B and replaced.
+#
+# So the supported shape is the containable one: an absolute `core.hooksPath`
+# whose directory lies inside this repository's git COMMON directory is this
+# repository's own by construction, cannot be another repository's, and is
+# `absolute`. Any other absolute value is `external`, and is handled exactly
+# like `relative` -- nothing installed, nothing claimed, both recoveries named.
+# That is narrower than "any absolute path git can run", and deliberately: the
+# cost of the narrow rule is an operator with a private-but-outside hooks
+# directory being told to move or unset it, and the cost of the wide one is
+# orchid writing into a directory belonging to repositories it was never
+# pointed at.
+#
+# ORCHID NEVER REWRITES THE KEY. It is the operator's configuration, on the
+# same principle libexec/orchid-start applies to an ignored `orchid.config`:
+# force-overriding a setting its owner chose is not a fix. The warning names
+# both recoveries and stops there.
+#
+# Tilde is expanded through git's own `--path` reader, because git reads this
+# key as a path type -- `~/hooks` IS absolute once git has it, and classifying
+# it `relative` would refuse a repository on a spelling git itself resolves.
+orchid_push_guard_hooks_mode() {
+  local repo="$1" raw expanded hooks_dir common
+  raw="$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)"
+  [ -n "$raw" ] || { printf 'default\n'; return 0; }
+  expanded="$(git -C "$repo" config --get --path core.hooksPath 2>/dev/null || true)"
+  [ -n "$expanded" ] || expanded="$raw"
+  case "$expanded" in
+    /*) ;;
+    *) printf 'relative\n'; return 0 ;;
+  esac
+  # Both sides canonicalized, or the comparison answers on spelling: a repo
+  # under macOS's /var reaches its own git dir through a symlink, and
+  # `/var/folders/.../hooks` would then fail to be "inside" the
+  # `/private/var/folders/.../.git` it is literally inside.
+  hooks_dir="$(_orchid_physical_path "$expanded" 2>/dev/null || true)"
+  common="$(orchid_push_guard_git_common_dir "$repo")"
+  { [ -n "$hooks_dir" ] && [ -n "$common" ]; } || { printf 'external\n'; return 0; }
+  hooks_dir="${hooks_dir%/}"; common="${common%/}"
+  case "$hooks_dir" in
+    "$common"|"$common"/*) printf 'absolute\n' ;;
+    *) printf 'external\n' ;;
+  esac
+}
+
+# The ONE text for those cases, composed here so init, `orchid start` and
+# `orchid doctor` cannot drift into saying three different things about the
+# same repository. Prints the body only; each caller adds its own prefix
+# (`orchid: `, `WARN: push guard: `) in its own convention.
+#
+# What it must contain, and each clause is load-bearing:
+#   * that nothing was installed, said as a negative and never as a claim of
+#     protection -- no caller may print "guard installed" or "already current"
+#     about a repository in this state;
+#   * WHY this particular value cannot be guarded, in the terms an operator can
+#     check: the per-worktree risk for a relative value, the other repositories
+#     reading the same directory for an external one;
+#   * BOTH recoveries, as commands -- and the absolute one names a REAL
+#     repo-contained directory rather than a `/absolute/path/to/hooks`
+#     placeholder, because a placeholder invites the operator to point the key
+#     at their shared hooks directory and meet this same refusal again;
+#   * the command to run afterwards, so the fix has an end.
+#
+# One tail, two causes. The recovery and the "nothing is guarding this" half
+# are identical for both unsupported shapes, and an operator who fixes one has
+# to be told the same thing either way.
+orchid_push_guard_hookspath_warning() {
+  local repo="$1" raw common cause
+  raw="$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)"
+  common="$(orchid_push_guard_git_common_dir "$repo")"
+  if [ "$(orchid_push_guard_hooks_mode "$repo")" = relative ]; then
+    cause="core.hooksPath is set to the RELATIVE path '$raw', which git resolves against EACH worktree's own top level -- so it names a different file in every checkout of this repository, and orchid's task and integration worktrees would each need their own copy. No single file can guard the repository."
+  else
+    cause="core.hooksPath is set to the ABSOLUTE path '$raw', which is OUTSIDE this repository's git directory ($common) -- so orchid cannot tell it apart from a hooks directory shared with other repositories on this machine (a \$HOME dotfiles directory, a team mount, a --global setting). Installing there would put a guard naming THIS repository's integration branch in front of every repository that reads it, and would overwrite whatever another one had installed for the same reason."
+  fi
+  printf '%s\n' "$cause So the pre-push guard was NOT installed here and nothing local refuses a push of run state. Fix it by pointing the key at an absolute directory inside this repository's own git directory (git -C '$repo' config core.hooksPath '$common/hooks') or by dropping it for git's default (git -C '$repo' config --unset core.hooksPath), then run 'orchid start --refresh-push-guard'. orchid does not change this setting for you."
+}
+
+# What the last orchid_install_push_guard call actually did, for a caller that
+# has to REPORT the outcome rather than merely cause it: `disabled`,
+# `unsupported-hookspath`, `unresolved`, `no-template`, `foreign`, `current`,
+# `repaired`, `upgraded`, `installed`, `failed`. Read it with
+# orchid_push_guard_action, never by grepping the printed line -- prose is for
+# people.
+#
+# Four of them mean an EXECUTABLE guard is in place at the path git runs:
+# `current`, `repaired`, `upgraded`, `installed`. Every other value means it is
+# not, and `repaired` is split out of `current` precisely so that "the bytes
+# were already right" and "the bytes were right but the file was inert" are not
+# the same answer.
+#
+# Every incidental caller (init, `orchid start`'s setup path) can and does
+# ignore this and let the printed line speak: for them, a hook that is already
+# current is correctly reported by saying nothing at all. The explicit
+# `orchid start --refresh-push-guard` route cannot, because there that same
+# silence is the answer to the one command an operator ran to fix exactly this
+# -- and because "the hook is yours, I left it" has to exit non-zero there and
+# exit 0 everywhere else.
+ORCHID_PUSH_GUARD_ACTION=""
+orchid_push_guard_action() { printf '%s\n' "$ORCHID_PUSH_GUARD_ACTION"; }
+orchid_install_push_guard() {
+  local repo="$1" integ="$2" guard hooks_dir
+  local integ_shell_esc integ_esc rendered hook hook_header
+  ORCHID_PUSH_GUARD_ACTION=disabled
+  guard="$(config_get "$repo" push_guard true)"
+  case "$guard" in false|0|no) return 0 ;; esac
+
+  # Two `core.hooksPath` shapes carry no repository-wide guard -- see
+  # orchid_push_guard_hooks_mode. A relative value is not one file but one per
+  # checkout; an absolute value outside this repository's git dir is a
+  # directory orchid cannot claim as this repository's own. Refuse the whole
+  # install in both, rather than write a file that guards the checkout this
+  # process happens to be looking at, or a file that lands in front of
+  # repositories nobody pointed orchid at, and call either one protection.
+  # Nothing is written, nothing is reported as installed or current, and the
+  # operator is told exactly what to change.
+  case "$(orchid_push_guard_hooks_mode "$repo")" in
+    relative|external)
+      ORCHID_PUSH_GUARD_ACTION=unsupported-hookspath
+      echo "orchid: $(orchid_push_guard_hookspath_warning "$repo")" >&2
+      return 0 ;;
+  esac
+
+  # Hooks live under the git dir, never inside a commit -- and at the ONE path
+  # git will execute, which orchid_push_guard_path asks git for rather than
+  # deriving. Install, inspect and report all name that same path below, so a
+  # guard is never written where git does not look and never reported at a
+  # path that is not the one carrying it.
+  ORCHID_PUSH_GUARD_ACTION=unresolved
+  hook="$(orchid_push_guard_path "$repo")" || return 0
+  hooks_dir="$(dirname "$hook")"
+
+  # $integ is substituted into a sed REPLACEMENT string, where `|` (the
+  # delimiter), `&` (whole-match backreference) and `\` (escape introducer) are
+  # all syntactically significant -- and all three are legal in a git branch
+  # name. It also lands INSIDE DOUBLE QUOTES in the rendered hook
+  # (`integ="__INTEGRATION_BRANCH__"`), where `"`, `$` and a backtick -- also
+  # all legal in a refname -- become live shell syntax rather than inert text.
+  # Escape for the SHELL context first, THEN for sed's replacement grammar
+  # (which doubles any backslash it finds, so the one added here survives to
+  # the rendered file as a single literal `\`). Never merge or reorder the two
+  # passes. This is not templates/task.md's __ID__/__TITLE__ idiom any more --
+  # T034 moved that renderer off `sed` entirely after a title containing `&`
+  # came out as the literal text `__TITLE__`. It stays `sed` here only because
+  # a branch name is a far narrower input than an operator's prose;
+  # lib/frontmatter.sh's fm_render_task_template is the literal-substitution
+  # alternative if that ever stops being true.
+  integ_shell_esc="$(printf '%s' "$integ" | sed -e 's/[`$"]/\\&/g')"
+  integ_esc="$(printf '%s' "$integ_shell_esc" | sed -e 's/[|&\\]/\\&/g')"
+  rendered="$(sed "s|__INTEGRATION_BRANCH__|$integ_esc|g" "${ORCHID_ROOT:-}/templates/pre-push.sh" 2>/dev/null || true)"
+  # An empty render is a missing or unreadable template, and the one outcome
+  # worse than not upgrading a hook is truncating a working one to nothing (the
+  # `producer | atomic_write` shape that destroys a file and exits 0, lesson
+  # L034). Say nothing and leave whatever is there.
+  ORCHID_PUSH_GUARD_ACTION=no-template
+  [ -n "$rendered" ] || return 0
+
+  if [ -e "$hook" ]; then
+    # Line 2 EXACTLY -- see the marker's own comment above. `sed -n '2p'` on a
+    # file with fewer than two lines, on a directory, or on something
+    # unreadable all yield the empty string, which fails the prefix test and
+    # takes the leave-it-alone branch: the safe answer for anything this
+    # function cannot positively identify as its own.
+    hook_header="$(sed -n '2p' "$hook" 2>/dev/null || true)"
+    case "$hook_header" in
+      "$ORCHID_PUSH_GUARD_MARKER"*) : ;;
+      *)
+        ORCHID_PUSH_GUARD_ACTION=foreign
+        echo "orchid: existing pre-push hook found at $hook -- leaving it untouched (push guard not installed)"
+        return 0 ;;
+    esac
+    # `$(cat)` strips trailing newlines from BOTH sides of this comparison
+    # (the render above lost its own to the same rule), so the two are compared
+    # on equal terms and a hook that is already current is left alone.
+    #
+    # BYTES ARE ONLY HALF OF "CURRENT". git runs a hook by exec'ing it, and
+    # silently runs nothing at all when the file is not executable -- no error,
+    # no output, the push simply proceeds. So a byte-identical guard with the
+    # execute bit off is the same inert-file-that-reads-like-protection this
+    # function refuses to create anywhere else, and it is a shape that happens
+    # for ordinary reasons: a hook copied with `cp` from a template directory, a
+    # restore from an archive that dropped the mode, a `umask` that stripped it,
+    # or an orchid install whose own chmod failed. Repair it and SAY SO -- the
+    # bytes did not change, but the repository's protection did, and an
+    # operator who is told "already current" learns nothing about the minute in
+    # which they were unguarded.
+    if [ "$rendered" = "$(cat "$hook" 2>/dev/null)" ]; then
+      if [ -x "$hook" ]; then
+        ORCHID_PUSH_GUARD_ACTION=current
+        return 0
+      fi
+      # A failed chmod is NOT `current` and NOT success: the end state is a
+      # file git will not run. Report it as a failure so the explicit refresh
+      # route exits non-zero, rather than telling an operator their guard is
+      # fine because its contents are.
+      if ! chmod +x "$hook" 2>/dev/null || [ ! -x "$hook" ]; then
+        ORCHID_PUSH_GUARD_ACTION=failed
+        echo "orchid: the pre-push guard at $hook holds the current template but is NOT executable, and it could not be made executable -- git silently runs nothing in that state, so pushes of task branches, of $integ, and of run state are NOT guarded here (fix: chmod +x $hook)" >&2
+        return 0
+      fi
+      ORCHID_PUSH_GUARD_ACTION=repaired
+      echo "pre-push guard repaired: $hook was not executable and git would have run nothing -- execute bit restored (integration branch: $integ)"
+      return 0
+    fi
+    ORCHID_PUSH_GUARD_ACTION=failed
+    if ! printf '%s\n' "$rendered" > "$hook"; then
+      # Never fatal -- neither caller may die over a hook -- but never silent
+      # either: "the guard is not in place" is exactly the fact an operator
+      # must not have to infer from an absence of output. The shell's own
+      # diagnostic (a failed redirection prints one) lands just above this
+      # line and says which way the write failed; this says what it cost.
+      echo "orchid: could not replace the pre-push guard at $hook -- the older hook is still in place and does not carry the newer checks" >&2
+      return 0
+    fi
+    # An unexecutable hook is not a guard, so a failed chmod is `failed` even
+    # though the file WAS replaced -- and the success line is NOT printed in
+    # that case. "pre-push guard upgraded" beside "could not make it
+    # executable" is two claims an operator has to reconcile, and the one they
+    # remember is the first; the stderr line below carries the whole truth,
+    # replacement included.
+    if ! chmod +x "$hook" 2>/dev/null || [ ! -x "$hook" ]; then
+      ORCHID_PUSH_GUARD_ACTION=failed
+      echo "orchid: replaced the pre-push guard at $hook but could not make it executable -- git silently runs nothing in that state, so pushes of task branches, of $integ, and of run state are NOT guarded here (fix: chmod +x $hook)" >&2
+      return 0
+    fi
+    ORCHID_PUSH_GUARD_ACTION=upgraded
+    echo "pre-push guard upgraded: $hook (integration branch: $integ)"
+    return 0
+  fi
+
+  ORCHID_PUSH_GUARD_ACTION=failed
+  if ! mkdir -p "$hooks_dir" || ! printf '%s\n' "$rendered" > "$hook"; then
+    echo "orchid: could not install the pre-push guard at $hook -- pushes of task branches, of $integ, and of run state are NOT guarded in this repository" >&2
+    return 0
+  fi
+  if ! chmod +x "$hook" 2>/dev/null || [ ! -x "$hook" ]; then
+    echo "orchid: wrote the pre-push guard to $hook but could not make it executable -- git silently runs nothing in that state, so pushes of task branches, of $integ, and of run state are NOT guarded here (fix: chmod +x $hook)" >&2
+    return 0
+  fi
+  ORCHID_PUSH_GUARD_ACTION=installed
+  echo "pre-push guard installed: $hook (integration branch: $integ)"
 }
 
 # with_timeout <secs> cmd... -- runs cmd (any command form, including a
@@ -396,6 +3697,232 @@ with_timeout() {
   local rc=0; wait "$pid" 2>/dev/null || rc=$?
   if kill -0 "$w" 2>/dev/null; then kill -- "-$w" 2>/dev/null; wait "$w" 2>/dev/null; return "$rc"; fi
   return 124
+}
+
+# -- worktrees Orchid creates ------------------------------------------------
+
+# orchid_physical_dir <path> -- <path> as a canonical, absolute, symlink-free
+# directory path, or nothing (non-zero) when it does not exist or is not a
+# directory.
+#
+# `cd` plus `pwd -P`, and nothing else. Both one-word spellings of this are
+# traps: `realpath` is not installed on a stock macOS, and BSD `readlink` had
+# no `-f` at all before macOS 12.3 -- either would work on the CI Linux runner
+# and fail on the operator's own laptop, which is the worst way for a path
+# helper to differ. This spelling is shell built-ins only, so it behaves the
+# same everywhere bash 3.2 runs.
+#
+# CANONICAL matters as much as portable. macOS reaches $TMPDIR through a
+# symlink (/var -> /private/var), so one directory has two spellings, and any
+# path this repository hands to something running ELSEWHERE -- a `git worktree
+# list` comparison, or a `worktree_prepare` command whose cwd is a fresh
+# checkout under /var/folders -- must be the spelling both sides agree on.
+orchid_physical_dir() {
+  ( cd "$1" 2>/dev/null && pwd -P )
+}
+
+# A checkout Orchid creates holds exactly what is committed and nothing else:
+# a task's dispatch worktree (runners/orchid-drive) and the detached
+# validation worktree `orchid merge` runs the suite in are both `git worktree
+# add` of a ref, never a copy of anybody's working directory. So every project
+# whose verification needs something UNTRACKED -- installed dependencies, a
+# generated lockfile, a .env, a built toolchain -- fails in those checkouts
+# while passing in the operator's own, and the failure is reported against the
+# candidate rather than against the environment that produced it.
+#
+# `worktree_prepare` (config, default unset) is the operator's one chance to
+# close that gap: a command line run INSIDE the fresh checkout before anything
+# else uses it. Parsed from config and never sourced -- same treatment
+# `verify` gets -- and run through `bash -c` in the foreground, so this is a
+# setup command rather than an engine spawn and INV-01 is untouched.
+#
+# The command is handed three environment variables, of which the first is the
+# point of the exercise:
+#
+#   ORCHID_REPO_ROOT  the repository orchid dispatched from, canonicalized by
+#                     orchid_physical_dir. A prepare command's job is nearly
+#                     always to bring across something the checkout does not
+#                     have (`ln -s "$ORCHID_REPO_ROOT/node_modules" .`), and
+#                     it cannot work that path out for itself: a dispatch
+#                     worktree is a SIBLING of the repository while a merge
+#                     validation worktree is an unrelated mktemp directory
+#                     under $TMPDIR, so no fixed number of `..` hops reaches
+#                     the repository from both, and on macOS the $TMPDIR one
+#                     is not even on the same spelling of the filesystem.
+#   ORCHID_WORKTREE   the checkout being prepared (also its cwd).
+#   ORCHID_TASK       the task id that checkout belongs to. The TASK ID, and
+#                     nothing decorated onto it: a prepare command that keys a
+#                     cache or names a scratch directory off this value has to
+#                     get back the same string the rest of the protocol uses
+#                     for that task. Which checkout of that task is being
+#                     prepared is ORCHID_WORKTREE's job to say, and the log
+#                     slug's -- neither of which is this variable.
+#
+# ORCHID_REPO_ROOT is deliberately NOT spelled `ORCHID_REPO`: that name is a
+# verb's "which repository am I operating on" input, and setting it here would
+# silently retarget any nested `orchid` call the prepare command makes -- at
+# the exact moment the caller is standing in a different checkout.
+
+# _worktree_prepare_gitdir <worktree> -- that checkout's PRIVATE git directory
+# (`<common>/worktrees/<name>` for a linked worktree, `.git` for the main
+# one), canonicalized, or nothing.
+#
+# This is where the prepared-stamp goes, and the choice is the whole
+# crash-safety story: git deletes that directory when the worktree is removed
+# or pruned, so a stamp can never outlive the checkout it describes, and a
+# worktree recreated at the same path is never mistaken for a prepared one.
+_worktree_prepare_gitdir() {
+  local wt="$1" raw
+  raw="$(git -C "$wt" rev-parse --git-dir 2>/dev/null)" || return 1
+  [ -n "$raw" ] || return 1
+  case "$raw" in
+    /*) ;;
+    *) raw="$wt/$raw" ;;
+  esac
+  orchid_physical_dir "$raw"
+}
+
+# _worktree_prepare_run <worktree> <repo-root> <task> <command> -- the child
+# side of the fork with_timeout backgrounds: working directory and
+# environment, then the configured command line through `bash -c` WITH ITS
+# STDIN CLOSED, exactly as `orchid verify` runs its own.
+#
+# `</dev/null` is the load-bearing token on that line, and leaving it off is a
+# silent-data-loss bug rather than a hygiene miss. runners/orchid-drive walks
+# its work through loops whose OWN stdin is the list being walked -- the task
+# walk reads `< <("$ORCHID_BIN" task list | sort)`, and the binding,
+# review-slot and escalation loops are herestring-fed the same way. Dispatch
+# calls worktree_prepare from inside that walk, in a command substitution,
+# which redirects stdout and nothing else; so an inherited stdin here is the
+# driver's own worklist pipe. A prepare command that reads stdin for any
+# ordinary reason -- an installer asking to continue, a bootstrap script with
+# a bare `read`, anything ending in `cat` -- then consumes the tasks the
+# driver has not walked yet. The loop sees EOF, the pass ends early having
+# silently skipped real work, and NOTHING reports an error: every task it
+# never reached simply looks like a task with nothing to do this pass.
+#
+# Closing stdin makes that impossible instead of unlikely, and costs a prepare
+# command nothing it should have had: it is a setup step running unattended,
+# with no operator on the other end of a prompt to answer it.
+_worktree_prepare_run() {
+  local wt="$1" root="$2" task="$3" cmd="$4"
+  cd "$wt" || return 1
+  ORCHID_REPO_ROOT="$root" ORCHID_WORKTREE="$wt" ORCHID_TASK="$task" \
+    bash -c "$cmd" </dev/null
+}
+
+# worktree_prepare <repo> <worktree> <task> [log-slug] -- prepares <worktree>
+# when the operator configured a command for it. Prints exactly one line,
+# "<action><TAB><detail>" (the shape drive_worktree_plan already uses), and
+# ALWAYS returns 0: the caller owns the consequence, and the two callers differ
+# on it -- dispatch parks the run on a worktree-conflict boundary and leaves
+# the task where it was, while `orchid merge` dies before it can report an
+# environment's problem as a candidate's.
+#
+#   skip <reason>   nothing is configured, or this checkout's stamp already
+#                   records this exact command
+#   ok   <log>      the command ran and exited 0
+#   fail <reason>   it exited non-zero, outlived worktree_prepare_timeout_s,
+#                   or could not be run at all. Names the log either way.
+#
+# The stamp records the COMMAND TEXT, not merely the fact of a run, so editing
+# `worktree_prepare` re-prepares every checkout on its next pass -- and a
+# FAILED run is never stamped, so the next pass retries it once the operator
+# has fixed whatever broke.
+#
+# <task> is the task id the checkout belongs to, and reaches the command as
+# ORCHID_TASK -- undecorated, because that variable's contract is the task id.
+# <log-slug> names the log and defaults to <task>; the ONLY caller that passes
+# it is `orchid merge`, which prepares a SECOND checkout for a task that
+# usually already has a dispatch worktree, and would otherwise overwrite that
+# checkout's prepare log with this one's. Two checkouts, two records, one task
+# id in both.
+worktree_prepare() {
+  local repo="$1" wt="$2" task="$3" slug="${4:-$3}"
+  local cmd root phys gitdir stamp rt log secs out_tmp tail_txt rc=0
+  cmd="$(config_get "$repo" worktree_prepare "")"
+  if [ -z "$cmd" ]; then
+    printf 'skip\tno worktree_prepare configured\n'
+    return 0
+  fi
+  root="$(orchid_physical_dir "$repo")" || root=""
+  if [ -z "$root" ]; then
+    printf 'fail\tcannot resolve the repository root %s\n' "$repo"
+    return 0
+  fi
+  phys="$(orchid_physical_dir "$wt")" || phys=""
+  if [ -z "$phys" ]; then
+    printf 'fail\tcannot resolve the worktree %s\n' "$wt"
+    return 0
+  fi
+  gitdir="$(_worktree_prepare_gitdir "$phys")" || gitdir=""
+  if [ -z "$gitdir" ]; then
+    printf 'fail\t%s is not a git checkout, so nothing can record that it was prepared\n' "$phys"
+    return 0
+  fi
+  stamp="$gitdir/orchid-prepared"
+  if [ -f "$stamp" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$cmd" ]; then
+    printf 'skip\t%s is already prepared with this command\n' "$phys"
+    return 0
+  fi
+
+  secs="$(config_get "$repo" worktree_prepare_timeout_s 900)"
+  # A non-numeric budget would go straight to with_timeout's own `sleep`,
+  # whose immediate failure would have the watcher kill the command the
+  # instant it started -- every prepare a zero-second timeout, silently. A
+  # malformed value falls back to the default instead.
+  case "$secs" in ''|*[!0-9]*) secs=900 ;; esac
+
+  # The log lives under runtime/ (gitignored), never in .orchid/reviews/:
+  # this is an environment record, not evidence about a candidate, and no
+  # gate reads it.
+  rt="$(orchid_runtime "$repo")"
+  mkdir -p "$rt/worktree-prepare"
+  slug="${slug//\//-}"; [ -n "$slug" ] || slug=worktree
+  log="$rt/worktree-prepare/$slug.log"
+
+  out_tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-prepare.XXXXXX")"
+  with_timeout "$secs" _worktree_prepare_run "$phys" "$root" "$task" "$cmd" \
+    >"$out_tmp" 2>&1 || rc=$?
+  {
+    echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "worktree: $phys"
+    echo "repo_root: $root"
+    echo "task: $task"
+    echo "command: $cmd"
+    echo "---"
+    cat "$out_tmp"
+    echo "exit: $rc"
+  } | atomic_write "$log"
+  # A boundary reason is one line, so the tail that explains the failure is
+  # flattened and bounded here rather than at each call site.
+  tail_txt="$(tail -n 3 "$out_tmp" 2>/dev/null | tr '\n\t' '  ')" || tail_txt=""
+  tail_txt="${tail_txt:0:200}"
+  rm -f "$out_tmp"
+
+  if [ "$rc" -eq 0 ]; then
+    # An unwritable stamp costs a repeated prepare on the next pass, which is
+    # exactly what an unprepared checkout would have got anyway -- never worth
+    # aborting a caller running under `set -e` over.
+    printf '%s\n' "$cmd" | atomic_write "$stamp" || true
+    printf 'ok\t%s\n' "$log"
+    return 0
+  fi
+  # 124 AND 143 are both "we killed it". with_timeout reports 124 only when
+  # its watcher has already been reaped by the time the timed command is
+  # waited on; win that race the other way -- the watcher fires, kills the
+  # group, and is still a zombie when `kill -0` checks it -- and the caller
+  # gets the command's OWN status for a SIGTERM it did not survive, which is
+  # 128+15. Reading that as an ordinary non-zero exit would tell the operator
+  # to go debug a command that never got to finish.
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 143 ]; then
+    printf 'fail\tworktree_prepare timed out after %ss in %s (worktree_prepare_timeout_s; see %s)\n' \
+      "$secs" "$phys" "$log"
+    return 0
+  fi
+  printf 'fail\tworktree_prepare failed (exit status %s) in %s (see %s)%s\n' \
+    "$rc" "$phys" "$log" "${tail_txt:+ -- $tail_txt}"
+  return 0
 }
 
 # v1-m4: hyphenated config keys (a custom role id like `role.code-reviewer`)
@@ -462,7 +3989,10 @@ lock_acquire() {
     pid="$(jq -r .pid "$lock/owner.json" 2>/dev/null || echo 0)"
     host="$(jq -r .hostname "$lock/owner.json" 2>/dev/null || echo '?')"
     pstart="$(jq -r .pid_start "$lock/owner.json" 2>/dev/null || echo '?')"
-    now="$(date +%s)"; mt="$(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock")"
+    # An unreadable lock mtime falls back to `now`, i.e. age 0, i.e. the
+    # conservative "too young to break" answer -- never to a number that
+    # would let this acquirer tear down a lock it cannot actually date.
+    now="$(date +%s)"; mt="$(file_mtime "$lock" "$now")"
     age=$(( now - mt ))
     local alive=1
     if [ "$host" != "$(hostname)" ]; then alive=0
@@ -712,7 +4242,10 @@ epoch_require() {
 
 _trust_canon_path() {  # dir -> canonical absolute path (no trailing slash,
   # symlinks resolved), or nonzero if it doesn't exist / isn't a directory.
-  ( cd "$1" 2>/dev/null && pwd -P )
+  # The trust store's own name for orchid_physical_dir (above), kept because
+  # four call sites outside this file speak it; the implementation is shared
+  # so there is exactly one place this repository canonicalizes a path.
+  orchid_physical_dir "$1"
 }
 
 _orchid_file_sha256() {  # file -> a line binding this file's path to its
@@ -846,3 +4379,301 @@ trust_store_remove() {  # abs-dir -- atomic delete of any record for that path
   mkdir -p "$(_orchid_trust_dir)"
   awk -v d="$dir" '{p=$0; sub(/^[^ ]+ /, "", p)} p!=d' "$f" | atomic_write "$f"
 }
+
+# ---------------------------------------------------------------------------
+# The stale-root refusal (lesson L018). Last in this file because it must run
+# at SOURCE time -- it decides whether any caller of this library may run at
+# all -- and orchid_root_stale needs config_get, defined above.
+#
+# It is a refusal rather than a fourth warning on purpose. `orchid doctor`
+# FAILs and `orchid status` warns on the neighbouring staleness (orchid_stale_
+# checkout, the run's DURABLE state), and in a self-hosted setup -- the only
+# setup that can reach the condition here -- those are the same directory, so
+# an operator in this state has been told. On 2026-08-06 one read that warning
+# on the very first command of the session, filed it as the known cosmetic
+# trap, and then drove a run for a full day in which none of the merged
+# improvements were in effect for the code actually running it. A warning that
+# must be obeyed but is never enforced will be ignored, and was.
+#
+# Note what that costs, since nothing else in the file says it: `doctor` and
+# `status` source this library like every other verb, so once the refusal
+# fires the two verbs whose job is to explain it refuse too. That is why the
+# message below has to carry the whole OBSERVATION itself -- naming the branch
+# and the files, and the read-only commands for looking at them -- and why the
+# override is worth naming in it: `ORCHID_ALLOW_STALE_ROOT=1 orchid doctor` is
+# how an operator reads the rest of the picture out of a checkout in this
+# state (docs/troubleshooting.md).
+#
+# What this must NOT become is a run that halts on its own success. `orchid
+# merge` advancing the integration branch is precisely what creates the
+# condition, and the checkout it advances is, in a self-hosted run, the one it
+# is itself executing from -- so libexec/orchid-merge refreshes that ONE
+# checkout (orchid_kernel_clean + orchid_refresh_kernel above) immediately
+# after the ref moves, and shields its own remaining bookkeeping from this
+# refusal. Without that, the very next child process -- `task advance <id>
+# done` -- would refuse, stranding the task in `merging` with the branch
+# already moved and no verb left able to say so. The refusal is for the
+# checkouts nothing owns: an operator's parallel checkout of the same branch,
+# and a staged kernel edit that no refresh may silently discard.
+#
+# Shielding the merge's own children is not enough on its own, because the
+# window between the ref advance and the refresh is open to every OTHER
+# process too -- an operator's `orchid status`, a heartbeat, a notify hook,
+# all started from this same root and none of them a child of the merge.
+#
+# Those verbs REFUSE in that window, and must. The window cannot be made
+# atomic -- a ref advance and a tree restore are two operations, and no
+# ordering of them is atomic to a third process -- but the thing that has to
+# be closed is not the interval, it is the possibility of EXECUTING the
+# pre-merge tree inside it, and refusing closes that completely. An earlier
+# version instead stood the refusal down for the duration, which bought a
+# heartbeat its exit status by handing it the stale kernel: the failure of
+# L018, reintroduced inside the fix for L018. What the marker
+# (_orchid_kernel_refresh_inflight above) now buys is a truthful message --
+# "a repair is in flight, nothing ran, retry" instead of a report inviting an
+# operator to diagnose a condition that is repairing itself -- and a distinct
+# exit status for the automation that used to survive on the tolerance.
+#
+# Note the reach that claim does NOT have, because an earlier draft of this
+# comment claimed it and the code never delivered it. A checkout that SHARES
+# the advanced ref is covered -- a linked worktree (`git worktree add`) or any
+# other checkout of the same repository parked on the integration branch, all
+# of which see their own HEAD move when `orchid merge` runs `update-ref`. A
+# SEPARATE CLONE is not: refs are per-repository, so nothing in a clone moves
+# when the origin's branch does, its working tree goes on matching its own
+# HEAD, and this guard has nothing to compare. That checkout stays stale until
+# someone fetches into it, and no refusal here can tell it so.
+#
+# This library is sourced by every libexec/orchid-* verb and every runners/*
+# entry point, so there is exactly one place the check fires from and no verb
+# can be written that forgets to ask (lesson L016). It is deliberately NOT in
+# bin/orchid: the runners resolve their own $ORCHID_ROOT and source this file
+# without ever passing through the dispatcher, and the dispatcher stays
+# verb-agnostic.
+#
+# Being last also puts it AFTER _orchid_entry_restore_operator_path above, so
+# it adds no binary lookup ahead of that restore -- the property every
+# trust-boundary entry point (trust/doctor/status, and the pump, tick and
+# service runners) relies on, and which they preserve here anyway by holding
+# the fixed bootstrap PATH across this whole file. An ordinary verb reaches
+# this line with the operator's PATH restored, exactly as it reaches every
+# other `git` call it makes; this check claims no stronger boundary than the
+# verb around it already has.
+#
+# WHAT MAY HAPPEN AT SOURCE TIME, AND WHAT MAY NOT (T016, lesson L036). The
+# paragraph above is about binary LOOKUPS. The stronger rule, and the one the
+# unattended-trust contract actually imposes, is about REPOSITORY WORK: a
+# process that may still be looking for an acknowledgement may not spend a
+# `git` on any repository, and a source-time check lands in front of that
+# lookup however the gate itself is written. This block used to spend one --
+# not on every root, only on a root parked on the integration branch, which is
+# precisely the self-hosted checkout orchid develops and runs itself from, so
+# it was invisible everywhere except the one place it mattered.
+#
+# So the block below no longer asks the whole question. It ARMS, from file
+# reads alone, and then decides WHO may fire:
+#
+#   * A kernel entry point with no authorization boundary to cross -- every
+#     ordinary verb, and the runners that gate on nothing -- fires here, at
+#     source time, exactly as before. There is no acknowledgement pending in
+#     such a process, so there is nothing for the git to land in front of.
+#   * A TRUST-BOUNDARY entry point (it set __orchid_entry_defer_restore=1
+#     before sourcing this file) does NOT fire here. It fires from
+#     _orchid_entry_restore_operator_path above, which is the line where that
+#     entry point states its authorization decision is made. If it refuses
+#     before reaching that line, nothing fires and nothing needed to: it ran
+#     no protocol, spawned no adapter and executed nothing but its own gate.
+#   * A process that is not executing one of orchid's own entry points at all
+#     -- a test sourcing this library, a helper reaching for one function --
+#     never fires it. Such a process is not running a verb, so there is no
+#     verb to refuse, and _orchid_kernel_entry_point below is what says so.
+#
+# The one thing that is NOT reordered is the refusal's reach for a verb that
+# does run: every arm still ends in the same two refusals, with the same text
+# and the same exit statuses, before the verb's own work.
+#
+# `orchid help` and an unknown verb still answer (bin/orchid handles both
+# without sourcing anything). EVERYTHING ELSE REFUSES, `doctor` and `status`
+# included, and that is the deliberate answer to the obvious objection: those
+# two only read, they change nothing, and an operator meeting a refusal wants
+# them more than any other verb. Four reasons they are in anyway, and the
+# first is the one that decides it:
+#
+#   * A diagnostic read out of a stale checkout is produced BY the pre-merge
+#     code. `orchid doctor` in this state runs the checks the old tree
+#     carries, so it can pass a checkout the merged doctor fails, and it
+#     reports on the very staleness it is a symptom of. Trusting output from
+#     code nobody has looked at is the whole of L018; a wrong diagnosis is
+#     worse than a refusal, because the operator acts on it.
+#   * There is nothing to gain. The refusal below already carries more than
+#     `doctor` would say here: the branch, the staged paths, the unstaged ones
+#     as context, and two read-only commands for looking at them.
+#   * An exemption list is exactly how the advisory version failed. It was
+#     obeyable and therefore ignored, and every exemption reopens the same
+#     door for whichever verb ends up on the list next.
+#   * The exemption exists already, and is better: ORCHID_ALLOW_STALE_ROOT=1
+#     orchid doctor is one token, per-invocation, visible in the transcript,
+#     and chosen with the observation already in front of the operator -- so
+#     the staleness of what they are about to read is explicit rather than
+#     silent. docs/troubleshooting.md says all of this where an operator in
+#     this state will find it.
+#
+# And the refusal itself SAYS all four of those things, in a sentence, rather
+# than leaving an operator to infer them from a tool that has apparently
+# stopped working. That matters most in the case where the cause is their own
+# `git add` and nothing whatever is stale: from where they stand, orchid has
+# refused to run over an edit they made deliberately, and a refusal that reads
+# as a broken verb is one that gets worked around rather than resolved. It is
+# named as protection, with the reason and the override, in the message and in
+# docs/troubleshooting.md's "Why doctor and status refuse too".
+# ---------------------------------------------------------------------------
+
+# _orchid_stale_root_die -- the refusal text. ONE arm, because this verb's job
+# is to REFUSE and REPORT, and it has no business claiming to know which of
+# the two causes it is looking at.
+#
+# The history is why that is stated so flatly. The first version asserted the
+# branch-advance cause unconditionally and prescribed `git checkout HEAD --
+# <kernel paths>` to clear it. Met with a HAND-EDITED kernel -- the state
+# `orchid merge` itself leaves behind when it declines to refresh, so orchid
+# CREATES it -- both halves were wrong at once: a cause that had not happened,
+# and a remedy that silently overwrote the operator's only copy. The version
+# after that added arms to classify the cause, and did the identical thing to
+# a STAGED-ONLY edit, which it also read as "behind". Two rounds, two states,
+# the same data-loss defect, because the classification cannot be made
+# correctly from what is observable here (orchid_root_stale says why).
+#
+# So the rule, and it removes the class rather than the state last seen: say
+# what was OBSERVED, say plainly that the cause is not determinable from it,
+# and print nothing that can discard work. The only commands here are
+# read-only ones for LOOKING. The operator resolves it -- they are the one
+# party who knows whether they staged that edit.
+#
+# One exception is provided for in principle and does not fire in practice: a
+# state provably BEHIND with a clean tree could carry a bare restore, since
+# every byte it overwrote would already be in the object store. There is no
+# proof available (again, orchid_root_stale). Rather than approximate one for
+# a third time, no restore is printed at all. docs/troubleshooting.md carries
+# the repair options in a place that can spell out what each one costs.
+#
+# `orchid merge`'s automatic refresh is untouched by this and is NOT the same
+# judgment: it is gated on orchid_kernel_clean asked BEFORE the ref moves, at
+# a moment when "nothing uncommitted exists here" is a fact rather than an
+# inference. That is why the self-healing path may write and this may not.
+_orchid_stale_root_die() {
+  local root="${ORCHID_ROOT:-unknown}" at="${ORCHID_ROOT:-.}" nl idx mods also
+  nl=$'\n'
+  idx="${ORCHID_ROOT_STALE_INDEX:-}"
+  idx="${idx//$nl/ }"
+  mods="${ORCHID_ROOT_STALE_UNSTAGED:-}"
+  mods="${mods//$nl/ }"
+  # The fail-closed sentinel from the context read, spelled out rather than
+  # printed raw: "modified: ?" reads like a filename.
+  [ "$mods" != '?' ] || mods="(this checkout's git could not list them)"
+  also=""
+  [ -z "$mods" ] || also=" ALSO OBSERVED, and not part of why this refuses: kernel files modified in the working tree and not staged — $mods."
+  orchid_die "refusing to run: the checkout orchid itself runs from ($root) sits on the integration branch '$ORCHID_ROOT_STALE_BRANCH', and its INDEX does not match HEAD for the code orchid executes: $idx. Every verb, lib, runner, engine adapter, role profile and the PROTOCOL.md a tick follows are read from THIS working tree, so orchid stops here rather than run something nobody has looked at.$also
+This is a report, not a diagnosis. Two different things leave an index that does not match HEAD and they are indistinguishable from here: 'orchid merge' advancing this branch with update-ref, which moves HEAD and leaves the index describing the commit it moved off (lesson L018 — a merged fix stayed inert for two further rounds because the launcher went on executing pre-merge code), or a kernel edit staged here with 'git add'. orchid will not guess between them, and prints no command that could discard your work: the remedy for one of those is a silent data loss in the other.
+LOOK FIRST — both of these are read-only: \"git -C $at status --short -- ${ORCHID_KERNEL_PATHS[*]}\" and \"git -C $at diff --cached HEAD -- ${ORCHID_KERNEL_PATHS[*]}\". Then resolve it yourself, whichever it turns out to be. docs/troubleshooting.md 'Stale orchid itself' walks the options and says what each one costs. Note that the pathspec above names orchid's own code and nothing else: uncommitted .orchid run state and a pending orchid.config edit are outside it, and orchid neither inspects nor restores them. To run one command anyway: ORCHID_ALLOW_STALE_ROOT=1 orchid ...
+This stops EVERY verb, 'doctor' and 'status' included, and in both of the two cases above — including the one where nothing is stale and your own staged edit is what orchid cannot tell apart from a branch advance. That is orchid protecting you rather than orchid broken: a diagnosis read out of a checkout that IS stale is produced by the stale checks themselves, so the two verbs you would reach for first are the two whose answers could not be trusted here. Nothing was run and nothing here was changed. docs/troubleshooting.md 'Why doctor and status refuse too' has the whole argument and the one-line way to read them anyway."
+}
+
+# _orchid_stale_root_inflight_die -- the same refusal, worded for the one
+# state in which the checkout is knowably being repaired as it is read: an
+# `orchid merge` from this very root is between its ref advance and its
+# restore (_orchid_kernel_refresh_inflight above).
+#
+# It REFUSES like the other arm. What is different is only what the operator
+# is told to do about it, and that difference is the entire reason the marker
+# is worth a file: here the state clears itself within a moment and there is
+# nothing to decide, so sending anyone to `git diff --cached` would be sending
+# them to diagnose a condition that repaired itself while they read.
+#
+# A distinct exit status, because the callers this most affects are not
+# people. A heartbeat, a notify hook or a scheduler that starts in the window
+# used to be handed the pre-merge kernel and a zero exit; it now fails, and
+# telling it "retry" apart from "an operator must look at this checkout" is
+# what keeps that from becoming a page for a condition that resolves in a
+# second. 75 is sysexits' EX_TEMPFAIL, it is used nowhere else in orchid, and
+# it is the ONLY temporary refusal here: every other arm of this guard needs a
+# human and exits 1.
+ORCHID_STALE_ROOT_TEMPFAIL=75
+_orchid_stale_root_inflight_die() {
+  echo "orchid: refusing to run: an 'orchid merge' started from this same checkout (${ORCHID_ROOT:-unknown}) has just advanced '$ORCHID_ROOT_STALE_BRANCH' and is restoring this checkout's kernel files to it right now. Until that finishes, this working tree still holds the PRE-MERGE code, and running a verb out of it is the exact failure this guard exists for (lesson L018) — so nothing was run, and nothing here was changed. Waiting would not help this process: it has already read its libraries off the pre-merge tree, so only a fresh invocation can pick up the merged ones.
+Retry in a moment — the window is one ref advance and one restore wide. If retrying keeps reporting this, the merge died mid-restore; the next command after its process is gone reports the full state of this checkout instead, and docs/troubleshooting.md 'Stale orchid itself' takes it from there. Exit $ORCHID_STALE_ROOT_TEMPFAIL means 'temporary, retry' and is used for nothing else." >&2
+  exit "$ORCHID_STALE_ROOT_TEMPFAIL"
+}
+
+# _orchid_kernel_entry_point -- is the program this process is EXECUTING one
+# of orchid's own entry points, rather than something that merely sourced this
+# library?
+#
+# Asked of the OUTERMOST BASH_SOURCE entry, which is the file bash is running
+# (this library sits below it on that stack), never of `$0`. `$0` is whatever
+# the caller typed, and tests/helpers.sh carries the whole argument for why
+# deciding a gate's applicability from it fails open for two of the three ways
+# a person actually invokes a file. The directory is resolved with `cd` +
+# `pwd -P` -- both shell builtins, so this costs no binary lookup and no
+# subprocess of its own -- because a runner started as `./orchid-pump` from
+# inside runners/ arrives with no directory component for a pattern to bind
+# to, and a checkout reached through a symlinked path (macOS /var/folders ->
+# /private/var/folders) must compare equal to its physical spelling.
+#
+# FAILS CLOSED. Every path that cannot establish an answer -- an empty stack,
+# a directory that cannot be entered -- returns "yes, this is an entry point",
+# so an unresolvable spelling costs a refusal rather than silently standing a
+# safety gate down. The only way to get "no" out of it is a resolved directory
+# that demonstrably is not one of orchid's three executable roots.
+_orchid_kernel_entry_point() {
+  local main dir
+  main="${BASH_SOURCE[$(( ${#BASH_SOURCE[@]} - 1 ))]}"
+  [ -n "$main" ] || return 0
+  dir="${main%/*}"
+  [ "$dir" != "$main" ] || dir="."
+  dir="$(cd "$dir" 2>/dev/null && pwd -P)" || return 0
+  [ -n "$dir" ] || return 0
+  case "$dir/${main##*/}" in
+    */bin/orchid|*/libexec/orchid-*|*/runners/orchid-*) return 0 ;;
+  esac
+  return 1
+}
+
+# _orchid_root_stale_fire -- ask condition 2 and refuse on it. This is the
+# only caller of orchid_root_stale_content, and the only place a `git` is
+# spent on $ORCHID_ROOT's behalf; both of its own call sites are past the
+# point where an acknowledgement could still be pending.
+#
+# Which refusal, never whether. `orchid merge`'s own advance-then-refresh
+# window is asked about LAST, so it costs nothing until a refusal is already
+# certain.
+_orchid_root_stale_fire() {
+  orchid_root_stale_content "${ORCHID_ROOT:-}" || return 0
+  if _orchid_kernel_refresh_inflight "${ORCHID_ROOT:-}"; then
+    _orchid_stale_root_inflight_die
+  fi
+  _orchid_stale_root_die
+}
+
+# orchid_root_stale_gate -- fire the armed gate NOW, for a trust-boundary
+# entry point that holds the fixed entry PATH for its whole run and therefore
+# never calls _orchid_entry_restore_operator_path. Without it such an entry
+# point would arm the gate and never fire it, which is a gate skipped by
+# omission -- the class INV-15 exists for, and the reason that invariant
+# derives its entry-point list rather than trusting a written one.
+#
+# Idempotent, and a no-op when nothing is armed, so a caller may place it at
+# the earliest point its own contract allows without asking whether some other
+# site got there first.
+orchid_root_stale_gate() {
+  [ "${_ORCHID_ROOT_STALE_ARMED:-0}" = 1 ] || return 0
+  _ORCHID_ROOT_STALE_ARMED=0
+  _orchid_root_stale_fire
+}
+
+if [ "${ORCHID_ALLOW_STALE_ROOT:-}" != 1 ] && orchid_root_stale; then
+  _ORCHID_ROOT_STALE_ARMED=1
+  if [ "${__orchid_entry_defer_restore:-0}" != 1 ] && _orchid_kernel_entry_point; then
+    _ORCHID_ROOT_STALE_ARMED=0
+    _orchid_root_stale_fire
+  fi
+fi

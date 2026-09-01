@@ -2,6 +2,10 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/lessons.sh"; source "$ORCHID_ROOT/lib/drive.sh"
+# plancheck.sh after lessons.sh, whose _lessons_journal_start_date it uses:
+# `advance` is one of the two verbs that can take a run OUT of planning, and
+# T021's carry-forward cross-check gates both (see the advance arm below).
+source "$ORCHID_ROOT/lib/plancheck.sh"
 repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"; state="$(orchid_state "$repo")"
 
 # run_status transition table (kernel.md's normative table, v0b2 ownership
@@ -99,17 +103,23 @@ case "$sub" in
     # set, so the durable record of "we stopped here, and why" survives
     # regardless.
     #
-    # Schema (schema: 1): {schema, kind, task, reason, epoch, at}. `kind` is
+    # Schema (schema: 1): {schema, kind, task, reason, epoch, at, passes} --
+    # the same enumeration PROTOCOL.md and docs/specs/kernel.md carry, and the
+    # third place a new field has to be added by hand because no gate compares
+    # the three. `passes` is documented at the `set` arm that owns it. `kind` is
     # one of the kernel-owned set in lib/drive.sh (planning, blocked-task,
     # review-evidence, review-conflict, hook-failure, worktree-conflict,
-    # run-complete, operator-decision) -- anything else is refused, so a
-    # boundary can never be minted for a condition this kernel has no defined
-    # meaning for.
+    # operator-handoff, task-prerequisite, run-complete, operator-decision) --
+    # anything else is refused, so a boundary can never be minted for a
+    # condition this kernel has no defined meaning for.
     #
     # Exit codes: `show` exits 16 (the dedicated judgment-boundary code) when
-    # a boundary IS recorded, and 0 when none is -- so "is this run parked on
-    # a judgment call?" is answerable from an exit status alone, with no
-    # output parsing anywhere.
+    # a boundary IS recorded, and 0 when none is -- so "is a decision
+    # outstanding in this run?" is answerable from an exit status alone, with
+    # no output parsing anywhere. That is the question it answers, and it is
+    # not "can this run make progress": one task's boundary parks that task,
+    # never the roadmap, and `orchid drive` keeps walking and advancing every
+    # other task while this record stands.
     bsub="${1:-}"; shift || true
     bfile="$rt/boundary.json"
     case "$bsub" in
@@ -124,7 +134,7 @@ case "$sub" in
       set)
         verb_lock_guard "$repo"
         epoch_require "$repo"; export ORCHID_EPOCH
-        bkind=""; btask=""; breason=""
+        bkind=""; btask=""; breason=""; bnocount=0
         while [ $# -gt 0 ]; do case "$1" in
           --kind)
             [ -n "${2:-}" ] || orchid_die "--kind requires a value"
@@ -135,10 +145,18 @@ case "$sub" in
           --reason)
             [ -n "${2:-}" ] || orchid_die "--reason requires a value"
             breason="$2"; shift 2 ;;
+          # --no-count: record the boundary WITHOUT charging a wakeup to it.
+          # The counter below is spent by the wake budget, and a budget is only
+          # honest if what it counts is what it claims to count -- see the
+          # comment on `passes` itself. The caller (runners/orchid-drive) is
+          # the one component positioned to know whether this pass can actually
+          # produce a wakeup, so it says so here rather than leaving the record
+          # to assume every pass did.
+          --no-count) bnocount=1; shift ;;
           *) shift ;;
         esac; done
         [ -n "$bkind" ] || orchid_die "usage: orchid run boundary set --kind <kind> [--task <id>] --reason \"...\""
-        drive_boundary_kind_valid "$bkind" || orchid_die "unknown boundary kind '$bkind' (one of: planning, blocked-task, review-evidence, review-conflict, hook-failure, worktree-conflict, run-complete, operator-decision)"
+        drive_boundary_kind_valid "$bkind" || orchid_die "unknown boundary kind '$bkind' (one of: planning, blocked-task, review-evidence, review-conflict, hook-failure, worktree-conflict, operator-handoff, task-prerequisite, run-complete, operator-decision)"
         [ -n "$breason" ] || orchid_die "run boundary set requires --reason (INV-08)"
         if [ -n "$btask" ] && [ ! -f "$state/tasks/$btask.md" ]; then
           orchid_die "no task $btask"
@@ -146,20 +164,161 @@ case "$sub" in
         # Idempotent by content: the driver re-derives the same boundary on
         # every pass for as long as the underlying condition holds, so an
         # unchanged record must not re-journal it once per pass.
-        bprev_kind=""; bprev_task=""; bprev_reason=""
+        #
+        # `passes` is the ONE thing an unchanged re-set does change. The driver
+        # records the boundary exactly once per pump pass, so this counts how
+        # many passes this exact boundary has survived -- which is what
+        # lib/drive.sh's wake budget answers "has waking an orchestrator over
+        # this actually moved it?" from. It lives HERE, in the record's single
+        # writer, rather than in runtime state of its own: the reset rule is
+        # precisely the content comparison already being made two lines below,
+        # and a separate counter would need to re-derive that comparison to
+        # know when to zero itself.
+        #
+        # WHAT IT COUNTS IS WAKEUPS, NOT WALL PASSES, and `--no-count` is how
+        # that stays true. A pass on which no orchestrator can be woken at all
+        # -- the boundary is operator-only, or no orchestrator engine resolves
+        # (rate-limited, ledger-disabled, no engine configured) -- spends no
+        # wakeup, so it must not spend budget either. Counting it would let a
+        # transient engine outage exhaust the budget without a single model
+        # ever having been asked, permanently parking a boundary an
+        # orchestrator could have settled the moment the outage lifted, under
+        # a blocker claiming wakeups that never happened.
+        #
+        # AND IT IS COUNTED PER BOUNDARY, NOT PER RECORD SLOT. `passes` alone
+        # was the second: this record holds ONE boundary, but a pass MEETS as
+        # many as it meets and the driver ranks them, so the winner changes
+        # from pass to pass as tasks move. Counted in the slot, a boundary that
+        # loses one pass to a higher-ranked stop and comes back on the next
+        # begins again at 1 -- so two boundaries taking turns are BOTH immortal:
+        # neither ever reaches pump_wake_max, an orchestrator is woken for each
+        # of them forever, and the blocker that would have reached a human on
+        # the pass the budget ran out never fires. That is precisely the
+        # unbounded polling this counter exists to end, reappearing whenever a
+        # run has more than one thing wrong with it -- which is the normal case.
+        #
+        # So the count is kept in `counters`, keyed by the boundary's own
+        # identity (kind, task and reason -- the same three fields the content
+        # comparison below uses, so the two can never disagree about what "this
+        # exact boundary" means), and `passes` mirrors the current boundary's
+        # entry for every reader. An evicted boundary resumes its own count;
+        # a genuinely different one still starts at 1. Bounded to the 32 most
+        # recently touched entries, so a run that cycles through many distinct
+        # reasons cannot grow this file without limit -- and 32 is far more
+        # than the handful of stops a pass can be ranking between, so eviction
+        # is a backstop rather than part of the accounting.
+        # Composed through lib/drive.sh rather than spelled out here: the
+        # driver's ranking READS these same entries before it chooses which
+        # boundary to hand this verb, and a reader that built the key its own
+        # way would silently look up a boundary that is not the one this line
+        # files. One function, both ends.
+        bkey="$(drive_boundary_counter_key "$bkind" "$btask" "$breason")"
+        bprev_kind=""; bprev_task=""; bprev_reason=""; bprev_passes=0
+        bprev_counters='{}'; bkey_passes=-1
         if [ -f "$bfile" ]; then
           bprev_kind="$(jq -r '.kind // ""' "$bfile" 2>/dev/null || echo "")"
           bprev_task="$(jq -r '.task // ""' "$bfile" 2>/dev/null || echo "")"
           bprev_reason="$(jq -r '.reason // ""' "$bfile" 2>/dev/null || echo "")"
+          bprev_passes="$(jq -r '.passes // 0' "$bfile" 2>/dev/null || echo 0)"
+          case "$bprev_passes" in
+            ''|*[!0-9]*) bprev_passes=0 ;;
+          esac
+          # Type-checked, not merely null-checked: this value is handed back to
+          # jq as `--argjson`, and a `counters` that is somehow not an object
+          # would make `del(.[$key])` an error rather than a fallback -- which
+          # this arm must never be, since it would turn one corrupt field into
+          # a run that cannot record a boundary at all.
+          bprev_counters="$(jq -c 'if (.counters|type) == "object" then .counters else {} end' \
+            "$bfile" 2>/dev/null || echo '{}')"
+          case "$bprev_counters" in
+            ''|null) bprev_counters='{}' ;;
+          esac
+          # `// -1` distinguishes "this boundary has no entry" from "its entry
+          # reads 0", which a `// 0` would flatten -- and 0 is a real value
+          # here (a boundary first met on a pass that could wake nobody).
+          bkey_passes="$(jq -r --arg k "$bkey" '.counters[$k] // -1' "$bfile" 2>/dev/null || echo -1)"
+          case "$bkey_passes" in
+            ''|*[!0-9]*) bkey_passes=-1 ;;
+          esac
         fi
+        bunchanged=0
         if [ "$bprev_kind" = "$bkind" ] && [ "$bprev_task" = "$btask" ] && [ "$bprev_reason" = "$breason" ]; then
-          echo "boundary unchanged: $bkind${btask:+ ($btask)}"
+          bunchanged=1
+        fi
+        if [ "$bkey_passes" -lt 0 ]; then
+          # No entry for this boundary. On a record written before `counters`
+          # existed, the standing `passes` IS this boundary's count when the
+          # content is unchanged -- adopt it rather than restarting a budget
+          # mid-run at an upgrade. Otherwise this boundary is new here.
+          if [ "$bunchanged" -eq 1 ]; then bkey_passes="$bprev_passes"; else bkey_passes=0; fi
+        fi
+        bnext_passes="$bkey_passes"
+        [ "$bnocount" -eq 1 ] || bnext_passes=$(( bkey_passes + 1 ))
+        # The counters map, with this boundary's entry moved to the end (jq
+        # preserves an object's insertion order, and `del` then re-set is what
+        # makes "most recently touched" the eviction order) and everything
+        # older than the last 32 entries dropped. Read by BOTH branches below,
+        # which is why it is one string rather than two spellings that could
+        # drift into two different eviction rules.
+        bcounters_expr='(($c // {}) | del(.[$key]) | .[$key] = $p | to_entries | .[-32:] | from_entries)'
+        if [ "$bunchanged" -eq 1 ]; then
+          if [ "$bnocount" -eq 1 ]; then
+            # No wakeup was available to spend, so the record is left exactly
+            # as it was -- not rewritten with the same number, which would be
+            # an identical file relanded for nothing.
+            echo "boundary unchanged: $bkind${btask:+ ($btask)} (pass $bkey_passes, uncounted — no orchestrator wakeup was available)"
+            exit 0
+          fi
+          # Bump in place: `at` and `epoch` keep naming when this boundary was
+          # FIRST recorded (a record that restamped itself every pass would
+          # make "how long has this been parked" unanswerable). Written through
+          # a temp file rather than `jq ... | atomic_write` because a jq that
+          # dies mid-pipe still lands its empty output, and a zero-byte
+          # boundary.json reads to `show` as "no boundary" -- which would make
+          # this counter's own failure look like the run had come unstuck.
+          btmp="$bfile.tmp.$$"
+          if jq --arg key "$bkey" --argjson p "$bnext_passes" \
+               --argjson c "$bprev_counters" \
+               ".passes = \$p | .counters = $bcounters_expr" "$bfile" > "$btmp" 2>/dev/null \
+             && [ -s "$btmp" ]; then
+            mv "$btmp" "$bfile"
+          else
+            rm -f "$btmp" 2>/dev/null || true
+            # The bump did not land, so the pass number is NOT the one below.
+            # Fail-open on the counter is right -- a jq that cannot rewrite the
+            # record must never be what stops a run being driven -- but the
+            # line printed here is the only surface an operator debugging a
+            # stuck budget reads, and naming a pass the record does not hold
+            # would send them looking for a wakeup that was never counted.
+            bnext_passes="$bkey_passes"
+          fi
+          echo "boundary unchanged: $bkind${btask:+ ($btask)} (pass $bnext_passes)"
           exit 0
         fi
-        jq -n --arg k "$bkind" --arg t "$btask" --arg r "$breason" \
-          --arg e "$(epoch_current "$repo")" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-          '{schema:1, kind:$k, task:$t, reason:$r, epoch:($e|tonumber? // 0), at:$at}' \
-          | atomic_write "$bfile"
+        # A DIFFERENT boundary takes the record. It starts at 1 wakeup spent
+        # when this pass will spend one and at 0 when it cannot, so one first
+        # met during an engine outage does not begin its life already a wakeup
+        # down -- unless it is a boundary this run has already spent wakeups on,
+        # in which case `counters` still holds them and it resumes there. The
+        # map is carried forward across the change for exactly that reason; the
+        # displaced boundary keeps its own entry, and gets it back if it returns.
+        #
+        # Same temp-file guard as the bump above rather than `jq | atomic_write`:
+        # a jq that dies mid-pipe lands an empty file, and an empty record reads
+        # as "no boundary at all" to `show` -- which would report a run as
+        # unstuck at the exact moment it stopped.
+        btmp="$bfile.tmp.$$"
+        if jq -n --arg k "$bkind" --arg t "$btask" --arg r "$breason" \
+             --arg key "$bkey" --argjson p "$bnext_passes" --argjson c "$bprev_counters" \
+             --arg e "$(epoch_current "$repo")" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+             "{schema:1, kind:\$k, task:\$t, reason:\$r, epoch:(\$e|tonumber? // 0), at:\$at,
+               passes:\$p, counters: $bcounters_expr}" > "$btmp" 2>/dev/null \
+           && [ -s "$btmp" ]; then
+          mv "$btmp" "$bfile"
+        else
+          rm -f "$btmp" 2>/dev/null || true
+          orchid_die "could not write the boundary record ($bfile) — refusing to report a stop this run has no record of"
+        fi
         bjargs=(--kind blocker)
         [ -z "$btask" ] || bjargs=(--task "$btask" --kind blocker)
         ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add "${bjargs[@]}" \
@@ -216,6 +375,53 @@ case "$sub" in
     [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
     from="$(fm_get "$roadmap" run_status)"
     legal_run "$from" "$to" || { echo "orchid: illegal run_status $from -> $to" >&2; exit 3; }
+
+    # T021: LEAVING PLANNING is what the carry-forward cross-check gates, and
+    # `plan apply` is not the only verb that does it. Gating apply alone left
+    # a bypass that needed no forgery and no flag: `run advance running`
+    # first, THEN `plan apply` -- the plan commits with the refusal already
+    # scoped out, and every carried-forward item leaves planning with no
+    # per-item record at all. A gate that is skipped by doing the same two
+    # things in the other order is not enforcing anything, so the check moves
+    # to the property it actually means: no run_status edge out of `planning`
+    # while a carried item is neither covered by a task nor deferred.
+    #
+    # `from = planning`, not `to = running`, because `planning -> blocked` is
+    # legal too and `blocked -> running` after it would reach the same place
+    # in two hops. Gating the EXIT edge closes both hops at the one point
+    # where the plan is still free: the run is still in planning here, so the
+    # operator can cover the item with a task or `orchid plan defer` it,
+    # exactly as at a refused `plan apply`. That is why this is not the dead
+    # end the brief rules out -- and both remedies stay open on the far side
+    # of the edge too, since `plan defer` carries no run_status precondition
+    # (libexec/orchid-plan's defer arm says why it was dropped).
+    #
+    # Read-only and placed before the journal write, so a refusal mutates
+    # nothing. Every mid-run edge (running->accepting, blocked->running,
+    # accepting->running) is deliberately untouched: those are not this
+    # gate's question, and re-litigating a plan there could strand a live
+    # run over a task file that has since been renamed.
+    if [ "$from" = planning ]; then
+      crosscheck_rc=0
+      plancheck_report "$state" || crosscheck_rc=$?
+      if [ "$crosscheck_rc" -ne 0 ]; then
+        # Exit 4 -- the cross-check could not read the previous run's record
+        # at all -- names the repair instead of the two remedies, which have
+        # nothing to act on when no item could be listed (libexec/orchid-plan's
+        # apply arm says why at length).
+        # Exit 5 -- no scratch directory, so the check could not run at all --
+        # names the temporary directory instead, for the same reason: an
+        # operator sent to restore an archive that is intact learns nothing.
+        if [ "$crosscheck_rc" -eq 5 ]; then
+          echo "orchid: run advance $from -> $to refused — the carry-forward cross-check could not run (above); give it a writable TMPDIR, then re-run" >&2
+        elif [ "$crosscheck_rc" -eq 4 ]; then
+          echo "orchid: run advance $from -> $to refused — the carry-forward cross-check could not be answered (above); repair the previous run's record, then re-run" >&2
+        else
+          echo "orchid: run advance $from -> $to refused — a carried-forward item may not leave planning unconsidered; cover it with a task or record the decision (orchid plan defer <id> --reason \"...\"), then re-run" >&2
+        fi
+        exit "$crosscheck_rc"
+      fi
+    fi
 
     # `->complete` is the acceptance gate closing; every other edge is a
     # plain operator intervention (kernel.md's journal-kind table).
@@ -422,6 +628,14 @@ case "$sub" in
     wt=""
     run_new_cleanup() {
       if [ -n "$wt" ]; then
+        # No removal walks past a live schedule (orchid_service_removal_guard,
+        # lib/common.sh). A rollover's temp worktree never carries one -- the
+        # copy above skips runtime/ -- so this is expected never to fire; it is
+        # asked because "uninstall before you remove" has to hold at every
+        # removal site, not only the ones where a service could plausibly be.
+        if ! orchid_service_removal_guard "$wt"; then
+          return 0
+        fi
         git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
         rm -rf "$wt" 2>/dev/null || true
         git -C "$repo" worktree prune >/dev/null 2>&1 || true
@@ -497,7 +711,15 @@ case "$sub" in
       "run rollover: $old_run_id archived to runs/$old_run_id/ -> $new_run_id: $reason"
     rm -rf "$wt_state/runtime"
 
-    git -C "$wt" add .orchid
+    # `-f`, for the same reason orchid_commit_durable stages run state that
+    # way (T037): a rollover must not be the verb that dies because the
+    # operator's .gitignore excludes `.orchid/`. See lib/common.sh for why
+    # run state and orchid.config are answered differently -- and for why the
+    # `runtime/` exclusion travels with the `-f` rather than being left to the
+    # ignore rule that `-f` has just switched off. The `rm -rf` above already
+    # removed the throwaway runtime dir this arm minted for its nested
+    # `journal add`; this says so to git as well.
+    git -C "$wt" add -f -- .orchid ':(exclude).orchid/runtime'
     if git -C "$wt" diff --cached --quiet -- .orchid; then
       orchid_die "nothing to roll over"
     fi

@@ -11,6 +11,34 @@ assert_match "integration branch exists or creatable" "$out0" "doctor pre-init: 
 assert_match "WARN: unattended trust \\(headless execution gated\\): denied" "$out0" \
   "doctor reports the default-denied unattended gate without blocking interactive readiness"
 
+# T027 (dogfood F29): the RESOLVED pack budget, with the layer it came from.
+# A pack over this budget fails the LAUNCH before any engine starts, and the
+# layer is where operators go wrong: a run failed every launch on the default
+# 65536 while its operator believed the 131072 they had set -- in the orchid
+# installation's own orchid.config, which is not a layer for the repo being
+# driven at all.
+assert_match "note: pack budget: pack_budget_bytes=65536 \\(from: default\\)" "$out0" \
+  "doctor prints the resolved pack budget and that it came from the built-in default"
+printf 'pack_budget_bytes=131072\n' >> orchid.config
+budget_doctor="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" \
+  || fail "doctor still passes with a repo-set pack budget"
+assert_match "note: pack budget: pack_budget_bytes=131072 \\(from: repo\\)" "$budget_doctor" \
+  "and follows the value to the layer that actually won it"
+assert_match "is NOT part of that chain" "$budget_doctor" \
+  "naming the file that is not a layer, since that is the mistake it exists to catch"
+# ...but only when it really is not a layer. Driving orchid's OWN repository
+# makes $ORCHID_ROOT/orchid.config the repo layer, and doctor claiming it is
+# never consulted would be false in exactly the situation orchid is in whenever
+# it dogfoods itself.
+self_doctor="$(ORCHID_REPO="$REPO_ROOT" ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor 2>&1 || true)"
+assert_match "This target IS the orchid installation" "$self_doctor" \
+  "driving orchid itself, doctor says the installation's own orchid.config IS the repo layer"
+# Herestring, never `echo | grep -q`: same SIGPIPE/pipefail trap helpers.sh
+# documents for assert_match — a matching grep exiting early would poison the
+# pipeline status and silently skip this `fail`.
+grep -q "is NOT part of that chain" <<<"$self_doctor" \
+  && fail "doctor must not tell a self-driving run that its own orchid.config is not a layer — it is"
+
 trust_out="$("$ORCHID_BIN" trust unattended "$WORK" --reason "doctor test fixture")" \
   || fail "doctor fixture acknowledgement must succeed"
 assert_match "reason: doctor test fixture" "$trust_out" \
@@ -19,7 +47,7 @@ trusted_doctor="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" \
   || fail "doctor remains healthy after unattended acknowledgement"
 assert_match "^ok: unattended trust: allowed" "$trusted_doctor" \
   "doctor reports the allowed gate with machine-local provenance"
-echo "$trusted_doctor" | grep -q "scheduled/service invocation" \
+grep -q "scheduled/service invocation" <<<"$trusted_doctor" \
   && fail "doctor must not report scheduled refusals when none were recorded"
 
 # A scheduled pump/tick has nowhere to print: the cron line and the launchd
@@ -77,7 +105,7 @@ assert_match "repo-local plugins.*trust" "$out" "repo-local plugin note"
 git add -A && git commit -q -m "fixture: engines + config"
 init_out="$("$ORCHID_BIN" init)"
 git rev-parse --verify -q orchid/integration >/dev/null || fail "integration branch"
-git show orchid/integration:.orchid/roadmap.md | grep -q "run_status: planning" || fail "roadmap committed with run_status"
+grep -q "run_status: planning" <<<"$(git show orchid/integration:.orchid/roadmap.md)" || fail "roadmap committed with run_status"
 assert_match "integration branch: orchid/integration" "$init_out" "init prints the integration branch name"
 assert_match "git worktree add \.\./$(basename "$WORK")-orchid orchid/integration && cd \.\./$(basename "$WORK")-orchid" "$init_out" "init prints the exact worktree hint command"
 out1="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || fail "doctor passes post-init"
@@ -150,7 +178,7 @@ fi
 out_gf="$(ORCHID_ENGINES_DIR="$WORK/eng" ORCHID_ROLE_IMPLEMENTER=fake "$ORCHID_BIN" doctor --greenfield)" || fail "doctor --greenfield passes on an already-initialized repo"
 assert_match "greenfield: verify command deferred to scaffold task" "$out_gf" \
   "doctor --greenfield: verify check skipped with the greenfield note"
-echo "$out_gf" | grep -q "FAIL: verify command" && fail "doctor --greenfield must never FAIL the verify command check"
+grep -q "FAIL: verify command" <<<"$out_gf" && fail "doctor --greenfield must never FAIL the verify command check"
 
 # doctor --greenfield rejects an unknown flag.
 rc=0; ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor --bogus >/dev/null 2>&1 || rc=$?
@@ -238,7 +266,7 @@ assert_match "FAIL: split-brain checkout: work from the integration branch or a 
 
 # healthy fixture (the main $WORK repo, already initialized with a roadmap on
 # orchid/integration) must be unaffected by the new check.
-echo "$out1" | grep -q "FAIL: split-brain" && fail "doctor must not flag split-brain on a healthy post-init repo"
+grep -q "FAIL: split-brain" <<<"$out1" && fail "doctor must not flag split-brain on a healthy post-init repo"
 assert_match "ok: no split-brain checkout state" "$out1" "doctor's split-brain check passes on a healthy post-init repo"
 
 # ---------------------------------------------------------------------------
@@ -263,7 +291,15 @@ healthy_doctor_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" doctor 2>&1)" || tru
 assert_match "ok: no stale integration checkout state" "$healthy_doctor_out" \
   "doctor: a healthy integration-branch worktree is unaffected"
 healthy_status_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" status)"
-echo "$healthy_status_out" | grep -q "integration checkout is stale" \
+# T029: a HERESTRING, never `echo | grep -q` (the trap helpers.sh documents for
+# assert_match, and this file already spells out at its own line 36). It is
+# load-bearing HERE in a way it was not before: this is the only arm proving
+# the stale warning is CONDITIONAL, and the text it looks for just grew from
+# one line to four (orchid_stale_checkout_remedy). A piped `grep -q` exits at
+# its first match and SIGPIPEs the `echo`, which pipefail promotes to a nonzero
+# pipeline status -- so the `fail` is skipped exactly when the pattern IS
+# present, i.e. exactly when a regression made `status` warn unconditionally.
+grep -q "integration checkout is stale" <<<"$healthy_status_out" \
   && fail "status must not warn stale on a healthy integration-branch worktree"
 
 # Advance the ref from OUTSIDE $stale_wt: a second, DETACHED worktree of the
@@ -284,17 +320,114 @@ stale_doctor_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" doctor 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "doctor must FAIL on a stale integration checkout"
 # v1-m4 Task 1: the remedy text is now SCOPED to exclude .orchid/ (a bare
 # `git checkout HEAD -- .` would clobber uncommitted run state -- the r-001
-# incident's other half); ':(exclude)' contains ERE metacharacters, escaped
-# here since assert_match's first arg is an extended regex.
-assert_match "FAIL: integration checkout is stale — refresh with \"git checkout HEAD -- \. ':\(exclude\)\.orchid'\" before committing anything here" \
-  "$stale_doctor_out" "doctor names the scoped stale-checkout fix"
+# incident's other half).
+#
+# T029 (dogfood finding F31): that scoped checkout is only HALF the remedy --
+# it cannot clear this check by itself, because the index entries it clears
+# are the ones its own pathspec excludes. Both verbs now print the two-command
+# recovery from lib/common.sh's orchid_stale_checkout_remedy, and the Part
+# below RUNS each half against a real stale checkout rather than trusting the
+# text. `grep -F` here, not assert_match: the line is quotes, parentheses,
+# dots and `&&` almost end to end, and an ERE that escapes all of that is a
+# defect waiting to pass on a pattern nobody can read.
+stale_remedy_line="integration checkout is stale — refresh with \"git checkout HEAD -- . ':(exclude).orchid' && git reset\" before committing anything here"
+grep -qF "FAIL: $stale_remedy_line" <<<"$stale_doctor_out" \
+  || fail "doctor names the two-command stale-checkout fix (no match '$stale_remedy_line')"
+grep -qF 'the bare "git reset" is what CLEARS this warning' <<<"$stale_doctor_out" \
+  || fail "doctor says which half of the remedy actually clears the warning"
+grep -qF 'requirements.md being revised at the repository root' <<<"$stale_doctor_out" \
+  || fail "doctor warns that the checkout half overwrites uncommitted work outside .orchid/"
 
 # v1-m4 Task 5 review: `status`'s split-brain/stale-checkout warnings now go
 # to STDERR only (never stdout, in any mode -- see libexec/orchid-status),
 # so this capture needs `2>&1` to still see it; unchanged otherwise.
 stale_status_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" status 2>&1)"
-assert_match "WARNING: integration checkout is stale — refresh with \"git checkout HEAD -- \. ':\(exclude\)\.orchid'\" before committing anything here" \
-  "$stale_status_out" "status warns about the scoped stale-checkout fix"
+grep -qF "WARNING: $stale_remedy_line" <<<"$stale_status_out" \
+  || fail "status warns with the two-command stale-checkout fix (no match '$stale_remedy_line')"
+# The two verbs print ONE text: they drifted from correct together once (F31),
+# and a copy each is how that happened.
+grep -qF 'requirements.md being revised at the repository root' <<<"$stale_status_out" \
+  || fail "status carries the same recovery text doctor does, from the same source"
+
+# ---------------------------------------------------------------------------
+# T029 (dogfood finding F31): THE PRINTED REMEDY IS RUN, not read. An operator
+# followed the old one-command recovery character for character and watched
+# this warning survive it -- so the claim under test here is not "the text
+# mentions the right commands" but "each half does what the text says it does,
+# against a checkout that is actually stale".
+#
+# The fixture above is not enough for that, and the difference is the whole
+# finding: its advancing commit adds `elsewhere.txt` and nothing else, so the
+# scoped checkout clears it and the defect never appears. A REAL merge commit
+# carries new durable run state under `.orchid/` as well as code -- that is
+# what `orchid merge` commits -- and those are exactly the index entries the
+# `:(exclude).orchid` pathspec is not allowed to touch. So this fixture's
+# advance carries both.
+# ---------------------------------------------------------------------------
+rem_bare="$WORK/remedy-bare"; mkdir -p "$rem_bare"
+(cd "$rem_bare" && git init -q . && git commit -q --allow-empty -m root)
+ORCHID_REPO="$rem_bare" "$ORCHID_BIN" init >/dev/null
+rem_wt="$WORK/remedy-wt"
+git -C "$rem_bare" worktree add -q "$rem_wt" orchid/integration
+# An operator document at the repository root, committed FROM this checkout,
+# so nothing is stale yet. requirements.md is the specific file F31's operator
+# lost: it is edited uncommitted for long stretches while a run is driven.
+printf 'v1: the committed requirements\n' > "$rem_wt/requirements.md"
+git -C "$rem_wt" add requirements.md
+git -C "$rem_wt" commit -q -m "fixture: requirements.md at the repository root"
+
+# Advance the branch from OUTSIDE $rem_wt (same update-ref technique as above),
+# with a commit shaped like a merge: one code path, one new `.orchid/` path.
+rem_wt2="$WORK/remedy-wt2"
+git -C "$rem_bare" worktree add -q --detach "$rem_wt2" orchid/integration
+mkdir -p "$rem_wt2/.orchid/runs/r-001"
+echo "the merged code" > "$rem_wt2/kernel.sh"
+echo "merged run state" > "$rem_wt2/.orchid/runs/r-001/from-elsewhere.md"
+git -C "$rem_wt2" add -A
+git -C "$rem_wt2" commit -q -m "advance integration from elsewhere (code + run state)"
+git -C "$rem_bare" update-ref refs/heads/orchid/integration "$(git -C "$rem_wt2" rev-parse HEAD)"
+
+# The operator's own state in the stale checkout: an uncommitted edit at the
+# repository root (outside .orchid/, so NOT protected by the pathspec) and
+# live uncommitted run state (inside .orchid/, so protected).
+printf 'v2: the edit in progress\n' > "$rem_wt/requirements.md"
+printf 'live run state\n' > "$rem_wt/.orchid/live-state.md"
+[ -n "$(git -C "$rem_wt" diff --cached --name-status | grep '^D')" ] \
+  || fail "remedy fixture setup: $rem_wt must show the stale-checkout D-row signature"
+grep -qE '^D[[:space:]]+\.orchid/' <<<"$(git -C "$rem_wt" diff --cached --name-status)" \
+  || fail "remedy fixture setup: the advance must leave a staged deletion UNDER .orchid/, or this Part tests nothing"
+
+# RED -- the half the old text printed, alone. It restores the code, and it
+# leaves the warning exactly where it was, because the staged deletions it did
+# not clear are under the one prefix its pathspec excludes.
+git -C "$rem_wt" checkout HEAD -- . ':(exclude).orchid'
+rc=0; rem_half_out="$(ORCHID_REPO="$rem_wt" "$ORCHID_BIN" doctor 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "doctor must still FAIL after the scoped checkout alone (F31)"
+assert_match "FAIL: integration checkout is stale" "$rem_half_out" \
+  "the scoped checkout ALONE does not clear the stale-checkout warning — this is dogfood finding F31"
+assert_eq "the merged code" "$(cat "$rem_wt/kernel.sh")" \
+  "the scoped checkout does refresh the code half (that is why it is still the first command)"
+# ...and it overwrote the operator's uncommitted root file. The remedy text
+# warns about exactly this; the warning is true, and it is pinned here so it
+# cannot be quietly dropped as scaremongering.
+assert_eq "v1: the committed requirements" "$(cat "$rem_wt/requirements.md")" \
+  "the scoped checkout overwrites an uncommitted edit outside .orchid/ (the second half of F31)"
+assert_eq "live run state" "$(cat "$rem_wt/.orchid/live-state.md")" \
+  "...while uncommitted run state under .orchid/ is protected by the pathspec, as documented"
+
+# GREEN -- the second command the remedy now names. It clears the warning, and
+# it writes nothing: the live run state on disk is byte-identical afterwards.
+git -C "$rem_wt" reset -q
+rem_full_out="$(ORCHID_REPO="$rem_wt" "$ORCHID_BIN" doctor 2>&1)" || true
+assert_match "ok: no stale integration checkout state" "$rem_full_out" \
+  "the bare 'git reset' clears the stale-checkout warning the scoped checkout could not"
+assert_eq "live run state" "$(cat "$rem_wt/.orchid/live-state.md")" \
+  "a mixed 'git reset' writes no file — uncommitted run state survives it untouched"
+assert_eq "the merged code" "$(cat "$rem_wt/kernel.sh")" \
+  "...and it does not undo the refresh the checkout just made"
+rem_status_out="$(ORCHID_REPO="$rem_wt" "$ORCHID_BIN" status 2>&1)"
+grep -q "integration checkout is stale" <<<"$rem_status_out" \
+  && fail "status must not go on warning stale once the printed remedy has been run in full"
 
 # ---------------------------------------------------------------------------
 # v1-m4 Task 1 (the r-001 journal-loss incident, closed): `orchid config
@@ -347,7 +480,7 @@ cfg_commit_out="$(ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$MACHINE
 assert_match "^committed: " "$cfg_commit_out" "config commit prints the new commit sha"
 
 # The edited config landed on the integration branch...
-git -C "$cfg_bare" show orchid/integration:orchid.config | grep -q "^role.implementer=fake$" \
+grep -q "^role.implementer=fake$" <<<"$(git -C "$cfg_bare" show orchid/integration:orchid.config)" \
   || fail "config commit lands the edited orchid.config on the integration branch"
 # ...and EXACTLY orchid.config -- the stray staged deletion never rode along:
 # elsewhere.txt must still exist at the new HEAD, untouched.
@@ -731,3 +864,105 @@ assert_match "note: notify inbound \\(the return leg\\): nothing to probe" "$nfy
   "with no channel there is no return leg to probe either"
 grep -q "notify inbound (the return leg): NOT VERIFIED" <<<"$nfy_al_out" \
   && fail "with notify.channel unset there is no channel to be unverified about"
+
+# ---------------------------------------------------------------------------
+# T034 (dogfood F34): DOCTOR MUST SEE A DESTROYED TASK FILE.
+#
+# A task whose file was destroyed mid-flight -- zero bytes, or non-empty with
+# its frontmatter gone -- presents everywhere else as a task that simply
+# stopped existing: the path is still there, `task list` prints a row of empty
+# fields, and nothing in a run says anything is wrong. Both dogfood operators
+# found the damage only because a grep came back empty. Nobody goes looking for
+# a zero-byte file, so the check has to come to them.
+#
+# The GREEN direction is asserted FIRST and in the same repo, so the FAIL below
+# is attributable to the truncation and not to a check that flags every task
+# file it sees.
+#
+# ATTRIBUTION IS BY FAIL LINE, NOT BY `$tskf_rc`. Same reason
+# `assert_notify_advisory` above gives: doctor's exit code is its GLOBAL verdict
+# over every check in the file, so asserting `rc == 0` on the green half would
+# couple this case to whatever else a hand-built fixture happens to trip (the
+# split-brain check, a plugin note, the unattended gate) and would go red for a
+# reason that has nothing to do with task files. What this case actually claims
+# is narrower and stronger: the intact run emits the `ok:` line and NO
+# `FAIL: task file` line, and each damaged run adds EXACTLY ONE new FAIL --
+# doctor's own count, since `bad()` is what drives its non-zero exit (asserted
+# at the unresolvable-role case above).
+# ---------------------------------------------------------------------------
+tskf="$WORK/taskfile-repo"; mkdir -p "$tskf"
+git init -q "$tskf"
+(cd "$tskf" && git commit -q --allow-empty -m root)
+printf 'verify=true\nrole.orchestrator=fake\nrole.implementer=fake\nrole.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n' \
+  > "$tskf/orchid.config"
+mkdir -p "$tskf/.orchid/tasks"
+# roadmap.md alongside tasks/, or doctor's split-brain check fails this repo
+# for an unrelated reason and the rc assertions below prove nothing.
+printf -- '---\nrun_id: r-001\nrun_status: running\n---\nroadmap body\n' > "$tskf/.orchid/roadmap.md"
+printf -- '---\nschema: 1\nid: TK1\ntitle: intact\nstatus: pending\n---\nbody\n' > "$tskf/.orchid/tasks/TK1.md"
+# `|| true` on the count: `grep -c` prints 0 AND exits 1 when nothing matches,
+# so an unguarded count would abort the substitution on exactly the healthy run
+# this baseline exists to measure.
+tskf_doctor() {
+  tskf_rc=0
+  tskf_out="$(ORCHID_REPO="$tskf" HOME="$MACHINE_HOME" ORCHID_ENGINES_DIR="$WORK/eng" \
+    "$ORCHID_BIN" doctor 2>&1)" || tskf_rc=$?
+  tskf_fails="$(grep -c '^FAIL:' <<<"$tskf_out" || true)"
+}
+
+tskf_doctor
+tskf_fails_clean="$tskf_fails"
+grep -q '^FAIL: task file' <<<"$tskf_out" \
+  && fail "doctor must not report an INTACT task file as damaged (out: $tskf_out)"
+assert_match "^ok: task files: 1 present, each with parseable frontmatter and an id" "$tskf_out" \
+  "doctor reports intact task files as intact"
+green_case 'orchid doctor over an intact task file: ok, no task-file FAIL'
+
+# ZERO BYTES -- exactly what the destroyed r-002/F34 task file looked like.
+: > "$tskf/.orchid/tasks/TK1.md"
+tskf_doctor
+[ "$tskf_rc" -ne 0 ] || fail "doctor must FAIL on a zero-byte task file (a run whose task file vanished otherwise presents as a task that stopped existing)"
+assert_eq "$((tskf_fails_clean + 1))" "$tskf_fails" \
+  "the truncation adds EXACTLY ONE new FAIL -- nothing else about the fixture changed, so doctor's non-zero exit here is this check's (out: $tskf_out)"
+assert_match "^FAIL: task file \\.orchid/tasks/TK1\\.md: the file is EMPTY \\(0 bytes\\)" "$tskf_out" \
+  "doctor names the damaged path and what is wrong with it"
+assert_match "DAMAGED task file" "$tskf_out" \
+  "doctor calls it damage rather than an empty task"
+assert_match "git checkout <sha> -- \\.orchid/tasks/TK1\\.md" "$tskf_out" \
+  "doctor prints the recovery command for the file it names"
+grep -q '^ok: task files:' <<<"$tskf_out" \
+  && fail "doctor must not also report the task files as ok once one of them is damaged"
+red_case 'orchid doctor over a zero-byte task file: FAIL, non-zero exit'
+
+# ...and the non-empty half of the same class: a file with content but no
+# frontmatter at all, which every reader here would otherwise treat as a task
+# with no fields set.
+printf 'the frontmatter is gone but the body survived\n' > "$tskf/.orchid/tasks/TK1.md"
+tskf_doctor
+[ "$tskf_rc" -ne 0 ] || fail "doctor must FAIL on a frontmatter-less task file too"
+assert_eq "$((tskf_fails_clean + 1))" "$tskf_fails" \
+  "the frontmatter-less file adds exactly one new FAIL too (out: $tskf_out)"
+assert_match "^FAIL: task file \\.orchid/tasks/TK1\\.md: no frontmatter" "$tskf_out" \
+  "doctor distinguishes a frontmatter-less file from an empty one"
+red_case 'orchid doctor over a frontmatter-less task file: FAIL, non-zero exit'
+
+# ...and the shape that is neither empty nor frontmatter-less, which is the one
+# an operator can never find by looking (T034 rework). A value carrying a
+# newline splits one entry in two, leaving the remainder in the frontmatter as
+# a line belonging to no key. Both delimiters are present and `id` still
+# resolves, so this file passed both checks above, `task show` printed it, and
+# only the split field was quietly wrong -- doctor is the check that comes to
+# the operator, so it is the one that has to see this.
+printf -- '---\nschema: 1\nid: TK1\ntitle: first half of a value\nand the remainder of that value\nstatus: pending\n---\nbody\n' \
+  > "$tskf/.orchid/tasks/TK1.md"
+tskf_doctor
+[ "$tskf_rc" -ne 0 ] || fail "doctor must FAIL on a task file whose frontmatter carries a key-less remainder line -- id resolves and both delimiters are there, so nothing else reports it"
+assert_eq "$((tskf_fails_clean + 1))" "$tskf_fails" \
+  "the split value adds exactly one new FAIL too (out: $tskf_out)"
+assert_match "^FAIL: task file \\.orchid/tasks/TK1\\.md: malformed frontmatter: line 5" "$tskf_out" \
+  "doctor names the line the damage is on, since the rest of the document reads normally"
+red_case 'orchid doctor over frontmatter carrying a key-less remainder line: FAIL, non-zero exit'
+
+# And the fixture is restored, so nothing downstream of this file inherits a
+# repo doctor considers damaged.
+printf -- '---\nschema: 1\nid: TK1\ntitle: intact\nstatus: pending\n---\nbody\n' > "$tskf/.orchid/tasks/TK1.md"

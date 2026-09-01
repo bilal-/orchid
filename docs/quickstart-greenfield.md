@@ -107,6 +107,17 @@ trust unattended`, then `orchid service install` for unattended operation,
 `orchid status`/`orchid status --html` to check in, and answering any
 genuine blocker via `orchid answer`/`orchid task unblock`.
 
+That includes [tearing it down](./quickstart.md#tearing-it-down), which is not
+optional reading if you install the service: nothing removes a schedule when
+the run finishes, so the uninstall comes FIRST and removing the
+checkout second — `orchid service teardown` is that pair as one command, and
+removes the worktree only if the uninstall succeeded.
+
+It also includes [the Done procedure](./quickstart.md#8-done): candidate-local
+CI, then a post-merge run from the configured integration-branch checkout,
+then hosted CI only after the operator pushes. A candidate evidence file must
+leave its post-merge row open rather than claim a tree it could not see.
+
 ## Next
 
 - [quickstart.md](./quickstart.md) — the existing-repo path, referenced

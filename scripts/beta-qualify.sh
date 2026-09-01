@@ -14,6 +14,21 @@
 # than the promise being quietly weakened. `--no-run-verify` skips it and
 # records the timing probe as `not-tested`, never as a pass.
 #
+# That exception is also announced ON STDERR at the moment it happens, because
+# a header comment and a `--help` page are read by whoever goes looking and the
+# operator who does not look is exactly the one who needed telling. That notice
+# stands in place of a trust step: qualification takes NO acknowledgement of its
+# own, deliberately, and the reasoning together with the
+# alternatives that were rejected is recorded in docs/specs/operations.md
+# ("Qualification runs the target verify= command, and takes no
+# acknowledgement"). Read that before adding a gate here.
+#
+# ONE GATE THIS FILE DOES FIRE, and it is not that one: the stale-root gate,
+# below. It asks about ORCHID_ROOT -- whether the Orchid checkout this harness
+# is ITSELF running out of is pre-merge code -- and asks nothing at all about
+# --repo. It authorizes nothing and records nothing. The two are different
+# subjects and the same spec section says so.
+#
 # ---------------------------------------------------------------------------
 # THE EVIDENCE RULE (the reason this file is shaped the way it is)
 # ---------------------------------------------------------------------------
@@ -65,6 +80,49 @@ ORCHID_ROOT="$ROOT"
 export ORCHID_ROOT
 ORCHID_BIN="$ROOT/bin/orchid"
 
+# THE STALE-ROOT GATE, FIRED HERE AND NOT BESIDE THE OTHER LIBRARIES (INV-15).
+#
+# lib/common.sh is loaded at the TOP of this file, ahead of everything, for one
+# reason: loading it ARMS the stale-root guard, and this file is not one of the
+# three executable roots (bin/, libexec/, runners/) that lib/common.sh fires
+# that guard at source time for -- see its _orchid_kernel_entry_point. Loaded
+# further down beside lib/roles.sh and lib/resolver.sh, as it used to be, the
+# guard was armed here and fired nowhere: a gate skipped by omission, which is
+# exactly the class INV-15 exists for. `orchid_root_stale_gate` fires whatever
+# is armed from wherever it is called, which is why a harness outside those
+# three directories must call it explicitly.
+#
+# AHEAD OF THE PARSE, not after it, and deliberately unlike libexec/orchid-
+# trust's per-subcommand placement. The kernel does not have one answer here,
+# and this comment used to claim it did -- that every kernel entry point
+# refuses before it looks at its own arguments, `--help` included. It is true
+# of the entry points that fire at their operator-PATH restore, which
+# lib/common.sh reaches before their argument loops (libexec/orchid-doctor is
+# the clearest: it refuses ahead of even parsing `--greenfield`). It is NOT
+# true of the two verbs that fire the gate by an explicit call of their own,
+# libexec/orchid-trust and runners/orchid-service: both dispatch on a
+# subcommand first and answer `-h`, `--help`, `help` and a bare invocation with
+# their usage text ABOVE that call, so that a mistyped verb is answered with
+# its own diagnosis rather than a refusal about the checkout. Their rule is
+# that a usage text names no repository, resolves no record, and reports
+# nothing an operator could act on about a target; both are held to it, and to
+# the acting arm that must still refuse, by
+# tests/inv/test_INV-15_no_optional_gate.sh section 8.
+#
+# THIS file is placed ahead of its parse anyway, and on its own footing rather
+# than on that claim, because what it produces is not a usage text: anonymized
+# qualification EVIDENCE an operator decides a beta on and -- unless
+# --no-run-verify is passed -- one in-place run of the target repository's own
+# verify= command. Neither may be produced by a kernel nobody has looked at,
+# and neither may be reached before this call.
+#
+# Idempotent, and a no-op for every root not parked on its configured
+# integration branch: an installed prefix, an extracted archive, an ordinary
+# development checkout. It costs a stale self-hosted checkout a refusal and
+# costs everything else nothing.
+source "$ROOT/lib/common.sh"
+orchid_root_stale_gate
+
 QUALIFY_SCHEMA=1
 REPO=""
 OUTPUT=""
@@ -103,7 +161,11 @@ command once, IN PLACE, to time it. That is the operator's own code running in
 the operator's own repository -- whatever it writes, it writes, and this harness
 neither sandboxes it nor makes it safe. Timing it any other way would be a
 guess. With --no-run-verify the duration probe is recorded as not-tested, never
-as a pass.
+as a pass. The run is also announced on stderr as it starts. That notice stands
+in place of a trust step: qualification is deliberately ungated, because the
+acknowledgement that opens the headless gate is meant to be made AFTER a
+repository qualifies, not as a precondition for finding out whether it does.
+See docs/specs/operations.md for that decision and what was rejected.
 
 The verify= command's own output is discarded unread: its exit code and
 wall-clock duration are the only things recorded about it. The recorded
@@ -115,6 +177,13 @@ Genuine third-party beta runs and public release remain operator-owned. This
 harness does not perform them and never records that they happened.
 
 Exit: 0 qualified, 1 not qualified, 2 usage or precondition failure.
+
+Before any of that, this harness refuses outright if the Orchid checkout IT is
+running out of is itself stale -- parked on its integration branch with kernel
+files staged, i.e. pre-merge code -- because evidence produced by a build that
+cannot describe itself is worse than none. That refusal names itself in full on
+stderr, exits 1, and is nothing to do with --repo. ORCHID_ALLOW_STALE_ROOT=1 in
+front of the command is the documented, per-invocation way past it.
 EOF
 }
 
@@ -188,8 +257,13 @@ trap cleanup EXIT
 # re-deriving any of it here: a qualification harness that disagreed with the
 # kernel about which implementer is configured would qualify the wrong profile.
 # ORCHID_REPO is what repo-local plugin discovery keys on (lib/resolver.sh).
+#
+# lib/common.sh is NOT loaded here. It is loaded at the top of this file, above
+# the argument parse, because loading it is what arms the stale-root gate this
+# harness then fires; see that block for why the gate may not sit below a
+# parse. These three still load here, after --repo has been resolved, since
+# repo-local discovery is what they are for.
 export ORCHID_REPO="$REPO"
-source "$ROOT/lib/common.sh"
 source "$ROOT/lib/manifest.sh"
 source "$ROOT/lib/roles.sh"
 source "$ROOT/lib/resolver.sh"
@@ -410,7 +484,8 @@ fi
 # implementer-shell -- the no-shell implementer profile, half one.
 #
 # An implementer that cannot run a command cannot run a repository script (a
-# checksum pin, a codegen step, a formatter) and cannot change a file mode.
+# candidate-local codegen step, a lockfile refresh, a formatter) and cannot
+# change a file mode.
 # Both are silent, recurring operator hand-offs, and both are headless
 # DEADLOCKS: no other actor in the loop can perform them either, so a task
 # needing one can neither finish nor fail.
@@ -496,6 +571,18 @@ elif [ -z "$verify_cmd" ]; then
     "nothing was executed: no verify= command is configured" "$VERIFY_WHY" \
     "no verify= command is configured (see the repo-config probe), so there was nothing to time"
 else
+  # IN-BAND DISCLOSURE, printed only on the path that actually executes
+  # something. This is the mitigation qualification carries INSTEAD of a trust
+  # step, so it fires where the exposure is and nowhere else: a notice that also
+  # printed under --no-run-verify would be a warning about something that did
+  # not happen, and warnings that fire when nothing happened are how an operator
+  # learns to skip them. Stderr, not stdout: the two evidence paths this script
+  # prints last are what a caller pipes. No path is named -- the operator passed
+  # --repo and knows what it is, and _scrub_guard reaches only the two evidence
+  # FILES, never this stream; tests/test_beta_qualification.sh holds that by
+  # hand, so keep these two lines path-free when you edit them.
+  printf 'beta-qualify: executing the configured verify= command IN PLACE inside --repo, to time it.\n' >&2
+  printf 'beta-qualify: that is repository-specific code, run with your privileges; this harness does not sandbox it. --no-run-verify skips it and records the timing probe as not-tested.\n' >&2
   verify_rc=0
   # Both streams discarded: nothing the repository prints can reach a record.
   ( cd "$REPO" && with_timeout "$VERIFY_TIMEOUT_S" "$BASH_BIN" -c "$verify_cmd" >/dev/null 2>&1 ) || verify_rc=$?
@@ -524,25 +611,26 @@ fi
 
 # ===========================================================================
 # merge-rebase-regeneration -- the headless deadlock this repository met for
-# real. `orchid merge` rebases the candidate onto the integration head. Any
-# committed artifact derived from the tree's exact content -- a checksum pin, a
-# lockfile, a generated file -- is invalidated by that rebase, and the
-# post-rebase re-verification then fails. Regenerating it needs an actor able
-# to run a command. On a no-shell profile there is none, in or out of the loop,
-# and the run stops with nobody able to move it.
+# real. `orchid merge` rebases the candidate onto the integration head. A
+# committed candidate-local artifact derived from nearby content -- a lockfile
+# or generated file -- can be invalidated by that rebase, and post-rebase
+# verification then fails. Regenerating it needs an actor able to run a
+# command. On a no-shell profile there is none in the loop, and the run stops
+# with nobody able to move it. A whole-tree release checksum is deliberately
+# excluded: T030 places it on integration at release time, never in a candidate.
 # ===========================================================================
 probe_start
 probe_stop
 MERGE_TESTED="derived from the resolved implementer plugin's declared capabilities; no merge was performed against the target repository"
-MERGE_WHY="orchid merge rebases the candidate, which invalidates any committed artifact derived from the tree's exact content, and then re-verifies; regenerating one needs an actor able to run a command"
+MERGE_WHY="orchid merge rebases the candidate, which can invalidate a committed candidate-local generated artifact, and then re-verifies; regenerating one needs an actor able to run a command, while whole-tree release artifacts must not live on candidate branches"
 if [ "$IMPLEMENTER_SHELL" = present ]; then
-  record merge-rebase-regeneration "an in-loop actor can regenerate content-derived artifacts after the merge rebase" pass true \
+  record merge-rebase-regeneration "an in-loop actor can regenerate candidate-local artifacts after the merge rebase" pass true \
     "$MERGE_TESTED" "$MERGE_WHY" \
-    "the resolved implementer declares the shell capability, so a rework attempt after a failed post-rebase verification can regenerate a content-derived artifact in-loop -- subject to the implementer-command-execution probe, which this harness cannot settle"
+    "the resolved implementer declares the shell capability, so a rework attempt after a failed post-rebase verification can regenerate a candidate-local artifact in-loop -- subject to the implementer-command-execution probe, which this harness cannot settle"
 else
-  record merge-rebase-regeneration "an in-loop actor can regenerate content-derived artifacts after the merge rebase" fail true \
+  record merge-rebase-regeneration "an in-loop actor can regenerate candidate-local artifacts after the merge rebase" fail true \
     "$MERGE_TESTED" "$MERGE_WHY" \
-    "the resolved implementer cannot run a command, so a content-derived artifact invalidated by the merge rebase has no in-loop actor able to regenerate it; if this repository commits such an artifact, an unattended run deadlocks there and only the operator can clear it"
+    "the resolved implementer cannot run a command, so a candidate-local generated artifact invalidated by the merge rebase has no in-loop actor able to regenerate it; if this repository commits such an artifact, an unattended run deadlocks there and only the operator can clear it"
 fi
 
 # ===========================================================================
@@ -713,7 +801,7 @@ jq -s \
       "any publication, tag, push, or release of this build",
       "the blocker round trip end to end, including the inbound answering agent",
       "one task per implementer profile whose acceptance requires executing a repository script or changing a file mode",
-      "re-pinning Formula/orchid.rb after any change to shipped bytes",
+      "re-pinning Formula/orchid.rb once on the integration branch at release time, immediately before the local release gate",
       "chmod +x on any newly added libexec verb"
     ]}' \
   "$PROBES" > "$JSON_OUT" || die "cannot write $JSON_OUT"

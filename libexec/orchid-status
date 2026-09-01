@@ -34,18 +34,25 @@ __orchid_entry_defer_restore=1
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/trust.sh"
+# resolver/review/capability are here for lib/handoff.sh's capability arm
+# alone (INV-16): handoff_state asks which actor built a candidate and whether
+# the mechanical step may be routed to it, and this file's per-task hand-off
+# line is one of that function's two callers.
+source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/review.sh"
+source "$ORCHID_ROOT/lib/capability.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 
-# --explain and --html are independent flags (either, neither, or both may
-# be given) -- a loop over every arg rather than the old single `[ "${1:-}"
+# --explain, --html and --jobs are independent flags (any combination may be
+# given) -- a loop over every arg rather than the old single `[ "${1:-}"
 # = --explain ]` check, so `status --html` (a second, brand-new invocation
 # shape, v1-m4) doesn't have to land in argv position 1 relative to
 # --explain for either to be recognized.
-explain=0; html=0
+explain=0; html=0; jobs_view=0
 for _status_arg in "$@"; do
   case "$_status_arg" in
     --explain) explain=1 ;;
     --html) html=1 ;;
+    --jobs) jobs_view=1 ;;
   esac
 done
 
@@ -96,10 +103,59 @@ _status_task_why() {
       done <<< "$blockers"
       [ -n "$why" ] || why="ready-to-dispatch" ;;
     implementing) why="awaiting-implementer-envelope" ;;
-    testing)      why="awaiting-verify (or rebase-pending)" ;;
+    testing)
+      # TWO operator-owned stops sit between here and a verify, and a task held
+      # at either is NOT awaiting one: nothing is going to run, and nothing
+      # will, until a human acts. Reporting `awaiting-verify` would describe a
+      # wait on the machine when the wait is on a person — the whole class of
+      # silence these named pauses exist to end — and would send the operator
+      # looking for a running suite that does not exist, at the one moment they
+      # are themselves the thing being waited on.
+      #
+      # The HAND-OFF is reported first, and that order is not cosmetic: its
+      # acknowledgement ADVANCES `candidate_sha` onto the commit the mechanical
+      # steps produced, which supersedes any prerequisite acknowledgement made
+      # before it. Naming it first is what points the operator at the step that
+      # must come first (PROTOCOL.md says so in the same order). `off` and
+      # `satisfied` both read exactly as they did before T010, so a repository
+      # not using the gate sees no change at all.
+      if [ "$(handoff_state "$repo" "$id" | cut -f1)" = outstanding ]; then
+        # No quotes in the predicate text: this same string is rendered into
+        # the static status page's task table, and a stray `"` there is a
+        # markup hazard for no benefit. The full invocation is in PROTOCOL.md
+        # and in the boundary's own reason.
+        why="awaiting-operator-handoff (orchid task handoff $id --ack)"
+      elif handoff_prereq_unmet "$(orchid_state "$repo")/tasks/$id.md"; then
+        why="awaiting-operator-prerequisite (orchid task prereq-ack $id)"
+      else
+        why="awaiting-verify (or rebase-pending)"
+      fi ;;
     reviewing)    why="awaiting-review-envelopes" ;;
     arbitrating)  why="awaiting-arbitration" ;;
-    merging)      why="awaiting-merge" ;;
+    merging)
+      # Same reason as `testing` above, at the other stage that runs the
+      # suite: `orchid merge` re-runs it against the same external store and
+      # refuses on the same predicate (exit 16), so a task parked here on an
+      # unacknowledged prerequisite is not awaiting a merge — it is awaiting a
+      # human, and will keep doing so.
+      #
+      # Reported without checking whether the base is still current, which is
+      # the one case this can overstate: on a stale base merge rebase-resets to
+      # `testing` before it ever reaches the gate. The same hedge `testing`
+      # makes with "(or rebase-pending)" — a status line summarizes, and the
+      # driver's own `task-prerequisite` boundary, raised only when merge
+      # actually refused, is the authoritative signal.
+      #
+      # The hand-off is deliberately NOT consulted here: it is acknowledged
+      # from `testing` and no other status (its ack advances `candidate_sha`,
+      # which from `merging` would move the tree out from under a merge already
+      # in flight), so a task that reached `merging` at all has already passed
+      # that gate.
+      if handoff_prereq_unmet "$(orchid_state "$repo")/tasks/$id.md"; then
+        why="awaiting-operator-prerequisite (orchid task prereq-ack $id)"
+      else
+        why="awaiting-merge"
+      fi ;;
     blocked)      why="blocked (see: orchid journal show --task $id)" ;;
     done)         why="-" ;;
   esac
@@ -127,9 +183,27 @@ fi
 # v1-m4 Task 1: remedy scoped to exclude .orchid/ (see orchid-doctor's own
 # comment on this same wording) so it never clobbers uncommitted run state.
 # v1-m4 Task 5 review: stderr, same reasoning as the split-brain warning above.
+# T029 (dogfood finding F31): the recovery text is no longer spelled out here
+# -- it was wrong, and it was wrong identically in `orchid doctor`, which is
+# what maintaining one operator instruction as two string literals buys. Both
+# now print lib/common.sh's orchid_stale_checkout_remedy, which says why the
+# scoped checkout alone does not clear this warning and what the second command
+# costs. Still stderr, still multi-line only in the state that fires.
 if orchid_stale_checkout "$repo"; then
-  echo "WARNING: integration checkout is stale — refresh with \"git checkout HEAD -- . ':(exclude).orchid'\" before committing anything here" >&2
+  echo "WARNING: $(orchid_stale_checkout_remedy)" >&2
 fi
+# Job liveness warnings (T035), in EVERY mode and with no flag to ask for
+# them, in the same place and on the same stream as the two checkout warnings
+# above. Dogfood F36 is why they are unconditional: a session reported a
+# critique as "actively working", and quoted its real findings, while that job
+# had been dead for twelve and a half hours -- everything needed to notice was
+# already on disk (a pid that was gone, an envelope that never landed, a log
+# twelve hours cold) and `orchid status` showed a run in planning with no hint
+# of any of it. A view an operator has to know to ask for is a view that will
+# be missed by the operator who most needs it, so `jobs ls` prints these to
+# stderr and status simply lets them through. `|| true`: a report surface must
+# never turn a broken jobs read into a failed status call.
+"$ORCHID_ROOT/bin/orchid" jobs ls --warnings || true
 rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null)" || true
 
 # -- v1-m4: `orchid status --html` -------------------------------------------
@@ -193,6 +267,26 @@ if [ "$html" -eq 1 ]; then
   [ -n "$tasks_html" ] || tasks_html='<tr><td colspan="4">(no tasks)</td></tr>
 '
 
+  # -- jobs (T035): the same rows `orchid jobs ls` renders, read back as TSV
+  # from the one producer rather than re-derived here -- the page is the
+  # "check from another room" surface, and it was exactly the room the F36
+  # operator was checking from while a job had been dead half a day. Read
+  # through `jobs ls --tsv` for the same reason the engines table below goes
+  # through ledger_show: one reader, so the page and the terminal can never
+  # disagree about whether a job is alive.
+  jobs_html=""
+  jobs_out="$("$ORCHID_ROOT/bin/orchid" jobs ls --tsv 2>/dev/null || true)"
+  if [ -n "$jobs_out" ]; then
+    while IFS=$'\t' read -r j_id j_task j_role j_op j_att j_eng j_pid j_state \
+        j_age j_elapsed j_budget j_by j_log; do
+      [ -n "$j_id" ] || continue
+      jobs_html="$jobs_html<tr><td>$(orchid_html_escape "$j_id")</td><td>$(orchid_html_escape "$j_task")</td><td>$(orchid_html_escape "$j_role")</td><td>$(orchid_html_escape "$j_op")</td><td>$(orchid_html_escape "$j_att")</td><td>$(orchid_html_escape "$j_eng")</td><td>$(orchid_html_escape "$j_pid")</td><td>$(orchid_html_escape "$j_state")</td><td>$(orchid_html_escape "$j_age")</td><td>$(orchid_html_escape "$j_elapsed")</td><td>$(orchid_html_escape "$j_budget")</td><td>$(orchid_html_escape "$j_by")</td><td><code>$(orchid_html_escape "$j_log")</code></td></tr>
+"
+    done <<< "$jobs_out"
+  fi
+  [ -n "$jobs_html" ] || jobs_html='<tr><td colspan="13">(no outstanding jobs)</td></tr>
+'
+
   # -- engines ledger (same lib/ledger.sh reader the text report uses) ----
   engines_html=""
   engines_out="$(ledger_show "$repo" 2>/dev/null || true)"
@@ -221,7 +315,43 @@ if [ "$html" -eq 1 ]; then
       # own secret), never to this static page, which is the "check from
       # another room" surface and may be screen-shared.
       qtext="$(tail -n +2 "$qf" | grep -v '^nonce: ')"
-      blockers_html="$blockers_html<li><strong>$(orchid_html_escape "$qid")</strong>: <pre>$(orchid_html_escape "$qtext")</pre></li>
+      # The `choices: ` header (v1-m4 T009) comes out of the body too, but is
+      # NOT dropped. Unlike the nonce it is not a secret -- BLOCKERS.md and
+      # the outbound page both print it -- and this page is one of the
+      # surfaces on which a boundary has to say what may be ANSWERED, not
+      # just what is being decided. Left in place it would render as though
+      # the orchestrator had typed the machine CSV into its own question;
+      # rendered below it says the same thing in the display spelling.
+      #
+      # WHICH line is a header and which is body is decided by the SIDECAR's
+      # existence, never by the line's own prose -- the same gate
+      # libexec/orchid-answer uses to decide whether a set was declared at
+      # all. A question whose body merely begins "choices: ..." declared
+      # nothing, has no sidecar, and keeps its text exactly as written.
+      #
+      # ...and a sidecar that exists but yields no readable set renders
+      # NOTHING here rather than a bare "answers:" with no answers after it,
+      # which would be the same unanswerable page this whole feature exists
+      # to retire. Its `choices:` header stays in the body too: with no set to
+      # print in its place, dropping the line would delete the only remaining
+      # trace of what was declared. Unlike libexec/orchid-answer -- which is a
+      # GATE and refuses this case outright -- a display surface fails safe by
+      # showing what it has and inventing nothing.
+      qchoices=""; qchoices_html=""
+      if [ -f "$rt/answers/$qid.choices" ]; then
+        qchoices="$(head -n1 "$rt/answers/$qid.choices" 2>/dev/null || true)"
+      fi
+      if [ -n "$qchoices" ]; then
+        # Strip the ONE header line the notify verb wrote, matched whole and
+        # only at the front -- not every body line that looks like it.
+        qhdr="choices: $qchoices"
+        case "$qtext" in
+          "$qhdr")        qtext="" ;;
+          "$qhdr"$'\n'*)  qtext="${qtext#"$qhdr"$'\n'}" ;;
+        esac
+        qchoices_html="<div class=\"choices\">answers: $(orchid_html_escape "${qchoices//,/ | }")</div>"
+      fi
+      blockers_html="$blockers_html<li><strong>$(orchid_html_escape "$qid")</strong>: <pre>$(orchid_html_escape "$qtext")</pre>$qchoices_html</li>
 "
     done
   fi
@@ -303,6 +433,11 @@ $unattended_html
 <tr><th>id</th><th>status</th><th>title</th><th>why</th></tr>
 $tasks_html</table>
 
+<h2>Jobs</h2>
+<table>
+<tr><th>job</th><th>task</th><th>role</th><th>op</th><th>att</th><th>engine</th><th>pid</th><th>state</th><th>age</th><th>elapsed</th><th>budget</th><th>launcher</th><th>log</th></tr>
+$jobs_html</table>
+
 <h2>Engines</h2>
 <table>
 <tr><th>engine</th><th>status</th><th>detail</th></tr>
@@ -354,7 +489,24 @@ for f in "$state/tasks"/*.md; do
   echo "$line"
 done
 echo "== jobs"
-"$ORCHID_ROOT/bin/orchid" jobs check 2>/dev/null || echo "(jobs: plan B)"
+# --jobs (T035): the same process table `orchid jobs ls` renders, in place of
+# `jobs check`'s bare `<task>\t<state>` pairs -- which is all this section has
+# ever shown, and which cannot answer any of the questions an operator asks
+# when two jobs exist for one task: which job is which, its role, engine,
+# attempt, how long it has run, and whether a dead one is a corpse already
+# handled or a fresh failure needing escalation.
+#
+# `check` remains what the unflagged section prints. It is the machine surface
+# THE TICK is specified against (PROTOCOL.md), it kills what it reports as
+# stalled or timed out, and quietly swapping its vocabulary out from under
+# every existing reader is not what an operator asking for a nicer table
+# wanted. Warnings are suppressed here in both arms only because they were
+# already printed, once, above.
+if [ "$jobs_view" -eq 1 ]; then
+  "$ORCHID_ROOT/bin/orchid" jobs ls 2>/dev/null || echo "(jobs: plan B)"
+else
+  "$ORCHID_ROOT/bin/orchid" jobs check 2>/dev/null || echo "(jobs: plan B)"
+fi
 echo "== engines"
 engines_out="$(ledger_show "$repo" 2>/dev/null || true)"
 [ -n "$engines_out" ] && echo "$engines_out" || echo "(no engine events yet)"

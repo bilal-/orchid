@@ -92,7 +92,7 @@ rc=0; "$ORCHID_BIN" lessons retire NOPE --reason "x" >/dev/null 2>&1 || rc=$?
 list_out2="$("$ORCHID_BIN" lessons list)"
 assert_match "^L002	retired	engine:codex" "$list_out2" "list reflects retired state"
 active_out2="$("$ORCHID_BIN" lessons list --active)"
-echo "$active_out2" | grep -q "^L002" && fail "list --active must not show a retired lesson"
+grep -q "^L002" <<<"$active_out2" && fail "list --active must not show a retired lesson"
 [ "$(echo "$active_out2" | wc -l | tr -d ' ')" = 1 ] || fail "list --active now shows only L001"
 
 # ---------------------------------------------------------------------------

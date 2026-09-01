@@ -65,8 +65,19 @@ assert_eq "workspace-write" "$(jq -r .policy "$req")" "implement policy"
 # HOME, USER, LANG, LC_*, TERM, TMPDIR, ORCHID_*) plus exactly the env var
 # names a plugin's manifest opts into via `permissions=`. SECRET_LEAK is set
 # in the PARENT but neither base-allowlisted nor opted into by the first
-# stub's manifest (it has no plugin.conf at all) -- it must not reach the
-# child. ORCHID_MARKER (ORCHID_*) and PATH must always reach the child.
+# stub's manifest (it declares capabilities and NO `permissions=` key at all)
+# -- it must not reach the child. ORCHID_MARKER (ORCHID_*) and PATH must
+# always reach the child.
+#
+# T018: this stub used to ship no plugin.conf whatsoever, and the launch below
+# is an `implement` step -- which INV-16 now refuses to route to an actor whose
+# manifest does not declare `workspace_write` (lib/capability.sh). A plugin
+# that declares NOTHING covers nothing, so a manifest-less dir is refused for
+# the same reason one declaring the wrong atoms is; exempting it would be
+# exactly the fail-open direction that rule exists to close. What this fixture
+# actually tests is unchanged, because both shapes take the identical env path:
+# `spawn_child_env` reads `manifest_permissions`, and an absent `permissions=`
+# key and an absent manifest both yield no opted-in names at all.
 export SECRET_LEAK="topsecret-value"
 export ORCHID_MARKER="marker-should-pass"
 mkdir -p "$WORK/eng/leaky"
@@ -80,6 +91,9 @@ printf '{"contract":1,"job_id":"%s","task":"%s","operation":"implement","status"
   "$jid" "$task" "${SECRET_LEAK:-}" "${ORCHID_MARKER:-}" "${PATH:+yes}" > "$out"
 EOF
 chmod +x "$WORK/eng/leaky/run"
+# No `permissions=` key -- that absence is the point of this half.
+printf 'manifest_version=1\nid=test/leaky\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nentrypoint=run\n' \
+  > "$WORK/eng/leaky/plugin.conf"
 printf 'role.leaktest=leaky\n' >> "$WORK/orchid.config"
 
 "$ORCHID_BIN" task create T002 demo2 >/dev/null
@@ -95,7 +109,12 @@ assert_match "PATH_SET=<yes>" "$summary" "child sees PATH (always allowed)"
 # child (the ONLY way a non-base name may cross the boundary).
 mkdir -p "$WORK/eng/leaky2"
 cp "$WORK/eng/leaky/run" "$WORK/eng/leaky2/run"; chmod +x "$WORK/eng/leaky2/run"
-printf 'manifest_version=1\nid=orchid/leaky2\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nentrypoint=run\npermissions=SECRET_LEAK\n' \
+# `workspace_write,shell,git` are here for INV-16, not for this assertion: the
+# launch below is an `implement` step, and lib/capability.sh refuses to route one
+# to an actor that does not declare all three (edit the tree, deliver the commit,
+# run the repository's own gates first). `permissions=SECRET_LEAK` remains the
+# only thing this half is about.
+printf 'manifest_version=1\nid=orchid/leaky2\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text,workspace_write,shell,git\nentrypoint=run\npermissions=SECRET_LEAK\n' \
   > "$WORK/eng/leaky2/plugin.conf"
 printf 'role.leaktest2=leaky2\n' >> "$WORK/orchid.config"
 
@@ -153,6 +172,117 @@ for rf in "$WORK/.orchid/runtime/requests/"*.json; do
 done
 [ -n "$plan_req" ] || fail "plan critique request document not found under runtime/requests"
 assert_eq "$WORK" "$(jq -r .worktree "$plan_req")" "plan critique request worktree defaults to the repo (no task file to read one from)"
+
+# ===========================================================================
+# T040 / dogfood finding F35, END TO END through the real launcher.
+#
+# The incident: a critique attempt ran to completion, wrote eight complete
+# findings to its job log, and exited WITHOUT writing an envelope. reconcile
+# had nothing to land, so from the outside the attempt simply never happened;
+# the findings survived only because an operator went grepping runtime logs.
+#
+# `plan critique` is deliberately the shape used here -- it is the exact
+# operation that failed in the real run -- and the stub engine below does
+# precisely what that engine did: prints its results in the adapters' own
+# reply grammar (which the launcher's `>> "$log"` redirect captures verbatim,
+# the same way it captured the real one), then exits non-zero without ever
+# touching its `output` path.
+#
+# Two properties can only be proved HERE, against the real launcher, and not
+# in tests/test_jobs.sh against a hand-built manifest: that the engine's exit
+# status is recorded at all (this launcher returns at spawn and nobody waits
+# on the child, so without the spawn wrapper the status is simply gone), and
+# that the pack/pgid/liveness contract survives that wrapper.
+# ===========================================================================
+mkdir -p "$WORK/eng/salvager"
+printf 'manifest_version=1\nid=test/salvager\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/salvager/plugin.conf"
+cat > "$WORK/eng/salvager/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+# Does all the work, reports it to stdout, then dies without an envelope --
+# the `output` path is never written to at all.
+echo "FINDING: high: the reaper never runs in PLANNING"
+echo "FINDING: medium: a refusal and its gc disagree about the same predicate"
+echo "VERDICT: request-changes"
+exit 3
+EOF
+chmod +x "$WORK/eng/salvager/run"
+printf 'role.salvagecritic=salvager\n' >> "$WORK/orchid.config"
+
+salv_launch_out="$("$REPO_ROOT/runners/orchid-launch" plan salvagecritic critique)"
+assert_match "^launched j-" "$salv_launch_out" "the salvage-case job launches like any other"
+salv_job_id="$(echo "$salv_launch_out" | awk '{print $2}')"
+sleep 1
+
+# The exit status of a job nobody waits on: recorded by the launcher's spawn
+# wrapper, or lost forever.
+assert_eq "3" "$(tr -d '[:space:]' < "$WORK/.orchid/runtime/exits/$salv_job_id" 2>/dev/null)" \
+  "the engine's own exit status is recorded — the launcher returns at spawn, so nothing else on this machine ever collects it"
+
+salv_reconcile_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "^plan	no_envelope" "$salv_reconcile_line" \
+  "reconcile reports the job that exited without an envelope — printing nothing is what made this look like an attempt that never ran"
+salv_landed=".orchid/reviews/plan-a1-salvagecritic.json"
+[ -f "$WORK/$salv_landed" ] \
+  || fail "the findings the engine already produced must be landed as a degraded envelope rather than discarded (the whole of F35)"
+assert_eq no_envelope "$(jq -r .status "$WORK/$salv_landed")" "filed with the first-class no_envelope status"
+assert_eq 3 "$(jq -r .exit_code "$WORK/$salv_landed")" "carrying the exit code end to end, from the launcher's record"
+assert_eq 2 "$(jq -r '.findings | length' "$WORK/$salv_landed")" "and both findings the engine wrote to its log"
+assert_eq request-changes "$(jq -r .verdict "$WORK/$salv_landed")" "and the verdict it reached"
+assert_match "Exit code: 3" "$(ORCHID_REPO="$WORK" "$ORCHID_BIN" journal show --task plan)" \
+  "with the exit code and log tail journaled, so an operator sees it without knowing to grep runtime/logs"
+
+# ===========================================================================
+# T040 rework: THE KILL PATHS MUST NOT DESTROY THE EXIT RECORD. `jobs check`
+# answers a stalled or timed-out job with a process-GROUP kill (kill_stuck's
+# `kill -- -$pgid`), and the launcher's recording subshell is that group's
+# LEADER -- without its own TERM handler the recorder died of the same
+# signal before its one write, so reconcile journaled "Exit code:
+# unrecorded" in exactly the killed-job case the record was added for. The
+# kill below is kill_stuck's own shape, aimed at a job launched through the
+# real launcher; the record must say 143 (128+SIGTERM), and the journal must
+# carry it.
+# ===========================================================================
+mkdir -p "$WORK/eng/sleeper"
+printf 'manifest_version=1\nid=test/sleeper\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/sleeper/plugin.conf"
+cat > "$WORK/eng/sleeper/run" <<'EOF'
+#!/usr/bin/env bash
+echo "engine up, waiting on a vendor API that never answers"
+sleep 600
+EOF
+chmod +x "$WORK/eng/sleeper/run"
+printf 'role.sleepycritic=sleeper\n' >> "$WORK/orchid.config"
+
+kill_launch_out="$("$REPO_ROOT/runners/orchid-launch" plan sleepycritic critique)"
+assert_match "^launched j-" "$kill_launch_out" "the to-be-killed job launches like any other"
+kill_job_id="$(echo "$kill_launch_out" | awk '{print $2}')"
+kill_pgid="$(jq -r .pgid "$WORK/.orchid/runtime/jobs/$kill_job_id.json")"
+# A beat for the recorder subshell to install its trap and spawn the engine,
+# then kill_stuck's own group signal.
+sleep 1
+kill -- "-$kill_pgid" 2>/dev/null || true
+
+# The recorder outlives the group TERM by exactly one write -- wait for it,
+# bounded, rather than guessing with a fixed sleep.
+kill_exit_file="$WORK/.orchid/runtime/exits/$kill_job_id"
+kill_wait=0
+while [ ! -f "$kill_exit_file" ] && [ "$kill_wait" -lt 20 ]; do
+  kill_wait=$((kill_wait + 1))
+  sleep 0.25
+done
+assert_eq "143" "$(tr -d '[:space:]' < "$kill_exit_file" 2>/dev/null)" \
+  "a group-killed engine's exit status (128+SIGTERM) is still recorded -- the recorder must survive the very kill paths whose deaths it exists to explain"
+
+# ...and the beat here lets the recorder subshell itself exit after that
+# write, so reconcile's liveness probe sees the job as dead on this pass.
+sleep 0.5
+kill_reconcile_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "^plan	no_envelope" "$kill_reconcile_line" \
+  "the killed job is reported as exited-without-an-envelope, never silence"
+assert_match "Exit code: 143" "$(ORCHID_REPO="$WORK" "$ORCHID_BIN" journal show --task plan)" \
+  "and the journal carries the real exit code for a stall/timeout kill, never 'unrecorded'"
 
 # ===========================================================================
 # v1-m4 Task 3 (worktree-read review packs): orchid-launch now resolves the
@@ -217,6 +347,33 @@ rc=0; wt2_err="$("$REPO_ROOT/runners/orchid-launch" TWT2 inlinecritic review 2>&
 [ "$rc" -ne 0 ] || fail "inline-only engine: launcher must fail (input_overflow) for the same big diff, unchanged"
 assert_match "input_overflow" "$wt2_err" "inline-only engine: launcher surfaces input_overflow for the big diff"
 
+# ...AND THE MANIFEST IT ABANDONED SAYS SO (T027 rework).
+#
+# This is the launcher's only chance to record WHY it failed. It returns the
+# non-zero exit to its caller and is gone; the manifest `jobs prepare` minted
+# for it stays on disk, and on disk it is otherwise indistinguishable from one
+# whose launcher was killed asynchronously -- a reboot, a Ctrl-C, a felled
+# driver. Only this process ever knew the exit status, so if it does not write
+# it here nobody can ever report it.
+#
+# runners/orchid-drive is the reader, and it reads this for DIAGNOSIS only: its
+# ageing sweep quotes this exit code when it turns out to be the arm that
+# charges the failure. Whether a rung has already been spent is a different
+# question with a different answer -- the journal receipt the charge itself
+# writes -- precisely because this mark is written BEFORE any charge and would
+# otherwise let a crashed pass hide a failure forever. tests/test_drive.sh
+# Parts T and W are the two end-to-end halves of that.
+wt2_mf=""
+for _m in "$WORK/.orchid/runtime/jobs"/*.json; do
+  [ -e "$_m" ] || continue
+  [ "$(jq -r '.task // ""' "$_m")" = TWT2 ] || continue
+  wt2_mf="$_m"
+done
+[ -n "$wt2_mf" ] || fail "the failed launch must leave its prepared manifest behind for the driver to read"
+assert_eq 0 "$(jq -r '.pid' "$wt2_mf")" "nothing was spawned, so the pid is still the one prepare minted"
+assert_eq "$rc" "$(jq -r '.launch_exit // "unset"' "$wt2_mf")" \
+  "and the launcher stamps its OWN exit status on the manifest it abandoned — the only record anywhere of why this launch failed"
+
 # ===========================================================================
 # v1-m4 Task 2 (push prevention): `orchid init` installs a defense-in-depth
 # `.git/hooks/pre-push` guard (PROTOCOL.md already forbids external
@@ -252,6 +409,96 @@ rc=0; ORCHID_ALLOW_PUSH=1 git -C "$pg" push origin task/T001 >/dev/null 2>&1 || 
 git -C "$pg" branch feature/other trunk
 rc=0; other_push_out="$(git -C "$pg" push origin feature/other 2>&1)" || rc=$?
 [ "$rc" -eq 0 ] || fail "push guard must never block a non-task/non-integration branch (got: $other_push_out)"
+green_case 'a branch carrying no run state pushes exactly as it always did'
+
+# ---------------------------------------------------------------------------
+# T037: the SECOND leg of the same hook -- a ref that is neither task/* nor
+# the integration branch, but whose tip carries orchid's own run state.
+#
+# This is the leak the name-based leg cannot see. On a real product repository
+# 14 `.orchid/` files reached `main` by riding the merge chain, integration
+# branch -> feature branch -> MR, and were approved because the diff was large
+# and the paths look like tooling. By the time that feature branch is pushed
+# it is an ordinary branch with an ordinary name.
+#
+# Push is the gate rather than merge because merging is only one of the
+# routes: a squash, a cherry-pick and a rebase put the same files on the same
+# branch with no merge commit at all, and a hosted MR is merged on the forge
+# where no local hook runs. Everything that reaches a forge is pushed first.
+#
+# RED (before this fix): the push succeeds and run state is on the remote.
+# ---------------------------------------------------------------------------
+git -C "$pg" branch feature/carries-run-state orchid/integration
+[ -n "$(git -C "$pg" ls-tree feature/carries-run-state -- .orchid)" ] \
+  || fail "fixture: the branch must actually carry .orchid/ for this case to mean anything"
+rc=0; leak_push_out="$(git -C "$pg" push origin feature/carries-run-state 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "push guard must block a branch that would introduce run state to the remote"
+assert_match "push blocked" "$leak_push_out" "the run-state leg names the block plainly"
+assert_match "carries orchid.s own run state" "$leak_push_out" "and says what is on the branch"
+git -C "$pg" ls-remote --exit-code --heads "$remote" feature/carries-run-state >/dev/null 2>&1 \
+  && fail "a blocked push must not have landed the ref on the remote"
+red_case 'an ordinarily-named branch carrying .orchid/ is refused at push'
+
+# The documented way through, and the reason this leg is not a nuisance in a
+# repository that tracks run state on purpose (orchid's own is exactly that):
+# push it once with the override, and every later push of that ref is exempt
+# automatically, because the remote's copy already carries run state.
+rc=0; ORCHID_ALLOW_PUSH=1 git -C "$pg" push origin feature/carries-run-state >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "ORCHID_ALLOW_PUSH=1 must allow a deliberate run-state push"
+
+leak_wt="$WORK/pushguard-leak-wt"
+git -C "$pg" worktree add -q "$leak_wt" feature/carries-run-state
+printf 'more\n' > "$leak_wt/more.txt"
+git -C "$leak_wt" add more.txt
+git -C "$leak_wt" commit -q -m "further work on a branch the remote already tracks run state on"
+git -C "$pg" worktree remove --force "$leak_wt"
+
+rc=0; second_push_out="$(git -C "$pg" push origin feature/carries-run-state 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a ref whose remote copy ALREADY carries run state must push without the override (got: $second_push_out)"
+green_case 'a ref whose remote copy already carries run state is exempt, no override needed'
+
+# Deleting a ref pushes no tree and can leak nothing -- it must never be
+# mistaken for the leak, or an operator could not clean up after one.
+rc=0; del_push_out="$(git -C "$pg" push origin :feature/carries-run-state 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "the run-state leg must never block a ref DELETION (got: $del_push_out)"
+
+# ---------------------------------------------------------------------------
+# BRANCH-BOUND REFS ONLY. The run-state leg is scoped to branches -- plus
+# Gerrit's `refs/for/*`, which is a branch-bound review upload and is covered
+# by its own cases in tests/test_start.sh -- and is reached only after the
+# name-based checks above, so a tag, or a note, pushes exactly as plain git
+# would, whatever its commit carries.
+#
+# The bound is the design, not an omission. The leak this leg exists for is a
+# merge-chain leak: run state rides a BRANCH into a product's `main` and
+# becomes part of its history. A tag names a commit that is, by the time
+# anyone tags it, already reachable from a branch this leg has judged on its
+# own merits -- so refusing `git push origin v1.2.3` decides nothing new and
+# breaks every release tag cut over any history that contains run state,
+# orchid's own repository first among them.
+#
+# RED (before this bound): the tag below is refused, and a release cannot be
+# cut at all.
+# ---------------------------------------------------------------------------
+git -C "$pg" tag v-run-state orchid/integration
+[ -n "$(git -C "$pg" ls-tree v-run-state -- .orchid)" ] \
+  || fail "fixture: the tagged commit must actually carry .orchid/, or the bound is never tested"
+rc=0; tag_push_out="$(git -C "$pg" push origin v-run-state 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "the run-state leg must never block a TAG push (got: $tag_push_out)"
+git -C "$pg" ls-remote --exit-code --tags "$remote" v-run-state >/dev/null 2>&1 \
+  || fail "and the tag must actually have landed on the remote, not merely not-errored"
+red_case 'a tag whose commit carries .orchid/ pushes exactly as plain git does'
+
+# The GREEN twin of that bound, asserted here rather than left to the block
+# above: the very same run-state commit, pushed to a BRANCH the remote does
+# not already carry it on, is still refused. That is what keeps the tag case
+# from passing because the leg stopped working.
+git -C "$pg" branch feature/tag-twin orchid/integration
+rc=0; twin_push_out="$(git -C "$pg" push origin feature/tag-twin 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "scoping the leg to refs/heads/* must not have disabled it for branches"
+assert_match "carries orchid.s own run state" "$twin_push_out" \
+  "the branch carrying the tagged commit is still refused, by the leg the tag walked past"
+green_case 'the same run-state commit pushed to a branch is still refused'
 
 # A pre-existing user pre-push hook must NEVER be overwritten by init.
 pg2="$WORK/pushguard-userhook"; mkdir -p "$pg2"
@@ -279,8 +526,11 @@ ORCHID_REPO="$pg3" HOME="$WORK/home" "$ORCHID_BIN" init >/dev/null
 # simply absent there, and a customized integration_branch silently fell
 # back to the hook's own hardcoded default -- bypassing that leg of the
 # guard. Fixed by resolving the name ONCE at install time (`orchid init`
-# substitutes `__INTEGRATION_BRANCH__` via sed, mirroring templates/task.md's
-# own placeholder idiom) and baking it into the installed hook file, which
+# substitutes `__INTEGRATION_BRANCH__` into templates/pre-push.sh with an
+# escaped `sed`; templates/task.md's own __ID__/__TITLE__ placeholders used to
+# be rendered the same way, but T034 moved that renderer off sed entirely after
+# a title containing `&` came out as the placeholder text) and baking it into
+# the installed hook file, which
 # never reads orchid.config again. Proves both halves: the baked name in the
 # installed hook file, and the guard actually firing when triggered from a
 # task WORKTREE checkout (not the main repo) that has no orchid.config at

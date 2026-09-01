@@ -125,7 +125,7 @@ mk_role_plugin "$home/.orchid/plugins/roles/code-reviewer" acme/code-reviewer co
 printf 'role.code-reviewer=citer\n' > "$repo/orchid.config"
 hyphen_names="$(HOME="$home" ORCHID_ROOT="$REPO_ROOT" _role_custom_names "$repo")"
 assert_match "^code-reviewer$" "$hyphen_names" "_role_custom_names captures a hyphenated role id whole"
-echo "$hyphen_names" | grep -qxF "code" && fail "_role_custom_names must not truncate a hyphenated id at its first hyphen"
+grep -qxF "code" <<<"$hyphen_names" && fail "_role_custom_names must not truncate a hyphenated id at its first hyphen"
 rm -f "$repo/orchid.config"
 
 # -- INV-10: a custom role plugin whose descriptor id shadows a BUILT-IN

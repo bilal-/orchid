@@ -3,6 +3,17 @@ source "$(dirname "$0")/../helpers.sh"
 # INV-07: a candidate whose SHA changed cannot merge without re-verify +
 # re-review. Exercised via the stale-base rebase path of `orchid merge`:
 # a parallel commit lands on integration first, forcing rebase-reverify.
+#
+# RED: a candidate whose SHA has moved under it -- a real parallel commit is
+#      landed on integration below, so the recorded verify evidence belongs to
+#      a commit that no longer exists. The merge must exit 5, the integration
+#      ref must be untouched, the stale evidence must be DELETED rather than
+#      reused, and the advance back to `reviewing` on the rebased candidate
+#      must then be refused. Evidence that outlives the thing it attests to is
+#      exactly a check that passes without having tested the candidate in hand.
+# GREEN: after a real re-verify on the rebased candidate, the same merge
+#      succeeds and the task reaches `done` -- so the refusal above is the
+#      gate discriminating, not `merge` being broken.
 cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks .orchid/reviews
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
@@ -34,7 +45,7 @@ git checkout -q "$integ"
 "$ORCHID_BIN" task advance T001 reviewing
 plant_reviewer_envelope T001
 "$ORCHID_BIN" task advance T001 arbitrating --reason "single reviewer approved"
-"$ORCHID_BIN" task advance T001 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T001 --result approve --reason "approved for merge"
 
 old_verify_log=".orchid/reviews/T001-verify.log"
 old_verify_sha="$(grep '^sha: ' "$old_verify_log" | cut -d' ' -f2)"
@@ -86,7 +97,11 @@ assert_eq "$integ_after_parallel" "$merge_base" "rebased branch now sits directl
 [ ! -f ".orchid/reviews/T001-merge.log" ] || fail "INV-07: stale merge evidence must not survive the rebase-reset"
 rc=0; err="$("$ORCHID_BIN" task advance T001 reviewing 2>&1 1>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "INV-07: reviewing must be refused before re-verify (stale evidence gone -> INV-11 gate)"
-echo "$err" | grep -qi "verify" || fail "INV-07: die message must mention verify (got: $err)"
+# A herestring, never `echo "$err" | grep -qi` (T016/INV-15 section 5): under
+# helpers.sh's `set -o pipefail` the SIGPIPE grep's first match sends `echo`
+# becomes the pipeline's status, so a die message that DOES mention verify can
+# read as one that does not.
+grep -qi "verify" <<<"$err" || fail "INV-07: die message must mention verify (got: $err)"
 assert_eq testing "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "INV-07: refused advance leaves status at testing"
 
 # --- Walk the rebased candidate through verify + review again; merge must
@@ -100,13 +115,15 @@ git checkout -q "$integ"
 "$ORCHID_BIN" task advance T001 reviewing
 plant_reviewer_envelope T001
 "$ORCHID_BIN" task advance T001 arbitrating --reason "re-reviewed after rebase, approved"
-"$ORCHID_BIN" task advance T001 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T001 --result approve --reason "approved for merge"
 
 rc=0; out2="$WORK/merge2.out"
 "$ORCHID_BIN" merge T001 >"$out2" 2>&1 || rc=$?
 assert_eq 0 "$rc" "merge succeeds on the new base"
 assert_match "^merged T001: $integ -> " "$(cat "$out2")" "prints merged message on second attempt"
 assert_eq "done" "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "task reaches done"
+red_case "a moved candidate SHA made merge exit 5, destroyed the stale verify evidence and blocked re-entry to reviewing until a real re-verify ran"
+green_case "after a real re-verify on the rebased candidate the SAME merge succeeded and the task reached done, so the refusal above is a re-verify requirement rather than a merge that refuses every rebased candidate"
 
 final_integ="$(git rev-parse "$integ")"
 git show "$final_integ:feature.txt" >/dev/null 2>&1 || fail "final integ contains the (rebased) feature commit"

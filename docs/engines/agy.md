@@ -10,6 +10,14 @@ covers: `plugins/engines/agy/run`.
 `agy` is the CLI for **Google Antigravity** (`agy`, not `antigravity`, is
 the binary name).
 
+## What the repository acceptance run proves
+
+Orchid's local CI deliberately proves the suite with vendor CLIs unavailable
+on `PATH`; it does not spend quota or perform a live agy review. Thus a green
+run proves the kernel and this adapter's stubbed contract do not depend on an
+ambient vendor install. The tested/live status above comes from its named
+adapter qualification, not from r-002's local acceptance run.
+
 ## Install
 
 ```sh

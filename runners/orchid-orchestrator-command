@@ -21,6 +21,7 @@ set -euo pipefail
 #     task show <id>
 #     task list
 #     status [--explain]
+#     jobs ls [--all]
 #     jobs review-plan <id>
 #     journal tail [-n <count>]
 #     journal show --task <id>
@@ -32,7 +33,7 @@ set -euo pipefail
 # ADMITTED -- recording what was learned, and telling a human:
 #     journal add [--task <id>] --kind <kind> <text>
 #     lessons add --scope <repo|engine:<id>> --invalidate-when <text> <text>
-#     notify [--task <id>] <text>
+#     notify [--task <id>] [--choice <value>]... <text>
 # ADMITTED -- releasing the boundary once judged:
 #     run boundary clear --reason <text>
 #
@@ -40,14 +41,16 @@ set -euo pipefail
 # `trust`, `service`, `config`, `plugins`, `init`, `start`, `doctor`, `plan`,
 # `requirements`, `answer`, `merge`, `verify`, `jobs prepare|reconcile|gc`,
 # `run advance|accept|new|start|resume|boundary set`, `task
-# advance|set|create|unblock|retry|infra-fail` form; every tier-2 runner
+# advance|set|create|unblock|retry|reverify|infra-fail` form; every tier-2 runner
 # (nothing here can start an engine); every vendor CLI; and anything that
 # would be interpreted by a shell. This file never builds a shell string and
 # never evaluates one -- it validates argv, then `exec`s `bin/orchid` with the
 # caller's own argv vector, so there is no quoting seam to escape through.
 #
 # Refusals exit 17 (kernel exit-code registry: ... 15 hook handler failure,
-# 16 judgment boundary, 17 brokered command refused).
+# 16 judgment boundary, 17 brokered command refused, 18 slot already holds an
+# unlaunched manifest, 19 step not routable to the resolved actor, 20
+# verification refused because its worktree drifted).
 
 self="$0"
 while [ -L "$self" ]; do
@@ -65,16 +68,22 @@ The brokered, judgment-only command surface. Admitted forms:
 
   task show <id>                     task list
   status [--explain]                 jobs review-plan <id>
+  jobs ls [--all]
   journal tail [-n <count>]          journal show --task <id>
   lessons list --active              run boundary show
   task arbitrate <id> --result approve|request-changes --reason <text>
                                      [--waive-attempt]
   journal add [--task <id>] --kind <kind> <text>
   lessons add --scope <repo|engine:<id>> --invalidate-when <text> <text>
-  notify [--task <id>] <text>
+  notify [--task <id>] [--choice <value>]... <text>
   run boundary clear --reason <text>
 
 Anything else is refused (exit 17).
+
+The command surface does not grant arbitration authority. In particular, an
+unresolved operator objection remains operator-owned: an approval relayed by a
+model is accepted only when the task records the operator's answer authority
+for that exact objection, round, candidate, and evidence set.
 EOF
 }
 
@@ -85,10 +94,23 @@ refuse() {
 }
 
 # The kernel's journal entry kinds this surface admits. `acceptance`,
-# `plan_revision`, `risk_change` and `attempt_waiver` are deliberately absent:
-# each is owned by a specific verb that writes it as part of its own
-# transaction, so a free-standing entry claiming one would be a forgery.
-_BROKER_KINDS=" note arbitration blocker blocker_resolved intervention lesson kill rebase_review "
+# `plan_revision`, `plan_deferral`, `risk_change` and `attempt_waiver` are
+# deliberately absent: each is owned by a specific verb that writes it as part
+# of its own transaction, so a free-standing entry claiming one would be a
+# forgery. `plan_deferral` is the sharpest case -- it is what SATISFIES the
+# planning cross-check for a carried-forward item, so an orchestrator able to
+# write one could talk itself out of a defect the previous run recorded.
+#
+# `ledger` is admitted, and the asymmetry with `plan_deferral` is the whole
+# point. A ledger entry only ever ADDS to what the next run's cross-check
+# must consider; a deferral REMOVES something from it. The orchestrator is
+# also the actor that meets these findings -- arbitration is where a run
+# decides a real defect is out of THIS task's scope -- so a surface that
+# refused the kind would leave the tick with no way to record what it just
+# chose not to close, and the cross-check reading the next run's journal
+# would find nothing to raise. A forged `ledger` entry costs one
+# `orchid plan defer`; a missing one costs what r-002 already paid.
+_BROKER_KINDS=" note arbitration blocker blocker_resolved intervention lesson kill rebase_review ledger "
 
 is_kind() {
   case "$_BROKER_KINDS" in
@@ -100,12 +122,18 @@ is_kind() {
 # Task and lesson identifiers: a conservative, path-safe shape. No slashes, no
 # dots, so nothing here can ever be steered into a traversal by a verb that
 # builds a path out of it.
+# HERESTRINGS, never `printf ... | grep -q` (T016's sweep of the class T010
+# named): `grep -q` exits at its first match and SIGPIPEs its producer, and
+# under this file's `set -o pipefail` the pipeline reports that kill-by-signal
+# status instead of grep's own 0 -- so a well-formed id or count reads as
+# malformed and a legitimate command is refused. `<<<` feeds grep from a temp
+# file, so there is no pipe, no SIGPIPE, and the status is the matcher's alone.
 is_id() {
-  printf '%s' "$1" | grep -qE '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'
+  grep -qE '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$' <<<"$1"
 }
 
 is_count() {
-  printf '%s' "$1" | grep -qE '^[1-9][0-9]{0,3}$'
+  grep -qE '^[1-9][0-9]{0,3}$' <<<"$1"
 }
 
 # Free text: any non-empty single argument WITHOUT a newline. The newline ban
@@ -191,9 +219,33 @@ case "$verb" in
     fi
     ;;
   jobs)
-    [ "${2:-}" = review-plan ] || refuse "jobs ${2:-<missing>} is not admitted (only review-plan)"
-    [ "$#" -eq 3 ] || refuse "jobs review-plan takes exactly one task id"
-    is_id "$3" || refuse "'$3' is not a valid task id"
+    case "${2:-}" in
+      review-plan)
+        # T039: the writing --pin/--repin/--adopt-evidence forms are not
+        # admitted to this judgment-only broker. The bare read returns the
+        # effective pinned table the evidence was dispatched against.
+        [ "$#" -eq 3 ] || refuse "jobs review-plan is admitted only as a bare read of one task id (its --pin/--repin/--adopt-evidence forms write the slot plan and are not admitted here)"
+        is_id "$3" || refuse "'$3' is not a valid task id"
+        ;;
+      ls)
+        # T035: the read-only process table, admitted because the seat this
+        # broker guards was ONE OF THE TWO READERS THAT GOT F36 WRONG -- a
+        # woken orchestrator reported a critique as actively working, and
+        # quoted its findings, while the job had been dead for twelve and a
+        # half hours. It had no way to ask; now it does, and the answer
+        # computes liveness instead of believing a manifest.
+        #
+        # `--all` is the only modifier admitted. `--watch` in particular is
+        # refused: a broker that admits it hands a woken model a command that
+        # never returns, and this surface exists to bound exactly that.
+        if [ "$#" -eq 3 ]; then
+          [ "$3" = --all ] || refuse "jobs ls accepts only --all"
+        elif [ "$#" -ne 2 ]; then
+          refuse "jobs ls accepts at most --all"
+        fi
+        ;;
+      *) refuse "jobs ${2:-<missing>} is not admitted (only ls, review-plan)" ;;
+    esac
     ;;
   journal)
     case "${2:-}" in
@@ -283,6 +335,24 @@ case "$verb" in
           is_id "$2" || refuse "'$2' is not a valid task id"
           [ -z "$n_task" ] || refuse "--task given more than once"
           n_task="$2"; shift 2 ;;
+        --choice)
+          # Repeatable: each occurrence names one permitted answer for the
+          # question being raised (libexec/orchid-notify records the set;
+          # `orchid answer` refuses values outside it). Validated to the
+          # broker's own conservative id shape — narrower than the verb's
+          # comma/whitespace ban, on purpose: nothing an orchestrator
+          # declares as a choice needs more than a word.
+          [ "$#" -ge 2 ] || refuse "--choice requires a value"
+          is_id "$2" || refuse "'$2' is not a valid choice value (one [A-Za-z0-9_-] word)"
+          shift 2 ;;
+        # `--objection` is the one this refusal is now load bearing for (T032,
+        # dogfood F33): that flag makes `orchid notify` mint the durable
+        # authority record beside the question, and that record is what lets a
+        # later arbitration credit an operator's answer as the operator's own
+        # decision. A woken model may raise a page about anything -- that is what
+        # `notify` is admitted for -- but it may not raise one that lends its own
+        # arbitration a human's authority. The generic arm below is what refuses
+        # it, structurally, along with every other flag nobody enumerated here.
         --*) refuse "unexpected flag '$1' to notify" ;;
         *)
           [ "$#" -eq 1 ] || refuse "notify takes exactly one text argument, last"

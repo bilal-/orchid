@@ -115,3 +115,145 @@ err6="$(PATH="$STUBBIN_STAT:$PATH" "$ORCHID_BIN" answer "$qid6" nope 2>&1 1>/dev
 [ "$rc" -ne 0 ] || fail "answer must refuse (not silently proceed) when both stat variants fail on the .question file"
 assert_match "cannot determine .* age" "$err6" "answer names the age-unknown refusal plainly, rather than skipping the expiry check"
 [ ! -f ".orchid/runtime/answers/$qid6.answer" ] || fail "an answer refused for unknown age must never be recorded as answered"
+
+# --- declared choice sets (T009): both edges pinned per L034 -----------------
+# A question minted with --choice values records the set with itself, and
+# `orchid answer` REFUSES a value outside it, naming the valid ones (L028:
+# a refusal names the action that clears it). A question with NO declared
+# set keeps today's free-text contract in full.
+
+# A --choice value must survive as one argv word of `orchid answer`, so a
+# value with whitespace or a comma (the set's own join character) is
+# refused at mint time, never recorded in a shape the reader can't split.
+rc=0
+"$ORCHID_BIN" notify --choice "two words" "bad choice shape" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "a --choice value containing whitespace must be refused at mint time"
+rc=0
+"$ORCHID_BIN" notify --choice "a,b" "comma in a choice" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "a --choice value containing a comma must be refused at mint time"
+
+# ...and a typoed flag dies as usage rather than silently becoming message
+# text (the same silent-acceptance shape the choice gate exists to close).
+rc=0
+"$ORCHID_BIN" notify --choise approve "typoed flag" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "an unknown --flag must die as a usage error, not be swallowed into the message text"
+
+qidC="$("$ORCHID_BIN" notify --task T001 --choice approve --choice request-changes --choice defer "promote r-001 to beta?")"
+assert_match "^choices: approve,request-changes,defer\$" "$(cat ".orchid/runtime/answers/$qidC.question")" \
+  "the .question file records the declared set on its own choices: line"
+assert_match "^choices: approve \| request-changes \| defer\$" "$(cat .orchid/BLOCKERS.md)" \
+  "BLOCKERS.md names the permitted answers beside the reply command"
+
+# RED: a value outside the declared set is refused, the refusal NAMES the
+# valid choices, and nothing is recorded — not the answer file, not a
+# blocker_resolved journal entry.
+rc=0
+errC="$("$ORCHID_BIN" answer "$qidC" ship-it 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "an answer outside the declared choice set must be refused"
+assert_match "'ship-it' is not among $qidC's declared choices" "$errC" "the refusal names the rejected value and the qid"
+assert_match "approve \| request-changes \| defer" "$errC" "the refusal names the valid choices (L028)"
+[ ! -f ".orchid/runtime/answers/$qidC.answer" ] || fail "a refused out-of-set answer must never be recorded as answered"
+if grep -q "$qidC: ship-it" .orchid/journal.md; then
+  fail "a refused out-of-set answer must never journal a blocker_resolved entry"
+fi
+
+# GREEN: a value inside the declared set is accepted and recorded verbatim.
+outC="$("$ORCHID_BIN" answer "$qidC" defer)"
+assert_match "$qidC: defer" "$outC" "an in-set answer is accepted"
+assert_eq "defer" "$(cat ".orchid/runtime/answers/$qidC.answer")" "the in-set choice is recorded verbatim"
+
+# GREEN (the other edge): a question that declares NO set records no
+# choices: line and still accepts free text, exactly as before.
+qidF="$("$ORCHID_BIN" notify "no declared set here")"
+if grep -q '^choices: ' ".orchid/runtime/answers/$qidF.question"; then
+  fail "a question minted without --choice must not record a choices: line"
+fi
+outF="$("$ORCHID_BIN" answer "$qidF" any-free-text-at-all)"
+assert_match "any-free-text-at-all" "$outF" "free text stays accepted when the question declares no choice set"
+[ ! -f ".orchid/runtime/answers/$qidF.choices" ] \
+  || fail "a question minted without --choice must record no declared set at all"
+
+# ...and the set that DOES gate is read from the question's own record, never
+# scraped back out of its prose. The `choices:` line in the .question file is
+# a display line: it sits at exactly the position the free-text body would
+# otherwise start at, so a blocker whose own text opens "choices: ..." is
+# indistinguishable from a declaration by any line-matching rule. Reading it
+# as one would refuse the operator's legitimate free-text answer and name
+# choices nobody ever declared — the silent-mis-gate twin of the typo this
+# feature exists to catch. Both directions, so neither half can rot:
+qidX="$("$ORCHID_BIN" notify "choices: rollback,retry")"
+[ ! -f ".orchid/runtime/answers/$qidX.choices" ] \
+  || fail "a blocker whose TEXT starts with 'choices: ' declared nothing — no set may be recorded for it"
+outX="$("$ORCHID_BIN" answer "$qidX" "let us discuss it first")"
+assert_match "let us discuss it first" "$outX" \
+  "a question whose prose merely looks like a declaration must still accept free text"
+[ -f ".orchid/runtime/answers/$qidC.choices" ] \
+  || fail "a question minted WITH --choice must record the declared set in its own file"
+assert_eq "approve,request-changes,defer" "$(cat ".orchid/runtime/answers/$qidC.choices")" \
+  "the recorded set is the CSV the refusal above names, verbatim"
+
+# --- a DECLARATION THAT CANNOT BE READ is refused, never waved through -------
+# The sidecar's EXISTENCE is the declaration, so the gate has to key on that
+# same fact. A sidecar that exists but yields no choice — a truncated runtime,
+# a restored backup, or a producer that died and still landed its zero bytes
+# through `atomic_write` — is "a set was declared and the record of it is
+# gone", NOT "no set was declared". Reading those two as one answer resolves
+# it the wrong way: every value sails through for a question whose page told
+# the operator their answer would be checked, and the refusal that names the
+# valid choices never fires. Both edges, since the whole point is that the two
+# cases are distinguishable.
+#
+# RED. `approve` is deliberately a value that WAS declared: the refusal has to
+# be about the unreadable record, not about the value being out of set.
+qidE="$("$ORCHID_BIN" notify --choice approve --choice defer "answer me after the sidecar is lost")"
+: > ".orchid/runtime/answers/$qidE.choices"
+rc=0
+errE="$("$ORCHID_BIN" answer "$qidE" approve 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a question whose declared set cannot be read must refuse the answer, not accept it because the file happened to be empty"
+assert_match "declared a choice set" "$errE" \
+  "the refusal says a set WAS declared — the operator is owed the difference between a lost record and no record"
+assert_match "$qidE.choices" "$errE" \
+  "and names the file, because restoring or re-raising it is an operator's move and nothing here can reconstruct it"
+if grep -q "is not among" <<<"$errE"; then
+  fail "an unreadable declaration must not be reported as an out-of-set value — that would name a set nobody can read as though it had been checked"
+fi
+[ ! -f ".orchid/runtime/answers/$qidE.answer" ] \
+  || fail "an answer refused for an unreadable declaration must never be recorded as answered"
+
+# GREEN, the edge this must not swallow: no sidecar AT ALL still declares
+# nothing and still takes free text. Same shape as qidE above, one difference
+# — the file is absent rather than empty — so the two conditions are pinned
+# apart rather than by one of them alone.
+qidN="$("$ORCHID_BIN" notify "no sidecar was ever minted for this one")"
+[ ! -f ".orchid/runtime/answers/$qidN.choices" ] \
+  || fail "test fixture: a notify with no --choice must mint no sidecar, or the contrast below tests nothing"
+outN="$("$ORCHID_BIN" answer "$qidN" "whatever the operator wants to say")"
+assert_match "whatever the operator wants to say" "$outN" \
+  "an ABSENT sidecar is not a lost one: free text stays accepted exactly as it was before choice sets existed"
+
+# --- and the two files are minted in the order that fails CLOSED -------------
+# The gate above is built from two facts that live in two different files, and
+# `orchid notify` writes them with two separate `atomic_write` calls -- so
+# there is a window between them, and which file lands first decides what a
+# notify interrupted inside that window leaves behind. The `.question` file's
+# existence is what makes a qid ANSWERABLE; the `.choices` file's existence is
+# what GATES the answer. Question first would leave an answerable, ungated
+# question -- the declared set silently not enforced, which is the one
+# fail-open direction this whole feature exists to close and the case above
+# refuses even when the sidecar is merely unreadable. Sidecar first can only
+# ever leave a declared set whose question was never minted, which `orchid
+# answer` refuses at its first gate ("unknown question") and nothing else
+# reads.
+#
+# Asserted against the SOURCE, because the property is about a crash window:
+# every run that completes leaves both files, so no black-box assertion can
+# tell the two orders apart. Same static-lint shape tests/test_engine_claude.sh
+# uses on its adapter's instruction block, and `grep -F` so the `$rt`/`$qid`
+# in the pattern are matched as the literal text they are.
+notify_src="$REPO_ROOT/libexec/orchid-notify"
+choices_ln="$(grep -Fn 'atomic_write "$rt/answers/$qid.choices"' "$notify_src" | cut -d: -f1)"
+question_ln="$(grep -Fn 'atomic_write "$rt/answers/$qid.question"' "$notify_src" | cut -d: -f1)"
+[ -n "$choices_ln" ] && [ -n "$question_ln" ] \
+  || fail "test fixture: could not locate both runtime/answers writes in $notify_src, so the order below is untested rather than satisfied"
+[ "$choices_ln" -lt "$question_ln" ] \
+  || fail "orchid notify must write the .choices sidecar BEFORE the .question file (found .choices at line $choices_ln, .question at $question_ln) — the other order leaves an answerable, ungated question if the verb dies between the two writes"

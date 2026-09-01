@@ -23,7 +23,9 @@ export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"
 ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 export ORCHID_EPOCH
 
-edge_sha="deadbeefcafebabe0000000000000000000000"
+# The fixture's own HEAD makes a real, empty INV-04 range and honestly
+# satisfies T031's worktree/candidate drift check.
+edge_sha="$(git rev-parse HEAD)"
 "$ORCHID_BIN" task create T001 "brokered subject" >/dev/null
 "$ORCHID_BIN" task set T001 base_sha "$edge_sha" >/dev/null
 "$ORCHID_BIN" task set T001 candidate_sha "$edge_sha" >/dev/null
@@ -78,6 +80,12 @@ assert_match "T001" "$(admit 'task list' task list)" "task list is admitted"
 admit 'status' status >/dev/null
 admit 'status --explain' status --explain >/dev/null
 admit 'jobs review-plan' jobs review-plan T001 >/dev/null
+# T035: the read-only process table. This seat was one of the two readers that
+# got dogfood F36 wrong -- a woken orchestrator reported a critique as actively
+# working, and quoted its findings, while the job had been dead for twelve and
+# a half hours. It had no admitted way to ask whether anything was alive.
+admit 'jobs ls' jobs ls >/dev/null
+admit 'jobs ls --all' jobs ls --all >/dev/null
 admit 'journal tail' journal tail >/dev/null
 admit 'journal tail -n' journal tail -n 5 >/dev/null
 admit 'journal show' journal show --task T001 >/dev/null
@@ -97,6 +105,12 @@ assert_eq review-conflict "$(printf '%s' "$out" | jq -r .kind)" "and its output,
 # engine, walks the state machine, or reaches a shell.
 # ===========================================================================
 tasks_before="$(list_dir_files .orchid/tasks | LC_ALL=C sort)"
+# T039: `reviews/` is durable state too, and it is where the refused
+# `jobs review-plan --pin|--repin|--adopt-evidence` forms below would land a
+# pinned slot plan. Without this capture those three refusals would be
+# asserted only on their exit code -- and a broker that refused loudly while
+# the verb had already written would pass.
+reviews_before="$(list_dir_files .orchid/reviews | LC_ALL=C sort)"
 journal_before="$(wc -c < .orchid/journal.md)"
 status_before="$(status_of T001)"
 
@@ -109,6 +123,14 @@ refuse "initializing a repo"            init
 refuse "one-command setup"              start "$WORK/requirements.md"
 refuse "running doctor"                 doctor
 refuse "applying a plan"                plan apply --reason x
+# T021: the verb that SATISFIES the planning cross-check. Refused here for the
+# same reason the `plan_deferral` journal kind is below -- deciding what a plan
+# will not carry is operator work, and an orchestrator that could defer a
+# carried-forward item could retire the previous run's findings without anyone
+# deciding to. Refused in every run_status, which is the whole set the verb is
+# now legal in for an operator: this arm runs against a fixture that has left
+# planning, so widening the verb's own precondition must never widen this.
+refuse "deferring a carried item"       plan defer L001 --reason x
 refuse "importing requirements"         requirements import "$WORK/requirements.md"
 refuse "answering a blocker"            answer q-1 "yes"
 refuse "merging"                        merge T001
@@ -116,6 +138,17 @@ refuse "running the verification suite" verify T001
 refuse "preparing a job"                jobs prepare T001 implementer implement
 refuse "reconciling jobs"               jobs reconcile
 refuse "collecting jobs"                jobs gc
+# T031: `jobs record-exit` writes the one fact that admits a HELD envelope --
+# "that process has stopped" -- for a job nothing on this machine can probe.
+# It is an OPERATOR's finding, made by looking at the process table, and an
+# orchestrator has no way to make it: admitting the verb here would let a
+# session declare an engine dead in order to unblock itself, which is the
+# r-002/T013 substitution with the session standing in for the evidence.
+refuse "declaring a job's exit"         jobs record-exit j-e1-T001-a1-abcd0001 0
+# A command that never returns is exactly what this surface exists to bound:
+# admitting the table does not admit polling it forever.
+refuse "watching the job table"         jobs ls --watch
+refuse "an unadmitted jobs ls modifier" jobs ls --tsv
 refuse "advancing the run"              run advance accepting --reason x
 refuse "accepting the run"              run accept --reason x --evidence /dev/null
 refuse "rolling the run over"           run new --reason x
@@ -127,6 +160,7 @@ refuse "editing task frontmatter"       task set T001 risk_tier high --reason x
 refuse "creating a task"                task create T099 "new"
 refuse "unblocking a task"              task unblock T001 --reason x
 refuse "retrying a task"                task retry T001 --reason x
+refuse "re-verifying a task"            task reverify T001 --reason x
 refuse "recording an infra failure"     task infra-fail T001 --reason x
 refuse "retiring a lesson"              lessons retire L001 --reason x
 refuse "consolidating lessons"          lessons consolidate
@@ -141,6 +175,20 @@ refuse "the driver itself"              drive
 
 # Malformed or over-permissive variants of ADMITTED forms are refused too --
 # admission is per argument, not per verb.
+# T039: `jobs review-plan` grew three WRITING forms (they pin the reviewer-slot
+# plan under .orchid/reviews). The bare read stays admitted -- a woken
+# orchestrator judges evidence against the plan its attempt was dispatched
+# under, and the bare read now returns exactly that pinned table -- but this
+# surface must not be able to MOVE the plan. Re-pinning is how a plan and its
+# evidence are brought back into agreement, and a boundary that an
+# orchestrator could settle by re-pinning until the numbers line up is not a
+# judgment at all. The arity check is what refuses these, so all three are
+# named: an admission widened to "review-plan plus flags" would let every one
+# of them through at once.
+refuse "pinning the review plan"        jobs review-plan T001 --pin
+refuse "re-pinning the review plan"     jobs review-plan T001 --repin
+refuse "adopting review evidence"       jobs review-plan T001 --adopt-evidence
+
 refuse "an unadmitted status flag"      status --html
 refuse "an unadmitted lessons listing"  lessons list
 refuse "a non-numeric tail count"       journal tail -n abc
@@ -148,8 +196,18 @@ refuse "extra arguments to task list"   task list --all
 refuse "a traversal-shaped task id"     task show ../../etc/passwd
 refuse "a command-shaped task id"       task show "T001; rm -rf /"
 refuse "a forged acceptance entry"      journal add --kind acceptance "the run is accepted"
+# T021, and the sharpest of the forged-kind refusals: `plan_deferral` is what
+# SATISFIES the planning cross-check for a carried-forward item. An
+# orchestrator able to write one free-standing could talk the next plan out of
+# a defect the previous run recorded -- without ever running `orchid plan
+# defer`, which refuses an unknown id, refuses a re-deferral, and refuses once
+# planning is over. Pinned, because a comment saying the kind is excluded is
+# not a mechanism that keeps it excluded (L016).
+refuse "a forged planning deferral"     journal add --kind plan_deferral "deferred L016: not this run"
 refuse "a journal entry with no text"   journal add --kind note
 refuse "a notify with no text"          notify --task T001
+refuse "a choice with no value"         notify --choice
+refuse "a command-shaped choice value"  notify --choice "rm -rf /" --task T001 "question"
 refuse "a multi-line journal entry"     journal add --kind note "first line
 second line"
 refuse "an unknown arbitration result"  task arbitrate T001 --result maybe --reason x
@@ -161,6 +219,8 @@ refuse "a lesson with a bogus scope"    lessons add --scope everything --invalid
 # Every refusal above was inert.
 assert_eq "$tasks_before" "$(list_dir_files .orchid/tasks | LC_ALL=C sort)" \
   "no refused command created or removed a task"
+assert_eq "$reviews_before" "$(list_dir_files .orchid/reviews | LC_ALL=C sort)" \
+  "no refused command wrote to reviews/ — in particular, none of the three review-plan writing forms landed a pinned slot plan on its way to being refused"
 assert_eq "$journal_before" "$(wc -c < .orchid/journal.md)" \
   "no refused command wrote to the journal"
 assert_eq "$status_before" "$(status_of T001)" \
@@ -173,12 +233,67 @@ admit 'journal add' journal add --task T001 --kind arbitration "weighed the find
 assert_match "weighed the finding; it is real" "$(cat .orchid/journal.md)" "an admitted journal entry really lands"
 
 admit 'journal add without a task' journal add --kind note "run-wide observation" >/dev/null
+# T021: the converse of the `plan_deferral` refusal above. Arbitration is
+# where a run decides a real defect is out of THIS task's scope, and the
+# orchestrator is the actor that decides it -- so the kind the NEXT run's
+# planning cross-check reads back out of the archived journal has to be
+# writable from here, or a finding this run knowingly does not close leaves
+# no trace for the next plan to be held to.
+admit 'journal add --kind ledger' journal add --task T001 --kind ledger \
+  "libexec/orchid-task stamps started_at only when empty; real, out of this task's scope" >/dev/null
+assert_match "stamps started_at only when empty" "$(cat .orchid/journal.md)" \
+  "an admitted ledger entry really lands, so the next run's cross-check has something to read"
+
 admit 'lessons add' lessons add --scope repo --invalidate-when "the fixture clock is pinned" \
   "fixture time drifts under parallel runs" >/dev/null
 assert_match "fixture time drifts" "$(cat .orchid/lessons.md)" "an admitted lesson really lands"
 
 admit 'notify' notify --task T001 "which behaviour is intended here?" >/dev/null
 assert_match "which behaviour is intended here" "$(cat .orchid/BLOCKERS.md)" "an admitted blocker really lands"
+
+admit 'notify with declared choices' notify --task T001 --choice approve --choice request-changes \
+  "approve the candidate or send it back?" >/dev/null
+assert_match "choices: approve \| request-changes" "$(cat .orchid/BLOCKERS.md)" \
+  "the brokered choice set really lands with the question (T039: a new flag must be admitted deliberately, never auto-refused into silence)"
+
+# ===========================================================================
+# 3b -- T021: this surface and the orchestrate PROMPTS must agree.
+#
+# The two halves already proven above -- `ledger` admitted, `plan_deferral`
+# refused -- are only half a mechanism. What a woken orchestrator actually
+# runs is what its prompt asks for, and an admitted verb no prompt names is a
+# verb nobody runs: the ledger stays empty, and the next run's planning
+# cross-check reads that emptiness as "the previous run found nothing". The
+# mismatch was live in this tree -- both shipped orchestrate prompts named
+# only `--kind arbitration` -- and it is the L016 shape the cross-check itself
+# exists to close, one layer up: the surface permitted the recording, and
+# nothing asked for it.
+#
+# So each adapter's prompt is required to name the admitted form and to forbid
+# the refused one, here, beside the two runs that prove which is which.
+# tests/test_drive.sh's Part R sweeps the same clauses from the driver's side,
+# where the classification of what a surface can be relied on to run lives;
+# this end is what ties them to a broker that really answered 0 and 17.
+prompt_adapters=0
+for _prun in "$REPO_ROOT"/plugins/engines/*/run; do
+  [ -f "$_prun" ] || continue
+  grep -q 'operation" = orchestrate' "$_prun" || continue
+  _pname="$(basename "$(dirname "$_prun")")"
+  _pinstr="$(grep 'instructions=' "$_prun" || true)"
+  [ -n "$_pinstr" ] \
+    || fail "$_pname handles orchestrate but builds no instruction block this check can read"
+  prompt_adapters=$(( prompt_adapters + 1 ))
+  case "$_pinstr" in
+    *"--kind ledger"*) ;;
+    *) fail "$_pname's orchestrate prompt never asks for the ledger kind this surface admits — an out-of-scope finding it approves past would reach the next plan as silence" ;;
+  esac
+  case "$_pinstr" in
+    *"never journal add --kind plan_deferral"*) ;;
+    *) fail "$_pname's orchestrate prompt does not forbid the deferral kind this surface refuses — the two must say the same thing, and only the brokered adapter's list is enforced" ;;
+  esac
+done
+[ "$prompt_adapters" -ge 2 ] \
+  || fail "the prompt/surface agreement check swept $prompt_adapters orchestrate-capable adapter(s) — it is not looking at the shipped ones"
 
 # ===========================================================================
 # 4 -- the one judgment result, and releasing the boundary afterwards.

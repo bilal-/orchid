@@ -1,0 +1,46 @@
+{
+  "contract": 1,
+  "job_id": "j-e0-plan-a3-b764",
+  "task": "plan",
+  "operation": "critique",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "",
+  "candidate_sha": "",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Untrusted repository content could arrive pre-acknowledged because checkout-local, non-portable operator provenance is not required"
+    },
+    {
+      "severity": "high",
+      "title": "The broker allows every documented Orchid verb without argument-level rules or exclusions for privileged trust and service operations"
+    },
+    {
+      "severity": "high",
+      "title": "T002 permits direct boundary and status writes even though cross-process boundary artifacts are durable Orchid run state"
+    },
+    {
+      "severity": "medium",
+      "title": "T002 provides no structured approval truth table or explicit approval-verb requirement, leaving arbitration non-testable"
+    },
+    {
+      "severity": "medium",
+      "title": "T003 does not explicitly create or safely reuse the required epoch"
+    },
+    {
+      "severity": "medium",
+      "title": "T004 does not explicitly build a reproducible archive from the exact clean tagged commit"
+    },
+    {
+      "severity": "medium",
+      "title": "Most task verification commands use ambient bash and therefore do not prove the full suite under Bash 3.2"
+    },
+    {
+      "severity": "medium",
+      "title": "No task explicitly updates and verifies PROTOCOL.md and CLI help for the deterministic driver and judgment-boundary workflow"
+    }
+  ]
+}

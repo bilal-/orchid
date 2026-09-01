@@ -5,8 +5,20 @@ source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/hooks.sh"
+# schedule.sh only for schedule_budget_pct — the one home for "does a
+# wall-clock budget apply to this task right now, and how far into it is it".
+# `check`'s backstop escalates at 100%; `ls`'s BUDGET column renders the same
+# number continuously, so the table can never disagree with the escalation.
+source "$ORCHID_ROOT/lib/schedule.sh"
+# capability.sh owns the kernel's step-to-capability table. Prepare is where
+# a resolved actor is finally bound to an operation, so it is the routing gate.
+source "$ORCHID_ROOT/lib/capability.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
+# T035: the append-only record of jobs that are no longer outstanding, so
+# `jobs ls --all` can answer "what did this task run, in what order, and how
+# long did each take" after the fact. See history_append below.
+hist_file="$rt/jobs-history.tsv"
 sub="${1:-}"; shift || true
 
 # Moves $src into quarantine as <basename>.reason-<reason>, never clobbering
@@ -25,6 +37,37 @@ quarantine_file() {
   mv "$src" "$dest"
 }
 
+# reviews_dest <task> <attempt> <role> <operation> <hook-point> -- the free
+# durable path this job's envelope should be filed at, never clobbering a
+# sibling that is already there: on collision, appends .2, .3, ... exactly as
+# quarantine_file does. A durable reviews/<task>-a<attempt>-<role>.json that
+# already exists (a relaunch of the same attempt landing a second accepted
+# envelope -- e.g. a crash-recovery relaunch before `attempts` was bumped) is
+# forensic evidence too, and both must survive.
+#
+# `hook` op (v1-m3): filed under `hook-<point>` instead of `<role>` -- the
+# role positional carries no meaning for a hook job (engine resolution never
+# consults it; it is the config binding by point that named the engine), so it
+# must never appear in the durable filename. `hook_point` rides on the
+# manifest (recorded at prepare time), never the envelope, so this is
+# trustworthy even though reconcile's cross-check never validates a
+# `hook_point` field one way or the other.
+reviews_dest() {
+  local task="$1" attempt="$2" role="$3" op="$4" point="$5" base dest n
+  if [ "$op" = hook ]; then
+    base="$state/reviews/$task-a$attempt-hook-$point"
+  else
+    base="$state/reviews/$task-a$attempt-$role"
+  fi
+  dest="$base.json"
+  n=2
+  while [ -e "$dest" ]; do
+    dest="$base.$n.json"
+    n=$((n + 1))
+  done
+  printf '%s\n' "$dest"
+}
+
 # Kills a stuck job: prefers the process-group signal (so the whole engine
 # tree dies), but only when pgid is a real positive group id. pgid can be
 # 0/invalid (e.g. a manifest written before an engine actually started, or
@@ -37,6 +80,252 @@ kill_stuck() {
   elif [ "$pid" -gt 0 ] 2>/dev/null; then
     kill "$pid" 2>/dev/null || true
   fi
+}
+
+# THE never-started predicate: 0 iff this manifest was minted by `jobs prepare`
+# and no engine was ever spawned for it. THE one definition -- `check` reports
+# it, `gc` reaps exactly it, `prepare` refuses exactly over it, and
+# runners/orchid-drive escalates exactly it -- so the four can never drift into
+# disagreeing about which manifests are safe to retire.
+#
+# Liveness is read from the pid AND the log TOGETHER, never from the pid alone
+# (T027 rework; dogfood F29 is the reason the pid alone is not enough):
+#
+#   pid != 0            an engine was spawned and stamped. Live or dead is the
+#                       pid's own question, and `check`/`gc`'s dead-job arms
+#                       ask it with `kill -0`. Not this class.
+#   pid == 0, log EXISTS
+#                       the spawn DID happen: runners/orchid-launch creates the
+#                       log by redirecting the engine into it, and only stamps
+#                       the pid on the line after. So this is the genuine
+#                       sub-second post-spawn/pre-stamp window (or a launcher
+#                       killed inside it), and the engine MAY BE RUNNING RIGHT
+#                       NOW with no pid recorded anywhere. The manifest is the
+#                       only handle on it: retiring it would both lose that
+#                       handle and let a second engine be dispatched into the
+#                       same worktree, which is the duplicate-implementer
+#                       defect the kernel already guards against. Not this
+#                       class -- it is job_unstamped_stale's, below, which is
+#                       where that manifest eventually converges rather than
+#                       being retained forever.
+#   pid == 0, NO log    the spawn line was never reached -- a pack that
+#                       overflowed its budget, an engine binary that would not
+#                       resolve, a launcher killed before it got there. No
+#                       engine ran, none ever will, and no envelope is coming.
+#                       THIS class.
+job_never_started() {  # manifest
+  local f="$1" log
+  [ "$(jq -r '.pid // 0' "$f" 2>/dev/null || echo 1)" = 0 ] || return 1
+  # An unreadable manifest falls back to `/`, which exists -- i.e. to the
+  # answer "not this class", so a manifest nothing can parse is never reaped
+  # and never refused over. Every fallback here points the same way.
+  log="$(jq -r '.log // ""' "$f" 2>/dev/null || echo /)"
+  [ -z "$log" ] || [ ! -e "$log" ] || return 1
+  return 0
+}
+
+# THE OTHER unstamped class, and the one that used to be kept FOREVER: pid 0
+# with a log whose last write is more than <stall_s> seconds ago.
+#
+# job_never_started's note explains why a log-backed pid-0 manifest cannot
+# simply be reaped: an engine may be behind it with its pid recorded nowhere.
+# But "may be" is not "is", and retention alone was never a coherent answer to
+# it (T027 rework). The manifest was retained at every age while
+# runners/orchid-drive's drive_job_outstanding read the very same manifest as
+# "no job" and relaunched over it on the next pass -- so the duplicate engine
+# the retention was supposed to prevent happened anyway, and the manifest that
+# was supposed to be an operator's handle just accumulated. Both halves are
+# fixed together: the driver now DEFERS to this manifest while it is fresh
+# (no duplicate), and this predicate is what eventually ends it (no forever).
+#
+# The bound is `stall_minutes`, read from the LOG's mtime, and it is
+# deliberately the same test `check` already applies to a job that DID stamp a
+# pid: no write to the log for that long is the kernel's existing standard for
+# "this is not working", and there it is grounds for a KILL. Applying a
+# strictly weaker consequence (stop waiting on it, report it, retire the
+# manifest) to a job that never even got far enough to be killable is the
+# conservative side of that line, not a new risk. What cannot be done for this
+# class is the kill itself: there is no pid to signal. A live-but-silent engine
+# would therefore survive its manifest -- which is why the log is deliberately
+# NOT removed with it (see gc_reap_unlaunched), so the evidence outlives the
+# handle.
+job_unstamped_stale() {  # manifest now stall_s
+  local f="$1" now="$2" stall_s="$3" log log_mtime
+  [ "$(jq -r '.pid // 0' "$f" 2>/dev/null || echo 1)" = 0 ] || return 1
+  # Same fail-closed fallbacks as job_never_started: a manifest nothing can
+  # parse answers "not this class" to every question the kernel asks about it.
+  log="$(jq -r '.log // ""' "$f" 2>/dev/null || echo)"
+  [ -n "$log" ] && [ -e "$log" ] || return 1
+  log_mtime="$(file_mtime "$log")"
+  [ "$log_mtime" -gt 0 ] || return 1
+  [ $(( now - log_mtime )) -gt "$stall_s" ] || return 1
+  return 0
+}
+
+# THE reapable-unlaunched predicate: 0 iff this manifest never stamped a pid
+# AND is past the point where anything can still be waiting on it -- either
+# because no engine was ever spawned (job_never_started) or because the one
+# that may have been has not written a line in `stall_minutes`
+# (job_unstamped_stale). `gc` reaps exactly this, `prepare` refuses exactly
+# this, and runners/orchid-drive escalates exactly this, so the refusal can
+# only ever name something the reaper will clear on its own.
+job_unlaunched_reapable() {  # manifest now stall_s
+  job_never_started "$1" || job_unstamped_stale "$1" "$2" "$3"
+}
+
+# THE POSITIVE terminal evidence a manifest can carry: 0 iff something on disk
+# RECORDS THAT THIS JOB ENDED, as opposed to merely failing to show that it is
+# still going. Two writers, both in runners/orchid-launch, and neither record
+# can exist before the event it reports:
+#
+#   $rt/exits/<job_id>   the ENGINE's own exit status. The launcher wraps the
+#                        engine in a subshell that outlives it by exactly one
+#                        write (T040), so this file exists BECAUSE the process
+#                        ended -- including when `jobs check` killed it, since
+#                        that subshell traps the group TERM in order to finish
+#                        its wait and record the status.
+#   .launch_exit         the LAUNCHER's own non-zero exit from before the spawn
+#                        line (T027): a record that no engine was ever started.
+#
+# SILENCE IS NOT ON THAT LIST, and that is the whole point (T031 attempt-5
+# rework). "Nothing has been written to the log for `stall_minutes`" is an
+# INFERENCE FROM AN ABSENCE; these two are facts written by a process about
+# itself. For a job that stamped a pid the distinction rarely matters, because
+# `kill -0` can ask the operating system directly. For one that never stamped a
+# pid there is nothing to ask and nothing to signal, so the inference is the
+# only other thing on offer -- and taking it as an exit is exactly how a
+# live-but-silent engine (a long model call writes nothing for many minutes)
+# has its mid-flight report filed as final while it goes on committing.
+job_exit_recorded() {  # manifest
+  local f="$1" jid
+  jid="$(jq -r '.job_id // empty' "$f" 2>/dev/null || echo)"
+  if [ -n "$jid" ] && [ -e "$rt/exits/$jid" ]; then return 0; fi
+  [ -n "$(jq -r '.launch_exit // empty' "$f" 2>/dev/null || echo)" ]
+}
+
+# THE LIVENESS QUESTION `reconcile` ASKS, in FOUR answers rather than two
+# (T031). An envelope is a COMPLETION report, so filing one is a claim about a
+# process that has finished -- and for a manifest that never stamped a pid,
+# "has it finished" has a third answer which is neither yes nor not-yet.
+#
+#   running     a stamped pid `kill -0` still answers for.
+#   exited      it is over, and something SAYS SO: a stamped pid that is gone
+#               (the kernel itself is the witness), or -- with pid 0 -- the
+#               positive record job_exit_recorded reads, or NO LOG AT ALL. The
+#               last of those is a fact about the launcher rather than a
+#               timeout: it creates the log by redirecting the spawn into it, so
+#               an absent log means the spawn line was never reached, no engine
+#               ran and none ever will (job_never_started -- the same reading
+#               `gc`, `prepare` and the driver already give that manifest, and
+#               an absence that no amount of waiting can turn into anything
+#               else).
+#   starting    pid 0 with a log written to inside `stall_minutes`: the
+#               launcher's post-spawn/pre-stamp window. An engine is producing
+#               output with its pid recorded nowhere, so it can still commit.
+#               Deliberately, exactly `runners/orchid-drive`'s
+#               drive_job_outstanding, which counts the same manifest as a live
+#               job -- the two must agree about one manifest, or the driver
+#               waits on a job whose envelope reconcile has already filed as
+#               done.
+#   unresolved  pid 0, a log, and silence past `stall_minutes`, with no exit
+#               recorded anywhere. NOT AN EXIT (see job_exit_recorded): there is
+#               no pid to probe and none to signal, so nothing on this machine
+#               can decide whether an engine is still running in that worktree.
+#               reconcile answers a question it cannot decide by declining to
+#               answer it, never by guessing the admissible way round; the
+#               driver's escalation sweep is what bounds that refusal.
+#
+# An unreadable manifest answers `starting`, the fail-closed direction every
+# other predicate in this file takes: never reaped, never refused over, never
+# reconciled out from under a process that might be behind it. In practice
+# reconcile cannot reach this arm with one, having just parsed `.job_id` out of
+# the very same file to match it to the envelope.
+job_liveness() {  # manifest now stall_s -> running|exited|starting|unresolved
+  local f="$1" now="$2" stall_s="$3" pid
+  pid="$(jq -r '.pid // 0' "$f" 2>/dev/null || echo 0)"
+  case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
+  if [ "$pid" -gt 0 ]; then
+    # `kill -0 0` would signal our OWN process group, so pid 0 never reaches
+    # this probe.
+    if kill -0 "$pid" 2>/dev/null; then echo running; else echo exited; fi
+    return 0
+  fi
+  if job_exit_recorded "$f" || job_never_started "$f"; then echo exited; return 0; fi
+  if job_unstamped_stale "$f" "$now" "$stall_s"; then echo unresolved; return 0; fi
+  echo starting
+}
+
+# Reaps ONE reapable-unlaunched manifest (job_unlaunched_reapable above), if it
+# is older than <threshold> seconds. Shared verbatim by BOTH of `gc`'s modes
+# below -- ordinary `gc` (which reaps this class too, T027) and the explicit
+# `--reap-prepared` pass -- so the two can never drift.
+#
+# Age is measured off the manifest FILE's own mtime, never `started_at`: an
+# unlaunched manifest's started_at is always 0 (nothing but the pid stamp ever
+# sets it), so it carries no other signal for "how long has this sat here".
+# <threshold> is the CALLER's retention policy and nothing else -- there is no
+# floor hidden under it (T027 rework; dogfood F41 is an operator asking for
+# `--older-than-s 0` twice, on two separate runs, and being quietly given
+# something else). The safety that used to be spelled as a floor is in the
+# predicate instead, where it belongs: `stall_s` is what decides whether a
+# manifest is a candidate AT ALL, and a caller that needs a launcher-in-flight
+# margin on the never-started half passes its own threshold for it (the driver
+# does exactly that).
+#
+# Same suspect-fields validation as the dead-job reap (job_id must match the
+# exact shape `jobs prepare` mints) -- a hand-edited or corrupt job_id is
+# quarantined as `.reason-gc-suspect` and nothing it names is removed, since
+# job_id is what builds the `rm -rf` targets. `$rt/exits/<job_id>` is cleared
+# with the rest of the litter for symmetry with the dead-job reap; an
+# unlaunched job never wrote one, so in practice that path is simply absent.
+#
+# THE LOG IS NEVER REMOVED HERE, unlike the dead-job reap. A never-started job
+# never opened one -- that absence is what put it in the class. An unstamped
+# stale one has a log that is the only surviving record of whatever did get
+# spawned, and possibly the only thing still growing if that engine is alive
+# after all; deleting it would destroy the evidence at the exact moment the
+# handle goes away.
+gc_reap_unlaunched() {  # manifest now threshold stall_s
+  local f="$1" now="$2" threshold="$3" stall_s="$4"
+  local mtime age job_id base suspect reason
+  if job_never_started "$f"; then
+    reason=gc-prepared
+  elif job_unstamped_stale "$f" "$now" "$stall_s"; then
+    reason=gc-unstamped
+  else
+    return 0                                # spawned, or spawning: never reaped
+  fi
+  mtime="$(file_mtime "$f")"
+  age=$(( now - mtime ))
+  [ "$age" -gt "$threshold" ] || return 0   # too young: untouched
+  job_id="$(jq -r .job_id "$f")"
+  # A herestring, never `echo ... | grep -q`: see the salvage scan below for
+  # the SIGPIPE-under-pipefail argument (T016's sweep of the class T010
+  # named). Here the cost is a healthy manifest quarantined as gc-suspect.
+  suspect=0
+  grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' <<<"$job_id" || suspect=1
+  if [ "$suspect" -eq 1 ]; then
+    base="$(basename "$f")"
+    quarantine_file "$f" gc-suspect
+    echo "gc-skip $base (suspect fields)"
+    return 0
+  fi
+  # THE SAME DELIVERY HOLD-BACK THE DEAD-JOB REAP MAKES (T022), for the same
+  # reason and by the same key. It can only ever matter for the `gc-unstamped`
+  # half -- that job WAS spawned, so it can write an envelope, and it can do it
+  # between this pass's `reconcile` and this reap. Reaping the manifest then
+  # destroys the delivery outright, because reconcile matches an envelope to
+  # its job THROUGH the manifest. A never-started job cannot reach this arm
+  # with a spool entry (nothing ran to write one), so for that half this is
+  # simply never true.
+  if [ -e "$spool_dir/$job_id.json" ]; then
+    echo "gc-pending $job_id (envelope awaiting reconcile)"
+    return 0
+  fi
+  history_append "$f" "$reason"
+  quarantine_file "$f" "$reason"
+  rm -rf "$rt/packs/$job_id" "$rt/requests/$job_id.json" "$rt/exits/$job_id"
+  echo "$reason $job_id"
 }
 
 # Parses an ISO-8601 UTC timestamp (the exact shape `orchid-task`'s now()
@@ -52,9 +341,679 @@ iso_to_epoch() {
   echo 0
 }
 
+# job_exit_code <job_id> -- the engine's own exit status, as recorded by
+# runners/orchid-launch when the job finally exited, or non-zero exit (and no
+# output) when there is no such record. Nothing else on disk carries it: the
+# launcher returns as soon as it has spawned, so without that recording an
+# envelope-less job's exit status is simply gone by the time anyone asks.
+job_exit_code() {
+  local f="$rt/exits/$1" v
+  [ -f "$f" ] || return 1
+  v="$(head -n1 "$f" 2>/dev/null | tr -d '[:space:]')"
+  case "$v" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$v"
+}
+
+# hb_cpu_flat <log> <window-s> <floor-s> -- 0, plus one
+# "<elapsed> <cpu-then> <cpu-now>" line, when the job's own heartbeat lines
+# show it burning LESS than <floor-s> of CPU across the last <window-s>
+# seconds of heartbeats. Non-zero (silent) otherwise, including "not enough
+# heartbeat history to judge yet".
+#
+# WHY (dogfood finding F35, second half). One attempt kept sending heartbeats
+# while its CPU time stayed flat -- 0.85s at 05:18:12Z and 1.07s at 05:23:42Z,
+# roughly two tenths of a second of CPU across five minutes of wallclock --
+# and then exited with no envelope. `jobs check` has a `stalled` status and it
+# never fired, because the process was ALIVE. That is the whole gap:
+# LIVENESS WAS CHECKED, PROGRESS WAS NOT, and the heartbeats were lying.
+#
+# The signal was already on disk. lib/heartbeat.sh has carried a `cpu` field
+# (`ps -o time=`, cumulative CPU) on every heartbeat line since it was
+# written, explicitly so a future CPU-delta guard would have the raw numbers
+# to consume without that function having to make the judgment itself (see
+# its own ACCEPTED TRADE-OFF note, and kernel.md's spinning row). This is
+# that consumer.
+#
+# OPT-IN, and `cpu_stall_min_s` is the switch: the default is 0, which
+# disables the arm outright. F35's own follow-up RETRACTED CPU as a sole
+# progress signal: a legitimate implement job sat at ~9 seconds of CPU
+# across 40 minutes -- on CPU alone indistinguishable from the dead attempt
+# above -- and was working the whole time, with 24 modified files in its
+# worktree to prove it. An engine whose wallclock is dominated by waiting on
+# vendor API responses burns almost nothing, so no floor separates the two
+# cases; and the worktree corroboration that report suggested cannot rescue
+# the signal for review/critique/hook jobs, which run under a read-only
+# policy and legitimately never touch the worktree for their whole run. A
+# kill on this arm discards work the engine was already paid for -- the
+# exact loss this task exists to prevent -- while a missed stall costs only
+# wallclock, which the timeout arm still bounds. An operator who knows their
+# engines' CPU profile opts in by setting a floor above zero.
+#
+# A NEGATIVE delta is UNKNOWN, never no-progress: `ps -o time=` is
+# cumulative per-PID, and pid reuse hands a heartbeat a stranger's counter,
+# which is ordinary, not exotic. Unknown must not kill, so a counter that
+# went backwards reports nothing rather than judging a number that no
+# longer describes one process.
+#
+# The window is anchored on the LAST HEARTBEAT, not on `now`: the two numbers
+# compared then come from the same clock the engine's own log was written
+# with, so nothing here depends on the checker and the job agreeing about the
+# time. A job whose heartbeats stopped entirely is the log-mtime stall arm's
+# case, not this one, and that arm is evaluated first.
+hb_cpu_flat() {
+  local log="$1" window="$2" floor="$3"
+  [ -f "$log" ] || return 1
+  awk -v window="$window" -v floor="$floor" '
+    function alldig(s,   i, c) {
+      if (length(s) == 0) return 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c < "0" || c > "9") return 0
+      }
+      return 1
+    }
+    # days_from_civil: the standard proleptic-Gregorian day count, so this
+    # needs no mktime (not in every awk) and no date(1) fork per line.
+    function daynum(y, m, d,   yy, era, yoe, doy, doe) {
+      yy = y
+      if (m <= 2) yy = y - 1
+      era = int((yy >= 0 ? yy : yy - 399) / 400)
+      yoe = yy - era * 400
+      doy = int((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1
+      doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+      return era * 146097 + doe - 719468
+    }
+    # Exactly the shape lib/heartbeat.sh stamps: YYYY-MM-DDTHH:MM:SSZ, UTC.
+    # Anything else returns -1 and its line is ignored rather than guessed at.
+    function ts2epoch(s,   y, mo, d, hh, mi, ss) {
+      if (length(s) != 20) return -1
+      if (substr(s, 5, 1) != "-" || substr(s, 8, 1) != "-") return -1
+      if (substr(s, 11, 1) != "T" || substr(s, 20, 1) != "Z") return -1
+      if (substr(s, 14, 1) != ":" || substr(s, 17, 1) != ":") return -1
+      y = substr(s, 1, 4); mo = substr(s, 6, 2); d = substr(s, 9, 2)
+      hh = substr(s, 12, 2); mi = substr(s, 15, 2); ss = substr(s, 18, 2)
+      if (!alldig(y) || !alldig(mo) || !alldig(d)) return -1
+      if (!alldig(hh) || !alldig(mi) || !alldig(ss)) return -1
+      return daynum(y + 0, mo + 0, d + 0) * 86400 \
+             + (hh + 0) * 3600 + (mi + 0) * 60 + (ss + 0)
+    }
+    # ps -o time= is [[HH:]MM:]SS on GNU and MM:SS.ss on BSD; both are read
+    # here, and a "?" (the placeholder heartbeat.sh writes when ps itself
+    # failed) is rejected, so a run of unreadable samples is treated as no
+    # evidence rather than as zero CPU.
+    function cpu2s(s,   parts, k, cnt, v, dot) {
+      if (length(s) == 0) return -1
+      cnt = split(s, parts, ":")
+      v = 0
+      for (k = 1; k <= cnt; k++) {
+        dot = index(parts[k], ".")
+        if (dot == 0) {
+          if (!alldig(parts[k])) return -1
+        } else {
+          if (!alldig(substr(parts[k], 1, dot - 1))) return -1
+          if (!alldig(substr(parts[k], dot + 1))) return -1
+        }
+        v = v * 60 + (parts[k] + 0)
+      }
+      return v
+    }
+    {
+      if (substr($0, 1, 4) != "[hb ") next
+      if (NF != 7) next
+      stamp = $2
+      if (substr(stamp, length(stamp), 1) != "]") next
+      e = ts2epoch(substr(stamp, 1, length(stamp) - 1))
+      if (e < 0) next
+      c = cpu2s($7)
+      if (c < 0) next
+      seen++; AT[seen] = e; CPU[seen] = c
+    }
+    END {
+      if (seen < 2) exit 1
+      cutoff = AT[seen] - window
+      anchor = 0
+      for (k = seen; k >= 1; k--) {
+        if (AT[k] <= cutoff) { anchor = k; break }
+      }
+      if (anchor == 0) exit 1
+      delta = CPU[seen] - CPU[anchor]
+      # A counter that went BACKWARDS no longer describes the same process
+      # (pid reuse; see the function header). That is UNKNOWN, not
+      # no-progress -- report nothing rather than fall through to a kill.
+      if (delta < 0) exit 1
+      if (delta >= floor + 0) exit 1
+      printf "%d %s %s\n", AT[seen] - AT[anchor], CPU[anchor], CPU[seen]
+      exit 0
+    }
+  ' "$log"
+}
+
+# A jq `def blank` prepended to every program below that builds one of these
+# tab-separated rows. It exists because NO CELL MAY EVER BE EMPTY: the readers
+# split on a tab, tab is IFS whitespace, and a run of IFS whitespace delimits
+# ONE field -- so a single empty cell silently shifts every column after it
+# left by one, and the row still parses. jq's `//` does not prevent that: it
+# is the alternative operator, taking its right side only when the left is
+# `null` or `false`, and an empty STRING is neither. `(.launched_by//"")` on a
+# manifest minted before this task (which has no such key) yields "" and the
+# key was never the problem; `{"role": ""}` yields "" too. So every string
+# cell goes through `blank` and renders `-`, which is also what the operator
+# should see in the column.
+JOBS_JQ_BLANK='def blank: if (. // "") == "" then "-" else . end;'
+
+# history_append <manifest> <outcome> -- record a job that has just stopped
+# being outstanding, one TSV line appended to runtime/jobs-history.tsv.
+#
+# The manifest is the ONLY place a job's identity, engine, launcher and start
+# time live, and both paths out of the jobs dir destroy it: `reconcile` files
+# the envelope and deletes the manifest, `gc` quarantines it. So the line is
+# written from the manifest while it is still on disk, and it is written at
+# exactly the two sites that remove one. Without it `jobs ls --all` could name
+# which envelopes landed but never how long any of them took -- the durable
+# envelope carries no timing at all.
+#
+# Best-effort by construction (`|| true`): this is a report surface, and a
+# full disk or an unreadable manifest must never take down `reconcile`, which
+# is the verb that lands an engine's actual work. Never called for a
+# `gc-suspect` manifest -- those have already failed field validation, and
+# copying hand-edited fields into a history file every later render reads is
+# how a forged manifest would reach an operator's terminal.
+#
+# Runtime-only and append-only: it lives under `.orchid/runtime/` (gitignored,
+# machine-local, exactly like the manifests it summarizes), nothing reads it
+# but `jobs ls --all`, and it is one short line per job for the life of a run
+# -- so no rotation, and no epoch fence for the same reason the whole `gc` arm
+# has none.
+history_append() {
+  local mf="$1" outcome="$2" now
+  now="$(date +%s)"
+  jq -r --argjson now "$now" --arg outcome "$outcome" \
+    "$JOBS_JQ_BLANK"'
+     select((.job_id//"") != "")
+     | [$now, .job_id, (.task|blank), (.attempt//0), (.role|blank), (.operation|blank),
+        (.engine|blank), (.pid//0), (.launched_by|blank), (.started_at//0),
+        (if ((.started_at//0) > 0) then ($now - (.started_at//0)) else -1 end),
+        ($outcome|blank), (.log|blank)] | @tsv' "$mf" 2>/dev/null >> "$hist_file" || true
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# `jobs ls` (T035) -- the operator's process table for the run.
+#
+# Every column below is already persisted in the job manifest, so this is a
+# rendering gap rather than a data-modelling one. Two properties are why it is
+# a renderer and not a dump of those fields:
+#
+#   LIVENESS IS COMPUTED, NEVER READ. A manifest records the pid its launcher
+#   stamped and nothing ever unstamps it: the process can be gone for hours
+#   and the file still reads exactly as it did while it was running. So every
+#   row uses the same predicates as `jobs check`: a stamped pid is probed with
+#   `kill -0`; pid 0 with no log is `never-started`, with a fresh log is
+#   `prepared`, and with a stale log is `unstamped`. Dogfood F29 was 73
+#   never-launched manifests rendering as 73 identical `prepared` lines; the
+#   only way to find they were corpses was cat-ing manifests and noticing
+#   `pid: 0` with no log.
+#
+#   AGE SITS BESIDE LIVENESS. Dogfood F36: a session told its operator a
+#   critique was "actively working" and quoted its recent findings while that
+#   job had been dead for twelve and a half hours. The findings were real, and
+#   simply stale. The operator and an assistant reading the same log both
+#   concluded the run was healthy from its CONTENT while the TIMESTAMP said
+#   otherwise -- so AGE (how long since the job last wrote anything) is a
+#   column on every row, and a job that has gone quiet past `stall_minutes`,
+#   or died without leaving an envelope, additionally gets a warning line on
+#   stderr that no amount of plausible log content can drown out.
+#
+# Read-only, and deliberately un-fenced (no epoch, no verb lock), like `jobs
+# review-plan`: it reports state, never mutates it. In particular it never
+# kills -- `jobs check` owns the stall/timeout kill, and a view an operator
+# polls must be safe to run at any moment, including from a second terminal
+# while a pass is mid-flight. That is also why a silent-but-alive job still
+# reads `running` here rather than borrowing `check`'s `stalled`: `stalled` in
+# this kernel means "reported AND killed", and this verb does neither.
+# ---------------------------------------------------------------------------
+
+# The literal tab these rows are separated by, so `sort -t` and `IFS=` never
+# have to spell it inline.
+JOBS_TAB="$(printf '\t')"
+
+# fmt_dur <seconds> -- a duration a human reads at a glance (`45s`, `12m30s`,
+# `3h04m`, `2d03h`). Anything not a whole non-negative number of seconds --
+# including the -1 the row producer uses for "unknown" -- renders as `-`,
+# never as a misleading 0.
+fmt_dur() {
+  local s="${1:-}"
+  case "$s" in
+    ''|-*|*[!0-9]*) printf -- '-\n'; return 0 ;;
+  esac
+  if [ "$s" -lt 60 ]; then
+    printf '%ds\n' "$s"
+  elif [ "$s" -lt 3600 ]; then
+    printf '%dm%02ds\n' "$(( s / 60 ))" "$(( s % 60 ))"
+  elif [ "$s" -lt 86400 ]; then
+    printf '%dh%02dm\n' "$(( s / 3600 ))" "$(( s % 3600 / 60 ))"
+  else
+    printf '%dd%02dh\n' "$(( s / 86400 ))" "$(( s % 86400 / 3600 ))"
+  fi
+}
+
+# jobs_rows <show-all> -- one RAW row per job, tab-separated, numeric fields
+# left as numbers (-1 meaning "unknown"), prefixed by a sort key:
+#
+#   key job task role op attempt engine pid state age elapsed pct launcher log
+#
+# One producer, three consumers (the table, the --tsv feed, and the warnings
+# pass), so a warning can never describe a different job from the row above
+# it. The key is the job's start time, falling back to the last thing that
+# touched it, so the table reads oldest-first: the order jobs actually ran in.
+jobs_rows() {
+  local show_all="${1:-0}" now stall_s f raw
+  local jid jtask jrole jop jatt jengine jpid jstarted jlog jby jstate
+  local age_src age elapsed pct tf key
+  local t_status t_started t_budget
+  now="$(date +%s)"
+  stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+  for f in "$jobs_dir"/*.json; do
+    [ -e "$f" ] || continue
+    # `blank` on every string cell, and `select` rather than a `//""` on
+    # job_id: an empty leading cell is stripped as leading IFS whitespace
+    # instead of shifting, which would make the TASK read as the JOB. A
+    # manifest with no job_id has nothing this table can identify, so it is
+    # dropped here and `[ -n "$raw" ]` below is what notices.
+    raw="$(jq -r "$JOBS_JQ_BLANK"'
+             select((.job_id//"") != "")
+             | [.job_id,(.task|blank),(.role|blank),(.operation|blank),(.attempt//0),
+                (.engine|blank),(.pid//0),(.started_at//0),(.log|blank),(.launched_by|blank)]
+             | @tsv' "$f" 2>/dev/null)" || raw=""
+    [ -n "$raw" ] || continue
+    IFS="$JOBS_TAB" read -r jid jtask jrole jop jatt jengine jpid jstarted jlog jby <<< "$raw"
+    [ -n "${jid:-}" ] || continue
+    case "$jpid" in ''|*[!0-9]*) jpid=0 ;; esac
+    case "$jstarted" in ''|*[!0-9]*) jstarted=0 ;; esac
+
+    # THE COMPUTED LIVENESS. `delivered` is the one non-obvious arm: a job
+    # that exited with its envelope already written and not yet drained has
+    # not failed, it is one `jobs reconcile` away from being filed (the same
+    # case `jobs gc` holds a manifest back for), so calling it `dead` would
+    # send an operator escalating a delivery that arrived.
+    if [ "$jpid" -le 0 ]; then
+      if job_never_started "$f"; then
+        jstate=never-started
+      elif job_unstamped_stale "$f" "$now" "$stall_s"; then
+        jstate=unstamped
+      else
+        # A log-backed pid-0 manifest inside the stall bound is the real
+        # post-spawn/pre-stamp window. The engine may still be running, so
+        # this is deliberately not reported as never-started or reaped.
+        jstate=prepared
+      fi
+    elif kill -0 "$jpid" 2>/dev/null; then
+      jstate=running
+    else
+      jstate=dead
+      case "$jid" in
+        */*|*..*) ;;   # never build a path out of an unvalidated job_id
+        *) if [ -e "$spool_dir/$jid.json" ]; then jstate=delivered; fi ;;
+      esac
+    fi
+
+    # AGE is time since the job last WROTE, which is the log's mtime -- the
+    # signal that was sitting on disk, unlooked-at, through both multi-hour
+    # F36 stalls. A never-started job has no log, so its manifest's own mtime
+    # answers the only question there is about it: how long it has sat there.
+    # `!= -` because that is what the producer above renders an absent log as;
+    # a bare `-n` would stat a relative path named `-` in whatever directory
+    # the operator happened to run this from.
+    age_src=0
+    if [ "$jlog" != - ] && [ -e "$jlog" ]; then age_src="$(file_mtime "$jlog")"; fi
+    if [ "$age_src" -le 0 ]; then age_src="$(file_mtime "$f")"; fi
+    if [ "$age_src" -gt 0 ]; then
+      age=$(( now - age_src ))
+      if [ "$age" -lt 0 ]; then age=0; fi
+    else
+      age=-1
+    fi
+
+    if [ "$jstarted" -gt 0 ]; then
+      elapsed=$(( now - jstarted ))
+      if [ "$elapsed" -lt 0 ]; then elapsed=0; fi
+    else
+      elapsed=-1
+    fi
+
+    # BUDGET through lib/schedule.sh's schedule_budget_pct -- the same
+    # predicate `check` reports budget-exceeded from, never a second copy of
+    # the arithmetic, so the column reads >=100% for exactly the tasks `check`
+    # escalates. It is a TASK-level fact, so a task with several outstanding
+    # jobs shows the same percentage on each of its rows.
+    pct=-1
+    tf="$state/tasks/$jtask.md"
+    if [ -f "$tf" ]; then
+      t_status="$(fm_get "$tf" status)"
+      t_started="$(fm_get "$tf" started_at)"
+      t_budget="$(fm_get "$tf" wallclock_budget_s)"
+      pct="$(schedule_budget_pct "$t_status" "$(iso_to_epoch "$t_started")" "$t_budget" "$now")" \
+        || pct=-1
+      case "$pct" in ''|*[!0-9]*) pct=-1 ;; esac
+    fi
+
+    key="$jstarted"
+    if [ "$key" -le 0 ]; then key="$age_src"; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$key" "$jid" "$jtask" "${jrole:--}" "${jop:--}" "$jatt" "${jengine:--}" \
+      "$jpid" "$jstate" "$age" "$elapsed" "$pct" "${jby:--}" "${jlog:--}"
+  done
+
+  # --all: everything that is no longer outstanding, from the history file
+  # both removal paths write. ELAPSED is real here (it was measured against
+  # the manifest's own started_at at the moment the job left the jobs dir);
+  # BUDGET is not carried, since a budget describes a task's attempt now, not
+  # a finished job then.
+  if [ "$show_all" -eq 1 ] && [ -f "$hist_file" ]; then
+    local h_fin h_jid h_task h_att h_role h_op h_eng h_pid h_by h_started
+    local h_elapsed h_outcome h_log h_age h_key
+    while IFS="$JOBS_TAB" read -r h_fin h_jid h_task h_att h_role h_op h_eng \
+        h_pid h_by h_started h_elapsed h_outcome h_log; do
+      [ -n "${h_jid:-}" ] || continue
+      case "$h_fin" in ''|*[!0-9]*) h_fin=0 ;; esac
+      case "$h_started" in ''|*[!0-9]*) h_started=0 ;; esac
+      case "${h_elapsed:-}" in ''|-*|*[!0-9]*) h_elapsed=-1 ;; esac
+      h_age=-1
+      if [ "$h_fin" -gt 0 ]; then
+        h_age=$(( now - h_fin ))
+        if [ "$h_age" -lt 0 ]; then h_age=0; fi
+      fi
+      h_key="$h_started"
+      if [ "$h_key" -le 0 ]; then h_key="$h_fin"; fi
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$h_key" "$h_jid" "$h_task" "${h_role:--}" "${h_op:--}" "${h_att:-0}" \
+        "${h_eng:--}" "${h_pid:-0}" "${h_outcome:--}" "$h_age" "$h_elapsed" \
+        -1 "${h_by:--}" "${h_log:--}"
+    done < "$hist_file"
+  fi
+  return 0
+}
+
+# jobs_display <with-header> -- raw rows on stdin, display rows on stdout:
+# durations formatted, an absent budget rendered `-` rather than -1.
+jobs_display() {
+  local with_header="${1:-1}" budget_cell
+  local jid jtask jrole jop jatt jeng jpid jstate age elapsed pct jby jlog
+  if [ "$with_header" -eq 1 ]; then
+    printf 'JOB\tTASK\tROLE\tOP\tATT\tENGINE\tPID\tSTATE\tAGE\tELAPSED\tBUDGET\tLAUNCHER\tLOG\n'
+  fi
+  while IFS="$JOBS_TAB" read -r jid jtask jrole jop jatt jeng jpid jstate \
+      age elapsed pct jby jlog; do
+    [ -n "${jid:-}" ] || continue
+    if [ "${pct:--1}" -ge 0 ] 2>/dev/null; then budget_cell="$pct%"; else budget_cell="-"; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$jid" "$jtask" "$jrole" "$jop" "$jatt" "$jeng" "$jpid" "$jstate" \
+      "$(fmt_dur "$age")" "$(fmt_dur "$elapsed")" "$budget_cell" "$jby" "$jlog"
+  done
+  return 0
+}
+
+# jobs_table -- display rows on stdin, column-aligned text on stdout. awk
+# rather than column(1): `column -t` is not in POSIX, its two implementations
+# disagree about empty fields, and a process table that renders differently
+# on the operator's laptop and in the pump log is worse than an unaligned one.
+jobs_table() {
+  awk -F'\t' '
+    {
+      rows++
+      for (i = 1; i <= NF; i++) {
+        cell[rows, i] = $i
+        if (length($i) > w[i]) w[i] = length($i)
+      }
+      if (NF > cols) cols = NF
+    }
+    END {
+      for (r = 1; r <= rows; r++) {
+        line = ""
+        for (i = 1; i <= cols; i++) {
+          if (i < cols) line = line sprintf("%-" w[i] "s  ", cell[r, i])
+          else line = line cell[r, i]
+        }
+        sub(/ +$/, "", line)
+        print line
+      }
+    }
+  '
+}
+
+# jobs_warnings -- raw rows on stdin, operator warnings on STDERR.
+#
+# Stderr, not stdout, for the same reason `orchid status`'s split-brain and
+# stale-checkout warnings are: stdout here is a table a script may read, and a
+# warning spliced into it would corrupt exactly the capture an operator most
+# needs to trust. They are the part of this feature that closes F36 -- the
+# failure there was not that the operator lacked data, it was that the data
+# they had (recent, real findings) read as health while the timestamp said the
+# job had been dead half a day. A row is easy to skim past; a line that says
+# so in words is not.
+jobs_warnings() {
+  local stall_s label seen_budget=" "
+  local jid jtask jrole jop jatt jeng jpid jstate age elapsed pct jby jlog
+  stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+  while IFS="$JOBS_TAB" read -r jid jtask jrole jop jatt jeng jpid jstate \
+      age elapsed pct jby jlog; do
+    [ -n "${jid:-}" ] || continue
+    # Everything needed to decide what to do next, on the line itself: which
+    # job, whose work, which engine, which process, and who started it -- a
+    # drive pass and an operator's own hand-run launch want different
+    # responses, and during the wasiyyat run the operator could not tell them
+    # apart at all.
+    label="$jid ($jtask $jrole/$jop a$jatt, $jeng, pid $jpid, by $jby)"
+    case "$jstate" in
+      dead)
+        # F36 exactly: pid gone, no envelope. Nothing else will notice on its
+        # own until a driver pass runs, and in a semi-attended run that pass
+        # may be the thing that died.
+        echo "WARNING: job $label is dead and left no envelope — it ran $(fmt_dur "$elapsed") and last wrote $(fmt_dur "$age") ago; escalate or relaunch (log: $jlog)" >&2 ;;
+      never-started)
+        if [ "${age:-0}" -gt "$stall_s" ] 2>/dev/null; then
+          echo "WARNING: job $label was prepared $(fmt_dur "$age") ago and never started (pid 0) — nothing is running for it (clear with: orchid jobs gc --reap-prepared)" >&2
+        fi ;;
+      unstamped)
+        echo "WARNING: job $label spawned but never stamped a pid and last wrote $(fmt_dur "$age") ago — nothing is visibly progressing; orchid jobs gc will retire the manifest but keep its log (log: $jlog)" >&2 ;;
+      running)
+        if [ "${age:-0}" -gt "$stall_s" ] 2>/dev/null; then
+          echo "WARNING: job $label is alive but last wrote $(fmt_dur "$age") ago — past the $(fmt_dur "$stall_s") stall threshold (log: $jlog)" >&2
+        fi ;;
+    esac
+    if [ "${pct:--1}" -ge 100 ] 2>/dev/null; then
+      case "$seen_budget" in
+        *" $jtask "*) ;;   # one escalation per task, not one per manifest
+        *) seen_budget="$seen_budget$jtask "
+           echo "WARNING: task $jtask is at $pct% of its wall-clock budget — orchid jobs check reports it budget-exceeded" >&2 ;;
+      esac
+    fi
+  done
+  return 0
+}
+
+# jobs_ls_emit <mode> <show-all> -- one rendering pass. Rows are produced
+# ONCE and shared by the table and the warnings, so a --watch loop costs one
+# manifest walk per refresh rather than two.
+jobs_ls_emit() {
+  local mode="$1" show_all="$2" rows
+  # Sorted on the leading key, which is then CUT AWAY: every consumer below
+  # reads exactly the thirteen columns it renders, so no reader carries a
+  # field it never uses and none can drift out of step with the header.
+  rows="$(jobs_rows "$show_all" | sort -t"$JOBS_TAB" -k1,1n | cut -f2-)"
+  case "$mode" in
+    tsv)
+      [ -z "$rows" ] || jobs_display 0 <<< "$rows" ;;
+    warnings) ;;
+    *)
+      if [ -z "$rows" ]; then
+        if [ "$show_all" -eq 1 ]; then echo "(no jobs recorded)"; else echo "(no outstanding jobs)"; fi
+      else
+        jobs_display 1 <<< "$rows" | jobs_table
+      fi ;;
+  esac
+  [ -z "$rows" ] || jobs_warnings <<< "$rows"
+  return 0
+}
+
+# prepare_capability_gate <operation> <engine> <role> -- INV-16 at the one
+# place a (task, role, operation) triple is bound to an engine. Returns 0 when
+# the step may be routed to that actor (which is NOT a grant -- see
+# lib/capability.sh's header); otherwise it reports and EXITS, so no manifest
+# is minted, nothing is spawned and no attempt is spent.
+#
+# ONE FUNCTION BECAUSE IT IS ASKED AT TWO POINTS, which must never drift into
+# two different refusals: once on the `--engine` arm for the engine the CALLER
+# named, before that arm's role gate, and once below for whatever engine
+# resolution finally settled on, on every arm alike.
+#
+# WHY THE NAMED-ACTOR CALL COMES BEFORE THE ROLE GATE. Both gates can refuse
+# the same call, and only one answer reaches the caller. They are not
+# interchangeable there:
+#
+#   exit 14  no eligible engine. runners/orchid-drive reads this as a WAIT --
+#            drive_launch's header says so in as many words -- because the
+#            usual way it happens is a closed ledger window that reopens by
+#            itself. Nothing is journaled, no boundary is raised, and the walk
+#            comes back next pass.
+#   exit 19  the resolved actor's manifest does not declare what this step's
+#            work needs. No later pass changes that, so the driver journals it
+#            and raises the `operator-handoff` boundary instead of waiting.
+#
+# The case that forced the ordering is a reviewer slot: review_routing's
+# session-independent fallback hands slot 1 the engine that BUILT the
+# candidate, and that arm skips the reviewer-eligibility check every chain
+# entry passes -- so the slot can be pinned to an implementer engine gated only
+# on `workspace_write,shell,git`, declaring no `structured_text`. Asked in the
+# other order, `role_eligibility_reason` refused it first and the driver was
+# handed a 14: the routing refusal INV-16 exists to name never fired, and the
+# hand-off it exists to produce was never journaled. The task simply stopped
+# moving, which is the silent dead end this whole invariant is about.
+#
+# IT IS AN ORDERING OF REPORTS, NEVER A WAIVER. A clean answer here permits
+# nothing: control falls straight through to the role gate, which still runs
+# and still refuses on its own terms, and lib/capability.sh's rule that a
+# missing atom is decisive while a present one settles nothing is untouched. An
+# engine role-ineligible for a capability the STEP does not need is still
+# refused at 14, by that gate, in its own words.
+prepare_capability_gate() {
+  local op="$1" eng="$2" rl="$3" why rc=0
+  why="$(capability_routing_refusal "$op" "$eng")" || rc=$?
+  # The caller-error arm blames the REQUEST, not the actor: a step name outside
+  # the kernel's closed set was never priced and no manifest was read, so it
+  # must not be dressed up as a capability the plugin lacks.
+  [ "$rc" -ne 3 ] || orchid_die "unknown operation '$op': $why"
+  # An `if`, never `[ "$rc" -eq 0 ] && return 0`: that form is a complete
+  # AND-list whose status is the failed test's, so under `set -e` the refusal
+  # path would exit 1 -- an ordinary launch failure charged to the task's
+  # infra_failures ladder -- instead of ever reaching the 19 below.
+  if [ "$rc" -eq 0 ]; then
+    return 0
+  fi
+  echo "orchid: refusing to route role '$rl' to engine '$eng': $why" >&2
+  exit 19
+}
+
+# prepare_chain_capability_gate <repo> <operation> <role> -- the same invariant
+# one gate EARLIER, for the arm where no actor was ever named.
+#
+# prepare_capability_gate above is asked ABOUT AN ACTOR. On the role-chain arm
+# there is no actor until resolve_role_available succeeds, and when it fails its
+# exit 14 is the whole of what the caller is told. 14 is a WAIT (drive_launch's
+# header), which is the right reading when the chain came up empty over a closed
+# ledger window. It is exactly wrong when every entry in the chain is short an
+# atom the step's work needs: nothing reopens, so the driver waits, journals
+# nothing, raises no boundary, and the walk meets the same task next pass
+# forever. That is the same silent dead end the comment above describes for the
+# `--engine` arm, reached through the chain instead -- and it is the one this
+# invariant exists to end, so the chain is asked before the 14 can be raised.
+#
+# BEFORE RESOLUTION, NOT AFTER IT, and the reversal is the point of this
+# revision rather than a tidy-up. It refuses only when EVERY entry is short, so
+# a chain resolution could still pick somebody out of is a chain this gate says
+# nothing about -- asking first cannot therefore refuse a dispatch that would
+# have happened. What asking first fixes is the REPORT: run afterwards, this
+# gate can only speak once resolve_role_available has already put its own "no
+# eligible engine available for role X" on stderr, so an operator meets a wait
+# and a permanent refusal about one call and has to work out which describes
+# their repository. Asked first, the 19 is the only thing emitted, and the wait
+# line is printed exactly when the wait is real.
+#
+# AND ONLY FOR A MISSING ATOM AT EVERY ENTRY. A rate limit, a missing capsuite
+# record, an uninstalled plugin and a ROLE requirement no step prices all stay
+# the wait they have always been, reported by resolve_role_available in its own
+# words -- see capability_chain_refusal, which draws that line and says why.
+prepare_chain_capability_gate() {
+  local rp="$1" op="$2" rl="$3" why rc=0
+  why="$(capability_role_chain_refusal "$rp" "$rl" "$op")" || rc=$?
+  # Same attribution as the named-actor gate, for the same reason: a step name
+  # outside the kernel's closed set is the REQUEST's fault, and reporting it as
+  # whatever wait resolution happened to produce hides the one thing the caller
+  # could fix.
+  [ "$rc" -ne 3 ] || orchid_die "unknown operation '$op': $why"
+  # An `if`, never an AND-list -- prepare_capability_gate's note on why the
+  # short form would exit 1 under `set -e` applies here unchanged.
+  if [ "$rc" -ne 1 ]; then
+    return 0
+  fi
+  echo "orchid: refusing to route role '$rl' to any engine in its chain: $why" >&2
+  exit 19
+}
+
 case "$sub" in
+  ls)
+    # See the block comment above. Read-only: no verb lock, no epoch fence,
+    # no kill, no write anywhere.
+    show_all=0; ls_mode=table; watch=0; interval=5
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --all) show_all=1; shift ;;
+        --tsv) ls_mode=tsv; shift ;;
+        --warnings) ls_mode=warnings; shift ;;
+        --watch) watch=1; shift ;;
+        --interval)
+          [ -n "${2:-}" ] || orchid_die "--interval requires a value"
+          case "$2" in ''|*[!0-9]*) orchid_die "--interval takes whole seconds (got '$2')" ;; esac
+          [ "$2" -gt 0 ] || orchid_die "--interval must be at least 1 second"
+          interval="$2"; shift 2 ;;
+        *) orchid_die "usage: orchid jobs ls [--all] [--tsv|--warnings] [--watch [--interval N]]" ;;
+      esac
+    done
+    if [ "$watch" -eq 1 ]; then
+      # The natural use of a process table is polling, and every operator who
+      # hit F29/F36 was already doing it by hand. Redraws in place only on a
+      # terminal -- redirected to a file or a pump log, the escape sequences
+      # would be noise in the one artifact read after the fact.
+      while :; do
+        if [ -t 1 ]; then printf '\033[H\033[2J'; fi
+        printf '# orchid jobs — %s (every %ss; Ctrl-C to stop)\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$interval"
+        jobs_ls_emit "$ls_mode" "$show_all"
+        sleep "$interval"
+      done
+    fi
+    jobs_ls_emit "$ls_mode" "$show_all"
+    ;;
   prepare)
     # tier-1: mints identity + writes the manifest only; never spawns (INV-01).
+    #
+    # NOT a concurrency gate: this arm does not refuse a second manifest for a
+    # task+operation that already has a RUNNING one. Duplicates of that kind
+    # are legitimate here (a dual-review tier routes two `review` jobs for one
+    # task, a point with two bindings launches two `hook` jobs for one point),
+    # and whether to have a second engine running is a tier-2 dispatch decision
+    # this verb is never told about. CONCURRENCY STAYS ENTIRELY IN
+    # runners/orchid-drive, where every arm asks drive_job_outstanding before
+    # it spawns -- drive_implementing's note is the authority on that split and
+    # this arm does not amend it.
+    #
+    # The ONE duplicate it does refuse (T027, dogfood F29) is a different
+    # question, and deliberately not the one that note is about: not "is
+    # something running for this slot" (liveness, tier-2's) but "does this slot
+    # already hold a manifest for a job that will demonstrably never produce
+    # anything" (identity + this verb's own output). See the refusal below,
+    # which is keyed on the shared job_unlaunched_reapable predicate so it can
+    # only ever fire over a manifest the reaper is about to retire anyway.
     verb_lock_guard "$repo"
     epoch_require "$repo"
     task="$1"; role="$2"; operation="$3"; shift 3
@@ -168,6 +1127,15 @@ case "$sub" in
       # an engine-name branch (INV-05), and never silently accepted.
       dir="$(resolve_engine_dir "$override_engine")" \
         || { echo "orchid: engine '$override_engine' for role '$role' not found on search path" >&2; exit 14; }
+      # INV-16 BEFORE the eligibility walk, and ONLY on this arm, because this
+      # is the arm where the caller already named the actor: the step's
+      # kernel-owned requirements can be asked about a manifest that exists.
+      # (The chain arm below has no actor to ask about until resolution
+      # succeeds, and a chain that yields none is exactly the wait 14 means.)
+      # Both gates can refuse this call and only one answer reaches the driver,
+      # which reads 14 as a wait and 19 as a hand-off -- see
+      # prepare_capability_gate for why the permanent fact is the one reported.
+      prepare_capability_gate "$operation" "$override_engine" "$role"
       reason="$(role_eligibility_reason "$role" "$dir")" \
         || { echo "orchid: engine $override_engine $reason for role $role" >&2; exit 14; }
       engine="$override_engine"
@@ -177,8 +1145,106 @@ case "$sub" in
       # ..." diagnostic to stderr on failure -- propagate its exit 14 verbatim
       # rather than re-wrapping it (prepare is tier-1: mint-manifest-only, so
       # there is nothing else to clean up here before exiting).
-      engine="$(resolve_role_available "$repo" "$role")" || exit 14
+      #
+      # UNLESS THAT 14 WOULD BE PERMANENT. A chain in which every entry is
+      # short an atom this step needs reopens for nobody, and propagated as a
+      # wait it stops the task in silence -- so the chain is asked BEFORE
+      # resolution, exits 19 for that one case, and lets resolution's own wait
+      # line be printed only when the wait is real. See
+      # prepare_chain_capability_gate.
+      prepare_chain_capability_gate "$repo" "$operation" "$role"
+      # ...and the walk itself is told which STEP it is picking an actor for,
+      # so an entry that cannot perform it is FAILED OVER instead of settled
+      # on. Without this a role-eligible but incapable primary shadows a
+      # capable, capsuite-proven fallback standing right behind it in the same
+      # chain: resolution stops at the primary, the step gate below refuses it
+      # permanently, and the entry that could have done the work is never
+      # reached (lib/resolver.sh's resolve_role_available).
+      engine="$(resolve_role_available "$repo" "$role" "$operation")" || exit 14
     fi
+    # INV-16: role eligibility and step coverage are different questions. A
+    # custom role may ask for nothing; it cannot thereby make its actor capable
+    # of work the kernel knows this operation requires. Refuse before minting a
+    # manifest, spawning a process, or spending an attempt.
+    #
+    # Asked here for EVERY arm, including the one that already asked: whichever
+    # way `$engine` was arrived at -- a caller's `--engine`, a hook binding, a
+    # role chain -- this is the single line the resolved actor passes through,
+    # and a gate that trusted an earlier arm to have asked would be one arm
+    # away from not being asked at all. For `--engine` this repeats an answer
+    # that arm already acted on, at the cost of one manifest read.
+    prepare_capability_gate "$operation" "$engine" "$role"
+    # T027 (dogfood F29): refuse to mint a SECOND manifest for a job that
+    # already has an UNLAUNCHED one -- same task, same attempt, same role,
+    # same operation and (for hooks) the same point.
+    #
+    # This is the identity question, not the liveness one. An unlaunched
+    # manifest is a job that was minted and either never spawned at all
+    # (job_never_started: pid 0, no log) or spawned something that has not
+    # written a line in `stall_minutes` (job_unstamped_stale); minting another
+    # for the same slot cannot make either of them run, it only leaves a second
+    # orphan behind. A run whose launcher failed before its spawn line (an
+    # input_overflow pack, a missing binary) did exactly that once per pass for
+    # 73 passes: 73 manifests, all pid 0, no logs, no envelopes, nothing to
+    # reconcile and nothing to escalate. Whatever else is wrong, ONE orphan per
+    # slot is enough to diagnose it.
+    #
+    # NARROWED TO EXACTLY THE CLASS `gc` REAPS, which is what makes exit 18 a
+    # state that can always be left. The refusal and the reaper share ONE
+    # predicate (job_unlaunched_reapable), so every manifest that can cause
+    # this refusal is a manifest `orchid jobs gc` will retire on its own,
+    # after which the identical call succeeds with no operator action.
+    # Widening it by even one case -- refusing over a pid-0 manifest whose log
+    # is still being written to, say -- would refuse over something nothing
+    # reaps, and the refusal would be permanent.
+    #
+    # Exit 18 is a WAIT for the caller, not a failure (runners/orchid-drive's
+    # drive_launch treats it exactly like exit 14's closed ledger window):
+    # nothing is running and nothing was spawned. The launch failure that left
+    # the orphan is journaled and escalated where it happened, by the driver,
+    # so this refusal never has to double as the report of it.
+    #
+    # Keyed on hook_point as well as the four fields, because for a hook job
+    # the role positional is the literal "hook" for EVERY point: without it, an
+    # unlaunched `before_merge` handler would refuse an unrelated `on_blocker`
+    # one on the same attempt. Not keyed on engine: a re-dispatch that merely
+    # picked a different engine for the same slot is the same job, and the
+    # orphan is still the only thing that needs clearing.
+    #
+    # LAST of the refusals, deliberately: a mis-typed `--engine`, an unbound
+    # hook point and an empty failover chain are all faults in the CALL, and
+    # each must keep reporting itself (exit 14) rather than being masked by a
+    # wait about the state of the jobs directory.
+    dup_now="$(date +%s)"
+    dup_stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+    for dupf in "$jobs_dir"/*.json; do
+      [ -e "$dupf" ] || continue
+      job_unlaunched_reapable "$dupf" "$dup_now" "$dup_stall_s" || continue
+      [ "$(jq -r '.task // ""' "$dupf" 2>/dev/null || echo)" = "$task" ] || continue
+      [ "$(jq -r '.attempt // 0' "$dupf" 2>/dev/null || echo)" = "$attempt" ] || continue
+      [ "$(jq -r '.role // ""' "$dupf" 2>/dev/null || echo)" = "$role" ] || continue
+      [ "$(jq -r '.operation // ""' "$dupf" 2>/dev/null || echo)" = "$operation" ] || continue
+      [ "$(jq -r '.hook_point // ""' "$dupf" 2>/dev/null || echo)" = "$hook_point" ] || continue
+      echo "orchid: $task attempt $attempt $role/$operation already has an unlaunched manifest ($(basename "$dupf" .json)) — refusing to prepare a second one; it is reaped by 'orchid jobs gc --older-than-s 0', or by 'orchid jobs gc --reap-prepared --older-than-s 0' when nothing else may be touched" >&2
+      exit 18
+    done
+
+    # WHO IS LAUNCHING THIS (T035). Recorded here rather than at the spawn, so
+    # even a manifest whose launcher died before it ever spawned still names
+    # the automation that minted it -- that is the pid-0 ghost an operator most
+    # needs attributed, since a job `drive` just started and one they started
+    # by hand want different responses. `ORCHID_LAUNCHED_BY` is set by
+    # runners/orchid-drive (`drive`) and runners/orchid-pump (`pump`, which
+    # wins because it is exported around the drive it invokes); a hand-run
+    # runners/orchid-launch, or an orchestrator session an operator started
+    # themselves, inherits neither and records `operator`.
+    #
+    # Sanitized, never trusted verbatim: this is ambient environment landing in
+    # a manifest that a tab-separated table later renders, so a value carrying
+    # a tab or a newline would splice a row apart in every reader downstream.
+    launched_by="$(printf '%s' "${ORCHID_LAUNCHED_BY:-operator}" | tr -cd 'A-Za-z0-9._-' | cut -c1-16)"
+    [ -n "$launched_by" ] || launched_by=operator
+
     epoch="$(epoch_current "$repo")"
     suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
     job_id="j-e${epoch}-${task}-a${attempt}-${suffix}"
@@ -188,17 +1254,22 @@ case "$sub" in
       --arg role "$role" --arg operation "$operation" --arg engine "$engine" \
       --arg log "$rt/logs/$job_id.log" --arg output "$output" \
       --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
-      --arg hook_point "$hook_point" \
+      --arg hook_point "$hook_point" --arg launched_by "$launched_by" \
       '{job_id:$job_id, task:$task, attempt:$attempt, role:$role, operation:$operation,
         engine:$engine, pid:0, pgid:0, started_at:0, log:$log, output:$output,
-        base_sha:$base_sha, candidate_sha:$candidate_sha, hook_point:$hook_point}' | atomic_write "$manifest"
+        base_sha:$base_sha, candidate_sha:$candidate_sha, hook_point:$hook_point,
+        launched_by:$launched_by}' | atomic_write "$manifest"
     echo "$manifest"
     ;;
   check)
     # Read-and-runtime-only: reports/kills by pgid, never mutates durable state.
     stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
     timeout_s=$(( $(config_get "$repo" timeout_minutes 60) * 60 ))
+    # 0 = the CPU-delta stall arm is OFF (the default; it is opt-in -- see
+    # hb_cpu_flat's header for why CPU alone must not kill).
+    cpu_floor="$(config_get "$repo" cpu_stall_min_s 0)"
     now="$(date +%s)"
+    budget_seen=" "
     for f in "$jobs_dir"/*.json; do
       [ -e "$f" ] || continue
       task="$(jq -r .task "$f")"; pid="$(jq -r .pid "$f")"
@@ -207,22 +1278,103 @@ case "$sub" in
       # arms below the same manifest also falls into. Report-only: `jobs
       # check` never kills for a budget overrun, the orchestrator escalates
       # it via protocol (`task advance ... blocked`).
-      tf_budget="$state/tasks/$task.md"
-      if [ -f "$tf_budget" ]; then
-        t_started="$(fm_get "$tf_budget" started_at)"
-        t_budget="$(fm_get "$tf_budget" wallclock_budget_s)"
-        if [ -n "$t_started" ] && [ -n "$t_budget" ]; then
-          t_started_epoch="$(iso_to_epoch "$t_started")"
-          if [ "$t_started_epoch" -gt 0 ] && [ $(( now - t_started_epoch )) -gt "$t_budget" ]; then
-            printf '%s\tbudget-exceeded\n' "$task"
-          fi
+      #
+      # It stays independent of liveness on purpose. `started_at` is now
+      # re-anchored at each dispatch (libexec/orchid-task), so an ALIVE job
+      # whose task is past its budget is exactly the runaway attempt this
+      # backstop exists to catch — suppressing the alive case would leave it
+      # able to report only jobs that had already died some other way, which
+      # is no backstop at all. What the alive case used to mean (webBooks
+      # L006: budget-exceeded reported against a minutes-old running job) was
+      # a symptom of the stale task-level anchor, and is fixed there.
+      #
+      # Gated on the task's status instead: the budget bounds an ATTEMPT, and
+      # a task only has an attempt in flight while it sits in an active
+      # status. A task parked in `rework` (after `task retry`/`task unblock`)
+      # or already `blocked` has no attempt running, so its leftover
+      # manifests must not keep re-reporting a budget — that is what made the
+      # recovery path unconvergent: the operator's own retry verb returned
+      # the task to the loop only for the very next `jobs check` to re-block
+      # it, one wasted implementer dispatch per cycle.
+      #
+      # Evaluated once per TASK, not once per manifest: a task mid-review
+      # legitimately has several manifests (implementer plus one per reviewer
+      # slot), and the budget is a task-level fact — one escalation, not one
+      # per slot.
+      case "$budget_seen" in
+        *" $task "*) ;;   # this task's budget was already evaluated this pass
+        *)
+          budget_seen="$budget_seen$task "
+          tf_budget="$state/tasks/$task.md"
+          if [ -f "$tf_budget" ]; then
+            t_status="$(fm_get "$tf_budget" status)"
+            t_started="$(fm_get "$tf_budget" started_at)"
+            t_budget="$(fm_get "$tf_budget" wallclock_budget_s)"
+            # T035: the active-status/anchor/budget predicate above now lives
+            # in lib/schedule.sh's schedule_budget_pct, so `jobs ls`'s BUDGET
+            # column renders the very percentage this arm escalates on rather
+            # than a second copy of the same arithmetic that could drift from
+            # it. The reported condition is unchanged: a task whose attempt has
+            # consumed its whole wall-clock budget.
+            t_pct="$(schedule_budget_pct "$t_status" "$(iso_to_epoch "$t_started")" \
+              "$t_budget" "$now")" || t_pct=""
+            case "$t_pct" in ''|*[!0-9]*) t_pct="" ;; esac
+            if [ -n "$t_pct" ] && [ "$t_pct" -ge 100 ]; then
+              printf '%s\tbudget-exceeded\n' "$task"
+            fi
+          fi ;;
+      esac
+      # pid 0 is a manifest `jobs prepare` minted and the launcher never
+      # stamped, and it has THREE very different meanings that used to be
+      # reported with the same word (T027, dogfood F29):
+      #
+      #   never-started -- there is no log file at all: no engine ran, none
+      #     ever will, and no envelope is coming. Reporting that as `prepared`
+      #     read as "queued, all fine" for the rest of the run -- 73 of them,
+      #     in the incident this arm comes from.
+      #   prepared -- a log exists AND has been written to within
+      #     `stall_minutes`, so the spawn DID happen and only the pid stamp is
+      #     missing. That is the genuine, sub-second window between `env ... &`
+      #     and the `jq` that records the pid, plus its crash case. Something
+      #     is producing output, so this is the one shape of pid-0 manifest the
+      #     driver waits on rather than relaunching over.
+      #   unstamped -- a log exists and NOTHING HAS WRITTEN TO IT for
+      #     `stall_minutes`: the same silence `check` kills a stamped job for,
+      #     on a job that never got far enough to have a pid to kill. This is
+      #     where `prepared` converges instead of being retained forever
+      #     (T027 rework); the driver escalates it once and `gc` retires the
+      #     manifest, deliberately leaving the log behind as the only surviving
+      #     record of whatever was spawned.
+      #
+      # Report-only, like every other line here: nothing is killed (there is no
+      # pid to signal), the driver decides what to escalate, and `gc` reaps.
+      if [ "$pid" = 0 ]; then
+        if job_never_started "$f"; then
+          printf '%s\tnever-started\n' "$task"
+        elif job_unstamped_stale "$f" "$now" "$stall_s"; then
+          echo "orchid: $task job $(jq -r .job_id "$f"): spawned but never recorded a pid, and its log has not been written to in ${stall_s}s — nothing can be signalled for it; the manifest is retired and $(jq -r .log "$f") is kept" >&2
+          printf '%s\tunstamped\n' "$task"
+        else
+          printf '%s\tprepared\n' "$task"
         fi
+        continue
       fi
-      if [ "$pid" = 0 ]; then printf '%s\tprepared\n' "$task"; continue; fi
       if ! kill -0 "$pid" 2>/dev/null; then printf '%s\tdead\n' "$task"; continue; fi
       pgid="$(jq -r .pgid "$f")"; log="$(jq -r .log "$f")"; started_at="$(jq -r .started_at "$f")"
-      log_mtime="$(stat -f %m "$log" 2>/dev/null || stat -c %Y "$log" 2>/dev/null || echo 0)"
+      log_mtime="$(file_mtime "$log")"
       if [ "$log_mtime" -gt 0 ] && [ $(( now - log_mtime )) -gt "$stall_s" ]; then
+        kill_stuck "$pgid" "$pid"
+        printf '%s\tstalled\n' "$task"
+      elif [ "$cpu_floor" != 0 ] && cpu_flat="$(hb_cpu_flat "$log" "$stall_s" "$cpu_floor")"; then
+        # SAME `stalled` token, deliberately: this is the same fact the arm
+        # above reports (this job is not working) reached by the other
+        # available route, and PROTOCOL.md's escalation ladder and the
+        # driver's own handling of `stalled` apply to it unchanged. The
+        # detail -- how long, and how little CPU -- goes to stderr rather
+        # than stdout, so the two-column contract every reader parses
+        # (`<task>\t<status>`) is untouched while an operator still sees why.
+        cpu_span="${cpu_flat%% *}"; cpu_pair="${cpu_flat#* }"
+        echo "orchid: $task job $(jq -r .job_id "$f"): no CPU progress across ${cpu_span}s of heartbeats (cpu ${cpu_pair% *} -> ${cpu_pair#* } seconds, floor ${cpu_floor}) — the heartbeats are alive but the work is not; killing it as stalled" >&2
         kill_stuck "$pgid" "$pid"
         printf '%s\tstalled\n' "$task"
       elif [ $(( now - started_at )) -gt "$timeout_s" ]; then
@@ -243,6 +1395,11 @@ case "$sub" in
     # before any JSON parsing — a cheap, early defense against a runaway or
     # forged tier-3 adapter dumping an oversized payload into the spool dir.
     spool_max="$(config_get "$repo" spool_max_bytes 262144)"
+    # The bound on job_liveness's pid-0 (launcher-window) arm, read from
+    # the same `stall_minutes` key `check`, `gc`, `prepare` and the driver all
+    # read, so one manifest can never be live to one of them and finished to
+    # another.
+    reconcile_stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
     for f in "$spool_dir"/*.json; do
       [ -e "$f" ] || continue
       base="$(basename "$f")"
@@ -257,6 +1414,19 @@ case "$sub" in
         echo "quarantined: $base (malformed)"
         continue
       fi
+      # `no_envelope` is the KERNEL's word for a job that wrote nothing at
+      # all (see the salvage pass at the end of this arm, and lib/envelope.sh).
+      # An adapter that writes it is not reporting its own status, it is
+      # claiming to BE the kernel's reconstruction of one -- and every reader
+      # that skips a degraded envelope as non-evidence would skip a real
+      # engine failure the same way, silently. Refused at the door, on the
+      # same terms as any other forged field (INV-03): quarantine, never
+      # acceptance.
+      if [ "$(envelope_field "$f" '.status // empty')" = no_envelope ]; then
+        quarantine_file "$f" kernel-status
+        echo "quarantined: $base (kernel-status)"
+        continue
+      fi
       jid="$(envelope_field "$f" .job_id)"
       manifest=""
       for mf in "$jobs_dir"/*.json; do
@@ -269,6 +1439,69 @@ case "$sub" in
         echo "quarantined: $base (unknown-job)"
         continue
       fi
+      # T031: AN ENVELOPE IS A COMPLETION REPORT. A job that has not exited
+      # has not completed, so its envelope is not yet a completion signal --
+      # DEFER it, leaving both the spool file and the manifest exactly where
+      # they are for a later pass.
+      #
+      # Reconciling early is what defeated INV-11 from the inside on r-002.
+      # `runners/orchid-drive`'s drive_implementing treats a reconciled `ok`
+      # implement envelope as "the implementer is done", captures candidate_sha
+      # from the worktree's HEAD right then, and advances implementing ->
+      # testing. On T013 the implementer job was still alive when its envelope
+      # landed and committed AGAIN 19 minutes later, so the captured candidate
+      # (4bb8d03) was never final and the verification that ran afterwards
+      # exercised a different commit (680cfc0). Nothing downstream could tell:
+      # reconcile DELETES the manifest, so by the time the driver looks there
+      # is no job left to ask about, and `drive_job_outstanding` reports the
+      # task as having nothing running.
+      #
+      # "Has it exited" is job_liveness's question, not a pid comparison
+      # inlined here (attempt-4 rework). A pid of 0 is NOT an exit: `jobs
+      # prepare` mints every manifest that way and runners/orchid-launch
+      # stamps the real pid only after the spawn, so pid 0 means "nobody has
+      # recorded whether this began" -- and a manifest still inside that
+      # launcher window has an engine behind it that is committing with its
+      # pid recorded nowhere. Filing its envelope as final is the same defect
+      # as T013's, just one window narrower.
+      #
+      # THREE WAYS NOT TO FILE, and the third is not a wait (attempt-5 rework):
+      #
+      #   running     a stamped, live pid. DEFER: bounded by `jobs check`,
+      #               which kills a job that stalls or times out, after which
+      #               the envelope reconciles on the very next pass.
+      #   starting    the launcher's post-spawn/pre-stamp window. DEFER:
+      #               bounded by `stall_minutes` on the job's own log, and by
+      #               nothing else -- gc_reap_unlaunched deliberately SPARES a
+      #               manifest whose envelope is still spooled, so a hold that
+      #               could only be ended by a reap would have the two holding
+      #               the envelope for each other forever.
+      #   unresolved  no pid was ever stamped and the log has gone quiet, so
+      #               NOTHING HERE CAN DECIDE whether an engine is still
+      #               running (job_exit_recorded's note). Not a wait, because
+      #               waiting is a bet that the answer arrives: it may, if that
+      #               engine exits and the launcher's wrapper records it, and
+      #               then this envelope files itself on the next pass with no
+      #               operator involved. What is refused is the OTHER bet --
+      #               reading silence as an exit and admitting a report from a
+      #               process that could still be committing. Bounded from the
+      #               outside instead: the envelope stays spooled and the
+      #               manifest stays standing, which is precisely the state
+      #               runners/orchid-drive's escalation sweep escalates as
+      #               `untracked` -- one rung, no relaunch over a possibly-live
+      #               engine, and a named operator boundary.
+      m_pid="$(jq -r '.pid // 0' "$manifest" 2>/dev/null || echo 0)"
+      case "$(job_liveness "$manifest" "$(date +%s)" "$reconcile_stall_s")" in
+        running)
+          echo "deferred: $base (job $jid still running, pid $m_pid)"
+          continue ;;
+        starting)
+          echo "deferred: $base (job $jid still starting, no pid stamped yet)"
+          continue ;;
+        unresolved)
+          echo "unresolved: $base (job $jid never stamped a pid and its log has been silent past stall_minutes, with no exit recorded — silence is not an exit, so this is not a completion signal)"
+          continue ;;
+      esac
       m_task="$(jq -r .task "$manifest")"; e_task="$(envelope_field "$f" .task)"
       m_base="$(jq -r .base_sha "$manifest")"; m_cand="$(jq -r .candidate_sha "$manifest")"
       m_op="$(jq -r .operation "$manifest")"
@@ -318,45 +1551,254 @@ case "$sub" in
       status="$(envelope_field "$f" .status)"
       verdict="$(envelope_field "$f" '.verdict // "n/a"')"
       retry_after="$(envelope_field "$f" '.retry_after // empty')"
-      # A durable reviews/<task>-a<attempt>-<role>.json that already exists
-      # (a relaunch of the same attempt landed a second accepted envelope —
-      # e.g. a crash-recovery relaunch before `attempts` was bumped) must
-      # never be silently overwritten: both are forensic evidence. Keep both
-      # via a counter suffix, same pattern as quarantine_file above.
+      # failure_kind (v1-m5 T008): the adapter's own classification of a
+      # non-`ok` envelope -- `capability` when it declined by design, absent
+      # or `engine` when it genuinely failed. Read here and handed to
+      # ledger_mark below, which is the ONE place the distinction has to be
+      # made: an engine that correctly refuses work outside its declared
+      # envelope must not accumulate consecutive_failures for it (see
+      # lib/ledger.sh's header for the r-002 cascade that proved why).
+      # Trustworthy enough for this purpose only because the cross-checks
+      # above already quarantined any envelope not bound to a live manifest
+      # for this exact engine; and it can only ever SPARE an engine a failure
+      # charge, never impose one, so the worst a confused adapter can do with
+      # it is keep itself in the rotation -- which `refusals <n>` in `orchid
+      # status` then shows the operator.
+      failure_kind="$(envelope_field "$f" '.failure_kind // empty')"
+      # A NON-APPROVE VERDICT WITH AN EMPTY findings[] IS NOT FILED SILENTLY
+      # (dogfood F32; lib/envelope.sh's own header has the case and the
+      # reasoning). The objection is lifted out of the free-text `summary`
+      # into findings[] HERE, at the one place every envelope passes through
+      # on its way to becoming durable evidence, so that every later reader
+      # -- lib/drive.sh's blocking_severity gate, PROTOCOL.md's PLANNING fold,
+      # an arbiter reading the file -- consults a field that has the
+      # substance in it rather than an empty array that weighs nothing.
       #
-      # `hook` op (v1-m3): filed under `hook-<point>` instead of `<role>` --
-      # the role positional carries no meaning for a hook job (engine
-      # resolution above never consulted it; it's the config binding by
-      # point that named the engine), so it must never appear in the durable
-      # filename. `hook_point` rides on the manifest (recorded at prepare
-      # time), never the envelope, so this is trustworthy even though the
-      # cross-check above never validated a `hook_point` field one way or
-      # the other.
-      if [ "$m_op" = hook ]; then
-        m_hook_point="$(jq -r '.hook_point // empty' "$manifest")"
-        dest_base="$state/reviews/$m_task-a$attempt-hook-$m_hook_point"
-      else
-        dest_base="$state/reviews/$m_task-a$attempt-$role"
+      # Done BEFORE the move, on the spool copy, so what lands in reviews/ is
+      # already complete: nothing downstream has to know whether it is reading
+      # a pre- or post-synthesis file. If the composed envelope does not
+      # itself validate, the ORIGINAL is filed untouched and the failure is
+      # printed -- a synthesis that cannot be trusted must not be allowed to
+      # replace the reviewer's own words, and the operator has to hear that
+      # the gate is weighing nothing for this one.
+      # The `mv` is INSIDE the chain, not after it: a replacement that did not
+      # happen must not be reported as one. `.synth` is deliberately not a
+      # `.json` name, so a half-written scratch file can never be picked up as
+      # a spool envelope by this loop or the next pass's.
+      synth=none
+      if envelope_prose_only_objection "$f"; then
+        if envelope_synthesize_finding "$f" > "$f.synth" 2>/dev/null &&
+           envelope_validate "$f.synth" 2>/dev/null &&
+           mv "$f.synth" "$f"; then
+          synth=ok
+        else
+          rm -f "$f.synth"
+          synth=failed
+        fi
       fi
-      dest="$dest_base.json"
-      n=2
-      while [ -e "$dest" ]; do
-        dest="$dest_base.$n.json"
-        n=$((n + 1))
-      done
+      # Naming (collision counter, and the hook op's own hook-<point> shape)
+      # is reviews_dest's, shared with the salvage pass at the end of this
+      # arm so a degraded envelope can never be filed under a name no reader
+      # globs for.
+      m_hook_point="$(jq -r '.hook_point // empty' "$manifest")"
+      dest="$(reviews_dest "$m_task" "$attempt" "$role" "$m_op" "$m_hook_point")"
       mv "$f" "$dest"
+      # T035: the manifest is about to be the last record of this job's engine,
+      # launcher and start time -- write the history line before deleting it.
+      history_append "$manifest" "$status"
       rm -f "$manifest"
       # Ledger-mark from the MANIFEST's engine (never the envelope's
       # self-reported one, even when present -- the cross-check above
       # already quarantined any envelope whose reported engine disagreed,
       # but this is our own durable record, not forgeable input).
-      ledger_mark "$repo" "$m_engine" "$status" "$retry_after"
+      ledger_mark "$repo" "$m_engine" "$status" "$retry_after" "$failure_kind"
+      # Printed under the durable name, never the spool one: the operator who
+      # reads this line goes and looks at the file it names.
+      case "$synth" in
+        ok) echo "synthesized-finding: $(basename "$dest") ($verdict verdict with an empty findings[]; its summary is now a $ENVELOPE_SYNTHESIZED_FINDING_SEVERITY-severity finding, so the severity gate can see the objection)" ;;
+        failed) echo "synthesis-failed: $(basename "$dest") ($verdict verdict with an empty findings[]; its summary could NOT be carried into findings[] -- every severity gate weighs nothing for this envelope, read its summary yourself)" ;;
+      esac
       printf '%s\t%s\t%s\n' "$m_task" "$status" "$verdict"
+      # A refusal gets its own line, not a new column: the three-column TSV
+      # above is what the tick prints and what tests match on, and the
+      # accepted envelope's `status` really is `failed` -- every downstream
+      # gate (drive_review_decision, the reviewing->arbitrating gate) still
+      # skips it exactly as before. What the extra line adds is that the
+      # refusal is no longer invisible in the run's own output: the envelope
+      # naming the limit is filed durably under reviews/, and this says which
+      # engine declined and that it was not charged for it.
+      if [ "$status" != ok ] && [ "$failure_kind" = capability ]; then
+        printf 'refusal: %s %s declined by design (%s, not counted as an engine fault)\n' \
+          "$m_task" "$m_engine" "$status"
+      fi
+    done
+
+    # -----------------------------------------------------------------------
+    # T040 (dogfood finding F35): A JOB THAT EXITED WITHOUT AN ENVELOPE.
+    #
+    # Two of four attempts in that run produced nothing reachable through the
+    # verbs. One ran to completion, wrote eight complete findings to its job
+    # log, and exited without writing an envelope; reconcile had nothing to
+    # land, so from the outside the attempt simply never happened, and the
+    # findings survived only because an operator thought to grep the runtime
+    # logs. THE ENGINE HAD ALREADY BEEN PAID FOR THAT WORK. This pass makes
+    # the kernel do what that operator did, and say so out loud.
+    #
+    # It runs AFTER the spool drain above, over whatever manifests are still
+    # on disk, and reports each such job exactly once (the `no_envelope_
+    # reported` stamp), so a second `jobs reconcile` before gc reaps the
+    # manifest neither re-journals nor files a second envelope.
+    #
+    # THREE THINGS HAPPEN, AND THE FIRST IS CONDITIONAL WHILE THE OTHER TWO
+    # ARE NOT:
+    #
+    #   1. A DEGRADED ENVELOPE, only when the log actually holds results.
+    #      Nothing is invented: a handler that exits quietly having produced
+    #      nothing still files nothing, because a same-shaped file on disk is
+    #      read by several gates as evidence that the point has been answered
+    #      (drive_hook_gate counts hook envelopes, `jobs prepare` counts plan
+    #      critique rounds), and manufacturing one for every muted exit would
+    #      answer questions nobody asked.
+    #   2. A JOURNAL ENTRY, always -- the exit code and the tail of the log.
+    #      This is the half that makes the failure visible without knowing to
+    #      grep `runtime/logs`, and it is written whether or not there was
+    #      anything to salvage: "the job died and left nothing" is exactly as
+    #      important to an operator as what it left.
+    #   3. A REPORT LINE on stdout, always, in the same three-column shape
+    #      every other reconciled envelope prints. reconcile printing NOTHING
+    #      is what made this class of failure look like a job that never ran.
+    #
+    # THE MANIFEST IS LEFT IN PLACE, stamped but not deleted. The driver's
+    # escalation sweep reads dead manifests, not this output, and it runs
+    # after reconcile in the same pass -- deleting the manifest here would
+    # silently retire the infra_failures ladder for exactly this failure
+    # class, trading one silent loss for another. `jobs gc` reaps it a step
+    # later in the same pass, as it always has.
+    #
+    # NO ledger_mark HERE, unlike every envelope above. The ledger records
+    # what an ENGINE reported about itself; a salvaged envelope is the
+    # kernel's own reconstruction, and marking one would charge an engine a
+    # consecutive failure on the kernel's word rather than its own. The
+    # task-scoped `infra_failures` ladder already counts this job, through
+    # the manifest this pass deliberately leaves standing.
+    # -----------------------------------------------------------------------
+    salvage_tail_lines=20
+    for mf in "$jobs_dir"/*.json; do
+      [ -e "$mf" ] || continue
+      s_pid="$(jq -r '.pid // 0' "$mf" 2>/dev/null || echo 0)"
+      [ "$s_pid" != 0 ] || continue                      # prepared, never launched
+      if kill -0 "$s_pid" 2>/dev/null; then continue; fi # still running
+      s_jid="$(jq -r '.job_id // empty' "$mf" 2>/dev/null || true)"
+      [ -n "$s_jid" ] || continue
+      # IT DELIVERED. A job that exited between the drain above and this
+      # liveness read is dead with its envelope sitting undrained in the
+      # spool; the next pass files it. Same hold-back `jobs gc` and the
+      # driver's escalation sweep already make, for the same reason.
+      [ ! -e "$spool_dir/$s_jid.json" ] || continue
+      [ "$(jq -r '.no_envelope_reported // false' "$mf" 2>/dev/null || echo false)" != true ] || continue
+
+      s_task="$(jq -r .task "$mf")"; s_attempt="$(jq -r .attempt "$mf")"
+      s_role="$(jq -r .role "$mf")"; s_op="$(jq -r .operation "$mf")"
+      s_engine="$(jq -r .engine "$mf")"
+      s_point="$(jq -r '.hook_point // empty' "$mf")"
+      s_log="$(jq -r '.log // empty' "$mf")"
+      s_base="$(jq -r '.base_sha // ""' "$mf")"
+      s_cand="$(jq -r '.candidate_sha // ""' "$mf")"
+      # Same suspect-fields posture as gc's dead-manifest reap (v0b2), for
+      # the same reason: everything above is manifest JSON content, and this
+      # pass USES it -- job_id keys the exits/ read, task/attempt/role/
+      # hook_point become the reviews/ write path, and the log is tailed
+      # straight into the journal. A corrupted or hand-edited manifest must
+      # not steer a read or a write anywhere on disk: skip it (salvage
+      # nothing, build nothing from it) and leave it standing for gc, whose
+      # own sweep quarantines it as gc-suspect.
+      # HERESTRINGS, never `echo ... | grep -q` (T016's sweep of the class
+      # T010 named): `grep -q` exits at its first match and SIGPIPEs `echo`,
+      # and under `set -o pipefail` that kill-by-signal status becomes the
+      # pipeline's -- so a WELL-FORMED field reads as malformed and a healthy
+      # manifest is quarantined as suspect. It fails in the safe direction,
+      # which is exactly why nobody would ever see it happen; it would present
+      # as a job that intermittently refused to salvage.
+      s_suspect=0
+      grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' <<<"$s_jid" || s_suspect=1
+      grep -qE '^[A-Za-z0-9_-]+$' <<<"$s_task" || s_suspect=1
+      grep -qE '^[0-9]+$' <<<"$s_attempt" || s_suspect=1
+      grep -qE '^[A-Za-z0-9_-]+$' <<<"$s_role" || s_suspect=1
+      if [ -n "$s_point" ]; then
+        grep -qE '^[A-Za-z0-9_-]+$' <<<"$s_point" || s_suspect=1
+      fi
+      if [ -n "$s_log" ]; then
+        case "$s_log" in *..*) s_suspect=1 ;; esac
+        case "$s_log" in "$rt"/logs/*) ;; *) s_suspect=1 ;; esac
+      fi
+      if [ "$s_suspect" -eq 1 ]; then
+        echo "salvage-skip: $(basename "$mf") (suspect fields)"
+        continue
+      fi
+      s_exit=""; s_exit="$(job_exit_code "$s_jid" || true)"
+      s_salvage="$(envelope_salvage_json "$s_log")"
+
+      s_filed=""
+      if ! envelope_salvage_empty "$s_salvage"; then
+        s_dest="$(reviews_dest "$s_task" "$s_attempt" "$s_role" "$s_op" "$s_point")"
+        s_env="$(jq -n \
+          --arg jid "$s_jid" --arg task "$s_task" --arg op "$s_op" \
+          --arg role "$s_role" --arg engine "$(resolve_engine_qualified_id "$s_engine")" \
+          --arg base "$s_base" --arg cand "$s_cand" --arg exitc "${s_exit:-}" \
+          --arg logp "$s_log" --argjson salv "$s_salvage" '
+          {contract:1, job_id:$jid, task:$task, operation:$op, role:$role,
+           engine:$engine, status:"no_envelope", degraded:true,
+           exit_code:(if $exitc == "" then null else ($exitc | tonumber) end),
+           salvaged_from:$logp,
+           summary:("job exited without writing an envelope; "
+                    + ($salv.findings | length | tostring)
+                    + " finding(s) salvaged from its log"),
+           findings:$salv.findings}
+          + (if $base == "" then {} else {base_sha:$base} end)
+          + (if $cand == "" then {} else {candidate_sha:$cand} end)
+          + (if $salv.verdict == null then {} else {verdict:$salv.verdict} end)')"
+        # Never `producer | atomic_write "$dest"`: a jq that fails mid-pipe
+        # leaves the destination created and empty, which reads downstream as
+        # a malformed envelope rather than as the absence of one.
+        if [ -n "$s_env" ]; then
+          printf '%s\n' "$s_env" | atomic_write "$s_dest"
+          s_filed="$s_dest"
+        fi
+      fi
+
+      s_note="job $s_jid ($s_op, role $s_role, engine $s_engine) exited without writing an envelope."
+      if [ -n "$s_exit" ]; then
+        s_note="$s_note Exit code: $s_exit."
+      else
+        s_note="$s_note Exit code: unrecorded."
+      fi
+      if [ -n "$s_filed" ]; then
+        s_note="$s_note Salvaged $(printf '%s' "$s_salvage" | jq -r '.findings | length') finding(s) from its log into $(basename "$s_filed") as a DEGRADED envelope (status no_envelope) — no gate counts it as evidence, but the work is not lost."
+      else
+        s_note="$s_note Its log held no parseable results, so there was nothing to salvage."
+      fi
+      if [ -n "$s_log" ] && [ -f "$s_log" ]; then
+        s_note="$s_note"$'\n'"Last $salvage_tail_lines line(s) of $s_log:"$'\n'"$(tail -n "$salvage_tail_lines" "$s_log" 2>/dev/null || true)"
+      else
+        s_note="$s_note"$'\n'"Its log ($s_log) is not readable, so no tail can be shown."
+      fi
+      "$ORCHID_ROOT/bin/orchid" journal add --task "$s_task" --kind intervention "$s_note" >/dev/null
+
+      s_mf_new="$(jq '.no_envelope_reported = true' "$mf" 2>/dev/null || true)"
+      [ -z "$s_mf_new" ] || printf '%s\n' "$s_mf_new" | atomic_write "$mf"
+
+      if [ -n "$s_filed" ]; then
+        printf '%s\t%s\t%s\n' "$s_task" no_envelope "salvaged $(basename "$s_filed")"
+      else
+        printf '%s\t%s\t%s\n' "$s_task" no_envelope nothing-to-salvage
+      fi
     done
     ;;
   gc)
     # Runtime-only cleanup: reaps DEAD jobs' litter (manifest -> quarantine,
-    # plus its pack dir/request file/log) once past --older-than-s, and
+    # plus its pack dir/request file/log) once past --older-than-s, reaps
+    # UNLAUNCHED manifests (pid 0, and either no log at all or a log nothing has
+    # written to in `stall_minutes`) once past --prepared-older-than-s, and
     # separately sweeps orphaned pack/request entries that have no manifest
     # and no pending spool envelope. Unlike prepare/reconcile (which mutate
     # durable state under .orchid/tasks or .orchid/reviews), gc only ever
@@ -368,66 +1810,106 @@ case "$sub" in
     # holds trivially — there is no kill call to guard here at all.
     reap_prepared=0
     older_than_s_arg=""
+    prepared_older_than_s_arg=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --reap-prepared) reap_prepared=1; shift ;;
         --older-than-s)
           [ -n "${2:-}" ] || orchid_die "--older-than-s requires a value"
           older_than_s_arg="$2"; shift 2 ;;
-        *) orchid_die "usage: orchid jobs gc [--older-than-s N] | orchid jobs gc --reap-prepared [--older-than-s N]" ;;
+        # --prepared-older-than-s (T027 rework): the retention bound for the
+        # UNLAUNCHED class only, so a caller can hold that class back without
+        # also holding back the dead jobs it wants reaped now. It exists
+        # because the alternative -- a floor built into this verb, applied to
+        # whatever the operator typed -- is what dogfood F41 is a report of:
+        # `--older-than-s 0` on a known pid-0 orphan silently did something
+        # other than what it says. Automatic callers that need a margin
+        # (runners/orchid-drive, which cannot know whether a launcher is
+        # mid-flight between its own `prepare` and its spawn line) pass their
+        # own bound here; a human who has looked at the manifest gets the
+        # number they typed. Defaults to --older-than-s, so an operator who
+        # gives one bound gets that bound applied to everything. Accepted under
+        # `--reap-prepared` too, where it is the more specific name for the only
+        # class that mode touches and therefore wins over --older-than-s.
+        --prepared-older-than-s)
+          [ -n "${2:-}" ] || orchid_die "--prepared-older-than-s requires a value"
+          prepared_older_than_s_arg="$2"; shift 2 ;;
+        *) orchid_die "usage: orchid jobs gc [--older-than-s N] [--prepared-older-than-s N] | orchid jobs gc --reap-prepared [--older-than-s N] [--prepared-older-than-s N]" ;;
       esac
     done
     mkdir -p "$quarantine_dir"
     now="$(date +%s)"
+    # The liveness bound for the log-backed half of the unlaunched class, and
+    # NOT a retention policy: a caller's --older-than-s/--prepared-older-than-s
+    # says how long to keep a reapable manifest, while this says whether one is
+    # reapable at all. `stall_minutes` is the kernel's existing "no sign of life
+    # for long enough to call it stuck" knob -- the same one `check` kills a
+    # stamped job over -- so no new number is invented here.
+    stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
 
-    # --reap-prepared (v1-m4): a SEPARATE, exclusive mode from the ordinary
-    # dead-job reap below -- targets EXACTLY the pid==0 "prepared, never
-    # launched" manifests the ordinary loop deliberately skips (see its own
-    # comment just below), closing the live incident where an orphaned
-    # prepare-but-never-launch manifest (e.g. `runners/orchid-launch` dying
-    # between `jobs prepare` and the actual spawn) sat forever, re-reported
-    # as `prepared` by every `jobs check` call across two whole runs. A
-    # never-launched manifest's own `started_at` is always 0 (jobs prepare
-    # mints it that way), so age is instead measured off the manifest FILE's
-    # own mtime -- the only signal on disk for "how long has this sat
-    # prepared". Ordinary `gc` (no --reap-prepared) is UNCHANGED: it still
-    # skips every pid==0 manifest outright, so this must be invoked as its
-    # own explicit pass (e.g. a separate cron line) rather than folded into
-    # the default. Same suspect-fields validation as the dead-job reap below
-    # (job_id must match the exact shape `jobs prepare` generates) --
-    # quarantined as `.reason-gc-suspect`, never reaped, on any mismatch. No
-    # epoch fence here either, for the same reason the whole `gc` arm
-    # isn't fenced (runtime-only; see the arm's own header comment).
+    # --reap-prepared (v1-m4): the EXCLUSIVE, explicit form of the unlaunched
+    # reap -- unlaunched manifests only, nothing else touched, and
+    # `--older-than-s` (default 3600) taken literally. Ordinary `gc` reaps the
+    # same class (below) alongside dead jobs, so this mode is what an operator
+    # or a caller reaches for when it must not touch anything else: it is the
+    # reap runners/orchid-drive runs in PLANNING, where the dead-job reap must
+    # not run at all because that phase deliberately skips reconcile. It is NOT
+    # a wider hammer: it reaps exactly what job_unlaunched_reapable answers for,
+    # so a pid-0 manifest whose log was written within `stall_minutes` survives
+    # it at every bound, including 0 -- that one may have an engine behind it.
+    # No epoch fence here either, for the same reason the whole `gc` arm isn't
+    # fenced (runtime-only; see the arm's own header comment).
+    #
+    # BOTH BOUNDS ARE HONOURED HERE, with the specific one winning. This mode
+    # reaps exactly one class, and `--prepared-older-than-s` is that class's own
+    # bound: a caller that names it and is then silently given `--older-than-s`
+    # (or, worse, the 3600 default) has been told a number was applied that was
+    # not, which is the precise shape of dogfood F41 -- a bound typed and
+    # ignored. Parsing a flag and dropping it is the same defect one level up,
+    # so it is either honoured or refused, and honouring it costs nothing:
+    # `--older-than-s` still means what it always did when it is the only one
+    # given, so runners/orchid-drive's PLANNING reap is unchanged.
     if [ "$reap_prepared" -eq 1 ]; then
-      older_than_s="${older_than_s_arg:-3600}"
+      older_than_s="${prepared_older_than_s_arg:-${older_than_s_arg:-3600}}"
       for f in "$jobs_dir"/*.json; do
         [ -e "$f" ] || continue
-        pid="$(jq -r .pid "$f")"
-        [ "$pid" = 0 ] || continue   # only never-launched manifests
-        mtime="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
-        age=$(( now - mtime ))
-        [ "$age" -gt "$older_than_s" ] || continue   # too young: untouched
-        job_id="$(jq -r .job_id "$f")"
-        suspect=0
-        echo "$job_id" | grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' || suspect=1
-        if [ "$suspect" -eq 1 ]; then
-          base="$(basename "$f")"
-          quarantine_file "$f" gc-suspect
-          echo "gc-skip $base (suspect fields)"
-          continue
-        fi
-        quarantine_file "$f" gc-prepared
-        rm -rf "$rt/packs/$job_id" "$rt/requests/$job_id.json"
-        echo "gc-prepared $job_id"
+        gc_reap_unlaunched "$f" "$now" "$older_than_s" "$stall_s"
       done
       exit 0
     fi
 
     older_than_s="${older_than_s_arg:-$(config_get "$repo" gc_older_than_s 86400)}"
+    # T027 (dogfood F29/F41): ordinary `gc` reaps UNLAUNCHED manifests too. It
+    # used to skip every pid==0 manifest outright, which left `orchid jobs gc
+    # --older-than-s 0` -- the call the driver itself makes and the first one an
+    # operator reaches for -- with no effect at all on 74 of them. They were
+    # deleted by hand, on two separate runs.
+    #
+    # `pid == 0` is NOT the test. Half of that class has a log, which means the
+    # spawn happened and an engine may be running with its pid recorded
+    # nowhere; reaping one of those while it is still writing throws away the
+    # only handle on a live process. gc_reap_unlaunched asks
+    # job_unlaunched_reapable, which reads the pid, the log and the log's own
+    # mtime together, so a log-backed manifest is retired only once it has been
+    # silent for as long as `check` would kill a stamped job for.
+    #
+    # Its retention bound is SEPARATE from the dead-job one because its age
+    # anchor is different (file mtime, since started_at is 0 on anything that
+    # never stamped a pid) and because an automatic caller needs a margin that
+    # it does not need there -- a manifest seconds old may belong to a launcher
+    # sitting between its own `jobs prepare` and its spawn line right now, and
+    # reaping that one deletes the pack and request document out from under a
+    # live launch. That margin is the CALLER's to pass (see
+    # --prepared-older-than-s above), never this verb's to impose: an operator
+    # who says 0 gets 0.
+    prepared_older_than_s="${prepared_older_than_s_arg:-$older_than_s}"
     for f in "$jobs_dir"/*.json; do
       [ -e "$f" ] || continue
       pid="$(jq -r .pid "$f")"
-      [ "$pid" != 0 ] || continue          # never started: not "dead", just prepared
+      if [ "$pid" = 0 ]; then              # never started, or spawned-but-unstamped
+        gc_reap_unlaunched "$f" "$now" "$prepared_older_than_s" "$stall_s"
+        continue
+      fi
       if kill -0 "$pid" 2>/dev/null; then continue; fi   # still alive: untouched
       started_at="$(jq -r .started_at "$f")"
       age=$(( now - started_at ))
@@ -442,8 +1924,9 @@ case "$sub" in
       # ..). Anything else is suspect: leave every runtime file in place and
       # just quarantine the manifest itself as gc-suspect so it surfaces,
       # instead of silently reaping it.
+      # A herestring, for the same reason the salvage scan above uses one.
       suspect=0
-      echo "$job_id" | grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' || suspect=1
+      grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' <<<"$job_id" || suspect=1
       case "$log_f" in
         *..*) suspect=1 ;;
       esac
@@ -457,12 +1940,39 @@ case "$sub" in
         echo "gc-skip $base (suspect fields)"
         continue
       fi
+      # A JOB WHOSE ENVELOPE IS STILL PENDING IN THE SPOOL HAS DELIVERED, and
+      # its manifest is not litter. `reconcile` and this reap run in the same
+      # pass, in that order, so a job that exits BETWEEN them is dead here with
+      # its envelope written and not yet drained -- and reaping the manifest
+      # then destroys the delivery outright, because reconcile matches an
+      # envelope to its job THROUGH the manifest: the next pass finds none and
+      # quarantines the envelope as `unknown-job`. What the engine actually
+      # reported is lost, and every reader downstream sees the job as one that
+      # died without an envelope. Skipped here instead, so the next reconcile
+      # can file it; the manifest is reaped on a later pass either way (once
+      # drained, reconcile deletes it itself; if the envelope is quarantined as
+      # malformed the spool entry is gone and this loop reaps it as before), so
+      # nothing lingers. Keyed <spool>/<job_id>.json -- the exact path `prepare`
+      # mints as `output`, and the same key the orphan sweep below already uses
+      # -- rather than the manifest's own `output` field, which a fixture or a
+      # hand-edited manifest may point at something that always exists.
+      if [ -e "$spool_dir/$job_id.json" ]; then
+        echo "gc-pending $job_id (envelope awaiting reconcile)"
+        continue
+      fi
+      history_append "$f" gc-dead
       quarantine_file "$f" gc-dead
-      rm -rf "$rt/packs/$job_id" "$rt/requests/$job_id.json" "$log_f"
+      # `$rt/exits/$job_id` goes with the rest of this job's litter. It is
+      # keyed on the job_id validated above (never on manifest-controlled
+      # text), and by the time gc reaps a dead manifest the reconcile pass
+      # that would have read the exit code has already run -- reconcile,
+      # check, then gc, in that order, every pass.
+      rm -rf "$rt/packs/$job_id" "$rt/requests/$job_id.json" "$rt/exits/$job_id" "$log_f"
       echo "gc $job_id"
     done
-    # Orphan sweep: a pack dir or request file with no manifest AND no
-    # pending spool envelope waiting on it. A job that finished normally
+    # Orphan sweep: a pack dir, request file or exit-code record with no
+    # manifest AND no pending spool envelope waiting on it. A job that
+    # finished normally
     # (reconcile already deleted its manifest and moved its spool envelope
     # to reviews/) leaves neither pack nor request litter behind on its own,
     # so any pack/request found here with truly nothing referencing it is
@@ -474,7 +1984,7 @@ case "$sub" in
     # $rt/requests), never from manifest JSON content — so, unlike the
     # dead-reap loop above, there is no manifest-controlled string here to
     # validate; $p is already a real path rooted under runtime/.
-    for p in "$rt/packs"/* "$rt/requests"/*; do
+    for p in "$rt/packs"/* "$rt/requests"/* "$rt/exits"/*; do
       [ -e "$p" ] || continue
       job_id="$(basename "$p")"; job_id="${job_id%.json}"
       [ -e "$jobs_dir/$job_id.json" ] && continue
@@ -483,15 +1993,184 @@ case "$sub" in
       echo "gc-orphan $p"
     done
     ;;
+  record-exit)
+    # THE OPERATOR'S ANSWER TO AN `untracked` JOB, AS A VERB (T031 attempt-6
+    # rework). `job_liveness` returns `unresolved` for a manifest that never
+    # stamped a pid and has gone quiet: nothing on this machine can decide
+    # whether an engine is still running in that worktree, so reconcile holds
+    # the envelope and runners/orchid-drive raises an operator boundary. The
+    # only thing that clears it is the positive record `job_exit_recorded`
+    # reads -- and for this class the launcher's wrapper will never write one,
+    # because nothing ever waited on that process.
+    #
+    # So a human who HAS looked (at the process table, at the log, at the
+    # worktree) records what they found, and this is where they record it.
+    # Before this verb existed the boundary told them to `printf` a number
+    # straight into `.orchid/runtime/exits/<job-id>`, which is the shape this
+    # kernel does not otherwise ask of anybody: an operator hand-editing
+    # runtime state has no gate between a typo and a decision, and every
+    # guarantee below would simply not have been asked.
+    #
+    # WHAT IS GATED, and why each one:
+    #
+    #   the job_id's SHAPE. It builds a write path under $rt/exits, so it is
+    #   held to the exact form `jobs prepare` mints -- the same regex the gc
+    #   and salvage reaps validate before they let a manifest field steer a
+    #   path. A traversal is refused before anything is touched.
+    #
+    #   a MANIFEST must exist. The exit record is a statement about a job, so
+    #   there has to be a job to make it about. Its absence also means the
+    #   ordinary thing already happened (reconcile filed the envelope and
+    #   deleted the manifest), which is worth saying rather than silently
+    #   minting a file nothing will ever read.
+    #
+    #   LIVENESS must be exactly `unresolved`. This verb writes the one fact
+    #   the whole task exists to protect -- "that process has stopped" -- so
+    #   it is admitted only for the state where no other answer is available.
+    #   `running` has the kernel as a witness and needs none of this;
+    #   `starting` is a job whose log moved within `stall_minutes`, so an
+    #   engine is plausibly still producing output; `exited` is already
+    #   answered and reconciles on the next pass. Each of those is refused
+    #   with the thing that DOES answer it, never with a bare no.
+    #
+    #   an existing record is NEVER OVERWRITTEN. `$rt/exits/<job-id>` written
+    #   by the launcher is a process's report about itself; replacing it with
+    #   a human's guess is the same substitution -- one thing certified on the
+    #   strength of another -- that this task is about. (The liveness gate
+    #   above already excludes it, since a recorded exit answers `exited`;
+    #   this is the second lock on the same door, and it names the value on
+    #   file so the refusal is readable.)
+    #
+    # Runtime-only, so -- exactly like `gc`, and for the reason `gc`'s header
+    # gives -- there is no epoch fence here: nothing under .orchid/tasks or
+    # .orchid/reviews is touched, and INV-02 has nothing to protect. There is
+    # no verb lock either: the write is a single atomic rename of a path that
+    # is absent or final, so a concurrent tick either does not see it yet or
+    # sees the whole of it.
+    #
+    # NOT ADMITTED TO runners/orchid-orchestrator-command, and that is the
+    # point of it being an operator verb: the finding it records is made by
+    # LOOKING at the process table, which a woken session cannot do. A broker
+    # that admitted it would let an orchestrator declare an engine dead in
+    # order to unblock itself -- the r-002/T013 substitution again, with the
+    # session standing in for the evidence. The broker's `jobs` default arm
+    # already refuses it; tests/test_orchestrator_command.sh pins that.
+    job_id="${1:-}"; code="${2:-}"
+    [ "$#" -eq 2 ] || orchid_die "usage: orchid jobs record-exit <job-id> <exit-code>"
+    # A HERESTRING, not `echo | grep -q`: this file runs under `set -o pipefail`
+    # and `grep -q` exits at its first match, so a pipeline can report the
+    # producer's SIGPIPE (141) for a pattern that DID match. `<<<` has no pipe
+    # in it and cannot invert that way.
+    grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' <<<"$job_id" \
+      || orchid_die "'$job_id' is not a job id — expected the form 'orchid jobs ls' prints, e.g. j-e12-T031-a4-9c2f"
+    # Length before value, deliberately: `[ "$n" -le 255 ]` on a digit string
+    # too long for a 64-bit integer is a bash arithmetic ERROR, not a false
+    # comparison, so the bound has to be reached through something that cannot
+    # overflow. Three digits is the whole of a wait status's range.
+    case "$code" in ''|*[!0-9]*) orchid_die "exit code must be a whole number 0-255 (got '$code')" ;; esac
+    [ "${#code}" -le 3 ] || orchid_die "exit code must be a whole number 0-255 (got '$code')"
+    [ "$code" -le 255 ] || orchid_die "exit code must be a whole number 0-255 (got '$code')"
+    manifest="$jobs_dir/$job_id.json"
+    [ -f "$manifest" ] \
+      || orchid_die "no outstanding job $job_id — there is no manifest for it, so either it already reconciled and was cleared, or the id is wrong ('orchid jobs ls --all' lists both)"
+    recorded=""; recorded="$(job_exit_code "$job_id" || true)"
+    [ -z "$recorded" ] \
+      || orchid_die "job $job_id already has its exit on record as $recorded, written by the process itself — that record is not replaced; its envelope files on the next 'orchid jobs reconcile'"
+    stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+    case "$(job_liveness "$manifest" "$(date +%s)" "$stall_s")" in
+      running)
+        orchid_die "job $job_id is running (pid $(jq -r '.pid // 0' "$manifest")) — the kernel can see it, so nothing here needs recording; 'orchid jobs check' is what ends a job that has stalled or run past its budget" ;;
+      starting)
+        orchid_die "job $job_id wrote to its log within stall_minutes, so an engine is producing output for it — wait for it to go quiet (or end it with 'orchid jobs check'); recording an exit now would file its report while it is still working" ;;
+      exited)
+        orchid_die "job $job_id is already resolved — its exit is on record or it never started, so its envelope files on the next 'orchid jobs reconcile' with nothing to record here" ;;
+    esac
+    mkdir -p "$rt/exits"
+    # The code on line 1 and nothing else on it: `job_exit_code` reads exactly
+    # `head -n1` and rejects any non-digit, and `job_exit_recorded` asks only
+    # whether the file is there -- so both readers see precisely what the
+    # launcher's own write gives them.
+    #
+    # Line 2 is PROVENANCE, and it is the reason this is not just a `printf`
+    # with a nicer name. A launcher-written record is a process reporting its
+    # own status; this one is a human's finding about a process nobody could
+    # ask. After the write nothing else on disk tells those two apart, and the
+    # difference is exactly the kind an investigation later wants -- so it is
+    # written down, in a line every existing reader already skips.
+    {
+      printf '%s\n' "$code"
+      printf 'recorded-by: operator (orchid jobs record-exit) at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } | atomic_write "$rt/exits/$job_id"
+    echo "recorded-exit $job_id $code"
+    echo "orchid: $job_id is now resolved; its held envelope is admitted by the next 'orchid jobs reconcile'" >&2
+    ;;
   review-plan)
-    # tier-1, read-only: pure routing diagnostics over durable state + config
-    # + engine discovery -- no mutation anywhere, so (unlike prepare/
-    # reconcile) this is deliberately NOT epoch-fenced. Consulted by the
-    # orchestrator before dispatching each reviewer slot (PROTOCOL, Task 10).
-    task="$1"
+    # The slot table for a task's current attempt. The bare form is tier-1 and
+    # read-only -- pure routing diagnostics over durable state + config +
+    # engine discovery, so (unlike prepare/reconcile) it is deliberately NOT
+    # epoch-fenced, and an operator can ask what the plan is from anywhere.
+    # Consulted before dispatching each reviewer slot (PROTOCOL, Task 10).
+    #
+    # The three writing forms below PIN that table for the life of the attempt
+    # (lib/review.sh's "PINNED plan" header has the incident this exists for).
+    # They mutate durable state under `.orchid/reviews`, so they take the verb
+    # lock and the epoch fence exactly like `prepare`/`reconcile` do, and each
+    # journals the table it landed -- never the no-op re-pin, so a driver may
+    # call `--pin` on every pass without narrating a change that did not
+    # happen:
+    #   --pin             pin the effective plan, once, idempotently
+    #   --repin           rebind the attempt to the LIVE routing table
+    #   --adopt-evidence  re-pin onto the engines that actually reviewed
+    task="${1:-}"
+    [ -n "$task" ] || orchid_die "usage: orchid jobs review-plan <task> [--pin|--repin|--adopt-evidence]"
+    shift
+    plan_mode=show
+    while [ $# -gt 0 ]; do case "$1" in
+      --pin) plan_mode=pin; shift ;;
+      --repin) plan_mode=repin; shift ;;
+      --adopt-evidence) plan_mode=adopt; shift ;;
+      *) orchid_die "usage: orchid jobs review-plan <task> [--pin|--repin|--adopt-evidence]" ;;
+    esac; done
     tf="$state/tasks/$task.md"
     [ -f "$tf" ] || orchid_die "no task $task"
-    review_routing "$repo" "$task"
+    if [ "$plan_mode" = show ]; then
+      review_plan "$repo" "$task"
+      exit 0
+    fi
+    verb_lock_guard "$repo"
+    epoch_require "$repo"
+    plan_before="$(review_plan_pinned "$repo" "$task" 2>/dev/null || true)"
+    plan_columns_persisted=0
+    review_plan_columns_persisted "$repo" "$task" && plan_columns_persisted=1
+    case "$plan_mode" in
+      pin)
+        plan_after="$(review_plan_pin_rows "$repo" "$task")" || \
+          orchid_die "cannot pin a review plan for $task — a plan is bound to a round of evidence, and there is none to bind to until the task has a candidate_sha (and a routable slot)" ;;
+      repin)
+        plan_after="$(review_plan_repin_rows "$repo" "$task")" || \
+          orchid_die "cannot re-pin a review plan for $task — a plan is bound to a round of evidence, and there is none to bind to until the task has a candidate_sha (and a routable slot)" ;;
+      # review_plan_adopt_evidence_rows prints its own refusal (which of the two
+      # conditions failed, with the counts) to stderr; repeating it here would
+      # replace a specific diagnostic with a generic one.
+      adopt) plan_after="$(review_plan_adopt_evidence_rows "$repo" "$task")" || exit 1 ;;
+    esac
+    # INV-08 ordering: compute the complete replacement first, journal that
+    # exact table, and only then mutate the pin. A failed journal write must
+    # leave no new/replaced review-plan file behind. If the process dies after
+    # the journal but before the store, the orphan entry is benign and the
+    # idempotent next invocation retries; the reverse order would leave an
+    # unjournaled durable-state change.
+    if [ "$plan_after" != "$plan_before" ] || [ "$plan_columns_persisted" -ne 1 ]; then
+      # The journaled summary carries the frozen attribution key as well as the
+      # slot's engine name: the key is what a filed review is matched by, so a
+      # record that omitted it would not say what was actually pinned.
+      ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --task "$task" --kind review_plan \
+        "review plan pinned for attempt $(review_plan_attempt "$repo" "$task") ($plan_mode): $(printf '%s\n' "$plan_after" | while IFS=$'\t' read -r s e l d q; do printf 'slot %s=%s[%s]/%s/%s ' "$s" "$e" "$q" "$l" "$d"; done)" >/dev/null \
+        || orchid_die "cannot journal the review-plan change for $task; no review plan was written"
+      review_plan_store "$repo" "$task" "$plan_after" \
+        || orchid_die "journaled the review-plan change for $task but could not store it; retry the same idempotent command"
+    fi
+    printf '%s\n' "$plan_after"
     ;;
-  *) orchid_die "usage: orchid jobs prepare|check|reconcile|gc|review-plan" ;;
+  *) orchid_die "usage: orchid jobs ls|prepare|check|reconcile|gc|record-exit|review-plan" ;;
 esac

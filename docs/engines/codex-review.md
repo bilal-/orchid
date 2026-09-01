@@ -7,6 +7,14 @@ adapter, exposed as a distinct engine identity so a review slot can be
 routed to a fresh, engine-independent-labeled codex session distinct from
 whichever engine implemented the task.
 
+## What the repository acceptance run proves
+
+Orchid's local CI deliberately proves the suite with vendor CLIs unavailable
+on `PATH`; it does not spend quota or launch a live Codex review. Thus a green
+run proves the wrapper and its stubbed adapter contract do not depend on an
+ambient vendor install. The tested status above comes from named adapter
+qualification, not from r-002's local acceptance run.
+
 ## Install / login
 
 Nothing separate to install — this engine **is** `codex` (see
@@ -56,11 +64,23 @@ without duplicating `plugins/engines/codex/run`'s actual logic anywhere.
 - **Everything in [codex.md](./codex.md) applies here too** (stdin-piped
   prompts, `--skip-git-repo-check`, `--sandbox read-only` for review) —
   this is the exact same code path, just gated and relabeled.
-- **`codex-review`'s single-line verdict contract can drop its reasoning**
-  on a `request-changes` outcome with no `REASON:` line in the reply — an
-  empty `summary`/`findings` is valid per the envelope schema, just less
-  useful for the audit trail than agy's own REASON-capture idiom
-  (`docs/dogfood-notes.md`, m2 smaller-notes ledger).
+- **`codex-review`'s verdict contract can still drop its reasoning** on a
+  `request-changes` outcome when the reply carries no `REASON:` line — an
+  absent `summary` with an empty `findings[]` is valid per the envelope
+  schema, just useless for the audit trail. The adapter's own REASON capture
+  is agy's idiom exactly (both ask for the line, both leave `summary` absent
+  rather than inventing placeholder text when it is missing), so what is left
+  here is the reply's, not the adapter's (`docs/dogfood-notes.md`, m2
+  smaller-notes ledger). Since T033 that `summary` is also the only thing a
+  withheld verdict from a REVIEW by this identity carries into any severity
+  gate — the review prompt asks for no `FINDING:` lines, so `findings[]`
+  arrives empty and `orchid jobs reconcile` composes one `high`-severity
+  finding from the summary as it files the envelope (its `critique` prompt
+  does ask for `FINDING:` lines, and an envelope that files its own findings
+  is never touched). A reply with a `REASON:` line gives the gate — and the
+  arbiter reading the `review-conflict` boundary — the actual objection; a
+  reply without one still gets an entry, but it can only say that a
+  non-approve verdict was filed with nothing in it.
 - **Independence is about identity, not literal process separation** — a
   `codex-review` job and a `codex` implement job for the same task may
   still share the same underlying vendor account/session state; the

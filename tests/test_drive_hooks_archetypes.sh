@@ -27,7 +27,22 @@ export ORCHID_ROOT="$REPO_ROOT"
 DRIVE="$REPO_ROOT/runners/orchid-drive"
 export ORCHID_ENGINES_DIR="$WORK/eng"
 export HOME="$MACHINE_HOME"
-edge_sha="deadbeefcafebabe0000000000000000000000"
+# The candidate range every fixture task below is given: the CURRENT scenario
+# repository's own HEAD, on both ends, so entry to `testing` scans a real,
+# EMPTY range. `use_repo` re-derives it for each disposable repo, because each
+# one has a root commit of its own and a sha from the previous repo would not
+# resolve here.
+#
+# It used to be one placeholder sha that exists in no repository at all, which
+# made `git log <base>..<candidate>` FAIL rather than answer -- and the INV-04
+# scan read that silence as a clean range. T026 made the scan fail CLOSED, so a
+# range nothing can walk is refused in the same direction every other
+# unreadable-input check in this codebase fails.
+#
+# T031 additionally requires that real HEAD: verify now refuses a worktree
+# that is not the recorded candidate, and H4 depends on verify genuinely
+# running and failing.
+edge_sha=""
 
 # --- hook plugins ----------------------------------------------------------
 # `hookok` reports success and carries a guidance artifact; `hookbad` reports
@@ -75,6 +90,33 @@ printf 'manifest_version=1\nid=test/hookmute\nversion=0.1.0\nkind=hook\napi_vers
 printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/eng/hookmute/run"
 chmod +x "$WORK/eng/hookmute/run"
 
+# `hookprose` reports success carrying MULTI-PARAGRAPH guidance -- the natural
+# thing for a handler asked to explain a verify failure to write, and (T034,
+# dogfood F34) the one value on the whole driver path that is neither typed by
+# an operator nor bounded by a schema. Frontmatter holds one line per key, so
+# `task set` refuses a newline outright; the driver must therefore FOLD this to
+# one line rather than hand it over and abort an autonomous round -- and, before
+# T034, handing it over destroyed the task file mid-run with no operator
+# present at all.
+mkdir -p "$WORK/eng/hookprose"
+printf 'manifest_version=1\nid=test/hookprose\nversion=0.1.0\nkind=hook\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/hookprose/plugin.conf"
+cat > "$WORK/eng/hookprose/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+cand="$(jq -r '.candidate_sha // ""' "$req")"
+jq -n --arg jid "$jid" --arg task "$task" --arg cand "$cand" \
+  --arg g "$(printf 'the first paragraph of prose guidance\n\nthe second paragraph of prose guidance')" \
+  '{contract:1, job_id:$jid, task:$task, operation:"hook", status:"ok",
+    engine:"test/hookprose", candidate_sha:$cand,
+    artifact:{guidance:$g}, summary:"hook ok, multi-paragraph guidance"}' > "$out"
+EOF
+chmod +x "$WORK/eng/hookprose/run"
+
 # --- a stub reviewer, for the archetype walks ------------------------------
 mkdir -p "$WORK/eng/stubreview" "$WORK/eng/stubimpl"
 printf 'manifest_version=1\nid=test/stubreview\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
@@ -119,6 +161,8 @@ use_repo() {
   printf -- '---\nrun_status: running\nrun_id: r-001\n---\n# Roadmap\n' > "$d/.orchid/roadmap.md"
   cd "$d" || exit 1
   export ORCHID_REPO="$d"
+  # Re-derived per repo -- see the comment on `edge_sha` above.
+  edge_sha="$(git -C "$d" rev-parse HEAD)"
   ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
   export ORCHID_EPOCH
 }
@@ -127,8 +171,9 @@ status_of() { "$ORCHID_BIN" task show "$1" | grep '^status: ' | cut -d' ' -f2; }
 field_of() { "$ORCHID_BIN" task show "$1" | grep "^$2: " | cut -d' ' -f2-; }
 
 # to_arbitrating <id> -- the light-weight walk tests/test_task.sh uses for
-# archetype edge coverage: placeholder shas (a git log over an invalid range
-# prints nothing, so INV-04's scan never trips) plus verification_commands=true.
+# archetype edge coverage: this repo's own HEAD on both ends of the candidate
+# range (a real, EMPTY range, so INV-04's scan runs and finds nothing) plus
+# verification_commands=true.
 to_arbitrating() {
   local id="$1"
   "$ORCHID_BIN" task create "$id" "hook subject" >/dev/null
@@ -298,6 +343,48 @@ assert_eq "pin the fixture clock before re-running" "$(field_of H4 hook_guidance
   "the on_verify_fail hook's guidance is attached to the task before the rework advance"
 
 # ===========================================================================
+# H6 (T034, dogfood F34) -- on_verify_fail guidance that spans PARAGRAPHS.
+#
+# Same walk as H4, one difference: the handler writes prose. Frontmatter is one
+# `key: value` per line, so `orchid task set` now refuses a newline-bearing
+# value outright -- correct for an operator typing one, and the wrong answer
+# here, where the guidance is advisory (it never changes a routing decision)
+# and there is no operator present to retype it. The driver folds it to one
+# line instead, so the round completes and every word stays attached to the
+# task.
+#
+# Before T034 this path did neither: `task set` attempted the write, the
+# rewrite died inside awk's own argument parsing, and the task file was left at
+# ZERO BYTES mid-run -- which is why the assertions below are as much about the
+# task still EXISTING as about the value.
+# ===========================================================================
+use_repo h6
+printf 'hook.on_verify_fail=hookprose\n' > orchid.config
+"$ORCHID_BIN" task create H6 "verify fails, prose guidance" >/dev/null
+"$ORCHID_BIN" task set H6 base_sha "$edge_sha" >/dev/null
+"$ORCHID_BIN" task set H6 candidate_sha "$edge_sha" >/dev/null
+"$ORCHID_BIN" task set H6 verification_commands false >/dev/null
+"$ORCHID_BIN" task advance H6 implementing --reason d >/dev/null
+"$ORCHID_BIN" task advance H6 testing --reason d >/dev/null
+
+drive_settle rework H6 \
+  || fail "multi-paragraph hook guidance must not stop the round: a failing verify still has to reach rework (last rc=$DRIVE_RC, out: $DRIVE_OUT)"
+assert_eq rework "$(status_of H6)" "the round completes rather than aborting over a formatting detail nobody chose"
+# `task show` exits non-zero on a damaged task file now, so `field_of` reaching
+# a value at all is itself the evidence the file survived the write.
+assert_eq "the first paragraph of prose guidance  the second paragraph of prose guidance" \
+  "$(field_of H6 hook_guidance)" \
+  "the paragraphs are FOLDED onto one line, keeping every word attached to the task"
+assert_eq 1 "$(grep -c '^hook_guidance: ' .orchid/tasks/H6.md)" \
+  "and land as exactly one frontmatter line -- a second line would be body text no reader of this field ever sees"
+[ -s .orchid/tasks/H6.md ] || fail "THE TASK FILE IS EMPTY: attaching prose guidance destroyed it mid-run, which is the defect F34 found"
+
+# This is the MECHANIZED half of that step. The hand-executed half -- the same
+# verbs in the same order, run by a front-end reading PROTOCOL.md, with no
+# driver to fold anything -- is pinned in tests/test_hooks.sh's tick-walk,
+# together with the instruction that tells it to fold.
+
+# ===========================================================================
 # A1 -- dispatch targets are read off the DECLARED transitions. No archetype
 # name appears in the driver; these four all resolve through the same lookup.
 # ===========================================================================
@@ -313,6 +400,27 @@ assert_eq reviewing "$(drive_dispatch_target review pending)" "the shipped revie
 assert_eq reviewing "$(drive_dispatch_target audit pending)" "a custom archetype dispatches into whatever IT declares"
 assert_eq reviewing "$(drive_dispatch_target audit rework)" "the same lookup serves the rework re-dispatch edge"
 assert_eq "" "$(drive_dispatch_target audit merging)" "a status the archetype declares no active edge out of yields nothing"
+
+# T026: the reverify edge (`<idle>:testing`) is NOT a dispatch target, and the
+# lookup must not depend on the ORDER an archetype lists its transitions in.
+# The scan is first-active-wins, so an archetype that merely wrote
+# `rework:testing` before `rework:implementing` would otherwise send every
+# reworked task straight back into verification of the candidate that just
+# failed -- no implementer spawned, no operator vouching for the tree, which
+# is the whole precondition that edge carries. This fixture writes them in
+# exactly that order.
+mkdir -p "$WORK/arch/reordered"
+printf 'manifest_version=1\nid=test/reordered\nversion=0.1.0\nkind=archetype\napi_version=1\noutcome=code\ntransitions=pending:implementing,implementing:testing,testing:reviewing,testing:rework,reviewing:arbitrating,arbitrating:merging,arbitrating:rework,merging:done,merging:rework,merging:testing,rework:testing,rework:implementing,blocked:testing\n' \
+  > "$WORK/arch/reordered/plugin.conf"
+archetype_validate reordered >/dev/null || fail "the reordered archetype fixture must satisfy the meta-contract"
+assert_eq implementing "$(drive_dispatch_target reordered rework)" \
+  "a rework dispatch still resolves to implementing with rework:testing listed FIRST — the reverify edge is never a dispatch target"
+assert_eq implementing "$(drive_dispatch_target reordered pending)" "and the ordinary pending edge is unaffected"
+assert_eq "" "$(drive_dispatch_target reordered blocked)" \
+  "a status whose only active edge IS the reverify one yields no dispatch target at all — blocked is resolved by an operator verb, never by the driver"
+assert_eq "" "$(drive_dispatch_target feature blocked)" "the same holds for the shipped feature archetype"
+assert_eq testing "$(drive_dispatch_target feature merging)" \
+  "and merging:testing — an ACTIVE source, orchid merge's own rebase reset — is untouched by that skip"
 
 assert_eq implementer "$(drive_role_for_status implementing | cut -f1)" "implementing waits on the implementer role"
 assert_eq reviewer "$(drive_role_for_status reviewing | cut -f1)" "reviewing waits on the reviewer role"

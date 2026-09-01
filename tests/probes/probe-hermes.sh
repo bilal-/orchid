@@ -71,7 +71,7 @@ with_timeout() {
 }
 
 is_auth_failure() {  # combined stdout+stderr text
-  printf '%s' "$1" | grep -qiE 'login|auth|unauthorized|not authenticated|api.?key'
+  grep -qiE 'login|auth|unauthorized|not authenticated|api.?key' <<<"$1"
 }
 
 # --- Probe 1: review-shaped ---------------------------------------------
@@ -95,7 +95,7 @@ set -e
 stderr_review="$(cat "$err_file")"
 combined_review="$stdout_review"$'\n'"$stderr_review"
 
-if [ "$rc_review" -eq 0 ] && printf '%s\n' "$stdout_review" | grep -qiE '^VERDICT:[[:space:]]*(approve|request-changes)[[:space:]]*$'; then
+if [ "$rc_review" -eq 0 ] && grep -qiE '^VERDICT:[[:space:]]*(approve|request-changes)[[:space:]]*$' <<<"$stdout_review"; then
   echo "PROBE-RESULT: review-shaped YES (reply: $(printf '%s' "$stdout_review" | tr '\n' ' ' | head -c 200))"
 elif [ "$rc_review" -ne 124 ] && is_auth_failure "$combined_review"; then
   echo "PROBE-RESULT: review-shaped AUTH-UNAVAILABLE ($(printf '%s' "$combined_review" | head -n1))"

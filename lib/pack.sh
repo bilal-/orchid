@@ -11,6 +11,11 @@
 # everything, in a fixed order) -- lib/lessons.sh has no further
 # dependencies of its own, so there is no cycle risk.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lessons.sh"
+# Same deliberate exception, same reason (T025): several test files source
+# lib/pack.sh directly with no ORCHID_ROOT set, and lib/rework.sh has no
+# dependencies of its own beyond lib/common.sh (which every caller of this
+# file already sources for atomic_write/config_get), so there is no cycle.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rework.sh"
 
 # _pack_fm_field <task-file> <key> -- a single frontmatter value, same
 # one-key extraction the review/critique branch below inlines twice already
@@ -19,6 +24,154 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lessons.sh"
 # third time.
 _pack_fm_field() {
   awk -v k="$2" '/^---$/{n++;next} n==1 && index($0,k": ")==1{print substr($0,length(k)+3)}' "$1"
+}
+
+# _pack_rework_brief <state> <task> [section] -- the rework brief, on stdout,
+# or nothing at all when this task has no captured failure to feed back (its
+# first attempt, or a rework nobody had evidence for).
+#
+# This is the OTHER half of the F27 fix. Capturing the failing output before
+# the kernel invalidates it (lib/rework.sh) only makes it survivable; a pack
+# that never carries it still hands the next attempt the same brief as the
+# last one, which is how three attempts came back byte-identical. The brief
+# leads with the CONVERGENCE fact, because that is the part a re-reading
+# implementer cannot derive for itself: whether the previous round's change
+# moved this failure at all.
+#
+# Verbatim output, never a summary: the whole finding is that a summarized
+# "verify failed" is what the loop already had.
+#
+# `section` splits that into the three parts the BUDGET has to treat
+# differently, and each split exists for one concrete failure:
+#
+#   head -- the round number, the signature, and whether it has repeated
+#           unchanged, down to and including the heading that labels the log.
+#           Small, bounded, and the single most valuable thing in the pack:
+#           an implementer that loses it is back to re-reading raw output
+#           with no idea it has already seen it, which IS finding F27. Split
+#           out because rework.md trims TAIL-kept and this sits at the TOP.
+#   body -- the captured log itself. Unbounded (a suite's whole output), and
+#           the only part it is ever correct to CUT.
+#   diff -- the comparison against the round before it. Unbounded too, and
+#           the first part it is correct to DROP ENTIRELY.
+#
+# BODY AND DIFF ARE NOT ONE SECTION, and the reason is the whole trim rule
+# read backwards. Tail-keeping a body of "the failing run, then the diff
+# against the previous one" keeps the DIFF and eats the RUN: the pack would
+# ship a comparison of two runs with neither run in it, under a heading
+# promising the verbatim output of the one that failed. That is worse than
+# omitting the comparison, because a diff is only meaningful against a
+# baseline the reader can see -- so the failing run is kept whole first, and
+# the comparison is dropped, whole, whenever it does not fit after it.
+#
+# Default `all` keeps the whole brief on stdout for any caller that has no
+# budget to spend -- the three sections concatenate to exactly it.
+#
+# NOTHING AT ALL when the newest captured round does not bind to the task's
+# CURRENT candidate (rework_evidence_current). The brief's own sentences are
+# what make that mandatory: "you already tried this and got exactly this" is a
+# claim about the code the recipient is holding, and against a superseded
+# candidate it is simply false -- a confident, specific lie in place of the
+# silence this feature was written to end. The candidate moves under this
+# evidence in ordinary operation (the reworking implementer commits, `orchid
+# merge`'s rebase arm mints a new sha, an operator re-derives the branch), so
+# this is a routine state, not a corner.
+#
+# NOTHING AT ALL, likewise, once the candidate has PASSED — and the binding
+# cannot see that one. On a reverify with no implementer cycle the candidate
+# never moves, so the captured round names the tree still under work and binds
+# every time, while `testing -> reviewing` has since proved that tree green.
+# The kernel RETIRES the captured rounds on that edge instead (the
+# `testing -> reviewing` arm of `task advance`, renaming each past
+# rework_retired_log_path), and this function reads them through
+# `rework_latest_log`, which no longer finds them. There is nothing to
+# special-case here, and that is the point: one edge owns the lifecycle and
+# every reader inherits it.
+_pack_rework_brief() {
+  local state="$1" task="$2"
+  local section="${3:-all}"
+  # Separate declaration on purpose: within ONE `local`, the earlier
+  # assignments have not taken effect yet, so `tf` would be built from the
+  # OUTER scope's $state/$task (ShellCheck SC2318).
+  local tf="$state/tasks/$task.md"
+  local latest prev rounds sig reps
+  latest="$(rework_latest_log "$state" "$task" 0)" || return 0
+  # An EMPTY captured round is not evidence, and the brief's own framing is
+  # what makes that dangerous: "the verbatim output of the run that FAILED is
+  # reproduced below" over zero bytes asserts that the failing run printed
+  # nothing, which is a claim about the failure rather than an absence of one.
+  # No brief at all is the honest reading, and it is what the pre-T025 loop
+  # already had -- so this degrades, never misleads. (`orchid verify` always
+  # writes at least a header and an `exit:` line, so this is a torn/truncated
+  # file, not an ordinary one.)
+  [ -s "$latest" ] || return 0
+  # The binding, checked HERE as well as at pack_build's call site: this
+  # function is the one that writes the sentences, so it is the one that has
+  # to be unable to write them about the wrong candidate. Callers get the
+  # empty output that says "no previous failure applies to this candidate".
+  rework_evidence_current "$state" "$task" "$(_pack_fm_field "$tf" candidate_sha)" || return 0
+  prev="$(rework_latest_log "$state" "$task" 1 2>/dev/null || true)"
+  rounds="$(_pack_fm_field "$tf" rework_rounds)"
+  sig="$(_pack_fm_field "$tf" rework_signature)"
+  reps="$(_pack_fm_field "$tf" rework_signature_repeats)"
+  case "$reps" in ''|*[!0-9]*) reps=1 ;; esac
+
+  if [ "$section" = all ] || [ "$section" = head ]; then
+    echo "# Previous attempt (rework round ${rounds:-1}) — what it actually failed on"
+    echo
+    echo "You are reworking this task. The verbatim output of the run that FAILED"
+    echo "is reproduced below. It is not a summary and not a pointer: it is the"
+    echo "evidence itself, captured before the kernel invalidated it."
+    echo
+    echo "- failure signature: ${sig:-unknown}"
+    if [ "$reps" -ge 2 ]; then
+      echo "- **this signature has now repeated $reps times in a row, unchanged.**"
+      echo
+      echo "READ THAT AGAIN: the previous round's changes did not move this failure"
+      echo "by a single byte. You already tried a fix and got exactly this. Whatever"
+      echo "the last attempt did was either not the cause, or never reached the code"
+      echo "under test. Do not re-apply it in another form. Establish what is"
+      echo "actually being asserted, and what the failing value actually is, before"
+      echo "changing anything — including the possibility that the ASSERTION is the"
+      echo "defect and the production code is right."
+    else
+      echo "- this is the first time this particular failure has been seen."
+    fi
+    echo
+    echo '## The failing run, verbatim'
+    echo
+  fi
+  if [ "$section" = all ] || [ "$section" = body ]; then
+    cat "$latest"
+  fi
+  if [ "$section" = all ] || [ "$section" = diff ]; then
+    if [ -n "$prev" ]; then
+      echo
+      if [ "$reps" -ge 2 ]; then
+        echo "## Versus the round before it"
+        echo
+        echo "Byte-identical after the volatile header (timestamp, shas, working"
+        echo "directory). There is no diff to show."
+      else
+        echo '## What changed since the round before it'
+        echo
+        # Header lines included on purpose. They are volatile by design (the
+        # signature strips them precisely so a re-run does not read as a new
+        # failure), but this diff is read by a HUMAN-facing implementer, and a
+        # hunk showing only `date:`/`sha:` moving is itself the answer to "did
+        # anything change" -- silently hiding it would leave an empty diff
+        # under a heading promising one.
+        diff -u "$prev" "$latest" || true
+      fi
+    fi
+  fi
+  # Explicit, because the caller reads this status as "the brief could not be
+  # built" and clears ALL THREE parts on it. Every arm above is an `if` whose
+  # false condition yields 0, so this is what it already returns -- but a
+  # single round (no `prev`) asking for the `diff` section leaves that
+  # unstated-by-accident, and the day it stops being true the pack loses the
+  # brief it did build, on the commonest shape there is.
+  return 0
 }
 
 # _pack_build_plan <repo> <state> <dest> -- the plan-scoped pack (v1-m3):
@@ -336,6 +489,155 @@ pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = in
     return 12
   fi
 
+  # T025: rework.md -- the previous attempt's failure, fed back into the
+  # attempt that has to fix it. Budgeted FIRST among the truncatables (ahead
+  # of lessons.md and context.md): on a rework attempt this is the single
+  # most specific input in the pack, and it is the one input whose absence
+  # produced the identical-failure loop this feature exists to end.
+  # Truncated TAIL-KEPT (`tail -c`), the opposite of tasks.md/lessons.md's
+  # head-first trim and for a concrete reason: a suite's output ends with the
+  # failing assertions and the exit line, so keeping the head of a long log
+  # keeps the part that passed.
+  #
+  # But tail-kept applies to the LOG, not to the brief that frames it and not
+  # to the comparison under it. Three parts, three different budget rules
+  # (_pack_rework_brief's `section` argument):
+  #
+  #   * the PREAMBLE -- the round number, the signature, and "this signature
+  #     has now repeated N times in a row, unchanged" -- sits at the top, so a
+  #     whole-file tail trim would drop precisely the sentence this feature
+  #     exists to deliver and hand the engine an unlabelled fragment of
+  #     somebody's test output. That is not a degraded brief; it is the
+  #     pre-T025 brief with extra noise, i.e. finding F27 again, reached
+  #     through the budget instead of through the dangling pointer. Kept
+  #     WHOLE, always.
+  #   * the FAILING RUN is what everything else is about, and it is the only
+  #     part that is ever cut -- tail-kept, so a trim keeps the assertions and
+  #     the exit line.
+  #   * the COMPARISON against the previous round is dropped ENTIRELY, and
+  #     first, whenever it does not fit after the run. It is the one part that
+  #     is worthless without the other: shipping a diff of two runs while
+  #     trimming away the run itself leaves the engine holding a description
+  #     of a change to output it cannot see.
+  #
+  # AND IT IS NEVER OMITTED SILENTLY WHEN IT IS REQUIRED. If a captured round
+  # binds to this candidate, the failure IS the specific input this attempt was
+  # dispatched to act on: sending an implementer without it, or with a token
+  # fragment of it, is the identical-answer loop with extra steps. So a budget
+  # that cannot carry the preamble plus a meaningful tail of the failing run
+  # fails the pack (exit 12, input_overflow, the same class the launcher
+  # already refuses to spawn on) rather than quietly shipping a pack that will
+  # produce the same failure again. The operator gets a named budget problem
+  # they can fix; the alternative is a run that looks healthy and converges on
+  # nothing.
+  #
+  # `implement` only. A reviewer judges base_sha..candidate_sha as it stands,
+  # against the task spec -- handing it the previous attempt's failure would
+  # prejudge a candidate that no longer has that defect (or invite it to
+  # review a diff it cannot see), and no shipped review prompt asks for it.
+  if [ "$op" = implement ]; then
+    local rework_head rework_body rework_diff
+    local rwcand rwlatest rwclaim rwstate=absent
+    local rwroom rwhbytes rwbbytes rwdbytes rwbodyroom rwfloor rwtrunc=false
+    rwcand="$(_pack_fm_field "$tf" candidate_sha)"
+    rwlatest="$(rework_latest_log "$state" "$task" 0 2>/dev/null || true)"
+    # Four states, and the three non-`current` ones are deliberately told
+    # apart. "No round was ever captured" is not an omission at all (a first
+    # attempt), while evidence that exists and was WITHHELD is one -- and the
+    # reason is what tells an operator whether the loop is healthy (the
+    # candidate moved on, as it does every successful rework) or whether
+    # something upstream stopped writing bindable logs.
+    if [ -n "$rwlatest" ] && [ -s "$rwlatest" ]; then
+      rwclaim="$(findings_log_candidate "$rwlatest")"
+      if rework_evidence_current "$state" "$task" "$rwcand"; then
+        rwstate=current
+      elif [ -z "$rwcand" ] || [ "$rwcand" = none ]; then
+        rwstate=no-candidate
+      elif [ -z "$rwclaim" ]; then
+        rwstate=unbindable
+      else
+        rwstate=superseded-candidate
+      fi
+    fi
+    if [ "$rwstate" = current ]; then
+      rework_head="$(mktemp)"; rework_body="$(mktemp)"; rework_diff="$(mktemp)"
+      # Failure here is contained, for two independent reasons. (1) pack_build
+      # runs inside runners/orchid-launch under `set -e`, so an unguarded
+      # non-zero from this call would abort the LAUNCH -- taking a whole
+      # dispatch down over an input that is optional by construction (a first
+      # attempt has none at all). (2) A brief that died partway through is not
+      # shipped half-written: "## The failing run, verbatim" with nothing under
+      # it reads as "the run produced no output", which is a worse lie than no
+      # brief. Degrading to no rework.md, recorded as such below, is never a
+      # wrong answer -- and it is NOT routed into the refusal above, because a
+      # brief that could not be built is a different fact from a budget that
+      # could not carry one, and only the second is something an operator can
+      # act on.
+      # ALL THREE parts are cleared when ANY fails: a body with no preamble is
+      # the unlabelled fragment described above, a preamble with no body claims
+      # an output that is not there, and a comparison with neither is a diff
+      # against nothing.
+      if ! _pack_rework_brief "$state" "$task" head > "$rework_head" 2>/dev/null \
+         || ! _pack_rework_brief "$state" "$task" body > "$rework_body" 2>/dev/null \
+         || ! _pack_rework_brief "$state" "$task" diff > "$rework_diff" 2>/dev/null; then
+        : > "$rework_head"; : > "$rework_body"; : > "$rework_diff"
+      fi
+      if [ ! -s "$rework_head" ] || [ ! -s "$rework_body" ]; then
+        rwstate=unreadable
+      else
+        rwroom=$(( budget - used ))
+        rwhbytes="$(wc -c < "$rework_head")"
+        rwbbytes="$(wc -c < "$rework_body")"
+        # The floor: what "carries the failure" has to mean in bytes before
+        # the pack may claim it did. 512 is a few assertion lines and the
+        # `exit:` line -- the tail of a failing suite, which is the part a
+        # reader needs. A whole body shorter than that is not a shortfall, so
+        # the floor never asks for more of a log than the log has.
+        rwfloor=512
+        if [ "$rwbbytes" -lt "$rwfloor" ]; then rwfloor="$rwbbytes"; fi
+        if [ "$rwroom" -lt $(( rwhbytes + rwfloor )) ]; then
+          rm -f "$rework_head" "$rework_body" "$rework_diff"
+          rm -rf "$dest"; [ -z "$symbols_tmp" ] || rm -f "$symbols_tmp"
+          echo "orchid: input_overflow — $task is reworking a captured failure, but the pack budget ($budget) leaves $rwroom bytes for rework.md and its brief needs at least $(( rwhbytes + rwfloor )); dispatching an implementer without the failure it was sent to fix reproduces it (raise pack_budget_bytes)" >&2
+          return 12
+        fi
+        cat "$rework_head" > "$dest/rework.md"
+        rwbodyroom=$(( rwroom - rwhbytes ))
+        if [ "$rwbbytes" -le "$rwbodyroom" ]; then
+          cat "$rework_body" >> "$dest/rework.md"
+        else
+          tail -c "$rwbodyroom" "$rework_body" >> "$dest/rework.md"
+          rwtrunc=true
+        fi
+        # The comparison, last and optional. Only once the failing run landed
+        # WHOLE (a truncated run has already taken every remaining byte), and
+        # only if the whole comparison fits: half a diff is not a smaller
+        # comparison, it is a misleading one. Dropping it marks the item
+        # truncated, because that is what the flag means -- the engine did not
+        # receive all of this input.
+        if [ -s "$rework_diff" ]; then
+          rwdbytes="$(wc -c < "$rework_diff")"
+          if [ "$rwtrunc" = false ] && [ "$rwdbytes" -le $(( rwbodyroom - rwbbytes )) ]; then
+            cat "$rework_diff" >> "$dest/rework.md"
+          else
+            rwtrunc=true
+          fi
+        fi
+        used=$(( used + $(wc -c < "$dest/rework.md") ))
+        items="$items,{\"name\":\"rework.md\",\"bytes\":$(wc -c < "$dest/rework.md"),\"truncated\":$rwtrunc}"
+      fi
+      rm -f "$rework_head" "$rework_body" "$rework_diff"
+    fi
+    # Recorded as its OWN items[] entry with the reason, exactly like
+    # diff.patch's capability-shaped omission above and for the same reason:
+    # this is not a budget omission, and a pack.json reader deserves to know
+    # WHY an input the task plainly has evidence for did not travel.
+    case "$rwstate" in
+      absent|current) : ;;
+      *) items="$items,{\"name\":\"rework.md\",\"omitted\":\"$rwstate\"}" ;;
+    esac
+  fi
+
   # v1-m3 Task 11: lessons.md, ACTIVE blocks only (kernel.md's per-role
   # table: implementer/reviewer both receive "context.md + lessons.md +
   # ..."), budgeted BEFORE context.md -- docs/specs/plugins.md's trim order
@@ -386,7 +688,14 @@ pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = in
     used=$(( used + $(wc -c < "$dest/context.md") ))
     items="$items,{\"name\":\"context.md\",\"bytes\":$(wc -c < "$dest/context.md"),\"truncated\":$trunc}"
   else
-    omitted="\"context.md\""
+    # Appended, never assigned over. Every other arm in this function builds
+    # `omitted` with the `${omitted:+$omitted,}` idiom; this one used a bare
+    # assignment, so an absent context.md silently ERASED whatever was already
+    # recorded there -- lessons.md's own omission (both arms above), and, since
+    # T025, rework.md's. The pack then shipped claiming context.md was the only
+    # thing left out, which is exactly the kind of quiet dishonesty pack.json
+    # exists to prevent: an input the engine never received, recorded nowhere.
+    omitted="${omitted:+$omitted,}\"context.md\""
   fi
 
   if [ -n "$symbols_tmp" ]; then

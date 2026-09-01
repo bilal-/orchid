@@ -41,12 +41,22 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 # --greenfield` plus docs/quickstart-greenfield.md own that path, which has a
 # scaffold task and a deferred verify command this verb's rule 1 would have
 # to special-case.
+#
+# ONE EXCEPTION to "this verb is setup", and it is a whole second form rather
+# than a mode of the first: `orchid start --refresh-push-guard` (T037), the
+# maintenance route that re-installs the pre-push guard on an
+# already-initialized repository at any run_status. It lives here because
+# setup already installs that guard and this verb is already the supported
+# door back into an initialized repo -- and it is a separate invocation,
+# argued for at the block that implements it, precisely so that rule 3 above
+# keeps meaning what it says for every OTHER way of typing this verb.
 
 _start_usage() {
   cat <<'EOF'
 usage:
   orchid start <requirements-file> [--verify <command>] [--worktree <path>]
                                    [--ack-unattended --reason <text>]
+  orchid start --refresh-push-guard
 
 One-command setup for an EXISTING repository: full preflight, repo-config
 validation, safe initialization, integration-worktree creation/reuse, epoch
@@ -70,6 +80,23 @@ setup, requirements import, and a handoff into PLANNING.
                        Requires --reason. Without both flags trust stays off
                        and headless ticks stay gated.
   --reason <text>      non-empty operator reason for that acknowledgement.
+
+The SECOND form is maintenance, not setup, and is the only one that takes no
+requirements file:
+
+  --refresh-push-guard re-install this repository's `pre-push` guard from the
+                       current template, at the path git itself will run it
+                       from (an absolute `core.hooksPath` included), and do
+                       nothing else: no branch moves, no commit, no run state
+                       written, no lock taken. Supported at ANY run_status,
+                       which is the point -- setup refuses a run that has left
+                       planning, so without this an already-running repository
+                       could never pick up a newer guard. Idempotent, and a
+                       hook orchid did not write is still never overwritten. A
+                       repository whose `core.hooksPath` is RELATIVE cannot be
+                       guarded repository-wide -- git resolves that value per
+                       worktree -- so this refuses, installs nothing, and says
+                       what to change. Takes no other option.
 
 Every step is a lower-level verb; none of them is replaced. Repositories with
 no commits yet are out of scope: use `orchid init --greenfield` and
@@ -152,20 +179,16 @@ _start_lock_live() {
   fi
   if [ -z "$parsed" ]; then
     now="$(date +%s)"
-    # Same BSD-then-GNU mtime probe lock_acquire uses, but selected on the
-    # RESULT rather than on the exit status alone: a stat that does not
-    # understand the other platform's directive can print `?` and still exit 0,
-    # and a non-numeric `mt` would make the arithmetic below a syntax error
-    # under `set -e` -- crashing the very refusal path this branch exists to
-    # make survivable. An unreadable mtime falls back to "just now", i.e. to
+    # Same BSD-then-GNU mtime probe lock_acquire uses, and now literally the
+    # same code: this file discovered the result-vs-exit-status hazard and
+    # carried the only correct copy of the fix while five other sites kept the
+    # broken idiom, so the fix moved into lib/common.sh's `file_mtime` (which
+    # documents the hazard in full) and every site calls that. A non-numeric
+    # `mt` would make the arithmetic below a syntax error under `set -e` --
+    # crashing the very refusal path this branch exists to make survivable --
+    # so an unreadable mtime falls back to "just now" ($now, age 0), i.e. to
     # the conservative "still live" answer.
-    mt="$(stat -f %m "$lock" 2>/dev/null || true)"
-    case "$mt" in
-      ''|*[!0-9]*) mt="$(stat -c %Y "$lock" 2>/dev/null || true)" ;;
-    esac
-    case "$mt" in
-      ''|*[!0-9]*) mt="$now" ;;
-    esac
+    mt="$(file_mtime "$lock" "$now")"
     age=$(( now - mt ))
     [ "$age" -lt "$grace" ] || return 1
     return 0
@@ -414,7 +437,8 @@ _start_require_no_config_clobber() {
 #                              ("" when that branch carries no roadmap.md)
 #   ORCHID_START_RUN_ID        run_id, preferring the live copy
 #   ORCHID_START_TASKS         "1" when <branch> carries committed
-#                              .orchid/tasks/ entries
+#                              .orchid/tasks/ entries that it did NOT inherit
+#                              when it was cut (see _start_tasks_inherited)
 #
 # Reading BOTH roadmap copies is the whole point. Neither is authoritative on
 # its own, and they can genuinely disagree in EITHER direction:
@@ -436,11 +460,17 @@ _start_require_no_config_clobber() {
 # ORCHID_START_TASKS is a third, independent witness, and the only one that
 # speaks directly to what the durable commit further below actually risks:
 # whether any candidate's base_sha can be moved by advancing this branch.
-# Task files reach the integration branch ONLY through `orchid plan apply`
-# (kernel.md's sole writer of the planning->running edge); `orchid init` and
-# `orchid run new` both leave .orchid/tasks/ empty, and git tracks no empty
-# directory. A branch carrying task files has a plan on it, whatever its
-# roadmap frontmatter happens to say.
+# Task files are ADDED to the integration branch only through `orchid plan
+# apply` (kernel.md's sole writer of the planning->running edge); `orchid init`
+# and `orchid run new` both leave .orchid/tasks/ empty, and git tracks no empty
+# directory. A branch carrying task files it did not inherit has a plan on it,
+# whatever its roadmap frontmatter happens to say.
+#
+# "Did not inherit" is load-bearing and is T002. `orchid init` cuts the branch
+# from the operator's HEAD, so a repo whose own mainline already carries
+# .orchid/tasks/ hands them to the branch without any `plan apply` -- the
+# witness has to be read against the branch's fork point, or the second
+# `orchid start` refuses the state the first one created.
 _start_read_run_state() {
   local repo="$1" branch="$2" live="$3" tmp
   ORCHID_START_ROADMAP=""; ORCHID_START_RS_LIVE=""; ORCHID_START_RS_COMMITTED=""
@@ -465,8 +495,68 @@ _start_read_run_state() {
   # boundary installs one, and a competing `trap ... EXIT` here would clobber
   # it rather than compose with it (lib/common.sh's verb_lock_guard note).
   rm -f "$tmp"
-  [ -z "$(git -C "$repo" ls-tree --name-only "refs/heads/$branch" -- .orchid/tasks/ 2>/dev/null || true)" ] \
-    || ORCHID_START_TASKS=1
+  if [ -n "$(git -C "$repo" ls-tree --name-only "refs/heads/$branch" -- .orchid/tasks/ 2>/dev/null || true)" ] \
+     && ! _start_tasks_inherited "$repo" "$branch"; then
+    ORCHID_START_TASKS=1
+  fi
+}
+
+# _start_tasks_inherited <repo> <branch> -- true when the committed
+# .orchid/tasks/ on <branch> is byte-for-byte what that branch INHERITED when
+# it was cut, so nothing has been planned onto it since.
+#
+# This is what makes the exemption below DURABLE instead of invocation-scoped,
+# and it is the whole of T002. `orchid init` cuts $integ from the operator's
+# own HEAD (libexec/orchid-init:80) and then commits a fresh roadmap.md over
+# whatever .orchid/ that HEAD carried -- but it does NOT clear an inherited
+# .orchid/tasks/, because it only ever `mkdir -p`s that directory and git
+# tracks no empty one. On a repo whose own mainline already carries task files
+# (an orchid-managed repo whose finished run was merged back -- this
+# repository's own shape), those files ride onto $integ having never come from
+# `orchid plan apply`.
+#
+# The `mode=new` arm further below already blesses exactly that state, and is
+# right to. But it is scoped to the INVOCATION, while the state it excuses is
+# durable on the branch: the next, identical `orchid start` reads mode=existing
+# and refuses what the first one created -- with a premise that is untrue of it
+# ("task files reach the integration branch only through 'orchid plan apply'")
+# and a recovery that does not apply (`run resume`/`run new`, for a run still
+# in planning with no plan on it). Deciding it from committed state instead
+# means both runs read the same answer.
+#
+# The fork point, not the operator's HEAD as it stands now: their branch may
+# have moved on since init, and only what was there when $integ was CUT is
+# inherited. Anything `plan apply` committed since is on $integ and not on the
+# merge base, so the trees differ and the witness fires exactly as before.
+#
+# Refuses to answer (returns false, i.e. keeps the strict reading) whenever the
+# fork point turns out to BE the branch tip. Every task file on $integ is then
+# also on the base, so the comparison below is vacuously true and would disable
+# the witness outright rather than inform it. A branch compared against itself
+# proves nothing, so this declines rather than guesses -- the operator gets the
+# existing refusal, which is safe.
+#
+# That test is on COMMITS, not on branch names, and the difference is the whole
+# of it. HEAD sitting on $integ is only the obvious way to reach a vacuous
+# comparison; an operator who fast-forwarded or merged their own branch onto
+# $integ mid-run reaches the identical one under a different name, and that is
+# the shape with a plan genuinely on the branch and candidates whose base_sha
+# this verb's durable commit could move. A name check would wave it through.
+_start_tasks_inherited() {
+  local repo="$1" branch="$2" tip base ours theirs
+  tip="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null || true)"
+  [ -n "$tip" ] || return 1
+  # Unborn HEAD (a repo with no commits of its own) has no merge base either,
+  # so this is also what declines there.
+  base="$(git -C "$repo" merge-base "refs/heads/$branch" HEAD 2>/dev/null || true)"
+  [ -n "$base" ] || return 1
+  [ "$base" != "$tip" ] || return 1
+  # Full `ls-tree -r` rows (mode, type, blob sha, path), never just the names:
+  # a plan apply that REPLACED an inherited task file's contents under the same
+  # path must read as a plan, and only the blob sha says so.
+  ours="$(git -C "$repo" ls-tree -r "refs/heads/$branch" -- .orchid/tasks/ 2>/dev/null || true)"
+  theirs="$(git -C "$repo" ls-tree -r "$base" -- .orchid/tasks/ 2>/dev/null || true)"
+  [ "$ours" = "$theirs" ]
 }
 
 # _start_require_planning <when> <branch> -- refuse unless EVERY witness
@@ -491,7 +581,7 @@ _start_require_planning() {
 # -- arguments --------------------------------------------------------------
 
 req=""; verify_opt=""; worktree_opt=""; ack_unattended=0; reason=""
-have_verify_opt=0; have_worktree_opt=0
+have_verify_opt=0; have_worktree_opt=0; refresh_guard=0
 # The bare-word `help` alias, and ONLY as the first argument: matched anywhere
 # in argv (as it was) it also swallows a requirements FILE named `help`,
 # printing usage instead of the setup that was asked for. `-h`/`--help` stay
@@ -507,6 +597,7 @@ while [ $# -gt 0 ]; do
     --worktree)
       [ -n "${2:-}" ] || orchid_die "--worktree requires a path"
       worktree_opt="$2"; have_worktree_opt=1; shift 2 ;;
+    --refresh-push-guard) refresh_guard=1; shift ;;
     --ack-unattended) ack_unattended=1; shift ;;
     --reason)
       [ -n "${2:-}" ] || orchid_die "--reason requires a non-empty value"
@@ -517,6 +608,105 @@ while [ $# -gt 0 ]; do
       req="$1"; shift ;;
   esac
 done
+
+# -- the explicit push-guard refresh route (T037) ---------------------------
+#
+# Everything below this block is SETUP: it demands a requirements file, it
+# refuses a run that has left `planning` (rule 3 at the top of this file), and
+# it holds the verb lock across a durable commit. A repository whose run is
+# already `running` therefore cannot reach the push guard through it AT ALL --
+# and that is exactly the repository the reported leak came from: initialized
+# by an older orchid, months into a run, carrying a hook with no run-state leg
+# and, until this route existed, no supported way to gain one. `orchid init`
+# is no help either; it dies on `branch $integ exists`. Documenting a hand-run
+# `sed` over templates/pre-push.sh, which is what the first cut of this task
+# did, is not a route: it makes every operator re-derive the escaping, the
+# hooks path and the never-overwrite rule that the two verbs already
+# implement, and it gets the `core.hooksPath` case wrong by construction.
+#
+# So the refresh is its OWN invocation rather than a side effect of setup.
+# Not because a side effect would be hard -- `orchid_install_push_guard` could
+# simply be called above `_start_require_planning`, and it would work. It
+# would also mean a command that refuses, loudly and with a recovery, on the
+# very next line had quietly rewritten a file under `.git/` first. An operator
+# reads "run r-001 has already left planning" as "nothing happened", and a
+# mutation nobody can name is a mutation nobody can audit. Making that reading
+# false to save a flag is not a trade worth taking.
+#
+# This route mutates nothing else. Hooks live under the git dir, outside every
+# tree orchid commits, so no branch moves, no commit is made, no `.orchid/`
+# path is written, no epoch is minted and no lock is taken -- which is why it
+# is safe against a run that is mid-flight, and why it neither resumes nor
+# steals a session (rule 3 holds; there is nothing here to take over). It
+# obeys every rule the other two callers obey, the never-overwrite rule first
+# among them, and it is idempotent by construction: the installer rewrites
+# nothing that already matches the template.
+if [ "$refresh_guard" -eq 1 ]; then
+  [ -z "$req" ] \
+    || orchid_die "orchid start --refresh-push-guard takes no requirements file (got '$req') — it refreshes this repository's pre-push guard and performs no setup. Run it on its own"
+  { [ "$have_verify_opt" -eq 0 ] && [ "$have_worktree_opt" -eq 0 ] \
+      && [ "$ack_unattended" -eq 0 ] && [ -z "$reason" ]; } \
+    || orchid_die "orchid start --refresh-push-guard takes no other option — it performs no setup, so --verify/--worktree/--ack-unattended/--reason have nothing to act on"
+
+  repo="${ORCHID_REPO:-$PWD}"
+  [ -d "$repo" ] || orchid_die "no such directory: $repo"
+  repo="$(cd "$repo" && pwd -P)"
+  git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || orchid_die "not a git repository: $repo"
+  integ="$(config_get "$repo" integration_branch orchid/integration)"
+  # ALREADY-INITIALIZED is the whole scope of this route. Without $integ there
+  # is no run whose branch name could be baked into the hook, and setup is the
+  # thing that is actually wanted -- which installs the guard itself.
+  git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
+    || orchid_die "$repo has no $integ branch, so there is no run here to guard — --refresh-push-guard maintains an ALREADY-INITIALIZED repository. Set this one up first with 'orchid start <requirements-file>', which installs the guard as part of setup"
+  # An opted-out repository is told, never silently left unguarded: the
+  # operator ran a command whose entire purpose is to put the guard in place,
+  # and "did nothing, said nothing" is the failure mode this whole guard
+  # exists to end.
+  case "$(config_get "$repo" push_guard true)" in
+    false|0|no)
+      orchid_die "push_guard is off in this repository's orchid.config, so nothing was installed — set push_guard=true (or drop the line; the default is true) and re-run. See docs/configuration.md" ;;
+  esac
+
+  guard_path="$(orchid_push_guard_path "$repo" 2>/dev/null || true)"
+  orchid_install_push_guard "$repo" "$integ"
+  case "$(orchid_push_guard_action)" in
+    installed|upgraded|repaired) exit 0 ;;
+    unsupported-hookspath)
+      # `core.hooksPath` names no guardable file for this repository, and this
+      # command cannot do what it was asked. Non-zero, and deliberately
+      # without a resolved path in the message: naming
+      # `<toplevel>/<value>/pre-push` for the relative case would answer for
+      # this one worktree and read as an answer for the repository, and naming
+      # the external directory here would read as a path orchid is about to
+      # install into. That is the exact confusion the classification exists to
+      # end. The installer has already printed the specific explanation and
+      # both recoveries on stderr.
+      case "$(orchid_push_guard_hooks_mode "$repo")" in
+        relative)
+          refresh_why="core.hooksPath is relative, so no single hook file covers this repository" ;;
+        *)
+          refresh_why="core.hooksPath is an absolute path outside this repository's git directory, which orchid cannot tell apart from a hooks directory shared with other repositories" ;;
+      esac
+      orchid_die "the pre-push guard was NOT installed in $repo — $refresh_why (the message above says what to change). Until it names a directory inside this repository's git directory, or is unset, pushes of task branches, of $integ, and of run state are NOT guarded here" ;;
+    current)
+      # The one outcome the installer reports by staying silent, because for
+      # init and for setup that silence is right. Here it is the answer.
+      echo "pre-push guard already current: ${guard_path:-unresolved} (integration branch: $integ)"
+      exit 0 ;;
+    foreign)
+      # The installer has already named the file and said it was left alone;
+      # this adds what an operator who asked for the guard now needs, which is
+      # how to have both. Non-zero because the end state asked for -- a guard
+      # git will run -- is not the one on disk.
+      orchid_die "the pre-push hook at ${guard_path:-that path} is yours, not orchid's, so the guard was NOT refreshed — orchid never overwrites a hook you wrote. To have both, render orchid's guard beside your own and chain to it: sed 's|__INTEGRATION_BRANCH__|$integ|g' '$ORCHID_ROOT/templates/pre-push.sh' > '${guard_path:-<your-hook>}.orchid' && chmod +x '${guard_path:-<your-hook>}.orchid' — then exec that file at the end of your hook. Or move your hook aside and re-run this command" ;;
+    *)
+      # unresolved / no-template / failed: the installer printed the specific
+      # diagnostic on stderr. Exiting non-zero is what keeps a failed refresh
+      # from reading, to a script or to a person, like a completed one.
+      orchid_die "the pre-push guard is not in place in $repo (the message above says why) — pushes of task branches, of $integ, and of run state are NOT guarded here" ;;
+  esac
+fi
+
 [ -n "$req" ] || { _start_usage >&2; exit 1; }
 
 # The unattended acknowledgement is a SEPARATE, two-part opt-in, never a side
@@ -572,8 +762,26 @@ if [ "$have_worktree_opt" -eq 1 ]; then
     # `.git` is a file); offering it for a branch checked out in the MAIN
     # working tree would be nonsense advice. The --worktree alternative works
     # either way, so it is what the main-worktree case leads with.
+    # THE ONE PLACE THIS FILE TELLS AN OPERATOR TO REMOVE A CHECKOUT, so the
+    # ordering has to be in the command it hands over rather than appended to it
+    # as a note. A pump service installed against that checkout keeps waking on
+    # its interval against a path that is about to stop existing, and the record
+    # naming it lives inside the directory being removed — and a bare `git
+    # worktree remove` offered here plus a separate "uninstall it first" caption
+    # is exactly the two-step shape that made the ordering unenforceable
+    # everywhere else: the operator has already been handed the removal, so a
+    # refused uninstall does not stop it. When a schedule is bound, the command
+    # named is the one whose removal is the uninstall's success branch
+    # (orchid_service_teardown_command, lib/common.sh).
     if [ -d "$existing_wt/.git" ]; then
       wt_hint="re-run with --worktree $existing_wt (that checkout is this repository's main working tree, so 'git worktree remove' does not apply to it — to free the branch, check out another branch there yourself)"
+      # Still worth saying: a schedule bound to the main checkout is not ended
+      # by anything suggested above, and nothing here is removing it either.
+      if orchid_service_bound "$existing_wt"; then
+        wt_hint="$wt_hint. NOTE: a pump service is installed against $existing_wt and nothing above ends it: $(orchid_service_uninstall_command "$existing_wt")"
+      fi
+    elif orchid_service_bound "$existing_wt"; then
+      wt_hint="re-run with --worktree $existing_wt (or end that checkout first — a pump service is installed against it, and removing it while that schedule is live leaves a scheduler firing at a deleted path, so uninstall and removal are ONE operation: $(orchid_service_teardown_command "$existing_wt"))"
     else
       wt_hint="re-run with --worktree $existing_wt (or 'git worktree remove $existing_wt' first)"
     fi
@@ -812,6 +1020,24 @@ if [ "$mode" = new ]; then
   ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" init >/dev/null \
     || orchid_die "orchid init failed — nothing else was done; the messages above say why"
   echo "initialized: $integ"
+else
+  # The EXISTING-repository half of the push guard (T037). `orchid init`
+  # installs `.git/hooks/pre-push` and is the only thing that ever did -- and
+  # it runs exactly once per repository, dying with `branch $integ exists` on
+  # every later run. So a repository initialized by an older orchid keeps that
+  # day's hook forever, however many times it is upgraded afterwards: the
+  # run-state leg this task adds (templates/pre-push.sh), which is the one
+  # refusal standing between a run's bookkeeping and a product's remote, would
+  # have reached no existing repository at all. The reported leak was found on
+  # exactly such a repository.
+  #
+  # This verb is the supported door back into an initialized repo, so it is
+  # where the upgrade lands. It is the same function init calls, and it is
+  # conservative in the two directions that matter: a hook orchid did not write
+  # is left untouched and reported, and a hook already matching the template is
+  # rewritten never and reported never -- so a repeat `orchid start` prints
+  # this line only when it actually changed something.
+  orchid_install_push_guard "$repo" "$integ"
 fi
 
 if [ "$wt_action" = created ]; then
@@ -881,6 +1107,14 @@ if [ "$mode" = new ]; then
   # already run. The two roadmap witnesses still apply (init writes and
   # commits `run_status: planning` itself, so anything else is a real
   # surprise).
+  #
+  # T002: _start_tasks_inherited now reaches the same verdict from committed
+  # state, on this run and on every later one, which is what makes a second
+  # `orchid start` idempotent instead of a refusal. This arm is KEPT rather
+  # than replaced by it: on a branch this invocation just created the answer
+  # is not in doubt, and it stays right even in the shapes the helper declines
+  # to judge (a fork point that is already the branch tip, where a branch
+  # would be compared against itself).
   ORCHID_START_TASKS=""
 fi
 _start_require_planning "re-checked under the verb lock, before anything was committed" "$integ"
@@ -992,8 +1226,9 @@ else
   # and under that lock the run was re-checked against all three witnesses
   # _start_read_run_state gathers: the checkout's roadmap.md, the roadmap
   # COMMITTED on $integ (the two lag each other in opposite directions), and
-  # $integ's own committed .orchid/tasks/, empty until a plan lands. A branch
-  # with no plan on it has no candidate whose base this commit can move.
+  # $integ's own committed .orchid/tasks/, unchanged from what the branch
+  # inherited until a plan lands. A branch with no plan on it has no candidate
+  # whose base this commit can move.
   #
   # The lease is deliberately NOT part of that argument: it is refused above
   # where a checkout exists, but it is advisory (an orchestrator session's
@@ -1090,7 +1325,29 @@ echo "unattended trust: $trust_state$trust_note"
 echo
 echo "next — durable orchid state lives only on $integ, so work from the worktree:"
 echo "  cd $wt"
-echo "  export ORCHID_EPOCH=$epoch"
+# T029 (dogfood finding F31, reported independently by two operators): this
+# line used to be `export ORCHID_EPOCH=$epoch`, i.e. `export ORCHID_EPOCH=0` on
+# every fresh setup -- a literal, in a shell an operator keeps for the rest of
+# the run, naming a value GUARANTEED to expire. `orchid run start`, `orchid run
+# resume` and every headless tick fence a fresh epoch (libexec/orchid-run), so
+# the first drive pass makes that 0 stale and the next mutating verb typed in
+# that shell is refused: `stale epoch '0' (current 3) — refused (INV-02)`.
+#
+# The refusal is not what is wrong -- it names the current epoch, and INV-02 is
+# doing exactly its job by fencing out a shell that no longer holds the run.
+# The HANDOFF was: it handed over a constant for a quantity that is not one,
+# and both operators ended up reading `.orchid/runtime/epoch` by hand for every
+# command afterwards. So the export is spelled as that read from the start --
+# it is correct the moment it is pasted, it is the same line to re-run after
+# each drive pass rather than a different number to hunt for, and it is the
+# form docs/quickstart.md already teaches for exactly this reason. The current
+# value is still printed (`epoch:` above, and the comment on the line itself)
+# for anyone who wants to see what they just took.
+echo "  export ORCHID_EPOCH=\"\$(cat .orchid/runtime/epoch)\"   # $epoch right now"
+echo "that export is a snapshot, not a constant: 'orchid run start', 'orchid run"
+echo "resume' and every headless tick fence a NEW epoch (INV-02), after which"
+echo "this shell is refused with \"stale epoch '$epoch' (current N) — refused"
+echo "(INV-02)\" — re-run the same line above to pick the current one back up."
 echo "draft the plan against the imported requirements (PROTOCOL.md's PLANNING"
 echo "procedure, or the orchid-plan skill): create each task with 'orchid task"
 echo "create <id> <title>' + 'orchid task set <id> <key> <value>', run the"

@@ -55,7 +55,7 @@ assert_match "^concurrency-cap \(1/1\)$" "$blockers" "cap=1, 1 active: concurren
 rm -f "$repo/orchid.config"
 # -- default cap (2): 1 active is still under cap, no concurrency-cap line --
 blockers="$(schedule_dispatch_blockers "$repo" A001)"
-echo "$blockers" | grep -q "concurrency-cap" && fail "default cap=2 with 1 active must not block on concurrency-cap"
+grep -q "concurrency-cap" <<<"$blockers" && fail "default cap=2 with 1 active must not block on concurrency-cap"
 assert_eq "" "$blockers" "default cap=2, 1 non-conflicting active, no deps: fully dispatchable (empty blockers)"
 
 # -- v1-m3 (m2 ledger finding): a non-numeric `concurrency` config value must
@@ -104,7 +104,7 @@ rm -f "$repo/.orchid/tasks"/*.md
 mk_task D000 implementing false "" ""
 mk_task D001 pending false "" ""
 blockers="$(schedule_dispatch_blockers "$repo" D001)"
-echo "$blockers" | grep -q "exclusive-overlap" && fail "no exclusive-overlap when neither task declares exclusive:true"
+grep -q "exclusive-overlap" <<<"$blockers" && fail "no exclusive-overlap when neither task declares exclusive:true"
 
 rm -f "$repo/.orchid/tasks"/*.md
 
@@ -113,8 +113,8 @@ mk_task E000 implementing false "db,cache" ""
 mk_task E001 pending false "db,queue" ""
 blockers="$(schedule_dispatch_blockers "$repo" E001)"
 assert_match "resource-conflict \(db: E000\)" "$blockers" "shared 'db' resource blocks with the active task's id"
-echo "$blockers" | grep -q "resource-conflict (cache" && fail "non-shared resource 'cache' must not appear as a conflict"
-echo "$blockers" | grep -q "resource-conflict (queue" && fail "non-shared resource 'queue' must not appear as a conflict"
+grep -q "resource-conflict (cache" <<<"$blockers" && fail "non-shared resource 'cache' must not appear as a conflict"
+grep -q "resource-conflict (queue" <<<"$blockers" && fail "non-shared resource 'queue' must not appear as a conflict"
 
 rm -f "$repo/.orchid/tasks"/*.md
 
@@ -122,7 +122,7 @@ rm -f "$repo/.orchid/tasks"/*.md
 mk_task F000 implementing false "db" ""
 mk_task F001 pending false "cache" ""
 blockers="$(schedule_dispatch_blockers "$repo" F001)"
-echo "$blockers" | grep -q "resource-conflict" && fail "disjoint resources lists must never conflict"
+grep -q "resource-conflict" <<<"$blockers" && fail "disjoint resources lists must never conflict"
 
 rm -f "$repo/.orchid/tasks"/*.md
 
@@ -135,7 +135,7 @@ assert_match "^waiting-deps \(G000\)$" "$blockers" "unmet dep G000 (not done) bl
 # once the dep is done, waiting-deps must disappear
 mk_task G000 "done" false "" ""
 blockers="$(schedule_dispatch_blockers "$repo" G001)"
-echo "$blockers" | grep -q "waiting-deps" && fail "a done dependency must no longer appear in waiting-deps"
+grep -q "waiting-deps" <<<"$blockers" && fail "a done dependency must no longer appear in waiting-deps"
 assert_eq "" "$blockers" "no deps outstanding, no cap/exclusive/resource issues: fully dispatchable"
 
 # multiple unmet deps: space-separated inside one predicate
@@ -144,6 +144,55 @@ mk_task G002 pending false "" ""
 mk_task G003 pending false "" "G000 G002"
 blockers="$(schedule_dispatch_blockers "$repo" G003)"
 assert_match "^waiting-deps \(G000 G002\)$" "$blockers" "two unmet deps listed space-separated in one predicate"
+
+# -- F30: schedule_split_deps, the shared separator rule ---------------------
+# Asked directly, because `orchid task set`'s write-time existence check reads
+# a value with this same function: if the two ever disagreed about where one
+# id ends and the next begins, a value accepted at write time would resolve to
+# different ids at dispatch time.
+assert_eq "$(printf 'T001\nT002\nT003')" "$(schedule_split_deps "T001, T002  T003")" \
+  "schedule_split_deps splits on commas and whitespace alike, and drops the empty tokens between them"
+assert_eq "" "$(schedule_split_deps "")" \
+  "an empty depends_on yields no ids at all -- never one empty-string id"
+
+# -- F30: a COMMA-separated depends_on value is TWO ids, not one -------------
+# `for d in $deps` split on whitespace alone, so `depends_on: G010,G011` was a
+# single token: the reader looked for `.orchid/tasks/G010,G011.md`, found no
+# file, read no status, and the dependency could never equal `done`. The task
+# waited forever, and the predicate said `waiting-deps (G010,G011)` -- which
+# is what a correct two-dependency wait looks like, so the report that was
+# meant to explain the stall was the thing concealing it.
+mk_task G010 pending false "" ""
+mk_task G011 pending false "" ""
+mk_task G012 pending false "" "G010,G011"
+blockers="$(schedule_dispatch_blockers "$repo" G012)"
+assert_match "^waiting-deps \(G010 G011\)$" "$blockers" "a comma-separated depends_on splits into two ids, rendered space-separated"
+grep -qF "G010,G011" <<<"$blockers" \
+  && fail "the comma token survived into the predicate -- the value was never split, so neither id was ever looked up"
+
+# ...and each of them is then resolved on its OWN: G010 done, G011 not, so
+# exactly one id drops out. Under the bug NOTHING could drop out, whatever
+# the individual tasks did, which is the half that made it permanent.
+mk_task G010 "done" false "" ""
+blockers="$(schedule_dispatch_blockers "$repo" G012)"
+assert_match "^waiting-deps \(G011\)$" "$blockers" "a satisfied id inside a comma list drops out on its own"
+
+# GREEN twin: both ids done -> the comma-separated dependency is SATISFIABLE.
+# Without this the assertions above would also pass on a reader that split the
+# value correctly and then never matched `done` at all.
+mk_task G011 "done" false "" ""
+blockers="$(schedule_dispatch_blockers "$repo" G012)"
+assert_eq "" "$blockers" "a comma-separated depends_on whose ids are all done blocks nothing -- it can actually be satisfied"
+
+# the shapes a hand-edited value actually takes: a space after the comma, and
+# a mixed comma/space list. Both must resolve id-by-id like the plain forms.
+mk_task G010 pending false "" ""
+mk_task G013 pending false "" "G010, G011"
+blockers="$(schedule_dispatch_blockers "$repo" G013)"
+assert_match "^waiting-deps \(G010\)$" "$blockers" "'G010, G011' (space after the comma) is two ids, and the done one is not reported"
+mk_task G014 pending false "" "G010,G011 G002"
+blockers="$(schedule_dispatch_blockers "$repo" G014)"
+assert_match "^waiting-deps \(G010 G002\)$" "$blockers" "a mixed comma/whitespace list resolves every id, in order"
 
 rm -f "$repo/.orchid/tasks"/*.md
 
@@ -186,7 +235,10 @@ assert_match "H001.*implementing" "$explain" "status --explain still shows H001'
 # rework, not yet re-dispatched; H002 is still pending) -- 0 active < cap 1
 # -- so the rework->implementing edge must succeed cleanly through the same
 # gate, proving it does not count the dispatching task against its own cap.
-edge_sha="deadbeefcafebabe0000000000000000000000"
+# repo2's own HEAD, for both shas: entry to `testing` scans a real, EMPTY
+# range. A placeholder that exists nowhere used to serve here, and T026 made
+# that scan fail CLOSED on a range `git log` cannot answer.
+edge_sha="$(git -C "$repo2" rev-parse HEAD)"
 "$ORCHID_BIN" task set H001 base_sha "$edge_sha" >/dev/null
 "$ORCHID_BIN" task set H001 candidate_sha "$edge_sha" >/dev/null
 "$ORCHID_BIN" task advance H001 testing >/dev/null
@@ -268,7 +320,10 @@ jq -n --arg jid "j-fixture-K004-a1" --arg cand "$repo3_sha" \
     verdict:"approve", scope_complete:true, summary:"fixture reviewer", candidate_sha:$cand}' \
   > "$repo3/.orchid/reviews/K004-a1-reviewer.json"
 "$ORCHID_BIN" task advance K004 arbitrating --reason "single reviewer approved" >/dev/null
-"$ORCHID_BIN" task advance K004 "done" --reason "accepted" >/dev/null
+# `task arbitrate`: since T032 it is the only public verb that reaches an
+# arbitration OUTCOME edge out of `arbitrating`, and on an outcome=report archetype
+# `--result approve` derives `done`.
+"$ORCHID_BIN" task arbitrate K004 --result approve --reason "accepted" >/dev/null
 assert_eq "done" "$("$ORCHID_BIN" task show K004 | grep '^status: ' | cut -d' ' -f2)" "K004 reached done"
 
 # (c) cap free + deps met -> K002's pending -> reviewing now proceeds.
@@ -286,7 +341,9 @@ jq -n --arg jid "j-fixture-K002-a1" --arg cand "$repo3_sha" \
     verdict:"approve", scope_complete:true, summary:"fixture reviewer", candidate_sha:$cand}' \
   > "$repo3/.orchid/reviews/K002-a1-reviewer.json"
 "$ORCHID_BIN" task advance K002 arbitrating --reason "single reviewer approved" >/dev/null
-"$ORCHID_BIN" task advance K002 rework --reason "needs another pass" >/dev/null
+# `task arbitrate`: since T032 it is the only public verb that reaches an
+# arbitration OUTCOME edge out of `arbitrating`, and it derives `rework` itself.
+"$ORCHID_BIN" task arbitrate K002 --result request-changes --reason "needs another pass" >/dev/null
 assert_eq rework "$("$ORCHID_BIN" task show K002 | grep '^status: ' | cut -d' ' -f2)" "K002 is rework"
 
 # (e) rework -> reviewing is gated identically: cap=1 with K001 still active
@@ -342,3 +399,65 @@ assert_eq implementing "$("$ORCHID_BIN" task show M002 | grep '^status: ' | cut 
 rc=0; errN="$("$ORCHID_BIN" task advance M003 implementing 2>&1 1>/dev/null)" || rc=$?
 assert_eq 3 "$rc" "an ordinary task's dispatch is refused while the migrate task is active"
 assert_match "exclusive-overlap \(M002\)" "$errN" "refusal names exclusive-overlap against the active migrate task"
+
+# ============================================================================
+# Integration level (dogfood F30): a comma-separated `depends_on` written
+# through `orchid task set`, and the RENDERED predicate the operator actually
+# reads -- in the dispatch refusal and in `orchid status --explain`.
+#
+# The rendering is the point. Under the bug the value never split, so the
+# refusal said `waiting-deps (N001,N002)`: byte-for-byte what a correct
+# two-dependency wait looks like, on a task that could never dispatch however
+# long its dependencies ran. The operator who found this stared at that line
+# for hours. Both surfaces are asserted here because both are read.
+# ============================================================================
+repo5="$WORK/integ5"; mkdir -p "$repo5/.orchid/tasks"
+(cd "$repo5" && git init -q . && git commit -q --allow-empty -m root)
+export ORCHID_REPO="$repo5" HOME="$WORK/home5"; mkdir -p "$HOME"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
+
+"$ORCHID_BIN" task create N001 "first dependency" >/dev/null
+"$ORCHID_BIN" task create N002 "second dependency" >/dev/null
+"$ORCHID_BIN" task create N003 "waits on both" >/dev/null
+
+"$ORCHID_BIN" task set N003 depends_on "N001,N002" >/dev/null \
+  || fail "a comma-separated depends_on naming two EXISTING tasks must be accepted"
+assert_eq "N001,N002" "$("$ORCHID_BIN" task show N003 | grep '^depends_on: ' | cut -d' ' -f2-)" \
+  "the accepted value is stored verbatim -- the write-time check validates, it does not rewrite"
+
+rc=0; errP="$("$ORCHID_BIN" task advance N003 implementing 2>&1 1>/dev/null)" || rc=$?
+assert_eq 3 "$rc" "dispatch with two unmet comma-separated deps is refused (exit 3)"
+assert_match "waiting-deps \(N001 N002\)" "$errP" "the refusal renders the comma value as TWO space-separated ids"
+# Herestring, never `echo ... | grep -q`: this file runs under `set -o
+# pipefail`, and grep exiting at its first match SIGPIPEs the upstream echo,
+# which pipefail then reports as the pipeline's status -- so a check written
+# that way can silently stop firing on exactly the input it is looking for
+# (helpers.sh's assert_match documents the same trap).
+grep -qF "N001,N002" <<<"$errP" \
+  && fail "the refusal rendered the raw comma token -- the ids were never looked up individually, and the message is indistinguishable from a correct two-dep wait"
+
+explainP="$("$ORCHID_BIN" status --explain)"
+assert_match "N003.*waiting-deps \(N001 N002\)" "$explainP" "status --explain renders the same two ids for the same task"
+
+# -- the write-time gate: an id with no task file is refused, and refused
+# whether it stands alone or hides inside an otherwise-valid comma list.
+rc=0; errQ="$("$ORCHID_BIN" task set N003 depends_on "N001,N999" 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "depends_on naming an unknown id must be refused at write time"
+assert_match "N999" "$errQ" "the refusal names the id that resolves to no task"
+grep -qF "N001 " <<<"$errQ" \
+  && fail "the refusal named N001, which DOES exist -- only the unresolvable ids belong in that message"
+assert_eq "N001,N002" "$("$ORCHID_BIN" task show N003 | grep '^depends_on: ' | cut -d' ' -f2-)" \
+  "the refused write left the previous depends_on value untouched"
+
+rc=0; errR="$("$ORCHID_BIN" task set N003 depends_on "N404" 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a lone unknown depends_on id must be refused too"
+assert_match "N404" "$errR" "the lone-unknown-id refusal names it"
+
+# GREEN twin for the gate: clearing the field, and a whitespace-separated list
+# of existing ids, are both still accepted -- a checker that refused every
+# value would satisfy the refusals above and break every legitimate write.
+"$ORCHID_BIN" task set N003 depends_on "" >/dev/null \
+  || fail "an empty depends_on (clearing the field) must remain legal"
+"$ORCHID_BIN" task set N003 depends_on "N001 N002" >/dev/null \
+  || fail "a whitespace-separated depends_on naming existing tasks must remain legal"

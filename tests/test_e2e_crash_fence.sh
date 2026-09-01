@@ -22,7 +22,7 @@ reconcile_until_ok() {
   local task="$1" tries=0 out=""
   while [ "$tries" -lt 50 ]; do
     out="$("$ORCHID_BIN" jobs reconcile)"
-    if printf '%s\n' "$out" | grep -Eq "^${task}[[:space:]]ok"; then
+    if grep -Eq "^${task}[[:space:]]ok" <<<"$out"; then
       "$ORCHID_BIN" jobs gc --older-than-s 0 >/dev/null
       printf '%s\n' "$out"
       return 0
@@ -262,7 +262,9 @@ assert_match "^T001[[:space:]]ok[[:space:]]approve" "$review_reconcile_out" "rev
 
 run_ok "advance arbitrating" "$ORCHID_BIN" task advance T001 arbitrating \
   --reason "review reconciled: verdict approve" >/dev/null
-run_ok "advance merging" "$ORCHID_BIN" task advance T001 merging --reason "approved for merge" >/dev/null
+# `task arbitrate`: since T032 it is the only public verb that reaches an
+# arbitration OUTCOME edge out of `arbitrating`, and it derives `merging` itself.
+run_ok "arbitrate approve" "$ORCHID_BIN" task arbitrate T001 --result approve --reason "approved for merge" >/dev/null
 
 pre_integ="$(git rev-parse "$integ")"
 rc=0; _merge_out="$("$ORCHID_BIN" merge T001 2>&1)" || rc=$?
@@ -275,4 +277,4 @@ git merge-base --is-ancestor "$cand1" "$integ" \
 
 final_explain="$("$ORCHID_BIN" status --explain)"
 assert_match "T001[[:space:]]done[[:space:]].*-$" "$final_explain" "status --explain: T001 done, clean"
-echo "$final_explain" | grep -qi "blocked\|FAIL" && fail "final status --explain must be clean"
+grep -qi "blocked\|FAIL" <<<"$final_explain" && fail "final status --explain must be clean"

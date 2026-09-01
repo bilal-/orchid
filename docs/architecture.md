@@ -23,7 +23,9 @@ flowchart TD
     OP["Operator<br/>terminal + phone"]
     PUMP["runners/orchid-pump<br/>launchd/cron heartbeat, short-lived"]
     TICK["runners/orchid-tick<br/>one bounded tick"]
-    ORCH["Orchestrator engine - claude by default<br/>one power: run orchid verbs in a bash shell"]
+    DRIVE["orchid drive<br/>one deterministic full-task pass"]
+    BOUNDARY{"named judgment boundary<br/>settleable by admitted verb?"}
+    ORCH["Orchestrator engine - claude by default<br/>judgment only when the boundary is settleable"]
     VERBS["Tier-1 verbs - libexec/<br/>orchid task / run / jobs / verify / merge / notify"]
     LAUNCH["runners/orchid-launch<br/>tier 2 - the ONE engine spawner"]
     subgraph ENGINES["Engine adapters - siblings, one role per job, launched per job"]
@@ -41,7 +43,12 @@ flowchart TD
     OP -->|"orchid run start - interactive session"| ORCH
     OP -->|"orchid service install"| PUMP
     PUMP -->|"lease stale? wake the run"| TICK
-    TICK -->|"orchestrate request"| ORCH
+    TICK -->|"always run mechanics first"| DRIVE
+    DRIVE -->|"exit 16 after walking every task"| BOUNDARY
+    BOUNDARY -->|"yes - one bounded orchestrate request"| ORCH
+    BOUNDARY -->|"no - one durable blocker"| OUTBOX
+    DRIVE -->|"structured fields only"| VERBS
+    DRIVE -->|"dispatch eligible jobs"| LAUNCH
     ORCH -->|"verbs only - never hand-edits state"| VERBS
     ORCH -->|"asks the kernel to launch"| LAUNCH
     LAUNCH -->|"request document"| COD
@@ -54,6 +61,7 @@ flowchart TD
     CLA -->|"result envelope"| SPOOL
     SPOOL -->|"orchid jobs reconcile"| VERBS
     VERBS -->|"epoch-fenced git commits"| STATE
+    STATE -.->|"accepting/complete leaves an installed schedule firing"| PUMP
     VERBS -->|"orchid notify writes the question"| OUTBOX
     OUTBOX -->|"pump drains, spawns send"| CHAN
     CHAN --> PHONE
@@ -79,10 +87,17 @@ as the reviewing adapter: `plugins/engines/claude/run` asks a `review` reply
 for `FINDING:` lines and populates `findings[]`, while the other shipped
 review adapters ask for a `VERDICT:` line only and never populate it, so
 there approval rests on `verdict` + `scope_complete`. Where it is populated
-the gate cuts both ways: an empty `findings[]` blocks nothing, and one
-finding at or above the task's own `blocking_severity` turns an otherwise
-unanimous `approve` into a `review-conflict` for the arbiter to settle.
-It stops at a named judgment boundary and exits
+the gate cuts both ways: on an approving review an empty `findings[]` blocks
+nothing, and one finding at or above the task's own `blocking_severity` turns
+an otherwise unanimous `approve` into a `review-conflict` for the arbiter to
+settle. A review that WITHHOLDS approval never reaches that gate with an empty
+array whichever adapter filed it: `orchid jobs reconcile` composes one
+`high`-severity finding from its free-text `summary` as it files the envelope
+(marked `synthesized: true`), because an objection that exists only as prose
+weighs nothing in any severity gate — and the danger there is not the
+disagreement, which blocks on its own, but the next reviewer who approves
+while keeping the same caveat.
+The driver stops at a named judgment boundary and exits
 16 rather than guessing; `orchid run boundary set|clear|show` owns that
 record, one per pass, preferring a boundary a woken orchestrator could
 actually settle over an operator-only one. A run whose tasks are
@@ -94,11 +109,16 @@ exits exactly 16, the boundary reads back through its verb, AND that boundary
 is settleable — some verb records its result, the resolved adapter's
 `command_surface` admits that verb, and the named task's current status lets
 it run. All three matter: `orchid task arbitrate` is the only write the
-broker admits and it refuses any status but `arbitrating`, and no brokered
-adapter can run `orchid run accept`, so a finished run is a human's job.
-Anything that fails the test is left to the
+broker admits and it refuses any status but `arbitrating`, and no adapter —
+brokered or soft — is admitted to run `orchid run accept`, so a finished run
+is a human's job. `soft` names the absence of ENFORCEMENT, not a wider set of
+admitted verbs: every woken adapter is handed the same judgment-boundary
+contract, so it settles the same decisions, with nothing stopping it from
+doing more. Anything that fails the test is left to the
 blocker the driver raised, rather than spending a model wakeup per pump cycle
-on a decision no admitted verb can make. When one is
+on a decision no admitted verb can make. Exit 16 means a decision is
+outstanding somewhere, not that the run is stuck: the pass still advanced
+every other task, and the pump reports the boundary and keeps driving. When one is
 woken, an adapter that declares `command_surface=brokered` confines it to
 `runners/orchid-orchestrator-command`, a default-deny argument-validating
 broker admitting judgment-only forms — a real command allowlist for that
@@ -114,17 +134,23 @@ so on every tick.
 
 <!-- Source of truth: PROTOCOL.md "THE TICK - 3. State-machine walk" (the
      feature archetype's walk) and docs/specs/kernel.md "Task lifecycle"
-     (the canonical transition table). Every state and edge below appears
-     in that table; none is invented here. -->
+     (the canonical transition table). State-changing edges come from that
+     table; self-edges below show driver refusals/boundaries that intentionally
+     leave the state unchanged. -->
 ```mermaid
 stateDiagram-v2
     [*] --> pending
     pending --> implementing: deps done - worktree created, base_sha recorded
-    implementing --> testing: implementer envelope ok - candidate_sha set, no commit touches .orchid/
+    implementing --> testing: ok envelope AND a candidate exists - new HEAD, or recorded candidate ahead of base
+    implementing --> implementing: ok envelope + clean unchanged base - refuse, infra-fail, mark, relaunch
+    implementing --> blocked: repeated no-candidate delivery reaches infra_max
+    implementing --> implementing: dirty tree - operator boundary; unreadable - conflict; no attempt
     testing --> reviewing: orchid verify PASS - the evidence log is the only gate (INV-11)
+    testing --> testing: verify REFUSED - HEAD differs from candidate or moves; no attempt
     testing --> rework: verify FAIL - consumes an attempt
     reviewing --> arbitrating: every required review envelope reconciled for this candidate
     arbitrating --> merging: approve - journaled reason required
+    arbitrating --> arbitrating: unresolved objection persists until equal authority clears it
     arbitrating --> rework: request-changes - journaled reason required
     merging --> done: orchid merge re-runs the suite in a temp worktree, then advances the ref
     merging --> rework: validation failed
@@ -133,6 +159,11 @@ stateDiagram-v2
     testing --> blocked: attempts exhausted - a human is pinged
     blocked --> rework: answer arrives - orchid task unblock or retry, reason recorded
     done --> [*]
+    note left of done
+        task done is not run accepted;
+        candidate-local, post-merge integration-branch,
+        and remote-CI evidence are separate facts
+    end note
     note right of blocked
         blocked is legal from any status
         (infra failures, budget, operator call).
@@ -141,18 +172,37 @@ stateDiagram-v2
     end note
 ```
 
+The picture deliberately collapses the infrastructure ladder,
+verify-failure classification, and review-slot routing into their resulting
+edges; PROTOCOL.md is the ordered procedure. It keeps the r-002 refusal paths
+explicit because those are precisely the cases where an `ok` envelope or a
+suite invocation establishes nothing and the state must not advance.
+
 **What this proves: every transition is evidence-gated, and the state IS
 the git branch.** `testing → reviewing` is refused without a passing
 `orchid verify` evidence log bound to the current `candidate_sha` (INV-11);
 `reviewing → arbitrating` is refused until the kernel counts enough
-reconciled review envelopes for the task's risk tier; `merging → done`
+reconciled review envelopes for the task's risk tier; a deterministic
+`arbitrating → merging` is refused outright while the task carries an
+`unresolved_objection` — an arbiter's own `request-changes` that no later
+arbitration has approved, which outlives the round it was raised in because
+the next round's reviews are not an answer to it, and which stops on an
+operator-only boundary when an operator raised it, so that no woken model
+settles it either; an objection the run's own orchestrator raised stops on an
+arbitrable one instead, since the actor that raised it is in the loop and a
+stop nothing can answer parks the run (T032,
+dogfood F33); `merging → done`
 re-runs the whole suite in a temp worktree before advancing the integration
 ref, and a moved base forces re-verify plus re-review (INV-07). Every
 reason-bearing transition journals its why before the state change (INV-08),
 and the state itself is `tasks/<id>.md` frontmatter committed on the
 `orchid/integration` branch — which is why a crash anywhere loses at most
 the current uncommitted tick
-([specs/kernel.md](./specs/kernel.md), "Kernel guarantees").
+([specs/kernel.md](./specs/kernel.md), "Kernel guarantees"). The self-edges
+are load-bearing refusals rather than hidden transitions: a no-candidate
+delivery is retried on the infrastructure ladder, a dirty or unreadable tree
+stops for an operator, and a verify run whose checkout differs from or moves
+off `candidate_sha` establishes nothing and spends no attempt.
 
 ## 3. The blocker round trip
 
@@ -203,20 +253,23 @@ flowchart LR
         IMP["implementer<br/>codex - fresh worktree"]
     end
     CAND["candidate<br/>base_sha..candidate_sha<br/>reviews bind to exactly this range"]
+    VERIFY{"orchid verify evidence<br/>sha = head_after = candidate?"}
     subgraph SB["Session B - vendor B, zero shared context"]
         R1["reviewer slot 1<br/>agy - engine-independent"]
     end
     subgraph SC["Session C - medium/high risk only"]
-        R2["reviewer slot 2 - worktree-capable<br/>engine-independent, or session-independent<br/>labeled and journaled as degraded"]
+        R2["reviewer slot 2 - worktree-capable wherever the install has one<br/>engine-independent, or session-independent<br/>depth and independence both labeled and journaled"]
     end
     ARB["arbiter - claude by default<br/>inline judgment on disagreement, journaled"]
     IMP -->|"adapter commits the edits"| CAND
-    CAND -->|"input pack: diff + acceptance criteria"| R1
-    CAND -->|"input pack"| R2
+    CAND -->|"suite starts and ends on recorded SHA"| VERIFY
+    VERIFY -->|"PASS: bound evidence"| R1
+    VERIFY -->|"PASS: bound evidence"| R2
+    VERIFY -->|"REFUSED: tree differs or moves; no attempt"| CAND
     R1 -->|"verdict envelope"| ARB
     R2 -->|"verdict envelope"| ARB
-    ARB -->|"approve"| MERGE["merging"]
-    ARB -->|"reject"| REWORK["rework"]
+    ARB -->|"approve only with no standing objection, or equal authority clears it"| MERGE["merging"]
+    ARB -->|"request changes - objection persists into later rounds"| REWORK["rework"]
 ```
 
 **What this proves: structural independence, not politeness.** The
@@ -227,10 +280,63 @@ which died with its session by design ([specs/kernel.md](./specs/kernel.md),
 "Memory & resumption"). Independence is enforced by the resolver against
 the task's recorded `implementer_engine_id`, in two grades: *engine
 independence* (different vendor) preferred, *session independence* (same
-vendor, fresh session) accepted at `medium` risk only when labeled and
-journaled — and `high` risk queues rather than accept the weaker guarantee.
-LLM evaluators measurably favor their own generations
-([research.md](./research.md)); this topology is the countermeasure.
+vendor, fresh session) accepted at `medium` and `high` alike, but only when
+labeled in the routing table and journaled before the slot is dispatched.
+Routing never withholds a slot to hold out for a better reviewer: a tier
+that cannot be filled independently is filled and labeled, and a shortfall
+is judged where the evidence is judged rather than where the slots are
+allocated — see the depth paragraph below, and
+[specs/kernel.md](./specs/kernel.md), "Review depth", for why refusing at
+the routing end was rejected. LLM evaluators measurably favor their own
+generations ([research.md](./research.md)); this topology is the
+countermeasure.
+
+**Candidate binding begins before review.** The verifier records the starting
+HEAD, ending HEAD, and task `candidate_sha`; only equality across all three can
+produce evidence usable by INV-11. A checkout that starts elsewhere or moves
+during the suite returns a refusal rather than laundering results from a
+different tree into this candidate. The arbiter's approval is bound to the
+same candidate and evidence set, and a request-changes decision leaves a
+standing objection that a later round of reviews cannot silently overwrite.
+
+**And the slot table is pinned for the life of an attempt.** Routing reads
+engine health, so it is a moving table; a review is judged against the one
+its attempt was dispatched under (`orchid jobs review-plan <id> --pin`,
+stored beside the envelopes it credits). Each pinned row records the engine's
+NAME and the qualified id it resolved to, because a name still has to be
+resolved through the live plugin registry before a filed review can be matched
+to it — so an uninstall or a rebind would orphan that review just as surely as
+a re-route. Recomputing it instead cost r-002 a task outright: an engine
+filed a valid review, went unavailable on unrelated work minutes later, and
+the slot it had been dispatched for was reassigned — leaving evidence nothing
+could credit, on the only edge out of `reviewing`, in a status from which no
+arbitration verb is legal. Independence you can
+recompute is not independence you can prove.
+
+**Independence is not depth, and `medium`/`high` need both.** Slot 1's
+engine-independent reviewer is typically *inline*: it judges the diff text
+alone and cannot open a file the diff never showed it. Run r-001 shipped the
+consequence four times — an inline slot approving a candidate whose central
+acceptance criterion was unmet, with an empty findings array, while the
+worktree-capable slot cited the file and line and the arbiter rejected. So
+at those tiers the routing table labels each slot `worktree` or `inline`,
+slot 2's depth pass searches past `review.<tier>` to find a worktree-capable
+reviewer wherever the install has one — and stops widening once slot 1 has
+already brought depth, so the second slot is not spent buying it twice at the
+cost of an available engine-independent reviewer — and an approval with no review
+credited to a `worktree` slot behind it is handed to an arbiter rather than
+made deterministically ([specs/kernel.md](./specs/kernel.md), "Review
+depth"). That credit is read from the attempt's pinned plan — the same
+table, the same frozen engine identity, and the same slot matching that
+decides which slot a review fills — so a review's depth is fixed when it is
+dispatched, not re-judged from whatever manifests happen to be installed when
+the arbitration runs. It is read from that plan or from nowhere: a plan
+missing, unreadable, empty or bound to a candidate the task has moved off is
+itself an arbitrable boundary at those tiers, rather than being answered from
+a routing table computed after the reviews were filed. The inline reviewer is
+never dropped: on a diff it can
+genuinely inspect it is often the only cross-vendor independence an install
+has, and independence guards a failure mode depth cannot.
 
 ## 5. Epoch fencing: two writers, one survivor
 
@@ -271,7 +377,7 @@ committed files.
 - [PROTOCOL.md](../PROTOCOL.md) — the tick procedure every front-end
   executes; the normative walk behind diagram 2.
 - [specs/kernel.md](./specs/kernel.md) — tiers, transition table,
-  invariants INV-01..INV-14, command surfaces, judgment boundaries.
+  invariants INV-01..INV-15, command surfaces, judgment boundaries.
 - [specs/plugins.md](./specs/plugins.md) — adapter contract, trust model,
   notify channels.
 - [frontends.md](./frontends.md) — which agent products can drive the

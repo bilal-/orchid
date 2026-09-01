@@ -504,3 +504,52 @@ PATH="$STUBBIN:$PATH" ORCHID_NOTIFY_CHANNEL=telegram ORCHID_NOTIFY_TO="#ops" \
   || fail "adding the probe mode must not break the ordinary send path"
 assert_match "message send --channel telegram --target #ops" "$(cat "$OC_LOG")" \
   "the ordinary two-argument send still invokes the verified openclaw shape"
+
+# ===========================================================================
+# 10 -- the judgment page has a BODY (T009). r-001 paged twenty-seven
+# boundaries as one opaque line each -- answerable in principle,
+# unanswerable in practice, because nothing on the phone said which task,
+# which attempt, or what would be accepted. The page now says what is
+# being decided first, then the task id AND title, the attempt number, the
+# permitted answers, and the reply command last. The qid and nonce ride
+# verbatim -- they are the security model; the body is what surrounds them.
+# ===========================================================================
+"$ORCHID_BIN" task create T900 "give the page a body" >/dev/null \
+  || fail "fixture task for the page-body section must be creatable"
+qidP="$("$ORCHID_BIN" notify --task T900 --choice approve --choice defer "promote the build?")"
+[ -f ".orchid/runtime/outbox/$qidP" ] || fail "page-body notify must still write its outbox file"
+obP="$(cat ".orchid/runtime/outbox/$qidP")"
+
+assert_match "^$qidP: promote the build\?\$" "$obP" \
+  "page line 1 is still qid + the one line saying what is being decided"
+assert_match "^task: T900 — give the page a body\$" "$obP" \
+  "the page names the task id AND its title"
+# The EXACT number, never `[0-9]+`. T900 was just created, so nothing has
+# been charged against it and it is on its first attempt -- the page must say
+# `attempt: 1`. A loose digit pattern accepted `attempt: 0` here for as long
+# as the page rendered the raw `attempts` counter: a round number no artifact
+# in the repo is filed under (envelopes land at `<task>-a<attempts+1>-<role>`),
+# printed on the one line whose job is to point an operator at them.
+assert_match "^attempt: 1\$" "$obP" \
+  "the page names the round being DECIDED (attempts + 1), so a freshly created task pages as attempt 1, never 0"
+assert_match "^choices: approve \| defer\$" "$obP" \
+  "the page lists the permitted answers"
+assert_match "reply: ORCHID_REPO=\"[^\"]+\" orchid answer $qidP <choice> --nonce [0-9a-f]+" "$obP" \
+  "the reply command still closes the page, complete and cwd-independent (F18)"
+assert_match "^reply: " "$(tail -n1 <<<"$obP")" \
+  "the reply command is the page's LAST line -- context first, action last"
+
+nP="$(grep -m1 '^nonce: ' ".orchid/runtime/answers/$qidP.question" | sed 's/^nonce: //')"
+assert_match "$nP" "$obP" "the page's nonce is the question's own nonce, verbatim"
+
+# ...and a page for a question with NO task and NO declared set is exactly
+# the minimal page: what-is-decided line + reply line, nothing invented
+# (section 3's qid1 assertions above already ran against this same code
+# path; this pins the whole shape, line count included).
+qidM="$("$ORCHID_BIN" notify "minimal page, no task, no set")"
+obM="$(cat ".orchid/runtime/outbox/$qidM")"
+assert_eq "2" "$(wc -l <<<"$obM" | tr -d ' ')" \
+  "a task-less, set-less page is exactly two lines (decided + reply)"
+if grep -Eq '^(task|attempt|choices): ' <<<"$obM"; then
+  fail "a task-less, set-less page must not invent task/attempt/choices lines"
+fi

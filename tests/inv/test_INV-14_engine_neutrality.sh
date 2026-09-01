@@ -23,6 +23,18 @@ export ORCHID_ROOT="$REPO_ROOT"
 # lib/archetype.sh's own header carries the archetype half of this rule, and
 # tests/test_drive_hooks_archetypes.sh proves it behaviourally by driving a
 # custom archetype nobody wrote code for.
+#
+# RED: two, on the two halves. Statically, a synthetic `if [ "$engine" = <a
+#      real discovered id> ]` line must be MATCHED by the same comparison
+#      pattern the scan uses (section 2's self-check) -- a scan that finds
+#      nothing passes, and so does a broken one. Behaviourally, section 3's
+#      fixture engine carries a name that appears nowhere in kernel source,
+#      asserted by grep before anything uses it: if any layer held a name
+#      table, that is the engine that falls through it.
+# GREEN: an ASSIGNMENT of the same name (`v=codex,other`, a config default
+#      table, which is data) must NOT match, or the gate would flag every
+#      default in the tree; and the unknown engine must resolve, validate,
+#      qualify and be routed to exactly like a shipped one.
 
 # ===========================================================================
 # 1 -- discover the identifier set.
@@ -111,6 +123,8 @@ probe_assign="$WORK/probe-assign.sh"
 printf 'v=%s,other\n' "$first_id" > "$probe_assign"
 probe_assign_hit="$(grep -nE "[[:space:]](=|==|!=)[[:space:]]*\"?$first_id\"?([^A-Za-z0-9_./-]|\$)" "$probe_assign" || true)"
 [ -z "$probe_assign_hit" ] || fail "INV-14 self-check: an assignment (a config default table) must not read as a branch"
+red_case "INV-14's comparison pattern matched a real engine-name branch, so the scan above is capable of finding one"
+green_case 'the same pattern left an assignment (v=<engine>,other, a config default table) alone, so the match above is detection rather than a pattern that hits every line naming an engine'
 
 # ===========================================================================
 # 3 -- neutrality, behaviourally. An engine whose name appears nowhere in
@@ -196,5 +210,14 @@ assert_match "$NEUTRAL" "$routing" "review routing selects an unknown engine on 
 # name alone would also be satisfied by a session-independent fallback, i.e. by
 # routing settling on $NEUTRAL because nothing else was left rather than
 # because an unknown engine is a first-class candidate.
-assert_match "^1[[:space:]]+${NEUTRAL}[[:space:]]+engine-independent\$" "$routing" \
-  "an unknown engine fills the engine-independent slot, not a degraded fallback"
+#
+# The trailing `worktree` is the routing table's fourth column (T012's review
+# DEPTH axis), and it belongs in a NEUTRALITY assertion rather than merely
+# being tolerated by a looser anchor: this fixture's manifest declares
+# `workspace_read`, and the column must read that claim off the manifest of an
+# engine whose name appears nowhere in kernel source. A name table that fed
+# the depth column would fail here exactly as one feeding column 3 does.
+# Keep the end anchor -- it is what distinguishes `engine-independent` from a
+# degraded `session-independent` label, and `worktree` from `inline`.
+assert_match "^1[[:space:]]+${NEUTRAL}[[:space:]]+engine-independent[[:space:]]+worktree\$" "$routing" \
+  "an unknown engine fills the engine-independent slot, not a degraded fallback, and its depth column is read from its own manifest"

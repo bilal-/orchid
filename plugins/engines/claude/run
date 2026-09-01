@@ -15,6 +15,16 @@ source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/heartbeat.sh"
 
+# The stale-root gate, fired explicitly (INV-15). An engine adapter lives
+# outside bin/, libexec/ and runners/, so lib/common.sh's source-time fire does
+# not cover this path: loading the library above ARMED the guard and left the
+# firing to this file. It is worth the line because an adapter executes
+# $ORCHID_ROOT's own libraries and role profiles, so a stale installation root
+# is precisely the stale-adapter shape lesson L018 records. Idempotent, and a
+# no-op for every root not parked on its configured integration branch, so an
+# ordinary run pays nothing for it.
+orchid_root_stale_gate
+
 req="${1:?usage: run <request.json>}"
 job_id="$(jq -r .job_id "$req")";         task="$(jq -r .task "$req")"
 operation="$(jq -r .operation "$req")";   worktree="$(jq -r .worktree "$req")"
@@ -34,18 +44,32 @@ write_envelope() {  # status extra-json
     | atomic_write "$output"
 }
 classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
-  if printf '%s' "$1" | grep -qiE 'rate limit|usage limit|429'; then echo rate_limited
-  elif printf '%s' "$1" | grep -qiE 'login|auth|unauthorized'; then echo auth
+  # HERESTRINGS, never `printf ... | grep -q` (T016's sweep of the class T010
+  # named). $1 is the whole of a vendor CLI's combined output, so it is the
+  # LARGEST producer any matcher in this tree is fed: `grep -q` exits at its
+  # first match, SIGPIPEs a `printf` with most of that still to write, and
+  # under this adapter's `set -o pipefail` the kill-by-signal status becomes
+  # the pipeline's. A genuine rate-limit notice then classifies as plain
+  # `failed`, lib/ledger.sh charges an attempt instead of scheduling the
+  # backoff, and the bigger the transcript the likelier it is.
+  if grep -qiE 'rate limit|usage limit|429' <<<"$1"; then echo rate_limited
+  elif grep -qiE 'login|auth|unauthorized' <<<"$1"; then echo auth
   else echo failed
   fi
 }
+
+# Capability-refusal marker (v1-m5 T008; same meaning as
+# plugins/engines/agy/run's): declining an operation this adapter never
+# claimed is designed behaviour, so `lib/ledger.sh` must not charge it toward
+# engine_fail_threshold. Genuine faults below never carry it.
+REFUSAL='{"failure_kind":"capability"}'
 
 # Operation gate precedes DRYRUN: an unsupported operation fails the same way
 # whether or not ORCHID_DRYRUN is set (no dryrun short-circuit for unknowns).
 case "$operation" in implement|review|critique|orchestrate) ;;
   *)
     echo "orchid/claude: unsupported operation '$operation'" >&2
-    write_envelope failed '{}'
+    write_envelope failed "$REFUSAL"
     exit 1 ;;
 esac
 
@@ -109,10 +133,27 @@ err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
 # below included. The "Never hand-edit anything under .orchid/" and "never
 # contact any remote" lines in the instructions are PROMPT POLICY, not
 # enforcement, and are written here as such.
+#
+# WHY THE NOTIFY FORM BELOW CARRIES `--choice` (v1-m4 T009). A boundary this
+# model hands on to a human arrives as one channel message, and r-001 shipped
+# twenty-seven of those whose only instruction was `orchid answer <qid>
+# <choice> --nonce <n>` -- with `<choice>` free text validated against
+# nothing, so the page could not say what it would accept and a typo was
+# recorded silently as a decision. runners/orchid-drive declares a set for
+# every boundary kind that has one (lib/drive.sh's drive_boundary_choices),
+# and this branch is the OTHER producer of those pages: a boundary the driver
+# routed to a woken model, which the model then judges to be a human's after
+# all. Left out here, exactly the pages a model escalates keep the
+# unanswerable shape -- and this is the adapter the run's own orchestrator
+# role resolves to, so that is not a hypothetical half. The broker already
+# admits and validates the flag (runners/orchid-orchestrator-command's
+# `notify` arm), so this is instruction text over an existing surface rather
+# than new surface. Omitting it stays explicitly permitted, because a
+# question whose honest answer is a sentence must not be gated on a menu.
 if [ "$operation" = orchestrate ]; then
   broker="$ORCHID_ROOT/runners/orchid-orchestrator-command"
   protocol="$(cat "$ORCHID_ROOT/PROTOCOL.md" 2>/dev/null || true)"
-  instructions="A deterministic driver has ALREADY executed this tick's mechanical steps against the repository at $worktree (lease, reconcile/check/gc, dispatch, verify, review routing, unambiguous approval, merge, status). You were woken for ONE reason: a judgment boundary deterministic policy refused to resolve. The ONLY command you may run is the brokered command surface $broker, which takes an orchid verb form as its arguments -- no other executable, no bare \`orchid\`, no engine launcher, no git, no shell pipeline. Start by running: $broker run boundary show. Read the named task with $broker task show <id>, its reviews with $broker jobs review-plan <id>, and the recent record with $broker journal tail -n 20. Then record exactly one decision: $broker task arbitrate <id> --result approve|request-changes --reason \"<why>\" when the boundary is an arbitration you can settle, or $broker notify --task <id> \"<what a human must decide>\" when it is not. Record anything durable you learned with $broker journal add --task <id> --kind arbitration \"<text>\" or $broker lessons add --scope repo --invalidate-when \"<when>\" \"<lesson>\". Finish with $broker run boundary clear --reason \"<what you decided>\" once, and only once, the boundary is genuinely resolved. Never hand-edit anything under .orchid/. Never run 'git push', never fetch/pull, never contact any remote -- every mutation stays repo-local; only the operator moves anything to origin. For every command you run, print one line of the exact form: ORCHID-ACTION: <command>."
+  instructions="A deterministic driver has ALREADY executed this tick's mechanical steps against the repository at $worktree (lease, reconcile/check/gc, dispatch, verify, review routing, unambiguous approval, merge, status). You were woken for ONE reason: a judgment boundary deterministic policy refused to resolve. The ONLY command you may run is the brokered command surface $broker, which takes an orchid verb form as its arguments -- no other executable, no bare \`orchid\`, no engine launcher, no git, no shell pipeline. Start by running: $broker run boundary show. Read the named task with $broker task show <id>, its reviews with $broker jobs review-plan <id>, and the recent record with $broker journal tail -n 20. Then record exactly one decision: $broker task arbitrate <id> --result approve|request-changes --reason \"<why>\" when the boundary is an arbitration you can settle, or $broker notify --task <id> [--choice <value>]... \"<what a human must decide>\" when it is not -- declare one --choice per permitted answer whenever the question has an enumerable set (orchid answer then refuses anything outside it and names the valid ones, so the page says what may be answered instead of leaving <choice> to be guessed); omit --choice entirely when the honest answer is prose. Record anything durable you learned with $broker journal add --task <id> --kind arbitration \"<text>\" or $broker lessons add --scope repo --invalidate-when \"<when>\" \"<lesson>\". When you approve despite a finding you judge REAL but out of this task's scope, record that finding before you clear the boundary: $broker journal add --task <id> --kind ledger \"<the finding>\", one finding per entry, because the ledger is what the NEXT run's planning cross-check reads back -- a real defect left open with no ledger entry leaves the next plan nothing to be held to. Do not, however, excuse one: never journal add --kind plan_deferral, since deciding a carried-forward finding may be skipped belongs to the operator's orchid plan defer, and this surface refuses that kind. Finish with $broker run boundary clear --reason \"<what you decided>\" once, and only once, the boundary is genuinely resolved. Never hand-edit anything under .orchid/. Never run 'git push', never fetch/pull, never contact any remote -- every mutation stays repo-local; only the operator moves anything to origin. For every command you run, print one line of the exact form: ORCHID-ACTION: <command>."
   prompt="$protocol"$'\n\n'"$instructions"
 
   # Streaming + heartbeat (v1-m3, round 2 of the live-run finding -- see
@@ -170,6 +211,13 @@ if [ "$operation" = implement ]; then
   prompt=""
   [ -f "$input_pack/context.md" ] && prompt="$(cat "$input_pack/context.md")"$'\n\n'
   prompt="$prompt$(cat "$input_pack/task.md")"$'\n\n'
+  # T025: on a rework attempt the pack carries rework.md -- the verbatim
+  # output of the run that failed last time, plus whether that failure has
+  # repeated unchanged. Placed AFTER the spec and immediately before the
+  # rules, so it reads as the most recent fact about this task rather than as
+  # background. Absent on a first attempt, which is why this is conditional
+  # and not a required pack item.
+  [ -f "$input_pack/rework.md" ] && prompt="$prompt$(cat "$input_pack/rework.md")"$'\n\n'
   prompt="${prompt}Rules: work only in this directory; edit files to satisfy the task; never touch any .orchid/ path."
 
   # v0b2 F2, judgment call: apply the same stdin fix as codex's adapter to
@@ -271,6 +319,21 @@ if [ -f "$input_pack/task.md" ]; then
   # lib/drive.sh's own gate applies when the key is absent, so the prompt and
   # the gate can never state different thresholds.
   bsev="$(fm_get "$input_pack/task.md" blocking_severity)"; [ -n "$bsev" ] || bsev=medium
+  # THE ARBITER'S STANDING OBJECTION (T032, dogfood F33), read from the same
+  # pack task.md as everything above -- lib/pack.sh copies the file whole, so
+  # a field the kernel writes reaches every adapter without a new pack item.
+  # Empty on the overwhelming majority of reviews, and the whole block below
+  # is omitted then; a task only carries one after an arbiter recorded
+  # `request-changes` on it and no arbitration has cleared it.
+  objection="$(fm_get "$input_pack/task.md" unresolved_objection)"
+  # AND WHO RAISED IT, from the field the arbitration wrote it with. An
+  # operator's objection and this run's own orchestrator's are worth different
+  # things to a reviewer -- one is a human who read the merged source, the
+  # other is a model that read this diff -- and the prompt must not describe
+  # either as the other. Defaulted like `bsev` above, and to the same stricter
+  # reading the kernel's own gate takes on an absent field.
+  objection_by="$(fm_get "$input_pack/task.md" unresolved_objection_by)"
+  [ -n "$objection_by" ] || objection_by=operator
   diff="$(cat "$input_pack/diff.patch" 2>/dev/null || true)"
   # Reply contract (v1-m4 T006): VERDICT **plus** the same `FINDING:
   # <low|medium|high>: <title>` line shape the critique prompt below already
@@ -297,6 +360,19 @@ if [ -f "$input_pack/task.md" ]; then
   # `low` is named as the home for anything worth mentioning but not worth
   # blocking on. The parser and the envelope schema are unchanged; this only
   # tells the model what it is choosing.
+  #
+  # AND A REPLY THAT WITHHOLDS APPROVAL IS ASKED FOR PROSE TOO (T033, dogfood
+  # F32). This adapter wrote no `summary` at all until now, which was harmless
+  # while findings[] carried everything -- but a `request-changes` reply whose
+  # FINDING lines all get dropped by the best-effort scrape below (or that
+  # files none) leaves an envelope with an empty findings[] AND no prose, and
+  # `orchid jobs reconcile`'s synthesis then has nothing to lift into the
+  # severity gate but a placeholder. `REASON:` is the same optional line
+  # plugins/engines/codex/run and plugins/engines/agy/run already carry into
+  # `summary`, captured by the same idiom at the foot of this file, so the one
+  # field every gate reads is never populated from nothing. The prompt names
+  # the consequence rather than the mechanism: a reviewer who wants the
+  # severity to stay its own call reports the finding itself.
   prompt="Acceptance criteria: $ac
 Stop condition: $stop
 $manifest_line
@@ -308,6 +384,7 @@ Reply with:
 VERDICT: approve OR request-changes
 One line per issue found, exactly: FINDING: <low|medium|high>: <title>
 (omit FINDING lines entirely when there are none).
+REASON: one sentence
 
 Severity decides what happens next, so pick it for consequence, not for
 emphasis. This task's blocking_severity is $bsev: a finding at or above $bsev
@@ -316,7 +393,34 @@ STOPS the run for human arbitration even when your verdict is approve.
 - medium: a real defect or a missed acceptance criterion — worth halting the
   run over wherever the threshold above reaches it.
 - low: worth telling the author, never worth stopping for — style, naming,
-  wording, optional cleanups. Use low for anything you would call a nit."
+  wording, optional cleanups. Use low for anything you would call a nit.
+
+A request-changes verdict carries at least one FINDING line. Severity gates
+read findings[] and nothing else, so an objection written only as prose is
+weighed by nothing: if you withhold approval without one, the kernel composes
+a high-severity finding from your REASON line on your behalf. Reporting the
+finding yourself is how the severity stays your call."
+  # WHY THE REVIEWER IS TOLD (T032, dogfood F33). On the run this comes from,
+  # a reviewer that had itself said `request-changes` twice returned `approve`
+  # on the third round with the objected-to defect untouched -- which is what a
+  # reviewer handed the same diff and no memory will do. The arbitration is the
+  # one thing it could not re-derive from the pack, so it is handed over
+  # explicitly, and the question is narrowed to it: "was this addressed", not
+  # "form an opinion". Appended LAST, after the reply contract, deliberately --
+  # it is the first thing this round must answer, and it must not read as one
+  # more consideration buried above the instructions.
+  [ -z "$objection" ] || prompt="$prompt
+
+AN ARBITER REJECTED AN EARLIER ROUND OF THIS TASK and that objection is still
+recorded as unresolved. It was raised by: $objection_by (operator = the human
+running this repository; orchestrator = this run's own arbiter). The objection:
+  $objection
+Judge this round on whether that objection was addressed, before anything
+else, and say which in your REASON line. If it was not addressed, withhold
+approval and file it as a FINDING -- do not re-form an opinion from scratch
+and do not approve around it because the rest of the diff looks right. A
+reviewer approving here with that defect untouched is the exact failure this
+paragraph exists to stop."
 else
   # v1-m3: a PLAN pack (task id `plan`, role.plan_critic) has no task.md/
   # diff.patch at all -- lib/pack.sh's _pack_build_plan builds
@@ -394,8 +498,13 @@ fi
 # fall through to malformed rather than being read as an approval.
 verdict_line="$(printf '%s\n' "$stdout" | grep -iE '^VERDICT:[[:space:]]*(approve|request-changes)[[:space:]]*$' | tail -n1 || true)"
 verdict=""
-if printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$'; then verdict=approve
-elif printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$'; then verdict=request-changes
+# Herestrings, same rule as classify above (T016's sweep of the class T010
+# named). $verdict_line is one line, so the race is remote here — but the
+# shape is the thing that gets copied into the next adapter, where the
+# producer is not one line, and tests/inv/test_INV-15_no_optional_gate.sh
+# holds the whole shipped tree to the shape rather than to a risk estimate.
+if grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$' <<<"$verdict_line"; then verdict=approve
+elif grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$' <<<"$verdict_line"; then verdict=request-changes
 fi
 if [ -z "$verdict" ]; then
   write_envelope malformed '{}'
@@ -417,9 +526,14 @@ scope_complete=true; [ "$any_trunc" = "true" ] && scope_complete=false
 # `<low|medium|high>` and all, contributes nothing).
 #
 # An empty result stays the literal `[]` and is NOT an error: a reviewer that
-# genuinely found nothing to report is a valid, still-`ok` review, and the
-# driver's blocking_severity gate (lib/drive.sh) reads an empty findings[] as
-# "nothing blocking", exactly as it always has.
+# genuinely found nothing to report is a valid, still-`ok` review, and on an
+# APPROVING one the driver's blocking_severity gate (lib/drive.sh) reads an
+# empty findings[] as "nothing blocking", exactly as it always has. On a reply
+# that WITHHOLDS approval the array does not stay empty for long (T033): what
+# this adapter writes is unchanged, but `orchid jobs reconcile` composes one
+# `high` finding from the envelope's `summary` as it files it, since an
+# objection no gate can weigh is the defect dogfood F32 named. That is the
+# reason the REASON line below is captured at all.
 findings_json='[]'
 findings_ndjson=""
 while IFS= read -r rest; do
@@ -432,5 +546,20 @@ while IFS= read -r rest; do
 done < <(printf '%s\n' "$stdout" | grep '^FINDING:' | sed 's/^FINDING:[[:space:]]*//')
 [ -z "$findings_ndjson" ] || findings_json="$(printf '%s' "$findings_ndjson" | jq -s -c '.')"
 
-write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --argjson f "$findings_json" '{verdict:$v, scope_complete:$sc, findings:$f}')"
+# Optional REASON line (last one wins, the same idiom the VERDICT grep above
+# uses) carried into the envelope's `summary` -- character for character
+# plugins/engines/codex/run's and plugins/engines/agy/run's, including the
+# 200-character cut, so the three shipped reviewers put their prose in one
+# place. ABSENT rather than a placeholder when the reply has no REASON line:
+# lib/envelope.sh's review/critique union never requires `summary`, every
+# reply written before this contract existed stays valid, and inventing text
+# here would hand reconcile's synthesis a sentence no reviewer wrote.
+reason_line="$(printf '%s\n' "$stdout" | grep '^REASON:' | tail -n1 || true)"
+reason="$(printf '%s' "$reason_line" | sed 's/^REASON:[[:space:]]*//')"
+reason="${reason:0:200}"
+if [ -n "$reason" ]; then
+  write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --argjson f "$findings_json" --arg s "$reason" '{verdict:$v, scope_complete:$sc, findings:$f, summary:$s}')"
+else
+  write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --argjson f "$findings_json" '{verdict:$v, scope_complete:$sc, findings:$f}')"
+fi
 exit 0

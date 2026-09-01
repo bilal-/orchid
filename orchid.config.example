@@ -1,5 +1,52 @@
 integration_branch=orchid/integration
 verify=npm test
+# The repository's own floor, checked once per merge on the MERGED tree, in
+# addition to whatever the task named for itself. Set it here and every task
+# inherits it: unlike `verify` (which a task overrides with its own
+# `verification_commands`), nothing a task writes can switch this off. That is
+# the whole point -- a repo-wide check that each task has to opt into reaches
+# only the tasks whose author remembered it. A failing gate sends the task to
+# `rework` and leaves the integration ref exactly where it was. Unset (the
+# default) means no gate and no cost.
+#
+# A red gate COSTS the task a rework round, and blocks it once the rounds run
+# out (`rework_max`, or a per-task grant from `orchid task retry --attempts
+# N`). Merge conflicts and a failing task suite still cost nothing at merge --
+# this one failure does, because a gate is a statement about the repository
+# and a repository nobody has touched is red again next round, so an uncharged
+# edge would re-dispatch implementers against it forever. See
+# docs/configuration.md for the recoveries when the gate was not the task's
+# fault.
+#
+# Name the part of your checks that a task's own suite does NOT already
+# cover -- lint, formatting, a licence scan. `orchid merge` has already run
+# the task's `verification_commands` on this very tree by the time the gate
+# fires, so a gate that repeats the test suite pays for it twice per merge for
+# nothing. Orchid's own gate below is `scripts/ci-local.sh --no-tests` for
+# exactly that reason: static checks and ShellCheck, no second suite. See
+# docs/configuration.md.
+# merge_gate=/bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+
+# A checkout Orchid creates -- a task's dispatch worktree, and the temp
+# worktree `orchid merge` validates in -- is `git worktree add` of a ref, so
+# it holds ONLY what is committed. If the `verify` command above needs
+# anything untracked (installed dependencies, a generated file, a .env), set
+# worktree_prepare to the command that puts it there; it runs once inside
+# each fresh checkout, before anything else uses it, and is skipped on later
+# passes until you change it. Unset (the default) means no preparation step
+# at all -- correct for any project whose committed tree is enough to verify.
+#
+# The command's cwd is the checkout and its stdin is closed (it runs
+# unattended -- there is nobody to answer a prompt), and it is given
+# ORCHID_REPO_ROOT (this repository's own canonical path -- a dispatch
+# worktree is a sibling of it, a merge worktree is somewhere under $TMPDIR,
+# so nothing relative reaches it from both), ORCHID_WORKTREE and ORCHID_TASK
+# (the bare task id in both checkouts). Output goes to
+# .orchid/runtime/worktree-prepare/<task>.log, or <task>-merge.log for the
+# merge validation checkout; a failure stops the run rather than letting the
+# environment's problem be reported as the candidate's.
+# worktree_prepare=npm ci --silent
+# worktree_prepare_timeout_s=900
 # Roles are configuration — see docs/configuration.md. Each role.* value is a
 # comma-separated failover chain, primary first (e.g.
 # role.implementer=codex,claude): a fallback engine only ever activates once
@@ -11,6 +58,11 @@ role.implementer=codex
 role.reviewer=agy
 role.arbiter=claude
 role.plan_critic=codex
+# Read from the TARGET repository being driven (or ~/.orchid/config, or an
+# ORCHID_PACK_BUDGET_BYTES env override) -- never from the orchid
+# installation's own orchid.config. `orchid doctor` prints the resolved value
+# and the layer it came from; a pack over this budget fails the LAUNCH
+# (input_overflow) before any engine starts.
 pack_budget_bytes=65536
 
 # Custom roles (v1-m3 Task 7): a role.<id>= binding for any id that is NOT
@@ -32,7 +84,21 @@ pack_budget_bytes=65536
 # chain of engine names consulted for the risk-tiered reviewer slots (see
 # docs/specs/kernel.md's Independence section) — low tier wants one
 # engine-independent reviewer; medium/high want two (worktree-capable for
-# depth + engine-independent for diversity). Built-in defaults shown here:
+# depth + engine-independent for diversity).
+#
+# v1.1 (docs/specs/kernel.md, "Review depth"): at medium/high the depth half
+# of that pairing is no longer only a preference. `orchid jobs review-plan`
+# labels each slot `worktree` or `inline`, its depth pass searches past this
+# chain into role.reviewer's chain and the implementer's own engine to find a
+# worktree-capable slot, and `orchid drive` will not make a DETERMINISTIC
+# approval at those tiers unless one of the counted reviews is credited to a
+# `worktree` slot of the attempt's PINNED plan — it stops at an arbitrable
+# `review-evidence` boundary instead. Credit follows the pin, so changing an
+# engine's binding or capabilities after a review is filed neither withdraws
+# that review's depth nor grants it any. Nothing here refuses a slot or an engine over depth: an
+# install whose only reviewers are inline still gets every slot, and still
+# reviews every task; what it does not get is an approval no human read.
+# Built-in defaults shown here:
 # review.low=agy
 # review.medium=codex-review,agy
 # review.high=codex-review,agy
@@ -45,6 +111,16 @@ pack_budget_bytes=65536
 # lock_break_s=900
 # verb_lock_wait_s=10
 # stall_minutes=10
+# T040: the CPU floor of the stall check -- OPT-IN, off by default (0).
+# stall_minutes catches a job that stops writing to its log; this catches
+# one that keeps writing and stops working -- an engine still heartbeating
+# while its cumulative CPU time barely moves. With a floor above zero, less
+# than that many CPU-seconds across the last stall_minutes of heartbeats is
+# reported (and killed) as `stalled`. Off by default because CPU alone
+# cannot tell a dead engine from a healthy one blocked on a vendor API
+# (F35 retracted the signal after a working job burned ~9 CPU-seconds in 40
+# minutes); opt in only if you know your engines' CPU profile.
+# cpu_stall_min_s=0
 # timeout_minutes=60
 # agy_max_bytes=100000
 # v1-m4: same shape as agy_max_bytes above -- plugins/engines/hermes/run is
@@ -67,6 +143,90 @@ pack_budget_bytes=65536
 # lessons_max_bytes=16384
 # gc_older_than_s=86400
 # infra_max=3
+# v1.1: the rework budget -- how many `attempts` a task may consume before
+# `orchid drive` stops retrying it and blocks it for a human. Was a
+# hardcoded 3 in the driver, changeable nowhere; raise it here for a repo
+# whose suites are slow to converge, or grant ONE task more rounds with
+# `orchid task retry <id> --reason "..." --attempts N` (which records an
+# `attempt_budget` in that task's frontmatter and journals the grant).
+# rework_max=3
+# v1.1: verification-failure classification. A FAILED verify is classified
+# before it is charged, so the attempt budget keeps measuring the candidate
+# rather than the harness. There is no signature list, and no way to declare a
+# failure forgiven: four failures are waivable, and each is PROVED against the
+# world rather than read out of the failure's wording --
+#   - a package pin this repository's own freshness check REPORTS STALE, and
+#   - an executable this candidate left mode 644 (stat'ing the files it added,
+#     and the ones it modified whose base recorded mode 755, since a rewrite
+#     that drops an exec bit is the same hand-off), and
+#   - gitignored build state the integration checkout carries and the task's
+#     worktree never received, since `git worktree add` reproduces only what
+#     git TRACKS (lesson L003), and
+#   - an assertion this repository ALREADY recorded as known-flaky, in a
+#     register this candidate did not touch (flaky.quarantine, below).
+# A run whose recorded exit status says it STOPPED SHORT (124/137/143) is
+# REPORTED and still charged. It was a fifth verdict once, on the reading that
+# the harness reaped a pass that therefore never spoke about the candidate --
+# but that is equally the trailer a candidate which HUNG until a timeout reaped
+# it leaves, and the one a suite that exits with the status deliberately
+# leaves, and nothing in the log tells them apart.
+# Each is proved against the world first, and then THIS failure must be
+# attributable to that artifact: a failing line naming the file and refusing to
+# execute it, naming it and calling it stale, or reporting that something the
+# missing dependency tree PUBLISHES could not be resolved. Everything else
+# charges, including a failure that merely coincides with an outstanding fault.
+# A round is never waived as a round: one failing line nothing accounts for
+# charges it, and the reason quotes that line.
+# THE TWO ROUTES THAT READ A FILE OUT OF THIS REPOSITORY -- the pin check and
+# the register -- read it only while it is an AUTHORITY ON THE CANDIDATE:
+# untouched across base_sha..candidate_sha, tracked in candidate_sha, and
+# present in the verified worktree with the same bytes and mode that commit
+# records. An unstaged edit, a staged-and-uncommitted one, an untracked
+# drop-in, a deletion or a mode change closes the route -- none of them is
+# visible in a diff of two commits, and each is a file the implementer
+# controls.
+#
+# The candidate-local package-pin freshness check that route RUNS, relative to
+# the verified tree. Invoked only if it is a regular file there that states how
+# it is run -- directly when it carries the exec bit, otherwise under the
+# interpreter its own `#!` line names. Its nonzero EXIT is not enough: it must report
+# a file stale in words, because a check that cannot find the formula or trips
+# over metadata the candidate corrupted also exits nonzero and re-pinning fixes
+# neither. Read only under the authority rule above, so a check the candidate
+# changed -- or edited in the worktree without committing -- forgives nothing.
+# Do not configure a whole-tree derived artifact here: every candidate would
+# rewrite the same line and stale-base rebases would conflict (lesson L022).
+# Orchid's Formula checksum is therefore release-gated, not a hand-off.
+# `none` disables the route.
+# Default: none
+# handoff.pin_check=scripts/check-package-pin.sh --check
+#
+# The known-flaky register the `flaky` route reads, relative to the verified
+# tree. One entry per line: `FLAKE: <literal substring of the failing line>`,
+# optionally followed by ` -- <why>`; everything else in the file is prose the
+# route ignores, so it can be the document a human actually reads. A signature
+# is matched LITERALLY (never as a pattern) and must be at least 16 characters,
+# so no entry can be written that matches everything, and it claims ONLY the
+# lines it matches -- an aggregate `3 tests failed` alongside it is unexplained
+# and charges the round.
+# THE SAFETY IS NOT THE PATH, IT IS THE TIMING: a register THIS CANDIDATE
+# CHANGED is not an authority on this candidate, so touching the file removes
+# the route entirely. An implementer cannot quarantine the assertion it is
+# failing -- and cannot reach around that by leaving the entry uncommitted in
+# the worktree either, because the register is read only under the authority
+# rule above. That question must also be ANSWERABLE -- a task record whose
+# base_sha or candidate_sha is missing or does not resolve yields the same
+# empty diff an untouched register does, and the route closes rather than
+# reading that as permission. `none` disables the route.
+# Default: tests/QUARANTINE.md
+# flaky.quarantine=tests/QUARANTINE.md
+# How many CONSECUTIVE rework rounds may come back with a byte-identical
+# failure signature before the driver stops the loop and blocks the task for a
+# human. An unchanged signature means the previous round's changes did not move
+# the failure at all -- more attempts at that point re-ask a question already
+# answered identically (dogfood finding F27). 0 disables the stop, leaving the
+# ordinary attempt budget as the only backstop.
+# rework_nonconvergence_max=3
 # model=
 # effort=medium
 # rate_limit_backoff_s=3600
@@ -78,10 +238,72 @@ pack_budget_bytes=65536
 # `orchid service install` to take effect; editing this key alone does not
 # touch an already-installed schedule.
 # pump_interval_s=240
+# How many pump passes one unchanged judgment boundary may wake an
+# orchestrator for before the pump stops waking a model over it and the
+# driver hands it to a human instead. "An orchestrator could settle this"
+# is a static property of the boundary's kind, the task's status and the
+# adapter's command surface; it cannot notice that the record has not moved
+# in three passes. What it bounds is the `review-conflict`/`review-evidence`
+# shape over an `arbitrating` task -- the only one any surface admits a
+# settling verb (`orchid task arbitrate`) for, and so the only one an
+# unbounded wake loop is possible over at all. What it counts is WAKEUPS: a
+# pass on which nobody could be woken is recorded but not charged, so an
+# engine outage cannot spend the budget without a model ever being asked. A
+# run whose tasks are all `done` is NOT what this bounds and never reaches
+# it: no surface admits `orchid run accept`, so `run-complete` is
+# operator-only and the pump declines it one gate earlier without spending a
+# wakeup at all. Raise this if your orchestrator legitimately needs more
+# passes to settle a boundary; `0` or a malformed value falls back to the
+# default rather than to "never wake" or "wake forever".
+# pump_wake_max=3
 # v1-m2: high-risk arbitration's wait (seconds) for the preferred
 # role.arbiter engine before a fallback arbiter may decide (PROTOCOL.md,
 # HEADLESS OPERATION).
 # arbiter_wait_s=14400
+
+# v1.1: the OPERATOR HAND-OFF (PROTOCOL.md, THE TICK's implementing arm).
+# Some candidates need mechanical work that requires EXECUTION -- applying a
+# linter's own fix, setting the mode bit on a newly added executable, or
+# running a candidate-local generator whose output is checked in -- and an
+# engine profile that denies on the command STRING can perform none of it.
+# Never use this pause to re-pin a whole-tree release checksum: that belongs
+# on the integration branch at release time (see `handoff.pin_check` above).
+# Set this to `required` when your implementer
+# is such a profile: a drive pass then STOPS at an `operator-handoff` boundary
+# after the implementer's envelope reconciles and BEFORE `orchid verify`,
+# instead of verifying a candidate that was never going to pass and spending a
+# rework round on it. Perform the steps, then record them with
+# `orchid task handoff <id> --ack --reason "..."` -- the acknowledgement is
+# bound to that task's current candidate_sha AND to the tree's HEAD, so a
+# resumed session proceeds, while a rebase, a fresh rework round or one more
+# commit after the ack invalidates it (INV-07; re-run the verb). `off` (the
+# default) never gates anything; any OTHER value reads as `required`, so a
+# typo here can only ever route more work to a human, never less. Turning it
+# on is an operator decision, landed like any other config change with
+# `orchid config commit --reason "..."`.
+#
+# A second arm asks for the same pause without being configured (INV-16),
+# where the mechanical step cannot be ROUTED to the engine that built the
+# candidate. It does not replace this key. What it closes on its own is the
+# implementer that resolves to no installed manifest at all; its other
+# outcome -- the engine declares no `shell` -- cannot arise for a candidate
+# orchid dispatched, because roles/implementer.role requires
+# `workspace_write,shell,git` and the role gate refuses such an engine before
+# it can build one. So THIS key stays the only cover for the case no manifest
+# shows: a profile that DECLARES `shell` and is still not granted it, which
+# the shipped `claude` adapter is on its implement path. The two arms compose
+# and never override -- either turns the pause on, neither turns the other
+# off -- so an engine declaring `shell` can never clear a pause you asked for.
+# handoff_before_verify=off
+
+# NOTE (T024, dogfood F26): the OPERATOR PREREQUISITE is a different stop at
+# the same point, and it has no config key at all. A task whose verification
+# depends on a step taken OUTSIDE this repository -- canonically applying, to
+# the database its suite runs against, the migration that task itself authored
+# -- declares it per task at planning time (`orchid task set <id>
+# operator_prerequisite "..."`), because only some tasks have one and a task
+# that needs a migration applied needs it applied in every repository. See
+# PROTOCOL.md's `testing` step.
 
 # v1-m3: kernel-owned hook points (docs/specs/plugins.md, Hooks section).
 # Each hook.<point> is an ordered, comma-separated list of plugin NAMEs (the

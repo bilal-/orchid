@@ -52,7 +52,7 @@ PROMPT='Count to 5. Print exactly one number per line (just the digit, nothing e
 MAX_WAIT_S=60
 
 is_auth_failure() {  # combined stdout+stderr text
-  printf '%s' "$1" | grep -qiE 'login|auth|unauthorized|not authenticated|api.?key'
+  grep -qiE 'login|auth|unauthorized|not authenticated|api.?key' <<<"$1"
 }
 
 # probe_engine <engine-name> ("codex" or "claude") — guards on installation,

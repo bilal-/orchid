@@ -213,8 +213,8 @@ mkdir -p "$WORK/.orchid/runtime/spool" "$WORK/.orchid/runtime/quarantine"
 printf '{"contract":1,"job_id":"j-bad-hook","task":"T001","operation":"hook","status":"ok","summary":"no artifact here"}' \
   > "$WORK/.orchid/runtime/spool/j-bad-hook.json"
 "$ORCHID_BIN" jobs reconcile >/dev/null
-list_dir_files "$WORK/.orchid/runtime/quarantine" \
-  | grep -q "j-bad-hook.json.reason-malformed" \
+grep -q "j-bad-hook.json.reason-malformed" \
+  <<<"$(list_dir_files "$WORK/.orchid/runtime/quarantine")" \
   || fail "malformed hook envelope (missing artifact) quarantined"
 
 # ---------------------------------------------------------------------------
@@ -231,9 +231,16 @@ printf 'manifest_version=1\nid=acme/foo\nversion=0.1.0\nkind=engine\napi_version
 printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/eng/foo/run"; chmod +x "$WORK/eng/foo/run"
 
 mkdir -p "$WORK/.orchid/runtime/jobs" "$WORK/.orchid/runtime/spool" "$WORK/.orchid/runtime/quarantine"
+# The log path must NOT EXIST (T031). These two manifests carry pid 0, and
+# reconcile reads pid 0 with a log that exists as the launcher's post-spawn/
+# pre-stamp window -- a job that has not resolved, whose envelope is deferred
+# rather than filed. `/dev/null` used to stand here and always exists, with an
+# mtime that is the machine's boot time: whether these fixtures deferred would
+# have depended on how recently the host booted. `/nonexistent...` is the same
+# "no log" this fixture always meant, said in a way that cannot drift.
 jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
   '{job_id:"j-thirdparty", task:"T001", attempt:9, role:"reviewer", operation:"review",
-    engine:"foo", pid:0, pgid:0, started_at:0, log:"/dev/null", output:"/dev/null",
+    engine:"foo", pid:0, pgid:0, started_at:0, log:"/nonexistent/j-thirdparty.log", output:"/dev/null",
     base_sha:$base, candidate_sha:$cand, hook_point:""}' \
   > "$WORK/.orchid/runtime/jobs/j-thirdparty.json"
 jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
@@ -245,8 +252,8 @@ jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
 "$ORCHID_BIN" jobs reconcile >/dev/null
 [ -f "$WORK/.orchid/reviews/T001-a9-reviewer.json" ] \
   || fail "a third-party publisher envelope (.engine=acme/foo, dir=foo) reconciles cleanly, not quarantined"
-list_dir_files "$WORK/.orchid/runtime/quarantine" \
-  | grep -q "j-thirdparty.json.reason-mismatch" \
+grep -q "j-thirdparty.json.reason-mismatch" \
+  <<<"$(list_dir_files "$WORK/.orchid/runtime/quarantine")" \
   && fail "a third-party publisher envelope (.engine=acme/foo) must NOT be quarantined as a mismatch"
 
 # Existing first-party fixtures stay green: a plain-name engine (no manifest
@@ -254,7 +261,7 @@ list_dir_files "$WORK/.orchid/runtime/quarantine" \
 # "orchid/<name>" fallback shape, unchanged from before this fix.
 jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
   '{job_id:"j-firstparty", task:"T001", attempt:9, role:"reviewer", operation:"review",
-    engine:"nosuchengine", pid:0, pgid:0, started_at:0, log:"/dev/null", output:"/dev/null",
+    engine:"nosuchengine", pid:0, pgid:0, started_at:0, log:"/nonexistent/j-firstparty.log", output:"/dev/null",
     base_sha:$base, candidate_sha:$cand, hook_point:""}' \
   > "$WORK/.orchid/runtime/jobs/j-firstparty.json"
 jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
@@ -388,7 +395,11 @@ _hg_walk_to_merging() {
   "$ORCHID_BIN" task advance "$id" reviewing >/dev/null
   plant_reviewer_envelope "$id"
   "$ORCHID_BIN" task advance "$id" arbitrating --reason "single reviewer approved" >/dev/null
-  "$ORCHID_BIN" task advance "$id" merging --reason "approved for merge" >/dev/null
+  # `task arbitrate`, not `task advance <id> merging`: `arbitrating:merging` is
+  # an arbitration RESULT, and since T032 the only
+  # public verb that records one is this (libexec/orchid-task's `advance` arm
+  # refuses the rest).
+  "$ORCHID_BIN" task arbitrate "$id" --result approve --reason "approved for merge" >/dev/null
 }
 
 # _hg_new_candidate <id> -- creates the task + a one-commit branch off
@@ -558,5 +569,66 @@ assert_eq "shrink the diff and retry" \
   "the rework advance CARRIES hook_guidance -- it is not reset by the transition"
 assert_eq 1 "$("$ORCHID_BIN" task show TW1 | grep '^attempts: ' | cut -d' ' -f2)" \
   "the (non-waived) rework advance consumed an attempt, same as any other rework entry"
+
+# ===========================================================================
+# THE SAME DOCUMENTED STEP, WITH THE VALUE A HANDLER ACTUALLY WRITES
+# (T034, dogfood F34). The walk above attaches a one-line guidance, which is
+# the easy case. `.artifact.guidance` is whatever the hook plugin chose to say,
+# and a handler asked to explain a verify failure writes PARAGRAPHS -- it is
+# the one value on this whole path that is neither typed by an operator nor
+# bounded by a schema.
+#
+# Frontmatter is one `key: value` per line, so `task set` refuses a
+# newline-bearing value outright (before T034 it destroyed the task file
+# instead, mid-run, with no operator present). That refusal is correct and it
+# is also why the DOCUMENTED sequence cannot be the bare `task set` call: this
+# is the hand-executed path, PROTOCOL.md's own "a human typing commands", and
+# it has no driver to fold anything for it. Refused here, the round stops over
+# a formatting detail nobody chose -- so the instruction carries the fold, and
+# this case walks the instruction as written.
+#
+# `orchid drive` does the same fold at the same step; the mechanized twin is
+# tests/test_drive_hooks_archetypes.sh's H6.
+# ===========================================================================
+cp .orchid/tasks/TW1.md "$TWORK/TW1.before"
+# Built with printf rather than through a second envelope: what is under test
+# is the SHAPE of the artifact string, and the artifact-to-`task set` hop is
+# already walked above.
+prose_tw="$(printf 'the fixture clock drifts under load\n\npin it, then re-run')"
+rc=0; prose_out="$("$ORCHID_BIN" task set TW1 hook_guidance "$prose_tw" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set must refuse a multi-paragraph hook guidance (it used to destroy the task file and exit 0)"
+assert_match "newline" "$prose_out" "the refusal names the single-line constraint rather than reporting a tool error"
+cmp -s "$TWORK/TW1.before" .orchid/tasks/TW1.md \
+  || fail "the refused attach must leave the task file BYTE-IDENTICAL -- this is the step that took out .orchid/tasks/T002.md on r-002"
+red_case 'the documented on_verify_fail attach, guidance spanning paragraphs: refused, task file intact'
+
+# ...and the documented remedy, applied here exactly as PROTOCOL.md spells it.
+folded_tw="$(printf '%s' "$prose_tw" | tr '\n' ' ')"
+"$ORCHID_BIN" task set TW1 hook_guidance "$folded_tw" >/dev/null \
+  || fail "the folded guidance must be accepted -- otherwise the documented sequence has no way to complete this step at all"
+assert_eq "the fixture clock drifts under load  pin it, then re-run" \
+  "$("$ORCHID_BIN" task show TW1 | grep '^hook_guidance: ' | cut -d' ' -f2-)" \
+  "every word of the guidance stays attached to the task, on one line"
+assert_eq 1 "$(grep -c '^hook_guidance: ' .orchid/tasks/TW1.md)" \
+  "and lands as exactly one frontmatter line -- a second would be body text no reader of this field ever sees"
+green_case 'the documented on_verify_fail attach, guidance folded to one line: accepted, one frontmatter line'
+
+# The instruction itself. Without it the sequence above is undocumented
+# folklore: a front-end executing PROTOCOL.md literally sends the paragraphs
+# and is refused, at the one step whose value it did not write. Pinned as
+# sentences rather than as the token `hook_guidance`, which PROTOCOL.md carried
+# throughout while saying nothing about folding.
+#
+# Folded before matching, because both sentences are hard-wrapped mid-phrase in
+# the source and a matcher sees one line at a time. assert_match (a herestring),
+# never `printf | grep -qF`: PROTOCOL.md is large enough that `grep -q` exits
+# while the upstream write is still going, and pipefail promotes that SIGPIPE to
+# the pipeline's status -- reporting "the docs lost this sentence" about a
+# sentence that is present.
+protocol_one_line="$(tr '\n' ' ' < "$REPO_ROOT/PROTOCOL.md" | tr -s '[:space:]' ' ')"
+assert_match 'folded onto one line first' "$protocol_one_line" \
+  "PROTOCOL.md's on_verify_fail step must tell a front-end executing it by hand to fold the hook guidance onto one line -- task set refuses a newline-bearing value, so the sequence as written aborts the round"
+assert_match 'folds it at exactly this step' "$protocol_one_line" \
+  "...and must say orchid drive folds at the same step, so the mechanized and hand-executed paths read as one procedure rather than two behaviours"
 
 cd_scratch "$WORK" || exit 1; rm -rf "$TWORK"

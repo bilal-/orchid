@@ -33,7 +33,7 @@ reconcile_until_ok() {
   local task="$1" tries=0 out=""
   while [ "$tries" -lt 50 ]; do
     out="$("$ORCHID_BIN" jobs reconcile)"
-    if printf '%s\n' "$out" | grep -Eq "^${task}[[:space:]]ok"; then
+    if grep -Eq "^${task}[[:space:]]ok" <<<"$out"; then
       "$ORCHID_BIN" jobs gc --older-than-s 0 >/dev/null
       printf '%s\n' "$out"
       return 0
@@ -136,7 +136,7 @@ assert_match "greenfield: verify command deferred to scaffold task" "$out_doctor
   "doctor --greenfield: verify check skipped with the greenfield note"
 assert_match "greenfield: root commit pending" "$out_doctor" \
   "doctor --greenfield: integration-branch check accepts unborn HEAD"
-echo "$out_doctor" | grep -q "^FAIL" && fail "doctor --greenfield must report no FAILs pre-init"
+grep -q "^FAIL" <<<"$out_doctor" && fail "doctor --greenfield must report no FAILs pre-init"
 
 # ---------------------------------------------------------------------------
 # init --greenfield: mints the root commit itself, then proceeds through the
@@ -152,7 +152,7 @@ assert_eq "orchid: root" "$(git -C "$repo" log -1 --format=%s HEAD)" "root commi
 integ=orchid/integration
 git -C "$repo" rev-parse --verify -q "$integ" >/dev/null 2>&1 \
   || fail "init --greenfield must create the integration branch"
-git -C "$repo" show "$integ:.orchid/roadmap.md" 2>/dev/null | grep -q "run_status: planning" \
+grep -q "run_status: planning" <<<"$(git -C "$repo" show "$integ:.orchid/roadmap.md" 2>/dev/null)" \
   || fail "init --greenfield: roadmap committed with run_status"
 
 cd "$repo" || exit 1
@@ -228,7 +228,10 @@ run_ok "advance T001 reviewing" "$ORCHID_BIN" task advance T001 reviewing \
 plant_reviewer_envelope T001
 run_ok "advance T001 arbitrating" "$ORCHID_BIN" task advance T001 arbitrating \
   --reason "review reconciled: approve" >/dev/null
-run_ok "advance T001 merging" "$ORCHID_BIN" task advance T001 merging \
+# `task arbitrate`, not `task advance T001 merging`: since T032 the edges an
+# arbitration RESULT takes out of `arbitrating` are refused by that verb, and
+# only this one records a result. The destination is derived from the archetype.
+run_ok "arbitrate T001 approve" "$ORCHID_BIN" task arbitrate T001 --result approve \
   --reason "approved for merge" >/dev/null
 
 pre_integ="$(git rev-parse "$integ")"
@@ -277,7 +280,7 @@ run_ok "advance T002 reviewing" "$ORCHID_BIN" task advance T002 reviewing \
 plant_reviewer_envelope T002
 run_ok "advance T002 arbitrating" "$ORCHID_BIN" task advance T002 arbitrating \
   --reason "review reconciled: approve" >/dev/null
-run_ok "advance T002 merging" "$ORCHID_BIN" task advance T002 merging \
+run_ok "arbitrate T002 approve" "$ORCHID_BIN" task arbitrate T002 --result approve \
   --reason "approved for merge" >/dev/null
 
 rc=0; merge2_out="$("$ORCHID_BIN" merge T002 2>&1)" || rc=$?

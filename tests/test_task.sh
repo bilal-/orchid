@@ -30,7 +30,11 @@ before_count="$(ls .orchid/tasks/*.md 2>/dev/null | wc -l | tr -d ' ')"
 rc=0; set_nope_out="$("$ORCHID_BIN" task set NOPE somekey someval 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task set on a nonexistent id must be refused"
 assert_match "no task NOPE" "$set_nope_out" "task set on a nonexistent id names it (clean die, not a raw awk error)"
-echo "$set_nope_out" | grep -qi "awk" && fail "task set on a nonexistent id must never leak a raw awk error"
+# Herestring, never `echo | grep -q` -- see the T034 block near the end of this
+# file for why the pipe makes a NEGATIVE assertion fail open. These two guard
+# the awk leak from the very pipeline T034 replaced, so they have to be able to
+# fire.
+grep -qi "awk" <<<"$set_nope_out" && fail "task set on a nonexistent id must never leak a raw awk error"
 
 rc=0; set_plan_out="$("$ORCHID_BIN" task set plan somekey someval 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task set plan must be refused (reserved id)"
@@ -39,7 +43,7 @@ assert_match "reserved" "$set_plan_out" "task set plan names it reserved"
 rc=0; unblock_nope_out="$("$ORCHID_BIN" task unblock NOPE2 --reason x 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task unblock on a nonexistent id must be refused"
 assert_match "no task NOPE2" "$unblock_nope_out" "task unblock on a nonexistent id names it (clean die, not a raw awk error)"
-echo "$unblock_nope_out" | grep -qi "awk" && fail "task unblock on a nonexistent id must never leak a raw awk error"
+grep -qi "awk" <<<"$unblock_nope_out" && fail "task unblock on a nonexistent id must never leak a raw awk error"
 
 rc=0; unblock_plan_out="$("$ORCHID_BIN" task unblock plan --reason x 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task unblock plan must be refused (reserved id)"
@@ -93,21 +97,161 @@ assert_eq 3 "$rc" "retry from pending must exit 3"
 "$ORCHID_BIN" task retry T003 --reason "guidance given"
 assert_eq rework "$("$ORCHID_BIN" task show T003 | grep '^status: ' | cut -d' ' -f2)" "retry from blocked -> rework"
 
+# T028 (dogfood F30): `task set <id> depends_on <value>` refuses, at WRITE
+# time, an id that names no task file. The scheduler cannot report such an id
+# as an error later -- it can only say `waiting-deps (T999)`, which is what a
+# task correctly waiting on an unfinished dependency says too -- so the write
+# is the last moment the operator can be told the id resolves to nothing. Ids
+# are split on commas as well as whitespace (lib/schedule.sh's
+# schedule_split_deps, the same splitter the scheduler reads with), so a bad
+# id hiding inside an otherwise-valid comma list is caught as well.
+deps_before="$("$ORCHID_BIN" task show T002 | grep '^depends_on: ' | cut -d' ' -f2-)"
+rc=0; dep_unknown_out="$("$ORCHID_BIN" task set T002 depends_on "T003,T999" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set depends_on with an id that has no task file must be refused"
+assert_match "T999" "$dep_unknown_out" "the refusal names the unresolvable id"
+assert_eq "$deps_before" "$("$ORCHID_BIN" task show T002 | grep '^depends_on: ' | cut -d' ' -f2-)" \
+  "a refused depends_on write leaves the field exactly as it was"
+
+# ...and the same call with every id resolving is accepted and stored as
+# written -- otherwise the refusal above would be satisfied by a check that
+# rejects every value.
+"$ORCHID_BIN" task set T002 depends_on "T001,T003" \
+  || fail "a comma-separated depends_on naming existing tasks must be accepted"
+assert_eq "T001,T003" "$("$ORCHID_BIN" task show T002 | grep '^depends_on: ' | cut -d' ' -f2-)" \
+  "an accepted depends_on is stored verbatim"
+"$ORCHID_BIN" task set T002 depends_on "" \
+  || fail "clearing depends_on must remain legal (no ids to resolve)"
+
 # v0b2: `task advance <id> implementing` stamps frontmatter `started_at`
-# (ISO) when it is still empty — the task wall-clock anchor `jobs check`
-# reads for the budget-exceeded backstop.
+# (ISO) — the task wall-clock anchor `jobs check` reads for the
+# budget-exceeded backstop.
 "$ORCHID_BIN" task create T004 "started-at-demo"
 assert_eq "" "$("$ORCHID_BIN" task show T004 | grep '^started_at: ' | cut -d' ' -f2-)" "started_at empty before dispatch"
 "$ORCHID_BIN" task advance T004 implementing
 started1="$("$ORCHID_BIN" task show T004 | grep '^started_at: ' | cut -d' ' -f2-)"
 [ -n "$started1" ] || fail "advance ... implementing must stamp started_at"
 assert_match "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" "$started1" "started_at looks like an ISO-8601 UTC stamp"
+
+# T020: the anchor is PER ATTEMPT, not per task. It used to be stamped only
+# once, ever ("stamp only if empty"), which made `wallclock_budget_s` measure
+# calendar time since a task's first dispatch — every hour of operator
+# downtime and overnight idling between attempts included. Every DISPATCH
+# edge (pending/rework -> an active status) re-anchors it, so the budget
+# bounds the attempt that is about to run. `sleep 1` is what makes the two
+# stamps distinguishable at the ISO stamp's one-second resolution.
 "$ORCHID_BIN" task advance T004 blocked --reason "demo blocker (unrelated)"
 sleep 1
 "$ORCHID_BIN" task unblock T004 --reason "guidance given"
 "$ORCHID_BIN" task advance T004 implementing
 started2="$("$ORCHID_BIN" task show T004 | grep '^started_at: ' | cut -d' ' -f2-)"
-assert_eq "$started1" "$started2" "advance ... implementing never overwrites an already-set started_at"
+assert_match "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" "$started2" "re-dispatch stamps a fresh ISO-8601 UTC started_at"
+[ "$started2" != "$started1" ] || fail "rework -> implementing must RE-anchor started_at (attempt budget, not task budget)"
+
+# ...but the intra-attempt edges are the SAME attempt and must NOT re-anchor:
+# re-stamping at every phase would let one attempt run unbounded, a phase at a
+# time. base_sha/candidate_sha are `testing`'s entry requirement; this
+# fixture's single root commit serves as both, so the INV-04 guard walks an
+# empty (and legal) commit range. The `sleep 1` is what would make an
+# unwanted re-stamp visible at the ISO stamp's one-second resolution.
+head_sha="$(git rev-parse HEAD)"
+"$ORCHID_BIN" task set T004 base_sha "$head_sha"
+"$ORCHID_BIN" task set T004 candidate_sha "$head_sha"
+sleep 1
+"$ORCHID_BIN" task advance T004 testing
+assert_eq "$started2" "$("$ORCHID_BIN" task show T004 | grep '^started_at: ' | cut -d' ' -f2-)" \
+  "implementing -> testing (same attempt) leaves started_at alone"
+
+# T019: a strict candidate failure normally charges on testing -> rework. A
+# valid custom code archetype may omit that edge, though, and the advance can
+# also refuse before it writes. The driver needs one narrow kernel-owned way
+# to preserve the charge while taking the universal blocked escape hatch.
+# `--charge-attempt` is that way: journal-first, exactly one increment, and
+# consumption of the deferred-failure receipt whose evidence it just accounted
+# for.
+#
+# THE ADMITTED EDGES ARE A CLOSED SET, AND IT IS NO LONGER A SET OF ONE (T007).
+# The flag shipped as `testing -> blocked` alone; T007 added `merging -> rework`
+# and `merging -> blocked` for `orchid merge`'s `gate_failed` arm, which is the
+# one merge failure that repeats identically until somebody outside the task
+# acts on the repository. What the probes below are about is unchanged -- every
+# edge OUTSIDE that set is still refused before any write -- but they must not
+# go on describing the set as a single edge: an assertion whose message says
+# "the only legal edge" is the thing a later reader trusts over the code, and
+# `tests/test_merge.sh` (G3) plus `tests/test_docs.sh` would then be the only
+# places the widening is written down. So each refusal below also pins that the
+# message ENUMERATES the whole set and names the edge that was attempted.
+"$ORCHID_BIN" task create T005 "charge a candidate failure while blocking"
+"$ORCHID_BIN" task advance T005 implementing
+
+rc=0
+charge_source_out="$("$ORCHID_BIN" task advance T005 blocked --charge-attempt \
+  --reason "candidate failure with no rework edge" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--charge-attempt must refuse a source the closed set does not admit"
+assert_match "only valid for testing -> blocked" "$charge_source_out" \
+  "the source-shape refusal names the edge this arm exists for"
+assert_match "merging -> rework or merging -> blocked" "$charge_source_out" \
+  "...and the REST of the admitted set beside it — a refusal that lists one of three edges reads as a narrower flag than the kernel actually has (T007)"
+assert_match "got implementing -> blocked" "$charge_source_out" \
+  "...and the edge that was actually attempted, so the caller is not left diffing the list against its own request"
+assert_eq implementing "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" \
+  "a refused charge leaves status untouched"
+assert_eq 0 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
+  "and leaves attempts untouched"
+
+"$ORCHID_BIN" task set T005 base_sha "$head_sha"
+"$ORCHID_BIN" task set T005 candidate_sha "$head_sha"
+"$ORCHID_BIN" task advance T005 testing
+pending_receipt="a1:$head_sha:1111111111111111111111111111111111111111111111111111111111111111"
+"$ORCHID_BIN" task set T005 verify_fail_pending "$pending_receipt"
+
+rc=0
+charge_dest_out="$("$ORCHID_BIN" task advance T005 rework --charge-attempt \
+  --reason "wrong destination" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--charge-attempt must refuse testing -> rework, which already charges through its own accounting"
+assert_match "only valid for testing -> blocked" "$charge_dest_out" \
+  "the destination-shape refusal names the edges the flag IS admitted on"
+assert_match "got testing -> rework" "$charge_dest_out" \
+  "...and the edge that was refused: rework is a legal DESTINATION for the flag out of merging, so the refusal is about the whole edge and has to say which one"
+assert_eq testing "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" \
+  "a wrong-destination charge leaves status testing"
+assert_eq 0 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
+  "and does not accidentally take rework's ordinary charge"
+assert_eq "$pending_receipt" "$("$ORCHID_BIN" task show T005 | grep '^verify_fail_pending: ' | cut -d' ' -f2-)" \
+  "a refused charge does not consume the evidence receipt"
+
+rc=0
+charge_conflict_out="$("$ORCHID_BIN" task advance T005 blocked --charge-attempt \
+  --waive-attempt --reason "contradictory accounting" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--charge-attempt and --waive-attempt must be mutually exclusive"
+assert_match "cannot be combined" "$charge_conflict_out" \
+  "the contradictory accounting flags are refused explicitly"
+assert_eq 0 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
+  "the contradictory request mutates no attempt budget"
+
+charge_ok_out="$("$ORCHID_BIN" task advance T005 blocked --charge-attempt \
+  --reason "candidate failure with no rework edge")"
+assert_match "T005: testing -> blocked" "$charge_ok_out" \
+  "the valid fallback reports the edge it took"
+assert_eq blocked "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" \
+  "the candidate-failure fallback lands blocked"
+assert_eq 1 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
+  "and charges exactly one candidate attempt"
+assert_eq "" "$("$ORCHID_BIN" task show T005 | grep '^verify_fail_pending: ' | cut -d' ' -f2-)" \
+  "the accounted round's deferred-failure receipt is consumed"
+assert_match "candidate attempt #1 charged while blocking: candidate failure with no rework edge" \
+  "$(cat .orchid/journal.md)" \
+  "the kernel-derived attempt number and reason are durable before the state move"
+
+rc=0
+charge_twice_out="$("$ORCHID_BIN" task advance T005 blocked --charge-attempt \
+  --reason "must not charge twice" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a blocked task cannot be charged again with --charge-attempt"
+assert_match "only valid for testing -> blocked" "$charge_twice_out" \
+  "the repeat charge is rejected on its source state"
+assert_match "got blocked -> blocked" "$charge_twice_out" \
+  "...named as the edge it is, so a second charge is refused for being blocked -> blocked and never for being a second one"
+assert_eq 1 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
+  "a repeated fallback cannot double-charge the round"
 
 # v0b2: `task infra-fail <id> --reason "..."` is the dedicated kernel-owned
 # path that bumps `infra_failures` (the general `task set` deny-list blocks
@@ -141,13 +285,29 @@ rc=0; "$ORCHID_BIN" task infra-fail T006 2>/dev/null || rc=$?
 # hardcoded case table. This walk drives EVERY edge that table declares
 # through one real feature task (T007), proving the archetype-driven path
 # reproduces today's exact legality, edge for edge. base_sha/candidate_sha
-# are fixed placeholder (non-existent) shas throughout: the `to=testing`
-# .orchid/-scan runs `git log <base>..<candidate>`, which prints nothing at
-# all for an invalid range, so a placeholder never trips INV-04's guard; and
+# are both this repo's OWN HEAD throughout, so `git log <base>..<candidate>`
+# is a real, EMPTY range and INV-04's `.orchid/` scan really does run and
+# really does find nothing; and `verification_commands=true` makes `orchid
+# verify` always PASS.
+#
+# They used to be a fixed placeholder sha that exists nowhere, which made
+# `git log` fail rather than answer -- and the guard read that silence as a
+# clean range. T026 made it fail CLOSED (an unanswerable range is refused, in
+# the same direction every other unreadable-input check in this codebase
+# fails), so a fixture that walked this edge on a non-existent range was
+# proving the guard was vacuous, not that the edge was legal.
+# are both the fixture's own HEAD throughout: the `to=testing` .orchid/-scan
+# runs `git log <base>..<candidate>`, which prints nothing at all for an
+# empty range, so this never trips INV-04's guard; and
 # `verification_commands=true` makes `orchid verify` always PASS.
+#
+# T031: this used to be a fixed placeholder (non-existent) sha, which worked
+# only because nothing ever asked whether the tree matched the claim.
+# `orchid verify` now refuses to run against a worktree that is not the
+# recorded candidate_sha, so the walk uses the sha the checkout is really at.
 # ============================================================================
 "$ORCHID_BIN" task create T007 "archetype edge walk"
-edge_sha="deadbeefcafebabe0000000000000000000000"
+edge_sha="$(git rev-parse HEAD)"
 "$ORCHID_BIN" task set T007 base_sha "$edge_sha"
 "$ORCHID_BIN" task set T007 candidate_sha "$edge_sha"
 "$ORCHID_BIN" task set T007 verification_commands true
@@ -187,7 +347,14 @@ assert_eq arbitrating "$(t007_status)" "archetype edge reviewing:arbitrating"
 # edge: arbitrating:rework (--waive-attempt: attempts stays at 1, so the
 # reviewer envelope already planted -- bound to attempts+1 -- stays valid
 # for every subsequent reviewing:arbitrating below without replanting)
-"$ORCHID_BIN" task advance T007 rework --waive-attempt --reason "sent back for rework"
+#
+# Taken through `orchid task arbitrate`, which since T032 is the only public
+# verb that reaches an arbitration OUTCOME edge out of `arbitrating` (the refusal, and
+# the RED case for it, are further down this file). The destination is derived
+# from this archetype's declared transitions and the move still goes through
+# `task advance`, so the edge, the waived accounting and the evidence
+# invalidation asserted here are all unchanged.
+"$ORCHID_BIN" task arbitrate T007 --result request-changes --waive-attempt --reason "sent back for rework"
 assert_eq rework "$(t007_status)" "archetype edge arbitrating:rework"
 assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep '^attempts: ' | cut -d' ' -f2)" "--waive-attempt left attempts at 1"
 
@@ -199,8 +366,8 @@ assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep '^attempts: ' | cut -d' ' -f2
 "$ORCHID_BIN" task advance T007 reviewing
 "$ORCHID_BIN" task advance T007 arbitrating --reason "re-reviewed, approved"
 
-# edge: arbitrating:merging
-"$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
+# edge: arbitrating:merging (through `task arbitrate`, per the note above)
+"$ORCHID_BIN" task arbitrate T007 --result approve --reason "approved for merge"
 assert_eq merging "$(t007_status)" "archetype edge arbitrating:merging"
 
 # edge: merging:testing (does NOT invalidate verify evidence -- only a
@@ -213,19 +380,67 @@ assert_eq testing "$(t007_status)" "archetype edge merging:testing"
 # still-bound reviewer envelope) -> reviewing:arbitrating -> arbitrating:merging
 "$ORCHID_BIN" task advance T007 reviewing
 "$ORCHID_BIN" task advance T007 arbitrating --reason "re-reviewed after merging:testing, approved"
-"$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T007 --result approve --reason "approved for merge"
 
 # edge: merging:rework
+#
+# A REAL merge log is planted first, so this edge exercises the rework brief on
+# the one path where the evidence OUTLIVES the transition. `merging:rework`
+# deliberately exempts `<id>-merge.log` from the invalidation every other entry
+# to `rework` performs -- that log documents the very failure the advance is
+# journalling -- and the two assertions after the edge are about what that
+# survivor may then do.
+mkdir -p .orchid/reviews
+{ echo "date: 2026-08-11T00:00:00Z"
+  echo "sha: $edge_sha"
+  echo "candidate: $edge_sha"
+  echo "command: fixture"
+  echo "---"
+  echo "lib/merged.sh:11: SC2115: the merged tree failed the same suite"
+  echo "exit: 1"
+} > .orchid/reviews/T007-merge.log
 "$ORCHID_BIN" task advance T007 rework --reason "validation_failed: see reviews/T007-merge.log"
 assert_eq rework "$(t007_status)" "archetype edge merging:rework"
 assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep '^attempts: ' | cut -d' ' -f2)" "merging:rework never bumps attempts (from=merging)"
+[ -f .orchid/reviews/T007-merge.log ] \
+  || fail "merging:rework must leave the merge log in place -- it is the evidence for the failure it just journalled"
+assert_match "^lib/merged\.sh:11: SC2115: the merged tree failed the same suite$" \
+  "$("$ORCHID_BIN" task show T007)" \
+  "and the edge carried that log's exact locations into the task body (T010, lesson L017)"
+
+# THE SAME BRIEF IS NEVER APPENDED TWICE.
+#
+# Aging withdraws the briefs describing some OTHER candidate; the ones
+# describing the CURRENT candidate are still true and are left standing. That
+# leaves one gap: a second entry to `rework` on an UNCHANGED candidate, with the
+# same evidence log still on disk, regenerates a block identical to the one
+# already in the body. The implementer is then handed the same locations twice,
+# in two blocks it must read as two separate reports, and the body grows by one
+# more copy on every further round -- the same defect a stale brief is, reached
+# from the other side.
+#
+# `merging` -> `rework` then `orchid task retry` is the route that reaches it,
+# and it is walked here exactly: the exempted merge log above is still on disk,
+# `retry` re-reads it, and the candidate has not moved. The guard is on the
+# APPEND rather than on this route (lib/findings.sh findings_brief_present),
+# because every other way of reaching `rework` twice without minting a new
+# candidate produces the same body.
+t007_briefs() { "$ORCHID_BIN" task show T007 | grep -c 'Rework brief — exact locations'; }
+t007_brief_n="$(t007_briefs)"
+assert_eq 1 "$t007_brief_n" "one live brief stands after the merging:rework edge"
+"$ORCHID_BIN" task retry T007 --reason "retry over the surviving merge log"
+assert_eq rework "$(t007_status)" "retry leaves the task in rework"
+assert_eq "$t007_brief_n" "$(t007_briefs)" \
+  "and appends NO second copy of the brief it already carries"
+assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep -c 'lib/merged\.sh:11: SC2115')" \
+  "the locations themselves appear exactly once, so nothing reads as two separate reports of one failure"
 
 "$ORCHID_BIN" task advance T007 implementing
 "$ORCHID_BIN" task advance T007 testing
 "$ORCHID_BIN" verify T007 >/dev/null
 "$ORCHID_BIN" task advance T007 reviewing
 "$ORCHID_BIN" task advance T007 arbitrating --reason "re-reviewed, approved"
-"$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T007 --result approve --reason "approved for merge"
 
 # edge: merging:done
 "$ORCHID_BIN" task advance T007 "done"
@@ -235,7 +450,9 @@ assert_eq "done" "$(t007_status)" "archetype edge merging:done"
 # through T007 (pending:implementing, implementing:testing, testing:reviewing,
 # testing:rework, reviewing:arbitrating, arbitrating:merging,
 # arbitrating:rework, merging:done, merging:rework, merging:testing,
-# rework:implementing) -- plus *:blocked, already covered above via T001.
+# rework:implementing) -- plus *:blocked, already covered above via T001, and
+# T026's two additions (rework:testing, blocked:testing), driven through the
+# `task reverify` fixtures at the end of this file.
 
 # -- one edge that was NEVER legal under the old hardcoded table stays
 # illegal (exit 3) under the archetype-driven path too --------------------
@@ -253,7 +470,9 @@ assert_eq pending "$("$ORCHID_BIN" task show T008 | grep '^status: ' | cut -d' '
 # file with the right name and candidate_sha exists.
 # ============================================================================
 "$ORCHID_BIN" task create T009 "status-ok gate"
-edge_sha2="cafebabedeadbeef0000000000000000000000"
+# The fixture's own HEAD, for the same reason edge_sha above is (T031:
+# `orchid verify` refuses a tree that is not the recorded candidate_sha).
+edge_sha2="$(git rev-parse HEAD)"
 "$ORCHID_BIN" task set T009 base_sha "$edge_sha2"
 "$ORCHID_BIN" task set T009 candidate_sha "$edge_sha2"
 "$ORCHID_BIN" task set T009 verification_commands true
@@ -277,3 +496,2381 @@ jq -n --arg cand "$edge_sha2" '{contract:1, job_id:"j-fixture-T009-a1-ok", task:
 "$ORCHID_BIN" task advance T009 arbitrating --reason "now has a real ok envelope"
 assert_eq arbitrating "$("$ORCHID_BIN" task show T009 | grep '^status: ' | cut -d' ' -f2)" \
   "reviewing->arbitrating succeeds once a status==ok envelope is reconciled (the status:failed one still doesn't count)"
+
+# ============================================================================
+# T026 (dogfood F28) -- the operator's two missing recovery moves.
+#
+# Both defects were found the same way: an operator diagnosed a failure
+# correctly, said so through the only verbs that exist, and watched the run
+# do the wrong thing anyway.
+#
+#   1. `task retry --reason` recorded the reason in the JOURNAL and nowhere
+#      else. The journal is not an implementer input -- `pack_build` copies
+#      the task FILE into the capsule -- so a retry carrying a precise
+#      diagnosis was indistinguishable, from outside, from a retry carrying
+#      nothing: the next attempt repeated the same mistake and no surface
+#      said whether the reason had ever been delivered.
+#   2. `retry`/`unblock` restore STATUS but granted no attempt budget, and
+#      the budget itself was a literal `attempts >= 3` in the driver with
+#      `attempts` on `task set`'s deny-list. A task that spent its rounds on
+#      causes T019 says must not be charged could not be given another one
+#      through any verb at all.
+#
+# Plus the edge neither verb ever offered: "the tree is green, re-run
+# verification" (`task reverify`), whose absence had operators hand-editing
+# task worktrees and committing on task branches with no name in the protocol.
+# ============================================================================
+
+tfield() { "$ORCHID_BIN" task show "$1" | grep "^$2: " | cut -d' ' -f2-; }
+# One honest rework round: the same three edges a failing verify walks, so
+# `attempts` below is only ever raised the way the kernel itself raises it --
+# never hand-set (`task set attempts` is refused, which is half the point).
+spend_one_attempt() {
+  "$ORCHID_BIN" task advance "$1" implementing >/dev/null
+  "$ORCHID_BIN" task advance "$1" testing >/dev/null
+  "$ORCHID_BIN" task advance "$1" rework >/dev/null
+}
+
+# This file accumulates tasks parked in ACTIVE statuses as it goes (T004 in
+# `testing`, T009 in `arbitrating`), which is already the default concurrency
+# cap of 2 -- and every dispatch edge below (pending/rework into an active
+# status, `reverify`'s rework:testing included) goes through
+# schedule_dispatch_blockers. Scheduling is tested in tests/test_dispatcher.sh;
+# raising the cap here keeps these fixtures about attempts and reverification,
+# exactly as tests/test_jobs.sh does for its own wall-clock fixtures.
+export ORCHID_CONCURRENCY=8
+
+# -- attempt_budget is kernel-owned: `task set` must refuse it by name ------
+"$ORCHID_BIN" task create T020 "budget is kernel-owned" >/dev/null
+rc=0; ab_set_out="$("$ORCHID_BIN" task set T020 attempt_budget 9 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set attempt_budget must be refused (kernel-owned)"
+assert_match "kernel-owned" "$ab_set_out" "the refusal says the key is kernel-owned"
+assert_match "task retry" "$ab_set_out" "and names the ONE verb that writes it (got: $ab_set_out)"
+assert_eq "" "$(tfield T020 attempt_budget)" "the refused set wrote nothing"
+
+# -- retry DELIVERS the reason into the task body, and says so --------------
+"$ORCHID_BIN" task create T021 "retry delivers its reason" >/dev/null
+"$ORCHID_BIN" task advance T021 blocked --reason "fixture blocker"
+retry_out="$("$ORCHID_BIN" task retry T021 --reason "the assertion on line 12 wants 'ok', not 'OK'")"
+assert_eq rework "$(tfield T021 status)" "retry from blocked -> rework"
+assert_match "Operator guidance" "$("$ORCHID_BIN" task show T021)" \
+  "the reason is written into the task body -- the file pack_build copies into the implementer's capsule"
+assert_match "wants 'ok', not 'OK'" "$("$ORCHID_BIN" task show T021)" \
+  "verbatim, not a summary of it"
+assert_match "guidance delivered to the task body" "$retry_out" \
+  "and retry's own output says where it went, so delivery is visible without reading the file (got: $retry_out)"
+assert_match "retry: the assertion on line 12" "$(cat .orchid/journal.md)" \
+  "the journal still records the intervention (INV-08), it is simply no longer the ONLY place the reason lands"
+
+# -- a retry that needs no extra budget must not shrink the one in force ----
+assert_eq "" "$(tfield T021 attempt_budget)" \
+  "a task with attempts spent BELOW the repo budget gets no frontmatter grant -- attempts+1 (=1) must never overwrite the default 3"
+assert_match "attempt budget unchanged at 3" "$retry_out" \
+  "and retry reports the budget it left alone, with the rounds remaining (got: $retry_out)"
+
+# -- the exhausted-budget case: retry grants, and the grant is recorded -----
+# Three real testing:rework rounds, so `attempts` reaches the default cap the
+# honest way (each edge bumps it -- no hand-set counter anywhere).
+"$ORCHID_BIN" task create T022 "spends its whole budget" >/dev/null
+budget_sha="$(git rev-parse HEAD)"
+"$ORCHID_BIN" task set T022 base_sha "$budget_sha"
+"$ORCHID_BIN" task set T022 candidate_sha "$budget_sha"
+spend_one_attempt T022
+spend_one_attempt T022
+spend_one_attempt T022
+assert_eq 3 "$(tfield T022 attempts)" "three rework rounds consumed three attempts"
+"$ORCHID_BIN" task advance T022 blocked --reason "attempts exhausted (3/3)"
+
+grant_out="$("$ORCHID_BIN" task retry T022 --reason "two of those three were the formula-pin deadlock, not the candidate" --attempts 2)"
+assert_eq 5 "$(tfield T022 attempt_budget)" \
+  "--attempts 2 raises the cap to attempts+2 -- the operator's grant is measured from what has been SPENT"
+assert_eq 3 "$(tfield T022 attempts)" \
+  "and the attempts counter itself is never wound back: it is the attempt NUMBER every reviews/<id>-a<n>-*.json is keyed on"
+assert_match "attempt budget 3 -> 5" "$grant_out" "retry reports the grant it made (got: $grant_out)"
+assert_match "attempt budget 3 -> 5" "$(cat .orchid/journal.md)" "and journals it before writing it (INV-08)"
+
+# A second grant is measured from the same spent count, and only ever raises:
+# `--attempts 1` here wants 4, which is below the 5 already in force.
+grant2_out="$("$ORCHID_BIN" task retry T022 --reason "second look, no more rounds needed")"
+assert_eq 5 "$(tfield T022 attempt_budget)" "a smaller grant never shrinks a budget already in force"
+assert_match "attempt budget unchanged at 5" "$grant2_out" "and says so (got: $grant2_out)"
+
+# -- --attempts is validated, not silently coerced --------------------------
+for bad_grant in 0 -1 two 1.5 ""; do
+  rc=0; bad_out="$("$ORCHID_BIN" task retry T022 --reason "bad grant" --attempts "$bad_grant" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "task retry --attempts '$bad_grant' must be refused"
+  assert_match "requires a value|positive integer" "$bad_out" \
+    "--attempts '$bad_grant' is refused with a message that names the constraint (got: $bad_out)"
+done
+assert_eq 5 "$(tfield T022 attempt_budget)" "none of the refused grants wrote anything"
+
+# -- unblock warns when it is handing back a task with no budget left -------
+# It deliberately does NOT grant one (it is the "here is guidance" verb), so
+# the operator has to be TOLD, or the next verify failure re-blocks instantly.
+"$ORCHID_BIN" task create T023 "unblock with an empty budget" >/dev/null
+unblock_sha="$(git rev-parse HEAD)"
+"$ORCHID_BIN" task set T023 base_sha "$unblock_sha"
+"$ORCHID_BIN" task set T023 candidate_sha "$unblock_sha"
+spend_one_attempt T023
+spend_one_attempt T023
+spend_one_attempt T023
+"$ORCHID_BIN" task advance T023 blocked --reason "attempts exhausted (3/3)"
+unblock_warn="$("$ORCHID_BIN" task unblock T023 --reason "here is the fix" 2>&1 1>/dev/null)"
+assert_match "attempts 3/3" "$unblock_warn" "unblock warns that the budget is spent (got: $unblock_warn)"
+# `[-]-attempts N` matches the same text as `--attempts N`, but does not begin
+# with a dash: `assert_match` passes its pattern as grep's FIRST argument, so a
+# leading `--` is parsed as a long option and grep exits with its usage message
+# instead of matching. The bracket is the smallest correct spelling here; the
+# helper itself wants `grep -Eq -e "$1"`, which is a suite-wide change.
+assert_match "[-]-attempts N" "$unblock_warn" "and names the verb that grants more"
+assert_eq rework "$(tfield T023 status)" "the warning is a warning: unblock still did its job"
+assert_eq "" "$(tfield T023 attempt_budget)" "and unblock granted nothing itself"
+
+# -- ...and the verb that warning names does the job with no flag at all ----
+# F28's headline ask is that `retry` "grant an attempt OR take --attempts N".
+# The bare form is the one an operator reaches for after a diagnosis, so it
+# has to buy a round on its own: a retry that restores status without a round
+# is the exact trap (diagnosis -> one engine invocation -> identical failure
+# -> re-blocked) this task exists to close.
+bare_grant_out="$("$ORCHID_BIN" task retry T023 --reason "diagnosed: the fixture wants 'ok', not 'OK'")"
+assert_eq 4 "$(tfield T023 attempt_budget)" \
+  "a bare retry of a task with NO rounds left grants exactly one (out: $bare_grant_out)"
+assert_eq 3 "$(tfield T023 attempts)" "and still never winds the counter back"
+assert_match "attempt budget 3 -> 4" "$bare_grant_out" "and reports the round it bought (out: $bare_grant_out)"
+# Repeated bare retries do not compound: the second wants the same 4 the first
+# already granted, so the budget stays put rather than drifting up one round
+# per keystroke.
+bare_again_out="$("$ORCHID_BIN" task retry T023 --reason "same diagnosis, said twice")"
+assert_eq 4 "$(tfield T023 attempt_budget)" "a second bare retry grants nothing on top (out: $bare_again_out)"
+assert_match "attempt budget unchanged at 4" "$bare_again_out" "and says so (out: $bare_again_out)"
+
+# -- an EXPLICIT `--attempts N` that would change nothing is REFUSED --------
+# The grant only ever raises the cap, so on a task that still has rounds left
+# the flag is satisfied before it is typed. Swallowing it prints the same
+# "budget unchanged" line a bare retry prints, having silently declined the one
+# thing the operator asked for -- and a flag that quietly does nothing is
+# trusted for exactly as long as it takes to be blamed, because the next
+# failure looks like the round was granted and spent. T023 is at 3 spent of a
+# budget of 4 here, so `--attempts 1` is already covered.
+rc=0
+attempts_noop="$("$ORCHID_BIN" task retry T023 --attempts 1 --reason "and one more round on top of that" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "an --attempts N that would grant nothing must be refused, not swallowed (out: $attempts_noop)"
+assert_match "would grant task T023 nothing" "$attempts_noop" \
+  "and the refusal says what it declined to do (out: $attempts_noop)"
+assert_match "budget is already 4 with 3 spent" "$attempts_noop" \
+  "showing the arithmetic the operator could not see (out: $attempts_noop)"
+assert_match "[-]-attempts 2" "$attempts_noop" \
+  "and naming the smallest number that WOULD buy a round, so the refusal is a route rather than a dead end (out: $attempts_noop)"
+assert_eq 4 "$(tfield T023 attempt_budget)" "the refused retry granted nothing"
+grep -q "and one more round on top of that" .orchid/journal.md \
+  && fail "a refused retry journals nothing either -- the flag is checked before the first write"
+# A herestring, never `show | grep -q`: under pipefail (helpers.sh line 32),
+# grep -q exiting at its first match can SIGPIPE `task show` mid-write and the
+# 141 skips the `&& fail` -- exactly when the guidance IS in the body.
+grep -q "and one more round on top of that" <<<"$("$ORCHID_BIN" task show T023)" \
+  && fail "and appends no guidance: the task body must not carry a diagnosis for a retry that never happened"
+
+# ...and the same flag with a number that DOES buy a round works, which is what
+# makes the refusal above about the no-op and nothing else.
+attempts_grant="$("$ORCHID_BIN" task retry T023 --attempts 2 --reason "the next two failures will be the environment as well")"
+assert_eq 5 "$(tfield T023 attempt_budget)" "--attempts 2 on a task 3 spent of 4 raises the budget to 5 (out: $attempts_grant)"
+assert_match "attempt budget 4 -> 5" "$attempts_grant" "and reports the move (out: $attempts_grant)"
+
+# ============================================================================
+# `orchid task reverify <id> --reason "..."` -- blocked|rework -> testing.
+# The supported "the tree is green, re-run verification without another
+# implementation pass" edge: no attempt consumed, the candidate re-stamped
+# from the worktree the operator actually fixed, the stale verify evidence
+# dropped so the next run is a real one.
+# ============================================================================
+"$ORCHID_BIN" task create T024 "reverify after an operator fix" >/dev/null
+# `reverify` refuses a worktree with uncommitted changes (see the RED case
+# below), so from here on this scratch repo has to be honestly clean -- and it
+# is not: line 4 puts the fixture's HOME at "$WORK/home", inside the repo,
+# where it shows up as untracked. Ignoring it is what a real repo does with
+# its own test junk. `.orchid/` needs no entry: the verb excludes kernel state
+# on its own account, because every verb writes it into the working tree by
+# design and INV-04 bars it from candidates anyway.
+# `wt/` joins it for the same reason: the RED cases below put a second and a
+# third CHECKOUT of this repository under it (a task worktree is how a real run
+# is laid out, and it is the only way to point a task's HEAD somewhere other
+# than this one). A nested checkout carries a `.git` file, so an untracked
+# `wt/` would read as an uncommitted change in every assertion after it.
+printf 'home/\nwt/\n' > .gitignore
+mkdir -p "$WORK/wt"
+git add .gitignore
+git commit -q -m "fixture: ignore the scratch HOME this suite plants inside the repo"
+rev_base="$(git rev-parse HEAD)"
+# EVERY TASK FILE NAMES A BRANCH (`branch: task/<id>`, templates/task.md), and
+# the reverify edge checks that the commit it is about to certify is CONTAINED
+# in it -- a clean tree says nothing about whose work is standing in it. A real
+# task worktree is on its own branch by construction (drive_worktree_plan cuts
+# one per task); this scratch repo does all of its work in one checkout on one
+# branch, so the records are pointed at the branch their commits are really on.
+# That is the same move the refusal itself prescribes (`orchid task set <id>
+# branch <name>`), and it keeps these fixtures honest rather than exempt: the
+# RED cases further down are refused on this exact axis.
+rev_branch="$(git rev-parse --abbrev-ref HEAD)"
+"$ORCHID_BIN" task set T024 base_sha "$rev_base"
+"$ORCHID_BIN" task set T024 candidate_sha "$rev_base"
+"$ORCHID_BIN" task set T024 branch "$rev_branch"
+"$ORCHID_BIN" task set T024 verification_commands true
+"$ORCHID_BIN" task advance T024 implementing >/dev/null
+"$ORCHID_BIN" task advance T024 testing >/dev/null
+"$ORCHID_BIN" task advance T024 rework >/dev/null
+assert_eq 1 "$(tfield T024 attempts)" "fixture: the rework round consumed one attempt"
+# A PASSING log left on disk and still bound to the OLD candidate_sha: the
+# stale evidence reverify has to drop, or INV-11's testing -> reviewing gate
+# would accept it as proof for a tree it never ran against.
+"$ORCHID_BIN" verify T024 >/dev/null
+[ -f .orchid/reviews/T024-verify.log ] || fail "fixture: T024 should have stale verify evidence on disk before reverify"
+
+# The operator's own fix, committed by hand on the task's tree -- the exact
+# move that had no verb before this one. (`git add <path>`, never `-a`: a
+# sweep would pull `.orchid/` into the commit and INV-04 would refuse entry
+# to `testing` -- correctly.)
+echo "the two-word test fix" > operator-fix.txt
+git add operator-fix.txt
+git commit -q -m "operator: fix the fixture the implementer kept getting wrong"
+rev_fixed="$(git rev-parse HEAD)"
+
+reverify_out="$("$ORCHID_BIN" task reverify T024 --reason "the tree is green: the operator fixed the fixture by hand")"
+assert_eq testing "$(tfield T024 status)" "reverify: rework -> testing (archetype edge rework:testing)"
+assert_eq 1 "$(tfield T024 attempts)" "reverify consumes NO attempt -- that is the whole point of it"
+assert_eq "$rev_fixed" "$(tfield T024 candidate_sha)" \
+  "and re-stamps candidate_sha from the task worktree's HEAD, so the evidence it is about to produce binds to the tree that will actually be tested"
+[ ! -f .orchid/reviews/T024-verify.log ] \
+  || fail "reverify must drop the stale verify evidence -- a prior PASS must never satisfy INV-11 on the re-verified candidate's behalf"
+assert_match "no attempt consumed" "$reverify_out" "reverify says so in its own output (got: $reverify_out)"
+assert_match "reverify: the tree is green" "$(cat .orchid/journal.md)" "and journals the operator's reason"
+assert_match "candidate_sha $rev_base -> $rev_fixed" "$(cat .orchid/journal.md)" \
+  "and journals the candidate re-stamp before writing it (INV-08)"
+
+# The re-verified candidate walks on from `testing` exactly like any other:
+# fresh evidence, then the ordinary gate.
+"$ORCHID_BIN" verify T024 >/dev/null
+"$ORCHID_BIN" task advance T024 reviewing >/dev/null
+assert_eq reviewing "$(tfield T024 status)" \
+  "a reverified candidate reaches reviewing on its own fresh, sha-bound evidence"
+
+# -- blocked -> testing, the case the exhausted-attempts trap actually ends in
+"$ORCHID_BIN" task create T025 "reverify straight out of blocked" >/dev/null
+"$ORCHID_BIN" task set T025 base_sha "$rev_base"
+"$ORCHID_BIN" task set T025 candidate_sha "$rev_fixed"
+"$ORCHID_BIN" task set T025 branch "$rev_branch"
+"$ORCHID_BIN" task advance T025 blocked --reason "attempts exhausted (3/3)"
+# The anchor the PREVIOUS attempt left behind. `blocked` is an idle status, so
+# nothing has been bounding it since -- and the moment reverify moves the task
+# into `testing` it becomes live again for libexec/orchid-jobs' task-level
+# budget backstop, which gates on exactly (active status + started_at +
+# wallclock_budget_s). An anchor this old would put the task over any budget
+# before its first re-verification command ran.
+"$ORCHID_BIN" task set T025 started_at 2020-01-01T00:00:00Z
+"$ORCHID_BIN" task set T025 wallclock_budget_s 3600
+"$ORCHID_BIN" task reverify T025 --reason "the failing suite was the environment, not the candidate" >/dev/null
+assert_eq testing "$(tfield T025 status)" "reverify: blocked -> testing (archetype edge blocked:testing)"
+assert_eq 0 "$(tfield T025 attempts)" "still no attempt consumed"
+# A dispatch into an active status re-anchors the wall-clock budget, whichever
+# idle status it came FROM: `blocked -> testing` is a dispatch by every
+# property that gate has (idle source, active destination, real work about to
+# run), and the literal `pending|rework` source test that predated `reverify`
+# silently exempted it -- leaving the re-verified task already over budget and
+# escalated straight back to `blocked`, the same unconvergent recovery loop
+# the anchor fix in `task advance` exists to prevent.
+rev_anchor="$(tfield T025 started_at)"
+[ "$rev_anchor" != 2020-01-01T00:00:00Z ] || \
+  fail "reverify out of blocked must re-anchor started_at -- it is a dispatch into an active status (still: $rev_anchor)"
+
+# ...and it is gated by the same dispatch predicates, for the same reason: a
+# re-verification runs the task's whole suite in its worktree, which is the
+# contention the concurrency cap bounds. Refused by `task advance` itself,
+# naming the predicate verbatim, with the task left where it was.
+"$ORCHID_BIN" task create T028 "reverify honors the dispatch gate" >/dev/null
+"$ORCHID_BIN" task set T028 base_sha "$rev_base"
+# Deliberately NOT the worktree's HEAD: a reverify that mutated before it
+# validated would re-stamp this to $rev_fixed on its way to the refusal below,
+# and the assertions after it are what catch that.
+"$ORCHID_BIN" task set T028 candidate_sha "$rev_base"
+"$ORCHID_BIN" task set T028 branch "$rev_branch"
+"$ORCHID_BIN" task advance T028 blocked --reason "attempts exhausted (3/3)"
+rc=0
+rev_capped="$(ORCHID_CONCURRENCY=1 "$ORCHID_BIN" task reverify T028 --reason "capped: green tree, wrong moment" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "reverify is refused when the concurrency cap is already met (out: $rev_capped)"
+assert_match "concurrency-cap" "$rev_capped" \
+  "and the refusal names the schedule predicate verbatim (out: $rev_capped)"
+assert_eq blocked "$(tfield T028 status)" "the refused reverify left the task where it was"
+# VALIDATE BEFORE YOU MUTATE. The refusal is the whole outcome: a task that
+# never moved must not be left carrying a re-stamped candidate and a pair of
+# journal entries describing a move that did not happen. That record would
+# outlive the refusal -- the next reader (operator, `task show`, a reconciled
+# envelope binding on candidate_sha) has no way to tell it apart from a
+# reverify that really did dispatch.
+assert_eq "$rev_base" "$(tfield T028 candidate_sha)" \
+  "a refused reverify re-stamps NOTHING -- every condition advance can refuse on is asked before the first write"
+grep -q "capped: green tree, wrong moment" .orchid/journal.md \
+  && fail "a refused reverify must not journal its reason either -- journal-first is for mutations that follow, and none did"
+
+# -- a DIRTY worktree is refused, never certified ---------------------------
+# The failure this closes: `orchid verify` runs the suite IN the task worktree
+# but stamps its evidence with a sha. So an uncommitted change sitting there is
+# exercised by the run while candidate_sha names a tree that never contained
+# it, and the resulting PASS describes something that was never the candidate
+# (lesson L025) -- produced by the verb that exists to be the SUPPORTED way to
+# re-verify, which is exactly where an operator would never think to look for
+# it. Untracked counts as much as modified: a suite reads a brand-new test file
+# every bit as happily as an edited one.
+"$ORCHID_BIN" task create T029 "reverify refuses a dirty worktree" >/dev/null
+"$ORCHID_BIN" task set T029 base_sha "$rev_base"
+"$ORCHID_BIN" task set T029 candidate_sha "$rev_base"
+"$ORCHID_BIN" task set T029 branch "$rev_branch"
+"$ORCHID_BIN" task advance T029 blocked --reason "attempts exhausted (3/3)"
+
+# (a) untracked
+echo "half of the fix, never committed" > operator-half-fix.txt
+rc=0
+rev_untracked="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task reverify T029 --reason "surely the tree is green by now" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "reverify refuses a worktree with uncommitted changes (out: $rev_untracked)"
+assert_match "uncommitted changes" "$rev_untracked" \
+  "and says what is wrong rather than certifying it (out: $rev_untracked)"
+assert_match "operator-half-fix.txt" "$rev_untracked" \
+  "NAMING what is uncommitted -- a refusal the operator cannot act on is a dead end (out: $rev_untracked)"
+assert_match "commit them" "$rev_untracked" \
+  "and naming the way out, since committing on the task branch is the procedure this verb exists to support (out: $rev_untracked)"
+assert_eq blocked "$(tfield T029 status)" "the refused reverify left the task where it was"
+assert_eq "$rev_base" "$(tfield T029 candidate_sha)" \
+  "and never stamped HEAD as the candidate while something else would have been what actually ran"
+grep -q "surely the tree is green by now" .orchid/journal.md \
+  && fail "a refused reverify journals nothing either -- the refusal is the whole outcome"
+
+# (b) tracked-but-modified, the same refusal by the same rule
+git add operator-half-fix.txt
+git commit -q -m "operator: commit the stray file"
+echo "an edit on top, also uncommitted" >> operator-half-fix.txt
+rc=0
+rev_modified="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task reverify T029 --reason "and now surely it is green" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "a tracked file with uncommitted edits is refused too (out: $rev_modified)"
+assert_match "operator-half-fix.txt" "$rev_modified" "named just the same (out: $rev_modified)"
+assert_eq blocked "$(tfield T029 status)" "still untouched"
+
+# (c) ...and once the operator commits, the same call goes straight through:
+#     the refusal is a nudge into the supported procedure, not a dead end.
+git add operator-half-fix.txt
+git commit -q -m "operator: finish the fix"
+rev_clean="$(git rev-parse HEAD)"
+rev_ok="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task reverify T029 --reason "committed on the task branch — now re-verify it")"
+assert_eq testing "$(tfield T029 status)" \
+  "a CLEAN worktree reverifies exactly as before (out: $rev_ok)"
+assert_eq "$rev_clean" "$(tfield T029 candidate_sha)" \
+  "bound to the committed tree the suite will actually run against"
+assert_eq 0 "$(tfield T029 attempts)" "and still no attempt consumed"
+# The kernel state dir is the ONE thing that never counts as dirty here: every
+# verb above wrote into `.orchid/` while this task sat blocked (this fixture
+# never commits it at all), and INV-04 bars it from candidates anyway -- so it
+# is never part of what the operator is asking to have verified. If the check
+# ever stops excluding it, (c) fails and this is why.
+
+# -- A CLEAN TREE IS NOT THE RIGHT TREE -------------------------------------
+# The dirty-tree refusal above asks whether the worktree is certifiable AT ALL.
+# Nothing in it asks WHOSE work is standing in it -- and adopting whatever a
+# clean HEAD happens to be is the worse mis-binding of the two, because
+# afterwards every field agrees and the evidence produced looks exactly right.
+# A checkout left on another task, a HEAD detached by a bisect, a worktree path
+# reused for something else: all clean, all certifiable, none of them this
+# candidate. So the commit's lineage is a gate as much as the tree's state is.
+"$ORCHID_BIN" task create T032 "reverify refuses a tree that is not this task's" >/dev/null
+"$ORCHID_BIN" task set T032 base_sha "$rev_base"
+"$ORCHID_BIN" task set T032 candidate_sha "$rev_clean"
+"$ORCHID_BIN" task set T032 branch "$rev_branch"
+"$ORCHID_BIN" task advance T032 blocked --reason "attempts exhausted (3/3)"
+
+# (a) AN UNRELATED HISTORY. The orphan below shares no ancestor with the
+#     candidate at all, so no amount of range-scanning would notice it: the
+#     range between them is not a range. Built with plumbing and checked out in
+#     a worktree of its own so this suite's own HEAD never moves.
+rev_alien_tree="$(git hash-object -w -t tree /dev/null)"
+rev_alien_sha="$(git commit-tree "$rev_alien_tree" -m "an unrelated line of work" < /dev/null)"
+rev_alien_wt="$WORK/wt/alien"
+git worktree add -q --detach "$rev_alien_wt" "$rev_alien_sha" \
+  || fail "fixture: could not put a worktree on the unrelated commit"
+"$ORCHID_BIN" task set T032 worktree "$rev_alien_wt"
+rc=0
+rev_alien_out="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task reverify T032 --reason "the tree over there is green" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "reverify refuses a clean worktree standing on an unrelated history (out: $rev_alien_out)"
+assert_match "does not descend from the current candidate" "$rev_alien_out" \
+  "and refuses on the ground that matters -- an operator's fix only ever ADDS commits on top of the candidate (out: $rev_alien_out)"
+assert_match "$rev_clean" "$rev_alien_out" \
+  "naming the candidate it declined to replace (out: $rev_alien_out)"
+assert_match "$rev_alien_sha" "$rev_alien_out" \
+  "and the commit it declined to certify -- those two shas ARE the mistake (out: $rev_alien_out)"
+assert_eq blocked "$(tfield T032 status)" "the refused reverify left the task where it was"
+assert_eq "$rev_clean" "$(tfield T032 candidate_sha)" \
+  "and never stamped an unrelated commit as this task's candidate"
+grep -q "the tree over there is green" .orchid/journal.md \
+  && fail "a refused reverify journals nothing -- the refusal is the whole outcome"
+
+# (b) A DESCENDANT, BUT NOT ON THE TASK'S BRANCH. Descent alone still admits a
+#     commit made on a branch that merely forked from this candidate, which is
+#     what an operator working two tasks in two checkouts produces by accident
+#     -- and it is the shape whose commits silently vanish from the branch that
+#     merges. Same worktree resolution, so this is the same door.
+rev_off_wt="$WORK/wt/off-branch"
+git worktree add -q --detach "$rev_off_wt" "$rev_clean" \
+  || fail "fixture: could not detach a worktree at the candidate"
+echo "the fix, committed off the task's branch" > "$rev_off_wt/operator-off-branch.txt"
+git -C "$rev_off_wt" add operator-off-branch.txt
+git -C "$rev_off_wt" commit -q -m "operator: the fix, on a detached HEAD"
+rev_off_sha="$(git -C "$rev_off_wt" rev-parse HEAD)"
+"$ORCHID_BIN" task set T032 worktree "$rev_off_wt"
+rc=0
+rev_off_out="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task reverify T032 --reason "it descends from the candidate, honest" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "a descendant that is not on the task's branch is refused too (out: $rev_off_out)"
+assert_match "is not contained in task T032's branch" "$rev_off_out" \
+  "and the refusal says which membership failed, not merely that something did (out: $rev_off_out)"
+assert_match "$rev_off_sha" "$rev_off_out" "naming the commit it refused (out: $rev_off_out)"
+assert_match "$rev_clean" "$rev_off_out" "and the candidate it would have replaced (out: $rev_off_out)"
+assert_eq blocked "$(tfield T032 status)" "still where it was"
+assert_eq "$rev_clean" "$(tfield T032 candidate_sha)" "and the candidate is untouched"
+
+# (c) ...and the moment that same commit IS on a branch the record names, the
+#     identical call goes through. The refusals above are about lineage and
+#     nothing else -- not about worktrees, not about detachment as such.
+git -C "$rev_off_wt" checkout -q -b task/T032-real
+"$ORCHID_BIN" task set T032 branch task/T032-real
+rev_lineage_ok="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task reverify T032 --reason "committed on the branch the record names — now re-verify it")"
+assert_eq testing "$(tfield T032 status)" \
+  "a commit that descends from the candidate AND sits on the task's branch reverifies (out: $rev_lineage_ok)"
+assert_eq "$rev_off_sha" "$(tfield T032 candidate_sha)" "re-stamped to it"
+assert_eq 0 "$(tfield T032 attempts)" "and still no attempt consumed"
+
+# -- refusals ---------------------------------------------------------------
+"$ORCHID_BIN" task create T026 "reverify guards" >/dev/null
+rc=0; rev_pending="$("$ORCHID_BIN" task reverify T026 --reason "not from here" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "reverify from pending exits 3"
+assert_match "illegal reverify from pending" "$rev_pending" "and names the status it refused (got: $rev_pending)"
+assert_eq pending "$(tfield T026 status)" "the refused reverify moved nothing"
+
+"$ORCHID_BIN" task advance T026 blocked --reason "now it is blocked"
+rc=0; rev_noreason="$("$ORCHID_BIN" task reverify T026 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "reverify without --reason must fail (INV-08)"
+assert_match "reverify requires --reason" "$rev_noreason" "and says which flag is missing (got: $rev_noreason)"
+rc=0; rev_novalue="$("$ORCHID_BIN" task reverify T026 --reason 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "reverify --reason with no value must fail"
+grep -q "unbound variable" <<<"$rev_novalue" && fail "reverify --reason with no value must not crash with an unbound-variable error"
+assert_match "requires a value" "$rev_novalue" "and dies cleanly (got: $rev_novalue)"
+assert_eq blocked "$(tfield T026 status)" "neither refusal moved the task"
+
+# INV-05: an archetype with no `testing` state simply never declares
+# blocked:testing/rework:testing, so reverify against one is refused as an
+# illegal transition -- no branch on the archetype's NAME anywhere.
+"$ORCHID_BIN" task create T027 "a report archetype cannot reverify" --archetype review >/dev/null
+"$ORCHID_BIN" task advance T027 blocked --reason "fixture blocker"
+rc=0; rev_report="$("$ORCHID_BIN" task reverify T027 --reason "there is nothing to verify" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "reverify on a report-outcome archetype exits 3 (its transition table has no blocked:testing)"
+assert_match "illegal blocked -> testing" "$rev_report" "refused as an illegal transition, by declared data (got: $rev_report)"
+assert_eq blocked "$(tfield T027 status)" "and the report task stays where it was"
+
+# ============================================================================
+# THE OTHER DOOR ONTO THE SAME EDGE (T026 rework).
+#
+# `blocked:testing`/`rework:testing` are declared transition DATA, so the
+# public `task advance <id> testing` reaches the identical edge. When
+# `reverify` alone carried the safeguards, that route bypassed every one of
+# them -- the reason requirement, the clean-worktree refusal, the candidate
+# binding, the evidence invalidation -- so verification could be made to
+# certify exactly the tree those safeguards exist to refuse just by typing
+# the other command. A guarded door beside an unguarded one guards nothing.
+#
+# So the conditions live on the EDGE, in functions both routes call. The
+# fixtures below drive the raw route and demand the same answers.
+# ============================================================================
+"$ORCHID_BIN" task create T030 "the raw advance onto the reverify edge" >/dev/null
+"$ORCHID_BIN" task set T030 base_sha "$rev_base"
+# Deliberately NOT the worktree's HEAD (which is $rev_clean by now).
+"$ORCHID_BIN" task set T030 candidate_sha "$rev_base"
+"$ORCHID_BIN" task set T030 branch "$rev_branch"
+"$ORCHID_BIN" task advance T030 blocked --reason "attempts exhausted (3/3)"
+
+# (a) INV-08: the edge carries an operator judgment, so it needs a reason on
+#     this route exactly as `reverify` demands one on its own.
+rc=0
+adv_noreason="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task advance T030 testing 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a bare advance onto the reverify edge must require --reason (INV-08)"
+assert_match "blocked -> testing requires --reason" "$adv_noreason" \
+  "and says so in the same shape as every other reason-bearing edge (got: $adv_noreason)"
+assert_eq blocked "$(tfield T030 status)" "the refused advance moved nothing"
+
+# (b) the candidate binding. This route cannot re-stamp (an operator asked for
+#     a transition, not for their candidate to be rewritten underneath them),
+#     so it requires what the re-stamp would have produced and names the verb
+#     that does it. Refusing is strictly stronger than fixing up.
+rc=0
+adv_stale="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task advance T030 testing --reason "surely it is green" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "candidate_sha that is not the worktree HEAD is refused, exit 3 (out: $adv_stale)"
+assert_match "not the HEAD of the task worktree" "$adv_stale" \
+  "naming the mismatch rather than certifying it (out: $adv_stale)"
+assert_match "$rev_clean" "$adv_stale" \
+  "and printing the HEAD the suite would ACTUALLY have run against (out: $adv_stale)"
+assert_match "orchid task reverify" "$adv_stale" \
+  "and naming the verb that re-stamps, so the refusal is a route into the supported procedure (out: $adv_stale)"
+assert_eq blocked "$(tfield T030 status)" "still where it was"
+assert_eq "$rev_base" "$(tfield T030 candidate_sha)" "and the candidate is untouched -- this route never writes one"
+
+# (c) the clean-worktree refusal is on the edge, not in the verb: the same
+#     dirty tree `reverify` refuses above is refused here, by the same code.
+"$ORCHID_BIN" task set T030 candidate_sha "$rev_clean"
+echo "an uncommitted edit, taking the other door this time" > operator-raw-dirt.txt
+rc=0
+adv_dirty="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task advance T030 testing --reason "the tree is green, honest" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "a dirty worktree is refused on the raw route too (out: $adv_dirty)"
+assert_match "uncommitted changes" "$adv_dirty" "with the same refusal reverify gives (out: $adv_dirty)"
+assert_match "operator-raw-dirt.txt" "$adv_dirty" "naming what is in the way (out: $adv_dirty)"
+assert_eq blocked "$(tfield T030 status)" "and the task did not move"
+rm -f operator-raw-dirt.txt
+
+# (d) ...and when every condition really is met, the raw route works AND
+#     invalidates the stale evidence. That last part is why the invalidation
+#     lives on the edge: a prior PASS surviving this transition would satisfy
+#     INV-11's testing -> reviewing gate for a candidate nothing re-verified.
+printf 'a PASS from a previous, unrelated candidate\n' > .orchid/reviews/T030-verify.log
+adv_ok="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task advance T030 testing --reason "already committed on the task branch, candidate already stamped")"
+assert_eq testing "$(tfield T030 status)" "a fully-satisfied raw advance takes the edge (out: $adv_ok)"
+assert_eq 0 "$(tfield T030 attempts)" "and consumes no attempt, exactly as reverify does not"
+[ ! -f .orchid/reviews/T030-verify.log ] \
+  || fail "the raw route must drop the stale verify evidence too -- the invalidation belongs to the EDGE, not to one verb"
+
+# ============================================================================
+# `retry` validates before it mutates, like `unblock` and `reverify`.
+# schedule_attempt_budget dies on a misconfigured budget; when that read came
+# AFTER the journal entry and the guidance append, a retry that never happened
+# still left the operator's reason recorded and pasted into the task body.
+# ============================================================================
+"$ORCHID_BIN" task create T031 "retry validates before it mutates" >/dev/null
+"$ORCHID_BIN" task advance T031 blocked --reason "fixture blocker"
+rc=0
+retry_bad="$(ORCHID_REWORK_MAX=not-a-number "$ORCHID_BIN" task retry T031 --reason "this diagnosis must not outlive the refusal" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "retry must die on a misconfigured attempt budget rather than proceed"
+assert_match "positive integer" "$retry_bad" "naming the constraint it failed (got: $retry_bad)"
+assert_eq blocked "$(tfield T031 status)" "the refused retry left the task where it was"
+grep -q "this diagnosis must not outlive the refusal" .orchid/journal.md \
+  && fail "a refused retry must journal nothing -- the budget is read before the first write"
+grep -q "Operator guidance" <<<"$("$ORCHID_BIN" task show T031)" \
+  && fail "and must not append operator guidance either: the task body would carry a diagnosis for a retry that never happened"
+# The same call with the budget configured sanely still does its whole job --
+# the reordering moved a read, it did not weaken the verb.
+retry_good="$("$ORCHID_BIN" task retry T031 --reason "and now, with a budget it can read")"
+assert_eq rework "$(tfield T031 status)" "retry works normally once the budget is readable (out: $retry_good)"
+assert_match "Operator guidance" "$("$ORCHID_BIN" task show T031)" "and the guidance lands in the body as before"
+
+# ============================================================================
+# A RENAME MUST NOT STEP AROUND THE CLEAN-TREE REFUSAL (T026 rework)
+#
+# The dirty-tree gate excludes `.orchid/` because kernel state is no part of
+# the candidate. Porcelain v1 is `XY <path>` -- EXCEPT for a rename or copy,
+# which is `XY <old> -> <new>`. A filter anchored at the path column therefore
+# reads only the left-hand side, and `R  .orchid/... -> <candidate path>` looks
+# exactly like kernel state to it while what it actually stages is a candidate
+# file holding content no commit contains. The gate would pass, the suite would
+# exercise that file, and candidate_sha would name the commit without it: the
+# mis-binding the whole refusal exists to stop, reached by renaming instead of
+# adding.
+#
+# Its own checkout ON ITS OWN BRANCH, because this case needs a TRACKED file
+# under `.orchid/` to rename out of, and the scratch repo's own branch
+# deliberately never commits one (INV-04 bars kernel state from candidates, and
+# every fixture after this one would inherit the commit). A worktree keeps the
+# commit off this suite's branch while leaving it in the SAME object store --
+# which matters: `testing_entry_blocker` walks `base..candidate` with `git -C
+# "$ORCHID_REPO"`, and since T026 it fails CLOSED when that walk cannot be
+# done, so a fixture in a separate `git init` would be refused for having an
+# unreadable range rather than for anything this case is about.
+# ============================================================================
+rn_wt="$WORK/wt/rename-hole"
+git worktree add -q -b task/T033-rename "$rn_wt" \
+  || fail "fixture: could not cut a worktree for the rename case"
+mkdir -p "$rn_wt/.orchid"
+printf 'kernel state, tracked here only so it can be renamed out of\n' > "$rn_wt/.orchid/scratch.txt"
+git -C "$rn_wt" add .orchid/scratch.txt
+git -C "$rn_wt" commit -q -m "fixture: a tracked file under .orchid/ to rename out of"
+rn_head="$(git -C "$rn_wt" rev-parse HEAD)"
+rn_branch="$(git -C "$rn_wt" rev-parse --abbrev-ref HEAD)"
+
+"$ORCHID_BIN" task create T033 "reverify refuses a rename out of .orchid/" >/dev/null
+"$ORCHID_BIN" task set T033 worktree "$rn_wt"
+"$ORCHID_BIN" task set T033 base_sha "$rn_head"
+"$ORCHID_BIN" task set T033 candidate_sha "$rn_head"
+"$ORCHID_BIN" task set T033 branch "$rn_branch"
+"$ORCHID_BIN" task advance T033 blocked --reason "attempts exhausted (3/3)"
+
+# RED: the rename lands a candidate path, and the record's LEFT side is
+# `.orchid/`. Nothing here is committed; HEAD is still rn_head.
+mkdir -p "$rn_wt/libexec"
+git -C "$rn_wt" mv .orchid/scratch.txt libexec/orchid-smuggled
+rn_status="$(git -C "$rn_wt" status --porcelain)"
+assert_match " [-]> libexec/orchid-smuggled" "$rn_status" \
+  "fixture: git must record this as a RENAME record, or the hole under test is not staged (status: $rn_status)"
+rc=0
+rn_out="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task reverify T033 --reason "only a rename, surely that is nothing" 2>&1)" || rc=$?
+assert_eq 3 "$rc" \
+  "a staged rename OUT of .orchid/ is an uncommitted candidate file and is refused like any other (out: $rn_out)"
+assert_match "uncommitted changes" "$rn_out" "with the same refusal as an added file (out: $rn_out)"
+assert_match "libexec/orchid-smuggled" "$rn_out" \
+  "NAMING the record, so the operator sees the candidate path it was about to have verified (out: $rn_out)"
+assert_eq blocked "$(tfield T033 status)" "the refused reverify left the task where it was"
+assert_eq "$rn_head" "$(tfield T033 candidate_sha)" \
+  "and never bound the candidate to a commit that does not contain libexec/orchid-smuggled"
+
+# GREEN: the exclusion itself is intact. A rename with BOTH sides under
+# `.orchid/` is kernel state moving, no part of any candidate, and still does
+# not count as dirty -- so this is a check on the record, not a blanket refusal
+# of renames.
+git -C "$rn_wt" reset -q --hard
+mkdir -p "$rn_wt/.orchid/tasks"
+git -C "$rn_wt" mv .orchid/scratch.txt .orchid/tasks/scratch.txt
+rn_ok="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task reverify T033 --reason "kernel state moved; the candidate is untouched")"
+assert_eq testing "$(tfield T033 status)" \
+  "a rename entirely inside .orchid/ is still excluded -- the gate reads the whole record, it does not just refuse renames (out: $rn_ok)"
+# T024 (dogfood F26) -- operator prerequisites.
+#
+# Some tasks cannot be verified by their candidate alone: a schema task
+# authors a migration, and the database its suite runs against is still
+# unmigrated when the tick reaches `testing`. Run anyway, the suite fails on
+# the ENVIRONMENT ("Call to a member function execute() on bool", because
+# prepare() found no such column), the log reads like a defect in the
+# candidate, and an attempt is spent on it.
+#
+# The convention: the task declares the step in `operator_prerequisite`, and
+# nothing verifies it until an operator acknowledges that step FOR THIS
+# CANDIDATE. Every assertion below is about the fix's own behaviour, never
+# about the shape of the failure it replaces.
+# ============================================================================
+#
+# Earlier sections intentionally park several tasks in active statuses, and
+# that population grows as independent regression cases are appended. Keep
+# this prerequisite fixture isolated from their scheduling side effects: its
+# subject is the acknowledgement state machine, not the repository-wide cap.
+export ORCHID_CONCURRENCY=99
+"$ORCHID_BIN" task create T010 "authors a migration it is not allowed to apply"
+# T031 now validates every candidate relation before admitting `testing`, so
+# this fixture uses real commits instead of the pre-T031 synthetic SHA.
+pre_sha="$(git rev-parse HEAD)"
+pre_step="apply db/migrate/0007_isolation.sql to the test database"
+"$ORCHID_BIN" task set T010 base_sha "$pre_sha"
+"$ORCHID_BIN" task set T010 candidate_sha "$pre_sha"
+"$ORCHID_BIN" task set T010 verification_commands true
+t010() { "$ORCHID_BIN" task show T010 | grep "^$1: " | cut -d' ' -f2-; }
+
+# The templates seed both fields empty, and a task that declares nothing is
+# affected in no way whatsoever -- this convention is opt-in per task.
+grep -q '^operator_prerequisite:$' .orchid/tasks/T010.md \
+  || fail "templates/task.md must seed an empty 'operator_prerequisite:' line"
+grep -q '^prerequisite_ack:$' .orchid/tasks/T010.md \
+  || fail "templates/task.md must seed an empty 'prerequisite_ack:' line"
+assert_eq "" "$(t010 operator_prerequisite)" "a fresh task declares no operator prerequisite"
+assert_eq "" "$(t010 prerequisite_ack)" "and has acknowledged nothing"
+
+# `prerequisite_ack` is kernel-owned. An acknowledgement that a human did
+# something OUTSIDE this repository is worth exactly the journal entry behind
+# it, and a bare frontmatter write carries none.
+rc=0; pre_set_out="$("$ORCHID_BIN" task set T010 prerequisite_ack "$pre_sha" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set prerequisite_ack must be refused (kernel-owned, single writer)"
+assert_match "task prereq-ack" "$pre_set_out" "the refusal names the verb that does write it"
+assert_eq "" "$(t010 prerequisite_ack)" "the refused set wrote nothing"
+
+"$ORCHID_BIN" task advance T010 implementing
+"$ORCHID_BIN" task advance T010 testing
+
+# Nothing declared: verify behaves exactly as it always has, evidence and all.
+"$ORCHID_BIN" verify T010 >/dev/null \
+  || fail "a task with no operator_prerequisite must verify exactly as before"
+[ -f .orchid/reviews/T010-verify.log ] \
+  || fail "...writing its evidence log as before"
+
+# ...and there is nothing to acknowledge, so the verb says so rather than
+# stamping a meaningless ack.
+rc=0; pre_none_out="$("$ORCHID_BIN" task prereq-ack T010 --reason "nothing to do" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task prereq-ack must be refused when no operator_prerequisite is declared"
+assert_match "no operator_prerequisite" "$pre_none_out" "the refusal says why"
+
+# -- declared and unacknowledged: refused BEFORE the command runs -----------
+rm -f .orchid/reviews/T010-verify.log
+"$ORCHID_BIN" task set T010 operator_prerequisite "$pre_step"
+rc=0; pre_verify_out="$("$ORCHID_BIN" verify T010 2>&1)" || rc=$?
+assert_eq 16 "$rc" \
+  "verify refuses with the judgment-boundary code 16 -- never its own FAIL code 1, which is what makes this unmistakable for a failing candidate"
+assert_match "$pre_step" "$pre_verify_out" "the refusal names the step a human must take"
+assert_match "orchid task prereq-ack T010" "$pre_verify_out" "...and the verb that records having taken it"
+[ ! -f .orchid/reviews/T010-verify.log ] \
+  || fail "a refused verify must write NO evidence -- that log is precisely the artifact a reviewer and an attempt would be spent on"
+assert_eq 0 "$(t010 attempts)" "and refusing costs no attempt"
+assert_eq testing "$(t010 status)" "the task stays where it was"
+
+# The ack verb accepts `testing` and `merging` and no other status. The line
+# is "wherever a verb actually READS the ack", not "wherever a candidate
+# exists": `orchid verify` gates on it in `testing`, `orchid merge` gates on
+# it in `merging`. Anywhere else the call would stamp a field nothing
+# consults from that state -- and before `testing` the migration it claims to
+# have applied has not even been written.
+"$ORCHID_BIN" task advance T010 rework --reason "exercise the status gate from somewhere else"
+rc=0; pre_status_out="$("$ORCHID_BIN" task prereq-ack T010 --reason "far too early" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "task prereq-ack from a status no gate reads exits 3"
+assert_match "is not testing or merging" "$pre_status_out" "...naming both states it does accept"
+assert_match "status: rework" "$pre_status_out" "...and the status it actually found"
+
+"$ORCHID_BIN" task advance T010 implementing
+"$ORCHID_BIN" task advance T010 testing
+
+rc=0; "$ORCHID_BIN" task prereq-ack T010 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "task prereq-ack requires --reason (INV-08)"
+assert_eq "" "$(t010 prerequisite_ack)" "the reason-less call wrote nothing"
+
+"$ORCHID_BIN" task prereq-ack T010 --reason "applied 0007 to orchid_test by hand" >/dev/null
+assert_eq "$pre_sha" "$(t010 prerequisite_ack)" \
+  "the acknowledgement is bound to the candidate it was given for, not to the task"
+grep -q "prerequisite acknowledged for candidate $pre_sha" .orchid/journal.md \
+  || fail "task prereq-ack must journal the acknowledgement before writing it (INV-08, journal-first)"
+grep -q "applied 0007 to orchid_test by hand" .orchid/journal.md \
+  || fail "...carrying the operator's own reason"
+
+# Acknowledging again, over a gate that is ALREADY satisfied, is accepted.
+# The verb does not gate on the predicate the other four callers gate on
+# (lib/handoff.sh says why): it is the verb that SETTLES that predicate, and
+# refusing it while satisfied would refuse the operator who re-applied the
+# migration after a store reset and wants the decision trail to say so -- or
+# who simply ran the command twice. Pinned because "no precondition" is
+# invisible in the source: a later reader finds the other callers gating and
+# nothing here, and a well-meant symmetry fix would break exactly this.
+pre_reack_ack="$(t010 prerequisite_ack)"
+pre_reack_j="$(grep -c "prerequisite acknowledged for candidate $pre_sha" .orchid/journal.md || true)"
+rc=0; "$ORCHID_BIN" task prereq-ack T010 --reason "re-applied 0007 after resetting orchid_test" >/dev/null || rc=$?
+assert_eq 0 "$rc" \
+  "re-acknowledging a prerequisite already acknowledged for THIS candidate is accepted -- the ack verb settles the gate, it does not read it"
+assert_eq "$pre_reack_ack" "$(t010 prerequisite_ack)" \
+  "...and is idempotent in the field: same candidate in, same candidate out"
+assert_eq "$((pre_reack_j + 1))" \
+  "$(grep -c "prerequisite acknowledged for candidate $pre_sha" .orchid/journal.md || true)" \
+  "...while still journaling the second reason, which is the whole point of allowing it"
+
+"$ORCHID_BIN" verify T010 >/dev/null \
+  || fail "an acknowledged prerequisite lets verify run normally"
+[ -f .orchid/reviews/T010-verify.log ] || fail "...and write its evidence as usual"
+
+# -- the ack dies with the candidate ---------------------------------------
+# Rework exists to replace the candidate, and the migration the next attempt
+# authors may not be the migration the operator applied for the last one.
+"$ORCHID_BIN" task advance T010 rework --reason "the next attempt may author a different migration"
+assert_eq "" "$(t010 prerequisite_ack)" \
+  "entry to rework clears the ack, exactly as it clears the verify evidence beside it"
+assert_eq "$pre_step" "$(t010 operator_prerequisite)" \
+  "the DECLARATION survives -- the task still needs the step, it just needs it again"
+
+"$ORCHID_BIN" task advance T010 implementing
+"$ORCHID_BIN" task advance T010 testing
+"$ORCHID_BIN" task prereq-ack T010 --reason "re-applied for the reworked candidate" >/dev/null
+"$ORCHID_BIN" task advance T010 blocked --reason "park it"
+assert_eq "$pre_sha" "$(t010 prerequisite_ack)" "blocking on its own changes no candidate, so the ack stands"
+"$ORCHID_BIN" task unblock T010 --reason "unpark it"
+assert_eq "" "$(t010 prerequisite_ack)" "task unblock lands the task in rework, so it clears the ack too"
+
+"$ORCHID_BIN" task advance T010 implementing
+"$ORCHID_BIN" task advance T010 testing
+"$ORCHID_BIN" task prereq-ack T010 --reason "re-applied once more" >/dev/null
+"$ORCHID_BIN" task advance T010 blocked --reason "park it again"
+"$ORCHID_BIN" task retry T010 --reason "nothing to change, just try again"
+assert_eq "" "$(t010 prerequisite_ack)" "task retry lands it in rework as well, so it clears the ack too"
+
+# -- the ack dies with the candidate it NAMED, not just with `rework` -------
+# The three clears above are the paths that go through `rework`. They cannot
+# be the whole binding: libexec/orchid-merge's rebase-reset rewrites
+# `candidate_sha` and sends the task `merging` -> `testing` without entering
+# `rework` at all, so the ack survives on file naming a candidate that no
+# longer exists. Here the frontmatter is moved directly (what that reset
+# writes); tests/test_merge.sh proves the same thing through a real `orchid
+# merge` rebase, and tests/test_drive.sh through the driver's own arm.
+git commit -q --allow-empty -m "fixture: rebased prerequisite candidate"
+pre_rebased="$(git rev-parse HEAD)"
+"$ORCHID_BIN" task advance T010 implementing
+"$ORCHID_BIN" task advance T010 testing
+"$ORCHID_BIN" task prereq-ack T010 --reason "applied 0007 for the pre-rebase candidate" >/dev/null
+assert_eq "$pre_sha" "$(t010 prerequisite_ack)" "acknowledged for the candidate then in hand"
+rm -f .orchid/reviews/T010-verify.log
+"$ORCHID_BIN" task set T010 candidate_sha "$pre_rebased"
+assert_eq "$pre_sha" "$(t010 prerequisite_ack)" \
+  "no verb cleared the ack -- what changed is the candidate underneath it"
+pre_att="$(t010 attempts)"
+rc=0; pre_stale_out="$("$ORCHID_BIN" verify T010 2>&1)" || rc=$?
+assert_eq 16 "$rc" \
+  "an ack naming a superseded candidate does NOT satisfy the gate -- it is a claim about ONE candidate's migration, and this is a different candidate"
+assert_match "$pre_sha" "$pre_stale_out" "the refusal names the candidate the ack was for"
+assert_match "$pre_rebased" "$pre_stale_out" "...and the candidate that superseded it"
+[ ! -f .orchid/reviews/T010-verify.log ] \
+  || fail "a stale ack writes no evidence either -- same refusal, same silence"
+assert_eq "$pre_att" "$(t010 attempts)" "and still costs no attempt"
+
+"$ORCHID_BIN" task prereq-ack T010 --reason "re-applied for the rebased candidate" >/dev/null
+assert_eq "$pre_rebased" "$(t010 prerequisite_ack)" "re-acknowledging binds to the candidate now in hand"
+"$ORCHID_BIN" verify T010 >/dev/null \
+  || fail "...which satisfies the gate again"
+
+# Keep the real rebased candidate as the fixture's baseline for the sections
+# below, with the task in `rework`. Waived, because nothing here was an attempt.
+"$ORCHID_BIN" task advance T010 rework --waive-attempt \
+  --reason "fixture bookkeeping: restoring the baseline, no attempt was spent"
+pre_sha="$pre_rebased"
+
+# -- rewording the step un-acknowledges it ---------------------------------
+"$ORCHID_BIN" task advance T010 implementing
+"$ORCHID_BIN" task advance T010 testing
+"$ORCHID_BIN" task prereq-ack T010 --reason "applied 0007" >/dev/null
+"$ORCHID_BIN" task set T010 operator_prerequisite "apply db/migrate/0008_isolation.sql to the test database"
+assert_eq "" "$(t010 prerequisite_ack)" \
+  "a redeclared prerequisite is an unacknowledged one -- the operator vouched for the step AS IT WAS WORDED"
+# ...and says so in the journal. `prerequisite_ack` is kernel-owned exactly
+# because an acknowledgement is worth the record behind it: the ack verb
+# journals the stamp, and every other clear (the rework advance, unblock,
+# retry) journals the intervention that clears it. An ack appearing in the
+# decision trail and then silently vanishing -- with the operator's own reason
+# for it still standing as the last word -- is an unexplained retraction.
+grep -q "prerequisite redeclared" .orchid/journal.md \
+  || fail "clearing the ack by redeclaration must be journaled, like every other write of that field"
+grep -q "acknowledgement for candidate $pre_sha cleared" .orchid/journal.md \
+  || fail "...naming the candidate whose acknowledgement was dropped"
+
+pre_j_before="$(grep -c 'prerequisite redeclared' .orchid/journal.md || true)"
+"$ORCHID_BIN" task prereq-ack T010 --reason "applied 0008" >/dev/null
+"$ORCHID_BIN" task set T010 operator_prerequisite "apply db/migrate/0008_isolation.sql to the test database"
+assert_eq "$pre_sha" "$(t010 prerequisite_ack)" \
+  "an idempotent re-set of the SAME text is not a redeclaration and must leave the ack alone"
+assert_eq "$pre_j_before" "$(grep -c 'prerequisite redeclared' .orchid/journal.md || true)" \
+  "...and journals nothing, because it cleared nothing"
+
+# A redeclaration over an EMPTY ack has nothing to retract, so it stays silent
+# too -- the entry marks a withdrawn acknowledgement, not every edit of the
+# declaration. (The first redeclaration below drops a real ack and does
+# journal; the second, over the field it just emptied, must not.)
+"$ORCHID_BIN" task set T010 operator_prerequisite "apply db/migrate/0009_isolation.sql to the test database"
+assert_eq "" "$(t010 prerequisite_ack)" "test setup: that redeclaration cleared the ack"
+pre_j_empty="$(grep -c 'prerequisite redeclared' .orchid/journal.md || true)"
+"$ORCHID_BIN" task set T010 operator_prerequisite "apply db/migrate/0010_isolation.sql to the test database"
+assert_eq "$pre_j_empty" "$(grep -c 'prerequisite redeclared' .orchid/journal.md || true)" \
+  "redeclaring over an empty ack retracts nothing and journals nothing"
+
+# Withdrawing the declaration removes the gate entirely, ack or no ack.
+"$ORCHID_BIN" task set T010 operator_prerequisite ""
+"$ORCHID_BIN" task set T010 prerequisite_ack "" 2>/dev/null && \
+  fail "task set prerequisite_ack must stay refused even with an empty value"
+rm -f .orchid/reviews/T010-verify.log
+"$ORCHID_BIN" verify T010 >/dev/null \
+  || fail "with no declaration there is no gate, whatever prerequisite_ack happens to hold"
+[ -f .orchid/reviews/T010-verify.log ] || fail "...and verify writes evidence again"
+# T034 (dogfood F34, and the identical accident on r-002's own
+# .orchid/tasks/T002.md): A NEWLINE IN A VALUE MUST BE REFUSED, NOT WRITTEN,
+# AND ABOVE ALL NOT ALLOWED TO DESTROY THE TASK FILE.
+#
+# What used to happen: `task set <id> <key> "<value with a newline>"` printed
+# "awk: newline in string" three times, EXITED 0, and left the task file at
+# ZERO BYTES -- id, title, status, archetype, branch, every field gone. Not a
+# rejected write: a destroyed file. It then failed quietly in both directions,
+# because every later `task set` against the empty file reported success too
+# and `task show` exited 0 printing nothing, so the only signal either dogfood
+# operator got was a grep coming back empty.
+#
+# The single-line rule itself is reasonable -- frontmatter is one `key: value`
+# per line. Destroying the file when it is violated is not. So the assertions
+# below are about BOTH halves: the refusal, and the file being byte-identical
+# afterwards.
+# ============================================================================
+make_scratch T034_KEEP
+# A FRESH id, and a CHECKED create. `task create` refuses an id that already
+# has a file ("task <id> exists"), and this file runs under `set -uo pipefail`
+# with no `-e`: an unchecked create against a taken id neither aborts nor
+# reports, it just leaves the block silently reading whatever the earlier case
+# left behind. T010 is exactly that trap -- the operator_prerequisite fixture
+# above walks it to `testing` -- so the green twin at the end of this block
+# would assert `status: pending` against a task that is not pending, and the
+# byte-identical check would be measuring a file this block never created.
+"$ORCHID_BIN" task create T013 "newline refusal" \
+  || fail "fixture: task create T013 must succeed (a taken id would make every assertion below read another case's task)"
+nl_file=".orchid/tasks/T013.md"
+cp "$nl_file" "$T034_KEEP/T013.before"
+
+# The value an operator actually types: multi-paragraph prose pasted into a
+# long field. `acceptance_criteria` and `hook_guidance` are where this happens,
+# and where losing the content hurts most.
+nl_value="$(printf 'first paragraph of the criteria\n\nsecond paragraph of the criteria')"
+rc=0; nl_out="$("$ORCHID_BIN" task set T013 acceptance_criteria "$nl_value" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set with a newline-bearing value must exit NON-ZERO (it used to exit 0 and leave the task file at zero bytes)"
+red_case 'task set with a value containing a newline: refused, non-zero exit'
+assert_match "newline" "$nl_out" "the refusal names the constraint it is enforcing (a newline in a single-line field), rather than reporting a tool error"
+# Herestring, never `echo "$nl_out" | grep -qi`: this file runs under `set -o
+# pipefail` (tests/helpers.sh line 2) and `grep -q` exits at its FIRST match,
+# SIGPIPEing the upstream `echo` mid-write -- pipefail then promotes that 141
+# to the pipeline's status, so `&& fail` is skipped for a pattern grep DID
+# find. On a NEGATIVE assertion that is the fail-open direction: the leak this
+# line exists to catch would go unreported precisely when it is present.
+grep -qi "awk" <<<"$nl_out" && fail "the refusal must not leak a raw awk error -- that message was the symptom of the file already being gone"
+# THE REMEDY IS A VERB (T034 rework). A refusal is the moment an operator is
+# most willing to open the task file themselves -- a verb has just declined to
+# store what they typed -- so this is the last message that may send them
+# there. PROTOCOL.md's Preamble forbids hand-editing anything under `.orchid/`
+# without qualification ("no frontmatter, no journal, no roadmap -- even when
+# you can see exactly what line would need to change"), and an earlier wording
+# of this refusal ended "put the prose in the task BODY (below the closing
+# '---' in .orchid/tasks/<id>.md)", which reads as an instruction to do it.
+grep -qE 'below the closing' <<<"$nl_out" \
+  && fail "the refusal must not point the operator INTO the task file: hand-editing anything under .orchid/ is forbidden outright, so a remedy that describes the file is one nobody is allowed to take"
+# ...AND EVERY VERB IT NAMES CAN BE RUN FROM WHERE IT IS PRINTED (T034 rework).
+# T013 is `pending`, which is where this refusal actually fires -- a long
+# `acceptance_criteria` is written while a task is being planned. The wording
+# that named `orchid task unblock <id> --reason` and `orchid task retry <id>
+# --reason` unconditionally handed the operator two commands that refuse them
+# right back: `unblock` dies "$id is not blocked" and `retry` exits 3 ("illegal
+# retry from pending"). A remedy that cannot be run is worse than none -- it
+# spends the operator's trust and returns them to the file anyway, which is the
+# one place they must not go.
+assert_eq pending "$("$ORCHID_BIN" task show T013 | grep '^status: ' | cut -d' ' -f2)" \
+  "fixture witness: T013 is pending, the status neither body-writing verb accepts -- which is what makes the remedy assertions below discriminating"
+assert_match "no verb writes prose there from status 'pending'" "$nl_out" \
+  "the refusal says so instead of naming a verb that would refuse the operator a second time"
+assert_match "orchid task advance T013 blocked --reason" "$nl_out" \
+  "...and names the edge that reaches a status where one of them IS legal, which is the universal transition every status has"
+assert_match "Flatten it to a single line" "$nl_out" \
+  "...and leads with the answer to the question actually asked: this value, in this field"
+[ -s "$nl_file" ] || fail "THE FILE IS EMPTY: a refused write destroyed the task, which is the whole defect"
+cmp -s "$T034_KEEP/T013.before" "$nl_file" \
+  || fail "a refused newline write must leave the task file BYTE-IDENTICAL"
+assert_eq T013 "$("$ORCHID_BIN" task show T013 | grep '^id: ' | cut -d' ' -f2)" \
+  "and the task is still fully readable after the refusal"
+
+# The GREEN twin, on the same key and the same check: a single-line value is
+# accepted and stored verbatim, so the refusal above is evidence of detection
+# rather than of a guard that rejects every value.
+"$ORCHID_BIN" task set T013 acceptance_criteria "one line of criteria is fine" \
+  || fail "a single-line value must still be accepted"
+assert_eq "one line of criteria is fine" \
+  "$("$ORCHID_BIN" task show T013 | grep '^acceptance_criteria: ' | cut -d' ' -f2-)" \
+  "an accepted single-line value is stored verbatim"
+green_case 'task set with a single-line value: accepted and stored verbatim'
+
+# THE KEY IS THE OTHER OPERAND, AND IT DESTROYS A TASK THE SAME WAY (T034
+# rework). `set` takes its key straight off the command line and the write is
+# `<key>: <value>`, so a key that is not a key -- a space where an underscore
+# was meant, which is the slip this field's name invites -- appends a line that
+# is not a frontmatter entry at all. Nothing objected: the write succeeded,
+# `task set` exited 0, and from that moment every reader of the task (`task
+# show`, `orchid doctor`, `task list`, the driver's walk) called it DAMAGED.
+# One typo in one argument, by the same mechanism as the newline -- something
+# that cannot be represented in a one-entry-per-line document, written anyway.
+cp "$nl_file" "$T034_KEEP/T013.keyshape"
+rc=0; badkey_out="$("$ORCHID_BIN" task set T013 'hook guidance' "shrink the diff" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set with a key that cannot be a frontmatter entry must exit NON-ZERO (it used to write it, exit 0, and leave the task unreadable)"
+red_case 'task set with a malformed key: refused, non-zero exit, task byte-identical'
+assert_match "hook guidance" "$badkey_out" \
+  "the refusal quotes the argument that was wrong, which is the one thing a library-level refusal about an unreadable document cannot say"
+assert_match "hook_guidance" "$badkey_out" \
+  "...and shows the key that was meant, since a space for an underscore is the whole mistake"
+cmp -s "$T034_KEEP/T013.keyshape" "$nl_file" \
+  || fail "a refused malformed key must leave the task file BYTE-IDENTICAL, exactly as the newline refusal does"
+"$ORCHID_BIN" task show T013 >/dev/null \
+  || fail "...and the task must still be readable afterwards -- the refusal is what keeps it that way"
+# The GREEN twin, one character apart: the key the operator meant is written.
+"$ORCHID_BIN" task set T013 hook_guidance "shrink the diff" \
+  || fail "the well-formed key one character away must still be accepted"
+assert_eq "shrink the diff" \
+  "$("$ORCHID_BIN" task show T013 | grep '^hook_guidance: ' | cut -d' ' -f2-)" \
+  "an accepted key stores its value"
+green_case 'task set with a well-formed key: accepted and stored'
+
+# THE REMEDY, FROM A STATUS WHERE THE VERB IT NAMES IS LEGAL. The refusal
+# T013 got above says no verb writes prose from `pending`; on a `blocked` task
+# the same refusal must name `unblock`, because there it can actually be run.
+# Both halves matter: a remedy that is always the same sentence is not advice,
+# and a remedy that names an unrunnable verb is worse than silence.
+"$ORCHID_BIN" task create T017 "the remedy follows the status" \
+  || fail "fixture: task create T017 must succeed (a taken id would make the assertions below read another case's task)"
+"$ORCHID_BIN" task advance T017 blocked --reason "fixture blocker for the remedy case" >/dev/null \
+  || fail "fixture: T017 must reach blocked, the status whose body-writing verb is unblock"
+rc=0; blocked_nl_out="$("$ORCHID_BIN" task set T017 acceptance_criteria "$nl_value" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "the newline refusal must fire from blocked too"
+assert_match "orchid task unblock T017 --reason" "$blocked_nl_out" \
+  "from blocked, the refusal names the verb that records prose in the task BODY and is legal right there"
+grep -qE "no verb writes prose there" <<<"$blocked_nl_out" \
+  && fail "...and must not claim none is available, which is only true away from blocked/rework"
+green_case 'the single-line refusal names a body-writing verb that is legal from the task status it fired in'
+
+# `task create` renders its template through fm_render_task_template, not
+# `fm_set` -- a different writer, and one that (since T034's rework) stores what
+# it is handed byte-for-byte, so an unguarded newline reaches the document as a
+# `title:` line split in two with the remainder sitting in the frontmatter as a
+# key-less line. fm_write_task's structural check refuses THAT document, so no
+# file is written either way; what the door guard adds is the diagnosis. The
+# assertions below are about the message as much as the refusal: which argument
+# was wrong, and what to do instead -- neither of which a backstop refusing an
+# unnamed line of a file the operator never saw can say.
+rc=0; create_nl_out="$("$ORCHID_BIN" task create T012 "$(printf 'title\nwith a newline')" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task create with a newline in the title must be refused"
+assert_match "newline" "$create_nl_out" "the create refusal names the constraint too"
+[ ! -e ".orchid/tasks/T012.md" ] \
+  || fail "a refused create must not leave a task file behind at all, least of all an empty one"
+# The remedy has to fit the caller. `task set` can send an operator to the task
+# BODY of a file that exists; a refused CREATE has no file at all, so pointing
+# at one is advice they cannot act on.
+grep -qE 'No task file was created' <<<"$create_nl_out" \
+  || fail "the create refusal must say no task file was created, rather than reusing 'task set's remedy, which sends the operator to a path that does not exist"
+grep -qE 'below the closing' <<<"$create_nl_out" \
+  && fail "and the create refusal must not describe the inside of a task file either -- hand-editing .orchid/ is forbidden, and here the file does not even exist"
+red_case 'task create with a newline in the title: refused, non-zero exit, no file written'
+
+# ---------------------------------------------------------------------------
+# THE RENDER END (T034 rework -- the attempt-1 gap). `task create` used to
+# render its template with `sed -e "s|__TITLE__|$title|g"`, and a sed
+# REPLACEMENT string is a small language rather than literal text. Two of its
+# metacharacters are ordinary characters in a title an operator types, and both
+# failed SILENTLY -- sed exits 0, the task file is well-formed frontmatter,
+# `task show` prints it happily, and only the title is wrong:
+#
+#   `&`  stands for the WHOLE MATCH, so `parser & lexer` was written out as
+#        `parser __TITLE__ lexer` -- the placeholder reinstated into the value
+#        that was supposed to replace it.
+#   `\n` (the two characters, which is what an operator types when flattening
+#        prose onto one line) is IMPLEMENTATION-DEFINED: GNU sed turns it into a
+#        REAL newline, splitting `title:` across two lines and landing the
+#        remainder as a key-less frontmatter line; BSD sed turns it into the
+#        single letter `n`.
+#
+# THE ASSERTIONS PIN THE ROUND TRIP -- the bytes back out equal the bytes in --
+# rather than either platform's particular wrong answer. That is deliberate:
+# pinning "GNU sed splits the line" would pass vacuously on BSD sed and pinning
+# "BSD sed eats the backslash" would pass vacuously on GNU, so a case written
+# either way is green on half the machines that run it while the defect is fully
+# present. Written as a round trip it is red on both, and stays red for whatever
+# escape a future sed invents.
+# ---------------------------------------------------------------------------
+amp_title='parser & lexer & 100% & rising'
+"$ORCHID_BIN" task create T014 "$amp_title" \
+  || fail "fixture: task create T014 must succeed (a metacharacter title is a legal title)"
+assert_eq "$amp_title" "$("$ORCHID_BIN" task show T014 | grep '^title: ' | cut -d' ' -f2-)" \
+  "a title containing '&' is stored byte-for-byte, never expanded into the placeholder text it replaced"
+
+# The implementation-defined half, asserted as three facts rather than one,
+# because the two sed families break it in different places: the value round
+# trips (both), the file gained no line (GNU's real newline), and exactly one
+# title line remains (GNU's key-less remainder).
+esc_title='flatten it: a\nb, and a\ttab, and a lone \ on its own'
+lines_plain="$(grep -c '' ".orchid/tasks/T014.md")"
+"$ORCHID_BIN" task create T015 "$esc_title" \
+  || fail "fixture: task create T015 must succeed (a backslash is a legal character in a title)"
+assert_eq "$esc_title" "$("$ORCHID_BIN" task show T015 | grep '^title: ' | cut -d' ' -f2-)" \
+  "a literal backslash-n in a title is stored as the two characters it is (GNU sed made it a real newline; BSD sed made it the letter n)"
+assert_eq "$lines_plain" "$(grep -c '' ".orchid/tasks/T015.md")" \
+  "and the rendered task has exactly as many lines as one rendered from the same template without escapes -- an expanded escape would have split the title line in two"
+assert_eq 1 "$(grep -c '^title: ' ".orchid/tasks/T015.md")" \
+  "exactly one title line, so no remainder was left behind as a key-less frontmatter line"
+
+# A substituted value must be INERT once placed. The old renderer was one sed
+# pass PER PLACEHOLDER, and each later pass rescanned text the earlier ones had
+# already written -- so a title naming a placeholder that sorts after __TITLE__
+# was itself substituted. `__DATE__` is the discriminating one: its pass ran
+# last.
+ph_title='why __DATE__ and __ID__ are spelled that way'
+"$ORCHID_BIN" task create T016 "$ph_title" \
+  || fail "fixture: task create T016 must succeed"
+assert_eq "$ph_title" "$("$ORCHID_BIN" task show T016 | grep '^title: ' | cut -d' ' -f2-)" \
+  "a title that names a placeholder is stored literally -- text already substituted is never rescanned"
+assert_eq T016 "$("$ORCHID_BIN" task show T016 | grep '^id: ' | cut -d' ' -f2)" \
+  "...while the template's OWN __ID__ placeholder was still substituted, so the single scan is a scan and not a skipped pass"
+assert_match '^created: [0-9]{4}-[0-9]{2}-[0-9]{2}T' "$("$ORCHID_BIN" task show T016)" \
+  "...and so was its __DATE__, which is the placeholder the title above impersonates"
+
+# THE OTHER READER. `task show` has read every one of these already -- each
+# assertion above went through it. The second reader is `orchid doctor`, whose
+# task-file check (the read end of this same T034 work, exercised against
+# DAMAGED files in tests/test_init_doctor.sh) parses the frontmatter of every
+# task on disk. A title carrying '&', a backslash escape or a placeholder name
+# has to read as an intact task there too, not as damage.
+# Asserted by LINE, never by doctor's exit code: that code is its global verdict
+# over a hand-built fixture repo, so coupling this case to it would go red for
+# reasons that have nothing to do with task files.
+create_doctor_out="$("$ORCHID_BIN" doctor 2>&1 || true)"
+grep -q '^FAIL: task file' <<<"$create_doctor_out" \
+  && fail "doctor must not report a task created with a metacharacter title as damaged (out: $create_doctor_out)"
+assert_match '^ok: task files: [0-9]+ present, each with parseable frontmatter and an id' \
+  "$create_doctor_out" \
+  "doctor parses the frontmatter of every task in this fixture, metacharacter titles included"
+green_case 'task create with & / backslash / placeholder-name titles: stored byte-for-byte, read back by both task show and doctor'
+
+# ---------------------------------------------------------------------------
+# ...AND THE READ END. A task file that has already been destroyed (by an
+# older orchid, an interrupted write, a bad restore) must be reported as
+# DAMAGED by the verb whose entire job is to show it. `cat` on a zero-byte file
+# prints nothing and exits 0, which is indistinguishable from a healthy verb
+# answering about a task with nothing in it.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T011 "the shape a destroyed task file leaves behind" \
+  || fail "fixture: task create T011 must succeed (see the checked create above for why an unchecked one is silent here)"
+cp ".orchid/tasks/T011.md" "$T034_KEEP/T011.before"
+: > ".orchid/tasks/T011.md"
+[ ! -s ".orchid/tasks/T011.md" ] || fail "fixture: T011.md must be zero bytes for this case to mean anything"
+
+rc=0; show_empty_out="$("$ORCHID_BIN" task show T011 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task show on an EMPTY task file must exit non-zero (it used to exit 0 and print nothing)"
+red_case 'task show against a zero-byte task file: refused, non-zero exit'
+assert_match "EMPTY" "$show_empty_out" "task show says the file is empty instead of printing nothing"
+assert_match "DAMAGED" "$show_empty_out" "and names it as damage, not as a task that merely has no content"
+
+# The other half of the quiet failure: a write against the already-destroyed
+# file used to report success, so nothing ever signalled that the task had
+# stopped existing.
+rc=0; set_empty_out="$("$ORCHID_BIN" task set T011 title "is anything still here" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set against an already-empty task file must not report success"
+assert_match "empty" "$set_empty_out" "the write refusal says the document it would have produced is empty"
+
+# Non-empty but frontmatter-less: the same class, reached from a partial
+# restore rather than a truncation.
+printf 'the frontmatter is gone but the body survived\n' > ".orchid/tasks/T011.md"
+rc=0; show_nofm_out="$("$ORCHID_BIN" task show T011 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task show on a frontmatter-less task file must exit non-zero"
+assert_match "no frontmatter" "$show_nofm_out" "task show names the missing frontmatter delimiter"
+
+# ---------------------------------------------------------------------------
+# THE LIST END (T034 rework), while T011 is still damaged. `task list` prints
+# three fields read straight out of frontmatter, so a damaged file used to
+# render as `<tab><tab>` -- a blank line among the tasks. That row is the
+# reason this defect presents as "a task that simply stopped existing":
+#
+#   * an operator scanning the list sees nothing worth reading, which is what
+#     both dogfood operators did before an unrelated grep came back empty;
+#   * the driver's task walk reads this very list and drops any row with an
+#     empty id, so the task is skipped in SILENCE -- and the walk's own count
+#     of what it saw is how a run decides every task is done.
+#
+# The id comes from the FILENAME, which is the kernel's own id-to-path mapping
+# and the one part of a task damage cannot erase.
+# ---------------------------------------------------------------------------
+list_tab="$(printf '\t')"
+rc=0; list_damaged_out="$("$ORCHID_BIN" task list 2>&1)" || rc=$?
+assert_eq 0 "$rc" \
+  "task list must still exit 0 with a damaged task file present -- it is read through a process substitution whose status nobody sees, so the ROW is the signal"
+assert_match "^T011${list_tab}DAMAGED${list_tab}" "$list_damaged_out" \
+  "the damaged task gets a row naming it and saying DAMAGED, never a row of empty fields"
+assert_match "^T011${list_tab}DAMAGED${list_tab}.*no frontmatter" "$list_damaged_out" \
+  "...carrying the same reason task show gave, so the list answers the question rather than only raising it"
+grep -qE "^${list_tab}${list_tab}" <<<"$list_damaged_out" \
+  && fail "no row of empty fields may remain -- that is the row the driver walk skips in silence"
+red_case 'task list with a damaged task file: a DAMAGED row, never a row of empty fields'
+# The GREEN twin on the same output: every intact task in this fixture is still
+# listed normally, so the row above is evidence of detection and not of a list
+# that has started shouting about everything.
+assert_match "^T013${list_tab}pending${list_tab}newline refusal$" "$list_damaged_out" \
+  "an intact task is still listed as id/status/title in the same output"
+green_case 'task list with intact task files: id/status/title rows, unchanged'
+
+# GREEN twin for the read end, in this same file: an intact task file is still
+# printed in full, exit 0.
+show_ok_out="$("$ORCHID_BIN" task show T013)" || fail "task show on a healthy task must still exit 0"
+assert_match "^id: T013$" "$show_ok_out" "task show on a healthy task still prints its frontmatter"
+assert_match "^status: pending$" "$show_ok_out" "task show on a healthy task prints the whole document, not just a probe"
+assert_match "^title: newline refusal$" "$show_ok_out" \
+  '...and prints a field the fm_check probe never reads, so show still cats the whole document rather than echoing its probe'
+green_case 'task show against an intact task file: printed in full, exit 0'
+
+# T011 is restored before this file ends. A deliberately damaged task file left
+# lying in the fixture is a trap for whatever case gets appended after this one:
+# `task list` renders it as a row of empty fields and every scheduler read in
+# this repo would see a task with no status at all -- which is exactly the
+# failure this block is about, arriving as an unrelated test's mystery.
+cp "$T034_KEEP/T011.before" ".orchid/tasks/T011.md"
+"$ORCHID_BIN" task show T011 >/dev/null \
+  || fail "the fixture teardown must leave T011 readable again"
+
+# ============================================================================
+# AN ARBITRATION IS DURABLE STATE, NOT JUST A JOURNAL ENTRY (T032, dogfood
+# F33).
+#
+# F33 was the most serious finding of its run and was confirmed live on r-002:
+# a defect the operator rejected TWICE was merged, and nothing in the run state
+# recorded that the concern was never addressed. `orchid task arbitrate
+# --result request-changes` moved the task to `rework` and journaled the
+# decision -- and that was all. The next attempt was judged entirely on its own
+# reviews, no verb ever asked whether the arbiter's objection had been met, and
+# round 3's deterministic approval merged the hole the task existed to close.
+#
+# So a rejection now writes `unresolved_objection` onto the task, and ONLY
+# `--result approve` clears it. This block walks the F33 sequence through the
+# real verbs: reject, rework, reject again, and finally approve -- asserting at
+# each step that the objection is still there, because "still there three
+# rounds later" is the entire property. The policy half (a standing objection
+# refusing deterministic approval, and the reviewer being shown it) is
+# tests/test_drive.sh's Part AF.
+#
+# A FRESH id, and a CHECKED create, for the reason the T034 block above gives:
+# this file runs under `set -uo pipefail` with no `-e`, so a create against a
+# taken id neither aborts nor reports and every assertion below would silently
+# read some earlier case's task.
+#
+# RED: a `request-changes` arbitration that leaves no durable marker on the
+#      task; a marker that does not survive the rework round it was raised
+#      before; and a marker `orchid task set` can quietly write away.
+# GREEN: `--result approve` clears it, journals the clear, and a task nobody
+#      has ever rejected carries no such field at all -- otherwise this would
+#      be a field that appears on everything and means nothing.
+# ============================================================================
+t32_sha="$(git rev-parse HEAD)"
+"$ORCHID_BIN" task create T040 "an arbitration that has to outlive its round" \
+  || fail "fixture: task create T040 must succeed (a taken id would make every assertion below read another case's task)"
+"$ORCHID_BIN" task set T040 base_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set T040 candidate_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set T040 verification_commands true >/dev/null
+
+t40_status()    { "$ORCHID_BIN" task show T040 | grep '^status: ' | cut -d' ' -f2; }
+t40_attempts()  { "$ORCHID_BIN" task show T040 | grep '^attempts: ' | cut -d' ' -f2; }
+# `cut -f2-`, so a value containing spaces (which every objection does) comes
+# back whole. Empty when the key is absent AND when it is present-but-empty --
+# both are "no objection standing", which is the only distinction any reader
+# makes.
+t40_objection() { "$ORCHID_BIN" task show T040 | grep '^unresolved_objection: ' | cut -d' ' -f2-; }
+
+# The light-weight walk tests/test_task_arbitrate.sh uses: base and candidate
+# both pinned to the fixture's own HEAD (an empty `base..candidate` range, so
+# INV-04's .orchid/ scan never trips), `verification_commands=true` so `orchid
+# verify` always PASSes, and a planted reviewer envelope for the kernel's own
+# reviewing->arbitrating count gate. plant_reviewer_envelope derives the
+# attempt from the task itself, so it plants against whichever round is
+# current -- which is what lets this walk run twice with an attempt consumed
+# in between.
+t40_to_arbitrating() {
+  "$ORCHID_BIN" task advance T040 implementing --reason "dispatch" >/dev/null
+  "$ORCHID_BIN" task advance T040 testing --reason "implemented" >/dev/null
+  "$ORCHID_BIN" verify T040 >/dev/null
+  "$ORCHID_BIN" task advance T040 reviewing --reason "verify passed" >/dev/null
+  plant_reviewer_envelope T040
+  "$ORCHID_BIN" task advance T040 arbitrating --reason "reviews reconciled" >/dev/null
+}
+
+t40_to_arbitrating
+assert_eq arbitrating "$(t40_status)" "fixture: T040 reaches arbitrating for its first round"
+
+# THE GREEN TWIN COMES FIRST, and it is about ABSENCE. `fm_set` on a key a file
+# does not carry APPENDS it, so a clear written unconditionally would give an
+# `unresolved_objection:` line to every task in every repository that never
+# carried one -- a field on everything, meaning nothing. A task nobody has
+# rejected must not have the key at all.
+grep -q '^unresolved_objection' <<<"$("$ORCHID_BIN" task show T040)" \
+  && fail "T032: a task no arbiter has rejected must not carry an unresolved_objection line at all"
+green_case 'a task nobody has ever arbitrated request-changes on: no unresolved_objection field is written'
+
+# --- round 1: the rejection is recorded ON THE TASK ------------------------
+T40_OBJ1='the write at lib/foo.sh:120 races the reader; guard it and add a concurrent-writer test'
+"$ORCHID_BIN" task arbitrate T040 --result request-changes --reason "$T40_OBJ1" >/dev/null \
+  || fail "fixture: the first request-changes arbitration must succeed"
+assert_eq rework "$(t40_status)" "a request-changes arbitration still lands in rework"
+assert_eq 1 "$(t40_attempts)" "...and still consumes an attempt, exactly as it did before"
+assert_eq "a1: $T40_OBJ1" "$(t40_objection)" \
+  "T032: the arbitration is recorded on the task, naming the round it rejected and quoting the reason — not journaled and forgotten"
+red_case 'an operator request-changes: the objection is written onto the task, not left as a journal entry nobody rereads'
+
+# --- it survives the rework round ------------------------------------------
+# The whole property. A new attempt, a fresh verify, a fresh reviewer envelope
+# -- everything about the round is new, and the objection is not part of the
+# round. It names a defect, not a commit.
+t40_to_arbitrating
+assert_eq arbitrating "$(t40_status)" "fixture: T040 reaches arbitrating again for its second round"
+assert_eq 1 "$(t40_attempts)" \
+  "fixture: exactly one attempt was consumed getting here, so this round really is a second one"
+assert_eq "a1: $T40_OBJ1" "$(t40_objection)" \
+  "T032: the objection survives the rework round it was raised before — nothing about a fresh attempt answers it"
+red_case 'an objection across a full rework round (new attempt, new verify, new review): still standing'
+
+# --- a second rejection supersedes it, and says so -------------------------
+# F33's actual sequence: the operator rejected twice, the second time naming
+# the exact constants and line range. One frontmatter line cannot hold a list,
+# so the arbiter's latest word replaces the earlier one -- and a value replaced
+# in silence reads as an objection nobody withdrew and nobody kept, which is
+# why the supersession is journaled before it happens.
+#
+# `--waive-attempt` here so `attempts` holds at 1 and the reviewer envelope
+# planted for this round stays valid for the next reviewing->arbitrating,
+# exactly as the archetype-edge walk earlier in this file does it. It also
+# keeps this fixture clear of `rework_max` (default 3), which would otherwise
+# block the task and turn a decided assertion into a mystery.
+T40_OBJ2='still unguarded on the retry path: RETRY_MAX and BACKOFF_MS at lib/foo.sh:118-140, reuse the response shape from bar()'
+"$ORCHID_BIN" task arbitrate T040 --result request-changes --waive-attempt --reason "$T40_OBJ2" >/dev/null \
+  || fail "fixture: the second request-changes arbitration must succeed"
+assert_eq "a2: $T40_OBJ2" "$(t40_objection)" \
+  "T032: a second rejection replaces the first — the arbiter's latest word is the operative statement of what is unresolved"
+# One PATTERN across both facts, not two assertions that could be satisfied by
+# two unrelated lines: the entry must name the supersession AND carry the text
+# it superseded. `assert_match` is line-oriented, and the journal already
+# contains T40_OBJ1 in the round-1 arbitration entry — so a second assertion
+# looking for that text alone would pass with no supersession entry at all.
+assert_match 'objection superseded by this arbitration.*concurrent-writer test' "$(cat .orchid/journal.md)" \
+  "...and the replacement is journaled with the text it replaced, so an objection is never silently dropped"
+
+# --- `task set` cannot write it away ---------------------------------------
+# The field exists to stop an APPROVAL, and the actor most able to reach `task
+# set` is the deterministic driver, which acts only through verbs (INV-13).
+# A verb that deletes the one thing standing between it and a merge is not a
+# gate. Asserted from `rework`, where the driver would meet it.
+rc=0; t40_set_out="$("$ORCHID_BIN" task set T040 unresolved_objection "" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T032: task set unresolved_objection must be refused (kernel-owned)"
+assert_match "kernel-owned" "$t40_set_out" "the refusal says the key is kernel-owned"
+assert_match "task arbitrate" "$t40_set_out" "...and names the verb that does clear it"
+assert_eq "a2: $T40_OBJ2" "$(t40_objection)" "and the refused write left the objection exactly as it was"
+red_case 'task set on unresolved_objection: refused, and the objection still stands afterwards'
+
+# --- and an explicit approval clears it ------------------------------------
+t40_to_arbitrating
+assert_eq "a2: $T40_OBJ2" "$(t40_objection)" "fixture: the objection is still standing on entry to the third round"
+"$ORCHID_BIN" task arbitrate T040 --result approve --reason "the retry path is guarded and the concurrent-writer test is in" >/dev/null \
+  || fail "fixture: the approving arbitration must succeed"
+assert_eq merging "$(t40_status)" "an approving arbitration still derives merging on an outcome=code archetype"
+assert_eq "" "$(t40_objection)" \
+  "T032: an explicit arbitration approval — and nothing else — clears the objection"
+# Both facts on ONE line, for the reason the supersession assertion above
+# gives: T40_OBJ2 is already in the journal from the arbitration that raised
+# it, so a bare search for that text proves nothing about the clear.
+assert_match 'objection cleared by an explicit arbitration approval.*RETRY_MAX and BACKOFF_MS' "$(cat .orchid/journal.md)" \
+  "...and journals the clear, naming what was cleared — the field does not simply disappear from the record"
+green_case 'orchid task arbitrate --result approve: the standing objection is cleared, and the clear is journaled'
+
+# ============================================================================
+# AN OBJECTION IS SETTLED BY AN ARBITER OF AT LEAST THE AUTHORITY THAT RAISED
+# IT (T032 convergence, after the attempt-2 arbitration).
+#
+# `orchid task arbitrate` has two callers who are not the same actor. An
+# OPERATOR runs it from their own shell. A BROKERED ORCHESTRATOR runs it
+# through runners/orchid-orchestrator-command after the pump woke it for a
+# `review-conflict` — `task-arbitrate` is the single judgment write that
+# surface admits, so a model reaching the verb is the broker working as
+# designed. The block above records an objection for both of them and does not
+# distinguish them, which is wrong in one direction each way:
+#
+#   * read as the operator's, a woken model's own `request-changes` becomes a
+#     stop only a human may clear. The boundary it raises wakes nobody, so no
+#     later pass can move it: the very disagreement the brokered surface exists
+#     to arbitrate becomes the thing that parks an unattended run forever.
+#   * read as the orchestrator's, F33 comes back — a woken model clears the
+#     operator's twice-stated objection from the same diff that produced it.
+#
+# So the arbitration records the CLASS of arbiter beside the text, from the
+# same `ORCHID_ACTOR` provenance libexec/orchid-journal has always derived its
+# own actor string from (kernel-set by runners/orchid-tick, carried into the
+# spawned adapter by lib/spawn.sh's ORCHID_* allowlist, absent in an operator's
+# shell). Refusing the DETERMINISTIC approval is owed to every objection;
+# requiring a HUMAN is owed only to a human's.
+#
+# RED: a brokered arbitration that clears — or silently supersedes — an
+#      OPERATOR's standing objection; and a `task set` that relabels one.
+# GREEN: the orchestrator's own objection is recorded as its own and settled by
+#      the same surface that raised it, so an unattended run still converges;
+#      and the operator's is settled by the operator.
+# ============================================================================
+# The brokered surface `exec`s `bin/orchid` with the tick's environment intact,
+# so this prefix is exactly what the verb sees when a woken model runs it. The
+# epoch-marked shape is runners/orchid-tick's own (`<engine>/orchestrator
+# tick-e<epoch>`), which libexec/orchid-journal passes through verbatim.
+T4X_BROKER_ACTOR="claude/orchestrator tick-e$ORCHID_EPOCH"
+
+t4x_status()       { "$ORCHID_BIN" task show "$1" | grep '^status: ' | cut -d' ' -f2; }
+t4x_objection()    { "$ORCHID_BIN" task show "$1" | grep '^unresolved_objection: ' | cut -d' ' -f2-; }
+t4x_objection_by() { "$ORCHID_BIN" task show "$1" | grep '^unresolved_objection_by: ' | cut -d' ' -f2-; }
+
+# The same light-weight walk the T040 block uses, taking its id: base and
+# candidate both pinned to the fixture's own HEAD, `verification_commands=true`,
+# and a planted reviewer envelope for the kernel's reviewing->arbitrating count
+# gate. plant_reviewer_envelope derives the attempt from the task itself, so it
+# plants against whichever round is current.
+t4x_new_task() {
+  "$ORCHID_BIN" task create "$1" "$2" \
+    || fail "fixture: task create $1 must succeed (a taken id would make every assertion below read another case's task)"
+  "$ORCHID_BIN" task set "$1" base_sha "$t32_sha" >/dev/null
+  "$ORCHID_BIN" task set "$1" candidate_sha "$t32_sha" >/dev/null
+  "$ORCHID_BIN" task set "$1" verification_commands true >/dev/null
+}
+t4x_to_arbitrating() {
+  "$ORCHID_BIN" task advance "$1" implementing --reason "dispatch" >/dev/null
+  "$ORCHID_BIN" task advance "$1" testing --reason "implemented" >/dev/null
+  "$ORCHID_BIN" verify "$1" >/dev/null
+  "$ORCHID_BIN" task advance "$1" reviewing --reason "verify passed" >/dev/null
+  plant_reviewer_envelope "$1"
+  "$ORCHID_BIN" task advance "$1" arbitrating --reason "reviews reconciled" >/dev/null
+}
+
+# --- the run's own orchestrator objects, and can answer its own objection ---
+t4x_new_task T041 "an objection the brokered surface raised itself"
+t4x_to_arbitrating T041
+assert_eq arbitrating "$(t4x_status T041)" "fixture: T041 reaches arbitrating"
+
+T41_OBJ='the retry path drops the error; return it rather than logging it'
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T041 \
+  --result request-changes --reason "$T41_OBJ" >/dev/null \
+  || fail "fixture: a brokered request-changes arbitration must still succeed"
+assert_eq rework "$(t4x_status T041)" "a brokered request-changes lands in rework exactly as an operator's does"
+assert_eq "a1: $T41_OBJ" "$(t4x_objection T041)" \
+  "T032: the objection is recorded whoever raised it — the persistence is not the operator's alone"
+assert_eq orchestrator "$(t4x_objection_by T041)" \
+  "T032: ...and it is recorded as the ORCHESTRATOR's, from the actor identity the kernel set for that wakeup"
+red_case "an objection with no recorded provenance: the arbiter's class is written on the task beside the text"
+
+t4x_to_arbitrating T041
+assert_eq "a1: $T41_OBJ" "$(t4x_objection T041)" \
+  "fixture: the brokered objection survives its rework round, exactly as an operator's does"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T041 \
+  --result approve --reason "the error is returned now" >/dev/null \
+  || fail "T032: the surface that raised an objection must be able to answer it — a brokered stop only a human can clear parks an unattended run forever"
+assert_eq merging "$(t4x_status T041)" "and the approving arbitration derives merging as usual"
+assert_eq "" "$(t4x_objection T041)" "the orchestrator's own objection is cleared by its own explicit approval"
+assert_eq "" "$(t4x_objection_by T041)" \
+  "...and the class is cleared with it, so a later rejection cannot inherit an authority nobody granted it"
+# One PATTERN across all three facts, for the reason the T040 block's own
+# journal assertions give: this file's earlier walk already wrote a "cleared by
+# an explicit arbitration approval" line, so a search for that phrase alone
+# would pass with nothing here at all. The objection's own words pin WHICH
+# clear, and the two actors pin what this case is actually about.
+assert_match 'objection cleared by an explicit arbitration approval.*retry path drops the error.*raised by: orchestrator, cleared by: orchestrator' "$(cat .orchid/journal.md)" \
+  "...and the journal names both actors, so a machine settling its own objection is legible as exactly that"
+green_case "the run orchestrator's own objection: recorded, survived a rework round, and settled by the same surface"
+
+# --- an OPERATOR's objection is not the brokered surface's to settle --------
+# The routing half of this (an operator's objection raises `operator-decision`,
+# which wakes nobody) is tests/test_drive.sh's Part AF. This is the verb half,
+# and it is not redundant: `task arbitrate <id>` takes an ID, so a model woken
+# for some OTHER task's boundary can name this one, and a guarantee that rests
+# only on which boundary got recorded is a guarantee one stray argument walks
+# past.
+t4x_new_task T042 "an objection only its author may settle"
+t4x_to_arbitrating T042
+T42_OBJ='the lock is still taken after the early return at lib/foo.sh:140'
+"$ORCHID_BIN" task arbitrate T042 --result request-changes --reason "$T42_OBJ" >/dev/null \
+  || fail "fixture: the operator's request-changes arbitration must succeed"
+assert_eq operator "$(t4x_objection_by T042)" \
+  "an arbitration run with no kernel-set actor identity is the operator's, which is the rule the journal has always used"
+t4x_to_arbitrating T042
+
+for _res in approve request-changes; do
+  rc=0
+  t42_out="$(ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T042 \
+    --result "$_res" --reason "reads fine to me" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "T032: a brokered --result $_res on an OPERATOR's standing objection must be refused — approve clears it from the same diff that produced it, and request-changes replaces their words with the model's own"
+  assert_match "not the operator" "$t42_out" \
+    "the refusal says whose objection it is and that this actor is not them (--result $_res)"
+  assert_match "orchid notify --task T042" "$t42_out" \
+    "...and names the move that IS available to a woken model: raise it to the operator (--result $_res)"
+  assert_eq "a1: $T42_OBJ" "$(t4x_objection T042)" "and the refused arbitration left the objection exactly as it was (--result $_res)"
+  assert_eq operator "$(t4x_objection_by T042)" "...including its class (--result $_res)"
+  assert_eq arbitrating "$(t4x_status T042)" "...and took no transition at all (--result $_res)"
+done
+red_case "a brokered arbitration over an operator's standing objection: refused at the verb, both results, nothing written"
+
+# --- and the class cannot be written away either ----------------------------
+# The objection's own key is already on `task set`'s deny-list. Without its
+# class beside it, an operator-only stop could be relabelled as a model's
+# without touching a character of the text an operator would reread — the same
+# bypass by a quieter door.
+rc=0; t42_set_out="$("$ORCHID_BIN" task set T042 unresolved_objection_by orchestrator 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T032: task set unresolved_objection_by must be refused (kernel-owned) — it decides who may clear the objection"
+assert_match "kernel-owned" "$t42_set_out" "the refusal says the key is kernel-owned"
+assert_match "task arbitrate" "$t42_set_out" "...and names the verb that does write it"
+assert_eq operator "$(t4x_objection_by T042)" "and the refused write left the arbiter class exactly as it was"
+red_case 'task set on unresolved_objection_by: refused, so an operator-only stop cannot be relabelled as a model-settleable one'
+
+"$ORCHID_BIN" task arbitrate T042 --result approve --reason "the early return releases the lock now" >/dev/null \
+  || fail "fixture: the operator's own approving arbitration must succeed"
+assert_eq merging "$(t4x_status T042)" "the operator settles their own objection, and the task moves"
+assert_eq "" "$(t4x_objection T042)" "...clearing it"
+assert_eq "" "$(t4x_objection_by T042)" "...and its class with it"
+assert_match 'objection cleared by an explicit arbitration approval.*early return at lib/foo.sh:140.*raised by: operator, cleared by: operator' "$(cat .orchid/journal.md)" \
+  "...and the journal records both actors, so who overrode whom is answerable from the record alone"
+green_case "an operator's own objection: settled by the operator, cleared, and both arbiters named in the journal"
+
+# ============================================================================
+# `orchid task arbitrate` IS THE ONLY PUBLIC ARBITRATING OUTCOME VERB (T032
+# convergence, after the attempt-3 arbitration).
+#
+# Everything above guards the verb that RECORDS an arbitration. None of it
+# guards the other door. Three edges out of `arbitrating` ARE the arbitration's
+# result — approve is `arbitrating:merging` (or `arbitrating:done` on an
+# outcome=report archetype), request-changes is `arbitrating:rework` — and
+# `orchid task advance` could take any of them by hand while recording none of
+# it: no result, no journal entry saying who decided, no objection raised, and,
+# on `arbitrating:merging`, a live `unresolved_objection` walked straight into
+# the merge queue. That is F33's outcome reached by typing the other command,
+# and every guarantee the blocks above assert is only as good as this door
+# being shut.
+#
+# So `task advance` refuses those three unless `task arbitrate` is the caller.
+# `arbitrating:blocked` is untouched, because stopping a task is not deciding
+# it — and that twin is asserted here rather than assumed, since a refusal that
+# also killed the escape hatch would leave an operator with no move at all. The
+# other twin, an archetype's own non-outcome edge, is the block below.
+#
+# RED: a hand-walked `arbitrating` outcome of any shape — merging, rework, and
+#      the report archetype's `done` — and, the F33 case itself, one taken
+#      while an operator's objection is standing.
+# GREEN: `task arbitrate` still takes every one of those edges, and `task
+#      advance <id> blocked --reason` still stops the task.
+# ============================================================================
+# This file parks tasks in ACTIVE statuses as it goes and raised the cap once
+# already for exactly that reason (see its note beside `ORCHID_CONCURRENCY=8`
+# above); the three blocks between there and here leave three more sitting in
+# `merging`. Raised again rather than counted, since a starved dispatch here
+# would surface as this block's own fixture assertion failing for a reason that
+# has nothing to do with what it tests.
+export ORCHID_CONCURRENCY=16
+
+t4x_new_task T043 "an arbitration outcome nobody may take by hand"
+t4x_to_arbitrating T043
+assert_eq arbitrating "$(t4x_status T043)" "fixture: T043 reaches arbitrating"
+
+# `--reason` supplied throughout, so a refusal can never be INV-08's rather
+# than this one's: these calls are complete and would have been taken.
+for _dest in merging rework; do
+  rc=0
+  t43_out="$("$ORCHID_BIN" task advance T043 "$_dest" --reason "hand-walked, deciding nothing" 2>&1)" || rc=$?
+  assert_eq 3 "$rc" \
+    "T032: task advance T043 $_dest out of arbitrating must be refused — it is an arbitration RESULT and this verb records none"
+  assert_match "arbitration RESULT" "$t43_out" "the refusal says what the edge is (dest: $_dest)"
+  # Single-quoted: the `\|` is a LITERAL pipe for `grep -E`, and the pattern
+  # needs no interpolation of its own.
+  assert_match 'orchid task arbitrate T043 --result approve\|request-changes' "$t43_out" \
+    "...and names the verb that records one, on this task (dest: $_dest)"
+  assert_match "task advance T043 blocked" "$t43_out" \
+    "...and names the move that IS still available: stopping the task (dest: $_dest)"
+  assert_eq arbitrating "$(t4x_status T043)" "and the task did not move (dest: $_dest)"
+done
+grep -q "hand-walked, deciding nothing" .orchid/journal.md \
+  && fail "T032: a refused arbitrating advance must journal nothing — the refusal is ahead of the journal-first write, so a reason on record for a transition that never happened is a decision nobody made"
+red_case 'a hand-walked arbitration outcome (task advance out of arbitrating): refused, nothing moved, nothing journaled'
+
+# The same edge through the verb that DOES record a result: still legal, and it
+# is what raises the objection the next case is about.
+T43_OBJ='the two writes at lib/foo.sh:118-140 are still not ordered'
+"$ORCHID_BIN" task arbitrate T043 --result request-changes --reason "$T43_OBJ" >/dev/null \
+  || fail "T032: the refusal must be scoped to the verb, not to the edge — task arbitrate still takes arbitrating:rework"
+assert_eq rework "$(t4x_status T043)" "and it lands exactly where the hand-walk was trying to go"
+green_case 'the same arbitrating:rework edge through task arbitrate: taken, and the result recorded'
+
+# THE F33 SHAPE, at this door. An objection is standing; a hand-walk to
+# `merging` would carry it into the merge queue with nothing having answered
+# it, which is precisely what the driver-side gate exists to prevent and
+# precisely what it cannot see.
+t4x_to_arbitrating T043
+assert_eq "a1: $T43_OBJ" "$(t4x_objection T043)" "fixture: the objection is standing on entry to the second round"
+rc=0
+t43_obj_out="$("$ORCHID_BIN" task advance T043 merging --reason "looks fine to me" 2>&1)" || rc=$?
+assert_eq 3 "$rc" \
+  "T032: a task carrying a standing objection cannot be hand-walked into merging — the gate that refuses the deterministic approval is worth nothing if the other verb walks past it"
+assert_match 'orchid task arbitrate T043 --result approve\|request-changes' "$t43_obj_out" \
+  "...naming the verb that would have had to decide whether the objection was met"
+assert_eq arbitrating "$(t4x_status T043)" "the task did not move"
+assert_eq "a1: $T43_OBJ" "$(t4x_objection T043)" "...and the objection is exactly where it was"
+red_case 'a hand-walked merging on a task carrying an uncleared objection: refused, and the objection still stands'
+
+# ...and the escape hatch is untouched, which is what keeps the refusal from
+# being a task nobody can move. Left idle deliberately: a task parked in an
+# ACTIVE status eats a concurrency slot every later case has to dispatch
+# against.
+"$ORCHID_BIN" task advance T043 blocked --reason "stopping it, not deciding it" >/dev/null \
+  || fail "T032: arbitrating -> blocked is the universal escape hatch and must stay open — an operator whose only move is refused has no move"
+assert_eq blocked "$(t4x_status T043)" "arbitrating -> blocked still works by hand"
+green_case 'task advance blocked out of arbitrating: still legal, because stopping a task is not deciding it'
+
+# --- and the report archetype's own outcome edge -----------------------------
+# `arbitrating:done` is the outcome=report archetype's approval, and it is a
+# DIFFERENT destination string. A refusal written as a list of the two edges a
+# feature task has would let this one through, and nothing above would notice.
+"$ORCHID_BIN" task create R040 "a report outcome nobody may take by hand" --archetype review \
+  || fail "fixture: task create R040 must succeed (a taken id would make every assertion below read another case's task)"
+# base_sha/candidate_sha by plain `task set`, the way tests/test_archetype.sh's
+# own review walk does it: a review-archetype task never traverses `testing`,
+# and the reviewing->arbitrating envelope gate is sha-bound, so the candidate
+# has to be set before a planted envelope can satisfy it.
+"$ORCHID_BIN" task set R040 base_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set R040 candidate_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task advance R040 reviewing --reason "report dispatch" >/dev/null
+plant_reviewer_envelope R040
+"$ORCHID_BIN" task advance R040 arbitrating --reason "reviews reconciled" >/dev/null
+assert_eq arbitrating "$(t4x_status R040)" "fixture: R040 reaches arbitrating on the review archetype"
+
+rc=0; r40_out="$("$ORCHID_BIN" task advance R040 "done" --reason "accepted by hand" 2>&1)" || rc=$?
+assert_eq 3 "$rc" \
+  "T032: arbitrating -> done is the report archetype's approval and is refused by task advance for the same reason arbitrating -> merging is"
+assert_match "orchid task arbitrate R040 --result approve" "$r40_out" "...naming the verb that records it"
+assert_eq arbitrating "$(t4x_status R040)" "and R040 did not move"
+red_case "a hand-walked arbitrating:done on an outcome=report archetype: refused too, not just the feature archetype's two edges"
+
+"$ORCHID_BIN" task arbitrate R040 --result approve --reason "the report is accepted" >/dev/null \
+  || fail "fixture: the report archetype's approving arbitration must succeed"
+assert_eq "done" "$(t4x_status R040)" \
+  "and task arbitrate derives done from the archetype that declares no arbitrating:merging"
+green_case 'the report archetype: task arbitrate --result approve still reaches done, deriving it from the declared transitions'
+
+# ============================================================================
+# ...AND ONLY ONTO THE OUTCOME EDGES (T032 convergence, after the attempt-4
+# arbitration).
+#
+# The block above shuts a door. Its first cut shut a wider one than its own
+# argument: it refused EVERY destination out of `arbitrating` but `blocked`.
+# What the rule protects is the merge queue and the attempt counter, and only
+# three destinations touch either — `merging` and `done` (an approval,
+# whichever the archetype declares) and `rework` (a request-changes). Those
+# three are exactly the ones `task arbitrate` derives, which is what makes them
+# arbitration RESULTS rather than merely edges leaving a status.
+#
+# An archetype may declare an `arbitrating` edge that decides nothing about the
+# candidate, and `arbitrating:reviewing` — sending a round back for another
+# reviewer instead of judging it — is the obvious one. No `--result` derives
+# that edge, so `task arbitrate` cannot take it and `task advance` is the only
+# door there is: refusing it deleted a transition rather than closing a bypass,
+# in the one verb whose refusal names an alternative that cannot reach it.
+#
+# RED: the outcome edges, refused on this SAME archetype and this SAME task, so
+#      the pass below is not an archetype-shaped escape from the rule.
+# GREEN: the non-outcome edge, walked by `task advance` exactly as the
+#      archetype declares it — and `task arbitrate` still reaching the outcome
+#      edge the hand-walk was refused.
+# ============================================================================
+# The resolver-only archetype hook (ORCHID_ARCHETYPES_DIR — real plugin
+# discovery never walks it), planted under $HOME rather than at the repo root
+# so this fixture leaves no untracked directory in the tree this suite's own
+# candidates are cut from. Exported for the rest of the file: it is the
+# highest-precedence root and `recheck` is a name no shipped archetype uses, so
+# every other task here still resolves exactly as it did.
+T44_ARCH="$HOME/arch-recheck"
+mkdir -p "$T44_ARCH/recheck"
+printf 'manifest_version=1\nid=test/recheck\nversion=0.1.0\nkind=archetype\napi_version=1\noutcome=code\ntransitions=pending:implementing,implementing:testing,testing:reviewing,reviewing:arbitrating,arbitrating:reviewing,arbitrating:merging,arbitrating:rework,rework:implementing,merging:done\n' \
+  > "$T44_ARCH/recheck/plugin.conf"
+export ORCHID_ARCHETYPES_DIR="$T44_ARCH"
+# Raised again, for the reason the block above raised it to 16: this file parks
+# tasks in ACTIVE statuses as it goes, and the three blocks between there and
+# the end of this file leave three more sitting in `merging`. A starved dispatch
+# here surfaces as a fixture assertion failing for a reason that has nothing to
+# do with what these cases test.
+export ORCHID_CONCURRENCY=24
+
+"$ORCHID_BIN" task create T044 "an arbitrating edge that decides nothing" --archetype recheck \
+  || fail "fixture: task create T044 must succeed (a taken id, or an archetype the meta-contract rejects, would make every assertion below read another case's task)"
+"$ORCHID_BIN" task set T044 base_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set T044 candidate_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set T044 verification_commands true >/dev/null
+t4x_to_arbitrating T044
+assert_eq arbitrating "$(t4x_status T044)" \
+  "fixture: T044 reaches arbitrating on an archetype that declares arbitrating:reviewing as well as the outcome edges"
+
+for _dest in merging rework; do
+  rc=0
+  t44_out="$("$ORCHID_BIN" task advance T044 "$_dest" --reason "hand-walked, deciding nothing" 2>&1)" || rc=$?
+  assert_eq 3 "$rc" \
+    "T032: the refusal is the DESTINATION, not the archetype — an outcome edge is still refused on one that declares a non-outcome edge too (dest: $_dest)"
+  assert_match "arbitration RESULT" "$t44_out" "the refusal says what the edge is (dest: $_dest)"
+  assert_eq arbitrating "$(t4x_status T044)" "and the task did not move (dest: $_dest)"
+done
+red_case 'an outcome edge out of arbitrating on a custom archetype: refused there too, so the rule is not a property of the shipped transitions'
+
+"$ORCHID_BIN" task advance T044 reviewing --reason "the round needs another reviewer, not a verdict" >/dev/null \
+  || fail "T032: arbitrating -> reviewing records no arbitration result, so task arbitrate cannot derive it and this verb is the only door onto it — refusing it deletes the archetype's transition instead of closing a bypass"
+assert_eq reviewing "$(t4x_status T044)" \
+  "T032: a non-outcome edge out of arbitrating is walked, exactly as the archetype declares it"
+green_case 'a declared arbitrating:reviewing edge: still walkable by task advance, because it decides nothing about the candidate'
+
+# And the outcome edge the hand-walk was refused is still reachable through the
+# verb that records a result — the refusal is scoped to the door, not the edge.
+plant_reviewer_envelope T044
+"$ORCHID_BIN" task advance T044 arbitrating --reason "the second reviewer is in" >/dev/null \
+  || fail "fixture: T044 must be able to return to arbitrating after the non-outcome edge"
+"$ORCHID_BIN" task arbitrate T044 --result approve --reason "the second look is clean" >/dev/null \
+  || fail "fixture: the approving arbitration must still succeed on this archetype"
+assert_eq merging "$(t4x_status T044)" \
+  "and task arbitrate still takes the very edge the hand-walk was refused"
+green_case 'task arbitrate on the custom archetype: still reaches merging, so the narrowed refusal closed nothing it was closing before'
+
+# ============================================================================
+# THE OPERATOR'S OWN DECISION, RELAYED — AND THE AUTHORITY IT IS RELAYED ON
+# (T032 convergence, after the attempt-5 arbitration).
+#
+# The T042 block refuses a non-operator arbitration on an operator's standing
+# objection. That refusal has a cost the OPERATOR pays. Their stop is paged with
+# `orchid notify`; they answer it with `orchid answer`; and no verb consumes an
+# answer file — a page RECORDS what was decided, and the verb is still run by
+# hand. So when the actor at this repository's keyboard is the woken
+# orchestrator, refusing it refuses to carry out a decision its owner has
+# already made and already made durable, and the run parks on a question that
+# has been answered.
+#
+# The class of an arbitration is therefore the ACTOR's unless durable operator
+# state authorises it — and WHAT THAT STATE IS is what this block is about.
+# It was, first, the page's own prose: a question naming this task, quoting the
+# standing objection and carrying the kernel's remedy clause was read as a page
+# about settling that objection. `notify` is on the brokered write table, so
+# every word of that was text the relaying model could compose for itself; the
+# operator's `approve` was real, but what it was an answer TO was the model's.
+#
+# So the evidence is a structured record the kernel writes beside the page —
+# `runtime/answers/<qid>.objection`, minted only by `orchid notify --objection`,
+# a flag runners/orchid-orchestrator-command refuses outright — and the identity
+# it is bound to is `objection_seq`, an instance counter rather than the text.
+# The text cannot be the identity: `--waive-attempt` leaves `attempts` where it
+# was, so an operator rejecting the same defect twice across a waived round
+# writes a BYTE-IDENTICAL objection line, and an answer to the first would
+# otherwise settle the second.
+#
+# RED: every near miss — nothing on record; an unanswered page; a page answered
+#      something else; a page about another task, authority record and all; a
+#      page the model minted itself carrying the objection AND the remedy clause
+#      word for word; the answered page for an objection since re-raised in the
+#      same words across a waived round; and a page whose authority a relay has
+#      already spent.
+# GREEN: the operator's answer to the page the kernel raised for the objection
+#      standing NOW, relayed by the orchestrator, clearing it and spending the
+#      record — including for an objection longer than REVIEW_OBJECTION_MAX,
+#      which the substring reading this replaces could never have carried.
+# ============================================================================
+# The page the driver really composes for this stop, in miniature:
+# runners/orchid-drive prefixes `judgment boundary [<kind>] needs an operator:`
+# to lib/drive.sh's detail and hands the result to `orchid notify` verbatim.
+#
+# THE PAGE'S PROSE IS NO LONGER EVIDENCE, and this fixture is written so that
+# nothing here can quietly become evidence again: every page below carries the
+# objection and the remedy clause, so the only thing separating a page that
+# authorises from a page that does not is the `--objection` flag that mints the
+# record. A reading that went back to matching text would make the model-minted
+# case pass, which is the case it exists to fail.
+#
+# The clause is still pinned against its own producer, because it is still what
+# tells the operator which verb settles this — a page whose remedy names
+# something the kernel does not compose is a page nobody can act on, and this
+# fixture writing it out by hand is how that drift would otherwise go unseen.
+grep -qF -e 'orchid task arbitrate %s --result approve|request-changes' "$REPO_ROOT/lib/review.sh" \
+  || fail "T032: lib/review.sh no longer composes the remedy clause this fixture writes into its pages — review_objection_remedy is the one producer, and the page an operator reads is pinned to it"
+# ...and so is the cap the long-objection case below turns on. This fixture
+# cannot source lib/review.sh (it drives the verbs, nothing else), so the
+# constant it reasons about is witnessed against the file that defines it.
+grep -qE '^REVIEW_OBJECTION_MAX=400$' "$REPO_ROOT/lib/review.sh" \
+  || fail "T032: REVIEW_OBJECTION_MAX is no longer 400 in lib/review.sh — the long-objection case below builds its fixture around that number and would silently stop exercising the truncation path"
+T4X_OBJ_MAX=400
+t4x_page() {   # <task> <objection-line>
+  printf 'judgment boundary [operator-decision] needs an operator: an objection recorded by an operator in a previous arbitration of this task is still uncleared: "%s" — this pass may not approve on the reviews alone. Expected: the operator who raised it reads the diff, decides whether the objection was met, and settles it with orchid task arbitrate %s --result approve|request-changes --reason "..." — an explicit arbitration approval is the only thing that clears it\n' \
+    "$2" "$1"
+}
+t4x_seq()       { "$ORCHID_BIN" task show "$1" | grep '^objection_seq: ' | cut -d' ' -f2-; }
+t4x_authority() { printf '%s\n' ".orchid/runtime/answers/$1.objection"; }
+
+t4x_new_task T045 "an objection the operator has already decided"
+t4x_to_arbitrating T045
+T45_OBJ='the two writes at lib/foo.sh:118-140 are still not ordered'
+"$ORCHID_BIN" task arbitrate T045 --result request-changes --reason "$T45_OBJ" >/dev/null \
+  || fail "fixture: the operator's request-changes arbitration must succeed"
+assert_eq operator "$(t4x_objection_by T045)" "fixture: the objection is recorded as the operator's"
+assert_eq 1 "$(t4x_seq T045)" \
+  "T032: the first rejection mints objection instance 1 — the identity an operator's answer is bound to, written by the arbitration and not derived from the text"
+# The counter is as kernel-owned as the two fields beside it, and for the
+# sharpest reason of the three: rewinding it by one would make an already
+# answered page's authority live again against whatever is standing now.
+rc=0; t45_set_out="$("$ORCHID_BIN" task set T045 objection_seq 0 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T032: task set objection_seq must be refused — a writable instance counter is a replay of every answered page"
+assert_match "kernel-owned" "$t45_set_out" "...and it is refused as kernel-owned rather than failing for some other reason"
+assert_eq 1 "$(t4x_seq T045)" "and the refused write left the instance exactly where it was"
+t4x_to_arbitrating T045
+assert_eq "a1: $T45_OBJ" "$(t4x_objection T045)" \
+  "fixture: the objection is standing on entry to the second round"
+
+# Every case below makes this one call. Written as a function so the six of
+# them cannot differ in the argument that matters (`--result approve`) or in
+# the actor identity, and so a case can never accidentally test the operator's
+# own arbitration while claiming to test a relay.
+t45_relay() {
+  ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T045 \
+    --result approve --reason "the writes are ordered now" 2>&1
+}
+# ...and every refusal below is asserted twice over: that it happened, and that
+# it is THIS refusal. A brokered arbitration that failed for some other reason
+# — a usage error, a status gate — satisfies a bare nonzero check and proves
+# nothing at all about the relay.
+t45_refused() {   # <what must not have been credited>
+  local rc=0
+  local out
+  out="$(t45_relay)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "T032: $1"
+  assert_match "not the operator" "$out" \
+    "...and it is the operator-authority refusal rather than another failure passing for one ($1)"
+  assert_match "orchid answer" "$out" \
+    "...and it names the route that WOULD carry the operator's decision, instead of only saying no — L028 ($1)"
+}
+
+# --- nothing on record ------------------------------------------------------
+t45_refused "with no operator answer on record a brokered approve must be refused — an actor cannot lend itself the authority it lacks"
+
+# --- a page nobody has answered --------------------------------------------
+q45_open="$("$ORCHID_BIN" notify --task T045 --objection "$(t4x_page T045 "a1: $T45_OBJ")")" \
+  || fail "fixture: the operator page for this objection must be raisable"
+[ -f ".orchid/runtime/answers/$q45_open.question" ] \
+  || fail "fixture: notify must have minted the question file the relay reads ($q45_open)"
+[ -f "$(t4x_authority "$q45_open")" ] \
+  || fail "T032: notify --objection must mint the authority record beside the question — without it no answer to this page can ever be relayed, and the operator's stop is a wall rather than a door"
+t45_refused "an unanswered page is a question, not a decision — a woken model may raise one and must not be able to credit itself with it"
+
+# --- a page answered something else -----------------------------------------
+"$ORCHID_BIN" answer "$q45_open" defer >/dev/null \
+  || fail "fixture: the operator must be able to answer their own page"
+t45_refused "an answer that is not the arbitration result settles nothing — the decision is the word the operator typed, never a reading of it"
+
+# --- a page about another task, authority record and all ---------------------
+# Same objection text, same remedy clause, a real kernel-minted authority — and
+# a different subject. `task arbitrate <id>` takes an id, so an answer that
+# travelled between tasks would be exactly the bypass the verb-level guard
+# exists to close. Given its own objection rather than paged bare, so what is
+# being refused here is a GENUINE authority for the wrong task, not the absence
+# of one.
+t4x_new_task T046 "another task, with an objection and a page of its own"
+t4x_to_arbitrating T046
+"$ORCHID_BIN" task arbitrate T046 --result request-changes --reason "$T45_OBJ" >/dev/null \
+  || fail "fixture: T046's own request-changes must succeed"
+t4x_to_arbitrating T046
+assert_eq "a1: $T45_OBJ" "$(t4x_objection T046)" \
+  "fixture: T046's objection is the same text as T045's, so only the subject can be what refuses the relay"
+q45_foreign="$("$ORCHID_BIN" notify --task T046 --objection "$(t4x_page T046 "a1: $T45_OBJ")")" \
+  || fail "fixture: the foreign page must be raisable"
+"$ORCHID_BIN" answer "$q45_foreign" approve >/dev/null \
+  || fail "fixture: the foreign page must be answerable"
+t45_refused "an answer about another task must not settle this one, however exactly its objection and its instance match"
+
+# --- the page a model minted for itself -------------------------------------
+# THE CASE THE PROSE READING COULD NOT FAIL. `notify` is on the brokered write
+# table, so a woken orchestrator can raise this page: same subject, the standing
+# objection quoted verbatim, the kernel's own remedy clause naming this task's
+# verb. Every word the old reader looked for is here. What it cannot pass
+# through the broker is `--objection`, so no authority record is minted and the
+# answer is an answer to a page the kernel never raised.
+q45_minted="$("$ORCHID_BIN" notify --task T045 "$(t4x_page T045 "a1: $T45_OBJ")")" \
+  || fail 'fixture: the model-minted page must be raisable — `notify` is admitted, and that is the premise of this case'
+[ ! -f "$(t4x_authority "$q45_minted")" ] \
+  || fail "T032: a notify without --objection must mint no authority record — if it does, the brokered surface can manufacture the evidence for its own arbitration"
+"$ORCHID_BIN" answer "$q45_minted" approve >/dev/null \
+  || fail "fixture: the model-minted page must be answerable"
+t45_refused "a page the relaying model raised itself is not the kernel's page, however exactly it quotes the objection and the remedy clause"
+assert_eq "a1: $T45_OBJ" "$(t4x_objection T045)" "and after all five refusals the objection is exactly where it was"
+assert_eq operator "$(t4x_objection_by T045)" "...including its class"
+assert_eq 1 "$(t4x_seq T045)" "...and its instance"
+assert_eq arbitrating "$(t4x_status T045)" "...and the task never moved"
+red_case 'a brokered approve backed by no answer, an unanswered page, another answer, another task, or a page the model minted itself: refused every time'
+
+# --- and the operator's actual answer, relayed ------------------------------
+q45="$("$ORCHID_BIN" notify --task T045 --objection "$(t4x_page T045 "a1: $T45_OBJ")")" \
+  || fail "fixture: the operator page must be raisable"
+"$ORCHID_BIN" answer "$q45" approve >/dev/null \
+  || fail "fixture: the operator must be able to answer it"
+t45_out="$(t45_relay)" \
+  || fail "T032: the operator has decided, durably, on this task and this objection — refusing the relay parks the run on a question its owner already answered: $t45_out"
+assert_eq merging "$(t4x_status T045)" "the relayed approval takes the edge an approval takes"
+assert_eq "" "$(t4x_objection T045)" "...and clears the objection the operator said was met"
+assert_eq "" "$(t4x_objection_by T045)" "...and its class with it"
+# SPENT, not merely checked. The record is gone, so the identical answer sitting
+# beside it can never authorise a second arbitration — and a crash anywhere
+# after this point leaves an objection standing with nothing left to settle it,
+# which is the direction this has to fail in.
+[ ! -f "$(t4x_authority "$q45")" ] \
+  || fail "T032: the authority record must be consumed by the arbitration it authorised — one left on disk is an answer a replay spends again"
+[ -f ".orchid/runtime/answers/$q45.answer" ] \
+  || fail "fixture: the operator's answer itself is untouched — it is the authority that is spent, not their decision"
+# One PATTERN across all four facts: the authority the arbitration acted with,
+# the actor that actually ran it, the answer joining them and the instance it
+# was bound to. This file has written "cleared by an explicit arbitration
+# approval" lines before, so any two of these would pass against an earlier
+# case's entry.
+assert_match "objection cleared by an explicit arbitration approval.*cleared by: operator.*relayed by claude/orchestrator.*$q45.*instance 1" \
+  "$(cat .orchid/journal.md)" \
+  "T032: the record names the authority, the actor that relayed it, the answer it acted on and the instance it was bound to — an operator-cleared objection with a model's actor on the entry is unreconcilable otherwise"
+green_case 'a brokered approve backed by the operator answer to this objection page: relayed, the objection cleared, the authority spent and the relay named in the journal'
+
+# --- an answer is not a token that outlives the objection it answered --------
+# The replay this binding exists to refuse. The operator answers the page for
+# the objection standing THEN, and before anything relays it they change their
+# mind about what is unresolved. A later orchestrator holding that answer must
+# not be able to spend it on the objection standing NOW.
+t4x_new_task T047 "an answer that must not outlive its objection"
+t4x_to_arbitrating T047
+T47_OBJ1='the lock is still held on the early return at lib/bar.sh:40'
+"$ORCHID_BIN" task arbitrate T047 --result request-changes --reason "$T47_OBJ1" >/dev/null \
+  || fail "fixture: the operator's first request-changes must succeed"
+t4x_to_arbitrating T047
+q47="$("$ORCHID_BIN" notify --task T047 --objection "$(t4x_page T047 "a1: $T47_OBJ1")")" \
+  || fail "fixture: the page for the first objection must be raisable"
+"$ORCHID_BIN" answer "$q47" approve >/dev/null \
+  || fail "fixture: the operator must be able to answer it"
+
+T47_OBJ2='and the new guard swallows the error at lib/bar.sh:52'
+"$ORCHID_BIN" task arbitrate T047 --result request-changes --waive-attempt --reason "$T47_OBJ2" >/dev/null \
+  || fail "fixture: the operator's superseding request-changes must succeed"
+assert_eq "a2: $T47_OBJ2" "$(t4x_objection T047)" \
+  "fixture: the operator's latest word is what is standing, and the answered page is about the earlier one"
+assert_eq 2 "$(t4x_seq T047)" "fixture: superseding an objection rotates the instance the answered page was bound to"
+t4x_to_arbitrating T047
+rc=0
+t47_out="$(ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T047 \
+  --result approve --reason "both of those are handled" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "T032: an answer given about the objection that stood then must not settle the one standing now — otherwise a single approve becomes a token a later orchestrator spends on an objection the operator never saw"
+assert_match "not the operator" "$t47_out" \
+  "and the refusal is the operator-authority one, not some other failure that would make this case pass for the wrong reason"
+assert_eq "a2: $T47_OBJ2" "$(t4x_objection T047)" "and the standing objection is untouched"
+assert_eq arbitrating "$(t4x_status T047)" "...and the task took no transition"
+red_case 'a stale operator answer against a superseded objection: refused, so an answer is bound to the objection it was given about'
+
+q47b="$("$ORCHID_BIN" notify --task T047 --objection "$(t4x_page T047 "a2: $T47_OBJ2")")" \
+  || fail "fixture: the page for the standing objection must be raisable"
+"$ORCHID_BIN" answer "$q47b" approve >/dev/null \
+  || fail "fixture: the operator must be able to answer it"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T047 \
+  --result approve --reason "both of those are handled" >/dev/null \
+  || fail "T032: the refusal must be a door and not a wall — the operator answering the page for the objection that IS standing converges the round"
+assert_eq merging "$(t4x_status T047)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T047)" "...and the objection the operator answered about is the one cleared"
+green_case 'the operator answering the page for the objection that IS standing: relayed, so the binding refuses a replay without stranding the round'
+
+# ============================================================================
+# THE SAME OBJECTION, RAISED AGAIN, IS A DIFFERENT OBJECTION (T032 convergence,
+# after the attempt-5 arbitration).
+#
+# The T047 case above is refused by text as much as by instance: `a1: ...` and
+# `a2: ...` are different strings, so a reader that compared only the words would
+# have passed it too. THIS is the case that separates them, and it is the one
+# the kernel's own documented workflow produces.
+#
+# `--waive-attempt` is how an operator rejects a round without charging the
+# implementer for it, and it leaves `attempts` exactly where it was. So an
+# operator who raises the same objection across two waived rounds writes the
+# SAME LINE, character for character: same round prefix, same words. Everything
+# else on the task agrees that nothing changed. If the answer to the first were
+# spendable on the second, the operator's "I have re-read the diff and it is
+# still wrong" would be settled by the "yes, that is fixed" they gave about a
+# round that came before it — F33's failure with the operator's own answer as
+# the instrument.
+#
+# RED: the answered page for the earlier of two byte-identical objections.
+# GREEN: the page for the one standing now, once it is raised.
+# ============================================================================
+t4x_new_task T048 "the same objection, raised again across a waived round"
+t4x_to_arbitrating T048
+T48_OBJ='RETRY_MAX and BACKOFF_MS at lib/net.sh:88-104 are still read outside the lock'
+"$ORCHID_BIN" task arbitrate T048 --result request-changes --reason "$T48_OBJ" >/dev/null \
+  || fail "fixture: T048's first request-changes must succeed"
+t4x_to_arbitrating T048
+"$ORCHID_BIN" task arbitrate T048 --result request-changes --waive-attempt --reason "$T48_OBJ" >/dev/null \
+  || fail "fixture: T048's second (waived) request-changes must succeed"
+t4x_to_arbitrating T048
+T48_LINE="$(t4x_objection T048)"
+assert_eq 2 "$(t4x_seq T048)" "fixture: the second rejection is instance 2"
+q48="$("$ORCHID_BIN" notify --task T048 --objection "$(t4x_page T048 "$T48_LINE")")" \
+  || fail "fixture: the page for instance 2 must be raisable"
+"$ORCHID_BIN" answer "$q48" approve >/dev/null \
+  || fail "fixture: the operator answers the page for instance 2"
+# ...and then, before anything relays it, they reject the round again in exactly
+# the same words. The attempt is waived, so the composed line cannot differ.
+"$ORCHID_BIN" task arbitrate T048 --result request-changes --waive-attempt --reason "$T48_OBJ" >/dev/null \
+  || fail "fixture: T048's third (waived) request-changes must succeed"
+t4x_to_arbitrating T048
+assert_eq "$T48_LINE" "$(t4x_objection T048)" \
+  "fixture: the recreated objection is BYTE-IDENTICAL to the answered one — a waived round leaves attempts alone, so the round prefix does not move either. Without this the case below would be refused by the text and prove nothing about the instance"
+assert_eq 3 "$(t4x_seq T048)" \
+  "T032: ...and the instance rotated anyway — it is a counter, not a reading of the text, which is the whole reason it can tell these two objections apart"
+# The answered page's record still names the objection standing now, word for
+# word, so the ONLY thing left to refuse on is the instance.
+grep -qxF -e "objection: $T48_LINE" "$(t4x_authority "$q48")" \
+  || fail "fixture: the stale authority record must still carry the current objection line verbatim, or this case is refused by the text and says nothing about the instance"
+rc=0
+t48_out="$(ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T048 \
+  --result approve --reason "the lock covers both now" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "T032: an answer about the objection that stood before a waived round must not settle the identical one standing after it — the operator re-raised it precisely because they did not consider it met"
+assert_match "not the operator" "$t48_out" \
+  "and it is the operator-authority refusal, not another failure passing for one"
+assert_eq "$T48_LINE" "$(t4x_objection T048)" "and the re-raised objection is untouched"
+assert_eq arbitrating "$(t4x_status T048)" "...and the task took no transition"
+red_case 'a byte-identical objection re-raised across a waived round: the earlier answer is refused, because the instance rotated where the text could not'
+
+q48b="$("$ORCHID_BIN" notify --task T048 --objection "$(t4x_page T048 "$T48_LINE")")" \
+  || fail "fixture: the page for instance 3 must be raisable"
+"$ORCHID_BIN" answer "$q48b" approve >/dev/null \
+  || fail "fixture: the operator answers the page for instance 3"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T048 \
+  --result approve --reason "the lock covers both now" >/dev/null \
+  || fail "T032: the operator answering the page for the instance standing now must converge the round — a rotation that could not be answered would be a wall"
+assert_eq merging "$(t4x_status T048)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T048)" "...and the re-raised objection is cleared"
+assert_eq 3 "$(t4x_seq T048)" \
+  "...while the instance counter does NOT rewind on a clear — a counter that reset would make the pages answered under instance 1 live again the next time an objection is raised"
+[ ! -f "$(t4x_authority "$q48b")" ] \
+  || fail "T032: the authority for instance 3 must be spent by the arbitration it authorised"
+green_case 'the operator answering the page for the re-raised objection: relayed, cleared, spent — and the instance counter never rewinds'
+
+# ============================================================================
+# AN OBJECTION LONGER THAN THE CAP STILL RELAYS (T032 convergence, after the
+# attempt-5 arbitration).
+#
+# The operator's second F33 rejection named the exact constants, the exact line
+# range, the response shape to reuse and the test to add. That is the objection
+# this feature exists to carry, and it is long. The reader this replaces matched
+# the objection as a SUBSTRING of the page — and the page quoted a value that had
+# been folded a second time, because the stored line carries an `a<attempt>: `
+# prefix that pushed it past the cap. So the specific objection, the one most
+# worth remembering, was the one whose answer could never be relayed: the
+# operator would answer their page and the verb would refuse, blaming their
+# answer for prose that had been truncated somewhere else.
+#
+# Two things fix it, and both are asserted here: the stored line is composed
+# WITHIN the cap so folding it again is a no-op, and the authority record carries
+# those stored bytes rather than any rendering of them.
+#
+# RED before: an objection past REVIEW_OBJECTION_MAX could not be relayed at all.
+# GREEN: it relays exactly as a short one does.
+# ============================================================================
+t4x_new_task T049 "an objection too specific to fit in the cap"
+t4x_to_arbitrating T049
+T49_OBJ=""
+t49_i=1
+while [ "$t49_i" -le 12 ]; do
+  T49_OBJ="$T49_OBJ RETRY_MAX and BACKOFF_MS at lib/net.sh:$((80 + t49_i))-$((104 + t49_i)) must be read under the same lock the writer takes, reusing the {ok,err} response shape, with a test for the interleaving;"
+  t49_i=$(( t49_i + 1 ))
+done
+[ "${#T49_OBJ}" -gt "$T4X_OBJ_MAX" ] \
+  || fail "fixture: this objection (${#T49_OBJ} chars) must exceed REVIEW_OBJECTION_MAX ($T4X_OBJ_MAX) or the case exercises nothing"
+"$ORCHID_BIN" task arbitrate T049 --result request-changes --reason "$T49_OBJ" >/dev/null \
+  || fail "fixture: the long request-changes must succeed"
+t4x_to_arbitrating T049
+T49_LINE="$(t4x_objection T049)"
+[ "${#T49_LINE}" -le "$T4X_OBJ_MAX" ] \
+  || fail "T032: the stored objection line (${#T49_LINE} chars) must fit within REVIEW_OBJECTION_MAX including its round prefix — a line over the cap is one every reader folds a second time, so no page can quote what the field holds"
+case "$T49_LINE" in
+  *...) ;;
+  *) fail "fixture: this objection must really have been truncated, or the fixpoint above is asserted against a line that never met the cap" ;;
+esac
+q49="$("$ORCHID_BIN" notify --task T049 --objection "$(t4x_page T049 "$T49_LINE")")" \
+  || fail "fixture: the page for the long objection must be raisable"
+grep -qxF -e "objection: $T49_LINE" "$(t4x_authority "$q49")" \
+  || fail "T032: the authority record must carry the STORED objection line, byte for byte — a record holding a rendering of it is one the arbitration's own read of the field can never match"
+"$ORCHID_BIN" answer "$q49" approve >/dev/null \
+  || fail "fixture: the operator must be able to answer it"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T049 \
+  --result approve --reason "all four are addressed" >/dev/null \
+  || fail "T032: an objection longer than the cap must relay exactly as a short one does — the specific objection is the one worth carrying, and it was the one that could not be"
+assert_eq merging "$(t4x_status T049)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T049)" "...and the long objection is cleared"
+green_case 'an objection longer than REVIEW_OBJECTION_MAX: stored within the cap, carried verbatim into the authority, and relayed'
+
+# ============================================================================
+# A QUESTION ID HANDED OUT TWICE IS AN ANSWER SPENT TWICE (T032 convergence,
+# after the attempt-6 arbitration).
+#
+# Everything the blocks above rest on is FILED UNDER THE QID: the `.question`
+# whose subject the relay checks, the `.answer` recording what the operator
+# typed, and the `.objection` authority record naming the instance that answer
+# was given about. `orchid notify` drew that id as sixteen bits of urandom and
+# used it unguarded, and every write under it is an `atomic_write` — a rename
+# over whatever was there. So a page raised later that happened to draw the same
+# suffix REPLACED the question and minted a fresh authority record for the
+# instance standing now, right beside an older `.answer` that nothing rewrote.
+#
+# That composes the exact defect this task exists to close, out of its own
+# machinery: the operator's `approve` about instance 1 sits under a record
+# naming instance 2, every field of `objection_authority_matches` agrees, and
+# `review_operator_relay` clears an objection the operator answered nothing
+# about. The instance counter cannot save it — the collision rewrote the file
+# the instance is stored in.
+#
+# So an id is CLAIMED before anything is filed under it, and never released. The
+# case below forces the collision rather than waiting for the birthday bound:
+# `orchid notify` draws its suffix through `xxd`, so a shim on PATH makes the
+# draw a fixture input. Nothing in the kernel reads the shim's variable; the
+# only thing being replaced is the entropy source, which is exactly the input a
+# real collision varies.
+#
+# RED: a page whose first draw names an id already carrying a question, an
+#      answer and an authority record — the earlier page must come through
+#      byte-identical, and the stale `approve` must authorise nothing.
+# GREEN: the operator answers the page that WAS raised, and it relays; and a
+#      draw that names a free id is claimed as drawn, not skipped.
+# ============================================================================
+make_scratch T50_SHIM
+mkdir -p "$T50_SHIM/bin"
+T50_SEQ="$T50_SHIM/suffixes"
+# A DETERMINISTIC STAND-IN for /dev/urandom, and only for the four hex
+# characters `orchid notify` composes a qid from. `-l2` is the qid draw and
+# `-l8` is the nonce (libexec/orchid-notify mints both through `xxd`); the qid
+# draw pops the next line of the sequence file this fixture writes, and the
+# nonce is a constant because no assertion here turns on it. An exhausted
+# sequence exits non-zero, which is what a machine without `xxd` looks like, so
+# the kernel falls back to its own source and the exact-id assertions below
+# fail loudly rather than passing on a lucky draw.
+cat > "$T50_SHIM/bin/xxd" <<'T50_SHIM_XXD'
+#!/usr/bin/env bash
+set -u
+t50_want=""
+for t50_a in "$@"; do
+  case "$t50_a" in
+    -l2) t50_want=qid ;;
+    -l8) t50_want=nonce ;;
+  esac
+done
+if [ "$t50_want" = qid ] && [ -n "${ORCHID_TEST_QID_SUFFIXES:-}" ] \
+   && [ -s "${ORCHID_TEST_QID_SUFFIXES}" ]; then
+  head -n 1 "$ORCHID_TEST_QID_SUFFIXES"
+  tail -n +2 "$ORCHID_TEST_QID_SUFFIXES" > "$ORCHID_TEST_QID_SUFFIXES.rest"
+  mv "$ORCHID_TEST_QID_SUFFIXES.rest" "$ORCHID_TEST_QID_SUFFIXES"
+  exit 0
+fi
+[ "$t50_want" = nonce ] || exit 1
+printf '%s\n' 'a1b2c3d4e5f60718'
+T50_SHIM_XXD
+chmod +x "$T50_SHIM/bin/xxd"
+
+# `orchid notify` through the shim, with a chosen sequence of draws. The PATH
+# override is scoped to this one call: every other verb in this block draws its
+# entropy the way it always does.
+t50_notify() {   # <task> <suffix>... <page-text> -- draws in the order given
+  local task="$1" page
+  shift
+  : > "$T50_SEQ"
+  while [ $# -gt 1 ]; do
+    printf '%s\n' "$1" >> "$T50_SEQ"
+    shift
+  done
+  page="$1"
+  PATH="$T50_SHIM/bin:$PATH" ORCHID_TEST_QID_SUFFIXES="$T50_SEQ" \
+    "$ORCHID_BIN" notify --task "$task" --objection "$page"
+}
+# A chosen suffix that an earlier page in this file already drew at random would
+# make the exact-id assertions below fail for a reason that is not the feature.
+# One in 65536 per page raised, so it has never happened — but a suite that
+# blamed the kernel for it would send somebody a long way in the wrong
+# direction.
+t50_free() {   # <suffix>
+  local f
+  for f in ".orchid/runtime/answers/q-$ORCHID_EPOCH-$1".*; do
+    [ -e "$f" ] || continue
+    fail "fixture: suffix $1 is already in use in epoch $ORCHID_EPOCH — an earlier page in this file drew it at random (1 in 65536). Nothing about the kernel changed; re-run"
+    return 0
+  done
+}
+
+t4x_new_task T050 "a question id that would be handed out twice"
+t4x_to_arbitrating T050
+T50_OBJ='the two writes at lib/pump.sh:40-72 are still not ordered'
+"$ORCHID_BIN" task arbitrate T050 --result request-changes --reason "$T50_OBJ" >/dev/null \
+  || fail "fixture: T050's first request-changes must succeed"
+t4x_to_arbitrating T050
+# The second rejection is WAIVED, and so is the third below, for the reason the
+# T048 block establishes: `review_objection_record` composes `a<attempts + 1>:`,
+# so only two consecutive waived rounds produce a byte-identical line. That is
+# the sharpest form of this case — with the text identical and the instance the
+# only thing that moved, nothing but the counter can refuse the stale answer,
+# and a collision that rewrites the record the counter lives in erases the one
+# difference there was.
+"$ORCHID_BIN" task arbitrate T050 --result request-changes --waive-attempt --reason "$T50_OBJ" >/dev/null \
+  || fail "fixture: T050's second (waived) request-changes must succeed"
+t4x_to_arbitrating T050
+T50_LINE="$(t4x_objection T050)"
+assert_eq 2 "$(t4x_seq T050)" "fixture: the waived rejection is instance 2"
+
+# The page for instance 2, at an id this fixture picks, answered `approve` and
+# then left alone: the operator decided, and nothing has relayed it yet.
+t50_free c011
+q50_old="$(t50_notify T050 c011 "$(t4x_page T050 "$T50_LINE")")" \
+  || fail "fixture: the page for instance 2 must be raisable"
+assert_eq "q-$ORCHID_EPOCH-c011" "$q50_old" \
+  "fixture: the shim must really be deciding the qid — if the kernel drew this suffix some other way, every collision below is imaginary"
+"$ORCHID_BIN" answer "$q50_old" approve >/dev/null \
+  || fail "fixture: the operator answers the page for instance 2"
+t50_old_question="$(cat ".orchid/runtime/answers/$q50_old.question")"
+t50_old_authority="$(cat "$(t4x_authority "$q50_old")")"
+
+# ...and then, before anything relays it, the objection is re-raised in exactly
+# the same words across another waived round.
+"$ORCHID_BIN" task arbitrate T050 --result request-changes --waive-attempt --reason "$T50_OBJ" >/dev/null \
+  || fail "fixture: T050's third (waived) request-changes must succeed"
+t4x_to_arbitrating T050
+assert_eq "$T50_LINE" "$(t4x_objection T050)" \
+  "fixture: the re-raised objection is byte-identical, so nothing but the instance separates it from the answered one"
+assert_eq 3 "$(t4x_seq T050)" "fixture: ...and the instance rotated to 3"
+
+# THE FORCED COLLISION. The first draw names the id the answered page is filed
+# under; the second names a free one.
+t50_free d0d0
+q50_new="$(t50_notify T050 c011 d0d0 "$(t4x_page T050 "$T50_LINE")")" \
+  || fail "T032: a drawn id that is already in use must cost a redraw, never the page — notify refused to raise this stop at all"
+assert_eq "q-$ORCHID_EPOCH-d0d0" "$q50_new" \
+  "T032: the first draw named an id already carrying a question, an answer and an authority record, so the page must be filed under the next one — an id is claimed before anything is written under it, and a claim is never released"
+assert_eq "$t50_old_question" "$(cat ".orchid/runtime/answers/$q50_old.question")" \
+  "T032: the earlier page's question must be byte-identical afterwards — atomic_write renames over whatever was there, so a reused id destroys the page an operator answered"
+assert_eq "$t50_old_authority" "$(cat "$(t4x_authority "$q50_old")")" \
+  "T032: ...and so must its authority record. Rewritten to the instance standing now, it would turn the operator's answer about instance 2 into an authority for instance 3"
+grep -qxF -e "seq: 2" "$(t4x_authority "$q50_old")" \
+  || fail "T032: the earlier record must still name instance 2 — this is the field a collision silently advances, and the one review_operator_relay matches on"
+assert_eq approve "$(cat ".orchid/runtime/answers/$q50_old.answer")" \
+  "T032: the operator's earlier answer is still exactly the word they typed"
+[ ! -f ".orchid/runtime/answers/$q50_new.answer" ] \
+  || fail "fixture: the page just raised must be unanswered, or the refusal below proves nothing"
+
+# ...so the stale `approve` authorises nothing for the objection standing now.
+rc=0
+t50_out="$(ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T050 \
+  --result approve --reason "both writes are ordered now" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "T032: an answer given about the objection of an earlier instance must not settle the one standing now, however the two pages' ids were drawn"
+assert_match "not the operator" "$t50_out" \
+  "...and it is the operator-authority refusal, not another failure passing for one"
+assert_eq "$T50_LINE" "$(t4x_objection T050)" "and the objection is untouched"
+assert_eq 3 "$(t4x_seq T050)" "...and so is its instance"
+assert_eq arbitrating "$(t4x_status T050)" "...and the task took no transition"
+red_case 'a question id drawn onto an answered page: redrawn, the earlier page untouched, and its approve authorising nothing for the objection standing now'
+
+# --- and the page that WAS raised still opens the door ----------------------
+"$ORCHID_BIN" answer "$q50_new" approve >/dev/null \
+  || fail "fixture: the operator answers the page raised for instance 3"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T050 \
+  --result approve --reason "both writes are ordered now" >/dev/null \
+  || fail "T032: the redraw must leave a page that relays exactly as an uncontended one does — a guard that cost the operator their route would be a wall"
+assert_eq merging "$(t4x_status T050)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T050)" "...and the objection is cleared"
+[ ! -f "$(t4x_authority "$q50_new")" ] \
+  || fail "T032: the authority for instance 3 must be spent by the arbitration it authorised"
+# Spending an authority frees nothing: the id stays claimed, and the answered
+# page beside it stays exactly where it was.
+assert_eq approve "$(cat ".orchid/runtime/answers/$q50_old.answer")" \
+  "T032: consuming one page's authority must not disturb another page's answer"
+[ -e ".orchid/runtime/answers/$q50_old.reserved" ] \
+  || fail "T032: an id must stay claimed after the artifacts under it are consumed — 'nothing is filed here any more' and 'this id was never used' are different facts, and only the claim keeps them apart"
+[ -e ".orchid/runtime/answers/$q50_new.reserved" ] \
+  || fail "T032: ...including the id whose authority was just spent"
+green_case 'the redrawn page: answered and relayed like any other, its authority spent, and both claims outliving the artifacts filed under them'
+
+# --- the twin: a free draw is used as it is drawn ---------------------------
+# The redraw above is only worth anything if the guard is not simply redrawing
+# every time. A guard that answered "taken" to everything would pass the case
+# above and quietly cost a draw on every page ever raised.
+t4x_new_task T051 "a free id is claimed as it is drawn"
+t4x_to_arbitrating T051
+"$ORCHID_BIN" task arbitrate T051 --result request-changes --reason 'the lock is still dropped before the retry at lib/pump.sh:88' >/dev/null \
+  || fail "fixture: T051's request-changes must succeed"
+t4x_to_arbitrating T051
+T51_LINE="$(t4x_objection T051)"
+t50_free e11e
+q51="$(t50_notify T051 e11e "$(t4x_page T051 "$T51_LINE")")" \
+  || fail "fixture: the page for T051's objection must be raisable"
+assert_eq "q-$ORCHID_EPOCH-e11e" "$q51" \
+  "T032: a drawn id nothing has ever been filed under must be claimed as drawn — a guard that redrew regardless would pass the collision case above while telling nobody it had stopped distinguishing anything"
+"$ORCHID_BIN" answer "$q51" approve >/dev/null \
+  || fail "fixture: the operator answers T051's page"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T051 \
+  --result approve --reason "the lock spans the retry now" >/dev/null \
+  || fail "T032: the uncontended page relays exactly as it always did"
+assert_eq merging "$(t4x_status T051)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T051)" "...and T051's objection is cleared"
+green_case 'a free question id: claimed on the first draw, and the page it names relays unchanged'
+
+# ============================================================================
+# AN ANSWER IS ABOUT A ROUND, NOT ONLY ABOUT AN OBJECTION (T032 convergence,
+# after the attempt-7 arbitration).
+#
+# Every case above binds the operator's answer to a TASK, an INSTANCE and a
+# TEXT. None of them binds it to what the operator was actually looking at. The
+# question an objection page asks is "given this round's diff and this round's
+# reviews, was my objection met?" — and every term of that can move while the
+# objection line and its instance sit perfectly still:
+#
+#   * a rebase or a hand-fix re-points `candidate_sha`;
+#   * a relaunched reviewer slot files a second accepted envelope;
+#   * `jobs reconcile` replaces a filed verdict at the same path;
+#   * a repin rewrites the review plan the round is judged under.
+#
+# The stored objection is `a<attempt>: <reason>`, so it only moves when
+# `attempts` does — and `--waive-attempt` is the documented way to reject a
+# round without moving it. So an answer given about the round the operator was
+# shown could be relayed against a round that had changed underneath it, and
+# their "yes, that is fixed" would settle a diff and a review set they never
+# saw. That is F33's outcome again, with the operator's own approve as the
+# instrument.
+#
+# So the authority record states the round's EVIDENCE — one digest over the
+# candidate, the attempt, the pinned plan and the accepted review envelopes
+# (lib/objection.sh's objection_evidence) — and the relay recomputes it and
+# compares it as a whole line, like the other three fields. tests/test_drive.sh
+# Part AJ pins each term of that digest moving on its own; what is driven here,
+# through the verbs, is what it costs and what it restores.
+#
+# RED: the objection, its instance and its text all unchanged, a second accepted
+#      review landing after the operator answered — the answer authorises
+#      nothing, and is not spent.
+# GREEN: the page raised for the round as it stands now relays exactly as an
+#      undisturbed one does.
+# ============================================================================
+t4x_new_task T052 "an answer bound to the round the operator was shown"
+t4x_to_arbitrating T052
+T52_OBJ='the second write at lib/queue.sh:61 still runs outside the lock'
+"$ORCHID_BIN" task arbitrate T052 --result request-changes --reason "$T52_OBJ" >/dev/null \
+  || fail "fixture: T052's request-changes must succeed"
+t4x_to_arbitrating T052
+T52_LINE="$(t4x_objection T052)"
+assert_eq 1 "$(t4x_seq T052)" "fixture: T052's objection is instance 1"
+
+q52="$("$ORCHID_BIN" notify --task T052 --objection "$(t4x_page T052 "$T52_LINE")")" \
+  || fail "fixture: the page for T052's objection must be raisable"
+grep -qxF -e "candidate: $t32_sha" "$(t4x_authority "$q52")" \
+  || fail "T032: the authority record must name the candidate the page was raised about, plainly — that line is what a human reading runtime/answers/ afterwards can line up against the diff the operator was shown"
+T52_EV="$(grep '^evidence: ' "$(t4x_authority "$q52")" | cut -d' ' -f2-)"
+[ -n "$T52_EV" ] \
+  || fail "T032: the authority record must state the review evidence the page presented — without it an answer is bound to a task, an instance and some words, and to nothing about the round it was given about"
+"$ORCHID_BIN" answer "$q52" approve >/dev/null \
+  || fail "fixture: the operator answers the page for T052's objection"
+
+# THE ROUND MOVES, AND NOTHING ELSE DOES. A second accepted reviewer envelope —
+# reconcile's own `<base>.2.json` shape, what a relaunched slot lands — arrives
+# after the answer. The objection, its class and its instance are untouched by
+# it, which is the whole point: every field the record carried before this
+# convergence still agrees.
+T52_ENV=".orchid/reviews/T052-a2-reviewer.json"
+[ -f "$T52_ENV" ] \
+  || fail "fixture: T052's round must have a filed reviewer envelope to duplicate, or the change below moves nothing"
+cp "$T52_ENV" ".orchid/reviews/T052-a2-reviewer.2.json" \
+  || fail "fixture: the second accepted envelope must be plantable"
+assert_eq "$T52_LINE" "$(t4x_objection T052)" \
+  "fixture: the objection text is untouched by a review landing, so nothing but the evidence can refuse the relay below"
+assert_eq 1 "$(t4x_seq T052)" "fixture: ...and so is its instance"
+assert_eq operator "$(t4x_objection_by T052)" "fixture: ...and its class"
+
+rc=0
+t52_out="$(ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T052 \
+  --result approve --reason "the second write is inside the lock now" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "T032: an answer given about the round the operator was shown must not settle a round whose reviews have changed since — they answered a question about evidence, and the evidence is not the evidence they read"
+assert_match "not the operator" "$t52_out" \
+  "...and it is the operator-authority refusal, not another failure passing for one"
+assert_eq "$T52_LINE" "$(t4x_objection T052)" "and the objection is untouched"
+assert_eq 1 "$(t4x_seq T052)" "...and so is its instance"
+assert_eq arbitrating "$(t4x_status T052)" "...and the task took no transition"
+[ -f "$(t4x_authority "$q52")" ] \
+  || fail "T032: a REFUSED relay must spend nothing — the consume is what an authority it acted on pays, and an authority that authorised nothing has paid nothing"
+red_case 'a second accepted review landing after the operator answered: the same objection, the same instance, the same words, and an answer that authorises nothing'
+
+# --- and the page for the round as it stands now still opens the door -------
+q52b="$("$ORCHID_BIN" notify --task T052 --objection "$(t4x_page T052 "$T52_LINE")")" \
+  || fail "fixture: the page for the round as it stands now must be raisable"
+T52_EV2="$(grep '^evidence: ' "$(t4x_authority "$q52b")" | cut -d' ' -f2-)"
+[ -n "$T52_EV2" ] \
+  || fail "fixture: the fresh record must state its own evidence"
+[ "$T52_EV2" != "$T52_EV" ] \
+  || fail "T032: the fresh page must present DIFFERENT evidence from the answered one — if the digest did not move, the refusal above happened for some other reason and this feature binds nothing"
+"$ORCHID_BIN" answer "$q52b" approve >/dev/null \
+  || fail "fixture: the operator answers the page for the round as it stands"
+ORCHID_ACTOR="$T4X_BROKER_ACTOR" "$ORCHID_BIN" task arbitrate T052 \
+  --result approve --reason "the second write is inside the lock now" >/dev/null \
+  || fail "T032: the binding must be a door and not a wall — the operator answering the page for the round that EXISTS converges it exactly as an undisturbed one does"
+assert_eq merging "$(t4x_status T052)" "the relayed approval lands"
+assert_eq "" "$(t4x_objection T052)" "...and the objection is cleared"
+[ ! -f "$(t4x_authority "$q52b")" ] \
+  || fail "T032: the fresh authority must be spent by the arbitration it authorised"
+# ...and the stale one is still sitting there, unspent, because it authorised
+# nothing. A consume that swept it would be the kernel deciding an answer it
+# refused to act on had been used up.
+[ -f "$(t4x_authority "$q52")" ] \
+  || fail "T032: the record for the round the operator was shown must survive an arbitration it did not authorise — spending it would let a later sweep read 'that answer was used' about an answer nothing ever acted on"
+green_case 'the page raised for the round as it stands: a different evidence digest, answered, relayed, spent — while the record it superseded is left exactly where it was'

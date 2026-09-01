@@ -19,6 +19,16 @@ belong in `~/.orchid/config` — set once, apply to every repo. Per-repo facts
 Env vars are for one-off overrides (`ORCHID_<KEY>`, uppercased, `.`/`-` both
 map to `_` — e.g. `role.code-reviewer` overrides via `ORCHID_ROLE_CODE_REVIEWER`).
 
+`<repo>` above is the **target repository** — the one being driven
+(`$ORCHID_REPO`, else the current directory). The orchid installation's own
+`orchid.config` (the one sitting next to `bin/orchid` in a checkout of orchid
+itself) is **never** a layer, however plausible a global default it looks: a
+value set there applies to orchid's own repository when orchid is the repo
+being driven, and to nothing else. `~/.orchid/config` is the per-machine layer
+that does apply everywhere. This has now wedged two runs through
+`pack_budget_bytes` alone, so `orchid doctor` prints the resolved pack budget
+and the layer it came from on every invocation.
+
 `orchid config list` prints the **effective** value of every key together
 with which layer won it — never guess why a setting applies. `orchid config
 commit --reason "..."` is the safe way to land an `orchid.config` edit onto
@@ -41,6 +51,9 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 |---|---|---|---|
 | `integration_branch` | `orchid/integration` | repo | v0 |
 | `verify` | *(none — required)* | repo | v0 |
+| `merge_gate` | *(unset — no gate)* | repo | v1.1 |
+| `worktree_prepare` | *(unset — no preparation step)* | repo | v1.0 |
+| `worktree_prepare_timeout_s` | `900` | repo | v1.0 |
 | `concurrency` | `2` | repo or user | v0 (1) / v1-m2 (2 + scheduling) |
 | `role.orchestrator` | `claude` (fallback chain default: `claude,codex`) | repo or user | v0 |
 | `role.implementer` | `codex` (fallback chain default: `codex,claude`) | repo or user | v0 |
@@ -54,6 +67,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `lock_break_s` | `900` | repo | v0 |
 | `verb_lock_wait_s` | `10` | repo | v1-m2 |
 | `stall_minutes` | `10` | repo | v0 |
+| `cpu_stall_min_s` | `0` | repo | v1.1 |
 | `timeout_minutes` | `60` | repo | v0 |
 | `agy_max_bytes` | `100000` | repo or engine worktree | v0 |
 | `hermes_max_bytes` | `100000` | repo or engine worktree | v1-m4 |
@@ -63,13 +77,19 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `spool_max_bytes` | `262144` | repo | v0 |
 | `gc_older_than_s` | `86400` | repo | v0 |
 | `infra_max` | `3` | repo | v0 |
+| `rework_max` | `3` | repo | v1.1 |
+| `handoff.pin_check` | `none` | repo | v1.1 |
+| `flaky.quarantine` | `tests/QUARANTINE.md` | repo | v1.1 |
+| `rework_nonconvergence_max` | `3` | repo | v1.1 |
 | `model` | *(empty — engine's own default)* | repo or user | v0 |
 | `effort` | `medium` | repo or user | v0 |
 | `rate_limit_backoff_s` | `3600` | repo | v1-m2 |
 | `engine_fail_threshold` | `3` | repo | v1-m2 |
 | `pump_stale_s` | `900` | repo | v1-m2 |
 | `pump_interval_s` | `240` | repo | v1-m4 |
+| `pump_wake_max` | `3` | repo | v1.1 |
 | `arbiter_wait_s` | `14400` | repo | v1-m2 |
+| `handoff_before_verify` | `off` | repo | v1.1 |
 | `hook.after_plan_draft` | *(unbound — no handler)* | repo | v1-m3 |
 | `hook.before_arbitration` | *(unbound)* | repo | v1-m3 |
 | `hook.on_verify_fail` | *(unbound)* | repo | v1-m3 |
@@ -87,9 +107,210 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 
 ## Notes on individual keys
 
+- **`integration_branch`** names more than the ref merge advances. Run-level
+  acceptance executes the canonical local-CI command once from a checkout
+  actually parked on this branch after the final candidate merges. Task
+  worktrees and merge temp worktrees cannot stand in for that run: any guard
+  conditioned on the checked-out branch is false in both. Record branch and
+  HEAD in the acceptance evidence; a candidate leaves this as a post-merge
+  operator step.
 - **`verify`** has no default on purpose: `orchid doctor` FAILs preflight
   until it's set (`orchid.config`), except `--greenfield` mode, which skips
   this check pre-scaffold (nothing to verify yet).
+- **`merge_gate`** is the repository's own floor: one command, run by `orchid
+  merge` on the MERGED tree in its temp worktree, in addition to whatever the
+  task named in `verification_commands`. It is the answer to a specific
+  failure — a repo-wide check that each task has to opt into reaches only the
+  tasks whose author remembered it, which in r-001 meant `scripts/ci-local.sh`
+  ran for two tasks out of eight while seventeen ShellCheck findings piled up
+  behind a green suite. So the resolution order is deliberately the reverse of
+  `verify`'s: `verify` is a *fallback* a task overrides with its own
+  `verification_commands`, while `merge_gate` is read from repo config only
+  and no task frontmatter can switch it off.
+  - **The command is resolved against the repository, not against the
+    candidate.** `orchid merge` reads this key from the repository's own
+    `orchid.config` and then *runs* the resulting command inside the temp
+    worktree holding the merged tree. Only the second half sees the candidate.
+    So a candidate that commits an `orchid.config` of its own naming a gentler
+    gate is still judged by the one configured here — its version of the key
+    takes effect from the *next* merge, once it has landed and the checkout
+    orchid runs from carries it. Frontmatter is not the only way a change
+    could otherwise lower the floor it is being measured against; this is the
+    other one.
+    - **When orchid runs from the checkout being merged into**, the merge
+      brings that last step with it: a merge that moved the committed
+      `orchid.config` refreshes this checkout's copy so the key it just landed
+      is live for the next merge — but *only* where that copy had no
+      uncommitted edit of its own in either the working tree or the index. If
+      it had one, nothing is overwritten, the merge says so on stderr, and the
+      values this checkout resolves stay yours until you reconcile the two.
+      `docs/troubleshooting.md`, "`orchid.config` after a merge", has both
+      sides and the order to do them in. Otherwise this is the one adoption
+      step a merge cannot take for you: the branch carries the key and each
+      checkout picks it up when it next pulls.
+  - **It blocks, it does not merely run.** Its exit status joins the task
+    suite's, and the integration-ref advance is already conditional on that
+    being zero — so a red gate returns the task to `rework` (journaled
+    `gate_failed`, distinct from `validation_failed`) with the integration ref
+    untouched.
+  - **A red gate is bounded, and it is the only merge failure that is.**
+    `merging → rework` normally charges no attempt: the candidate was
+    independently verified once already, so a merge conflict, a rebase
+    conflict or a `validation_failed` is not a fresh round of the
+    implementer's work. That reasoning does not survive contact with this key.
+    A gate failure is a statement about the *repository*, and a repository
+    nobody has touched is red again on the next round — so an uncharged edge
+    turns a persistently red gate into an endless loop: dispatch, implement,
+    verify, review, merge, red gate, rework, dispatch, with the counter that
+    exists to stop it never moving. So `gate_failed` charges the round, and
+    when the charge reaches the task's cap (`attempt_budget`, else
+    `rework_max`, default 3) the task goes to **`blocked`** instead of
+    `rework`. Nothing else about merge changed: conflicts and
+    `validation_failed` are still exempt.
+
+    Yes, this charges a task for a fault that is often not its own — that is
+    precisely why the cap exists rather than an argument against the charge.
+    The alternative is not that the task is treated fairly; it is that
+    implementers are re-dispatched forever against something no implementer
+    round can clear. When the gate really was naming the repository rather
+    than the candidate, `orchid task reverify <id> --reason "..."` re-runs
+    verification with **no attempt consumed** once the repository is green
+    again, and `orchid task retry <id> --reason "..." --attempts N` grants the
+    rounds back. Both are named in the reason the block records and in the
+    boundary the driver raises.
+  - **What it costs, and how to keep that small.** `orchid merge` runs the
+    task's `verification_commands` on the merged tree *first*, so a gate that
+    repeats the test suite pays for that suite twice per merge and learns
+    nothing the second time. Name the checks a task's own suite does **not**
+    already run. Orchid's own gate is
+    `scripts/ci-local.sh --bash /bin/bash --no-tests`: every static check and
+    ShellCheck, no second suite — which is exactly the half of the r-001
+    failure no task ever opted into, at seconds rather than minutes. What
+    remains is once per *merge* in any case:
+    `orchid verify`, which runs on every attempt, is untouched, so the inner
+    loop stays fast. Orchid will not deduplicate the overlap for you: the only
+    way to detect it is to ask whether the task's command *looks like* it
+    contains the gate, and satisfaction decided by string compare is how a
+    gate ships bypassable. The one skip it does make is not textual — the gate
+    is skipped when the task's own suite already failed, since that merge is
+    going to `rework` regardless.
+  - **What a narrow gate does not cover, said plainly.** "The task's own
+    suite" is whatever that task's author wrote in `verification_commands`,
+    which for a tightly-scoped task is a couple of files rather than the whole
+    suite. So a `--no-tests`-style gate raises the *static* floor for every
+    task and leaves the *test* coverage of a merge exactly as wide as each
+    author made it — the r-001 defect narrowed, not abolished. Choose
+    knowingly: put in this key what must hold for every merge regardless of
+    who wrote the task, and accept the second run if that includes tests.
+  - **Recursion.** A gate that runs the repository's own suite will re-enter
+    `orchid merge` through that suite's tests. `orchid merge` sets
+    `ORCHID_MERGE_GATE_ACTIVE` in the gate command's environment and refuses
+    to open a second level when it sees it; `scripts/ci-local.sh` sets it too,
+    for a direct run with no merge above it. A skipped gate is recorded in the
+    merge log as `gate_status: skipped-nested` and announced on stderr — never
+    passed off as a pass.
+  - **Its evidence is attributed per command.** Both commands write into one
+    `.orchid/reviews/<id>-merge.log`, separated by a `== merge_gate: <cmd>`
+    banner, and the header records each one's own status — `command_status:`
+    for the task suite, `gate_status:` plus `gate_exit:` for the gate. The
+    trailing `exit:` line remains the *merge's* status and is no longer enough
+    on its own to say who failed: the ordinary failing shape here is a green
+    suite followed by a red gate. The rework brief quotes only the half whose
+    recorded status is non-zero, so a passing suite's output never arrives in
+    front of the next implementer as though the gate had reported it — and,
+    since the brief is capped at twenty lines *in log order*, so that a chatty
+    green suite cannot spend that cap before the gate's real locations are
+    reached. The log itself keeps everything either command printed; the
+    filtering happens where the evidence is read, not where it is written.
+  - Distinct from **`hook.before_merge`**, which is an engine hook satisfied by
+    a reconciled envelope and refuses the verb before any merge is attempted
+    (exit 15). `merge_gate` is a shell command scored on its exit status.
+- **`stall_minutes`** is the kernel's one "no sign of life for long enough to
+  call it stuck" bound, and it is read in three places. For a job that stamped
+  a pid, `orchid jobs check` kills it and reports `stalled` after that long
+  without a write to its log. For a job that was spawned but never stamped a
+  pid (its launcher was killed in between), the same silence is what turns
+  `prepared` — which the driver WAITS on, since something is producing output
+  and a second engine in the same worktree is the worse outcome — into
+  `unstamped`, which walks the escalation ladder once and is then reaped, log
+  kept. And `runners/orchid-drive` passes it to `orchid jobs gc` as
+  `--prepared-older-than-s`, the margin an unattended sweep needs so it never
+  reaps a manifest out from under a launcher that is between its own `jobs
+  prepare` and its spawn line. That margin is the DRIVER's, not the verb's: an
+  operator running `orchid jobs gc --older-than-s 0` by hand gets zero.
+- **`worktree_prepare`** is the setup command for the checkouts Orchid makes
+  for itself. Both of them — a task's dispatch worktree, and the temp
+  worktree `orchid merge` runs the suite in before touching the integration
+  ref — are `git worktree add` of a ref, so they hold *only what is
+  committed*. If `verify` needs anything untracked (installed dependencies, a
+  generated file, a `.env`), it will pass in your own checkout and fail in
+  both of orchid's, and the failure lands on the candidate rather than on the
+  environment. Set this to the command that closes the gap; leave it unset
+  (the default) when the committed tree is enough to verify.
+
+  It runs *inside* the fresh checkout with that checkout as its working
+  directory, and is handed three variables:
+
+  | Variable | What it is |
+  |---|---|
+  | `ORCHID_REPO_ROOT` | this repository's own canonical path — a dispatch worktree is a *sibling* of it and a merge worktree is an unrelated directory under `$TMPDIR`, so no relative path reaches it from both (`ln -s "$ORCHID_REPO_ROOT/node_modules" .`) |
+  | `ORCHID_WORKTREE` | the checkout being prepared |
+  | `ORCHID_TASK` | the task id it belongs to — the bare id, with nothing appended, for the merge validation worktree exactly as for the dispatch one; `ORCHID_WORKTREE` is what tells the two apart |
+
+  `ORCHID_REPO_ROOT` is not `ORCHID_REPO`: the latter is a verb's
+  "which repository" input, and setting it here would retarget any nested
+  `orchid` call the command makes.
+
+  `ORCHID_REPO_ROOT` is also exported to **`verify` itself**, in both
+  checkouts that run it. Reaching back to this repository is not always
+  one-time setup — a symlink whose target the suite re-points, a cache
+  directory a test writes into, a fixture path computed per run — and the
+  checkout the suite runs in is a sibling worktree or a `$TMPDIR` one
+  regardless, so `verify` needs the same portable handle rather than an
+  absolute path hardcoded into committed config. `ORCHID_WORKTREE` and
+  `ORCHID_TASK` are not: both describe *the checkout being prepared*, and a
+  verification command is already standing in the checkout it runs against.
+
+  It runs **once per checkout per command text** — a stamp in the worktree's
+  own private git dir, so it dies with the worktree, is never re-run on the
+  next dispatch pass, and *is* re-run after you edit this key. A failure is
+  never stamped (the next pass retries it) and stops the run: dispatch parks
+  on a `worktree-conflict` boundary without advancing the task, and `orchid
+  merge` refuses before it can score the environment against a candidate.
+  Output lands in `.orchid/runtime/worktree-prepare/<task>.log` for the
+  dispatch worktree and `.orchid/runtime/worktree-prepare/<task>-merge.log`
+  for the merge validation one — two checkouts of one task, so two records.
+
+  A failure is also **counted as an infra failure, not as an attempt** (from
+  either checkout). That is the point of this being its own command: folded
+  into `verify` instead, a broken bootstrap is a failed verification, which
+  spends one of the task's attempts and reads as "the candidate is wrong".
+  Because `infra_failures` has a cap (`infra_max`), a setup command nobody
+  repairs ends as a blocked task after a bounded number of passes rather
+  than a boundary raised forever.
+
+  Its **stdin is closed** (`/dev/null`), so a command that prompts sees EOF
+  rather than hanging or, worse, reading the driver's own worklist out from
+  under the pass that called it. Write it to run unattended: `npm ci`, not
+  an installer that asks to continue. The same applies to `verify`.
+- **`worktree_prepare_timeout_s`** bounds that command so a hung setup step
+  cannot hang the driver pass that called it; a timeout is a failure like any
+  other. A non-numeric value falls back to the default.
+- **`cpu_stall_min_s`** (default `0`: the check is OFF until an operator
+  opts in) is the CPU floor of the stall check. `stall_minutes` catches a
+  job that stops writing to its log; this catches the job that keeps writing
+  and stops working — an engine still emitting heartbeats while its
+  cumulative CPU time barely moves. With a floor above zero, `orchid jobs
+  check` reads the `cpu` field of the heartbeat lines already in every job
+  log and reports `stalled` (and kills the job, exactly as the log-mtime arm
+  does) when the job burned less than this many CPU-seconds across the last
+  `stall_minutes` of heartbeats. The check is opt-in because CPU alone
+  cannot separate a dead engine from a healthy one blocked on a vendor API —
+  the incident this check came from (F35) later retracted the signal after a
+  working job was observed at ~9 CPU-seconds across 40 minutes — so set a
+  floor above zero only if you know your engines' CPU profile. A heartbeat
+  CPU counter that goes backwards (pid reuse) is treated as unknown and
+  never kills.
 - **`role.*`** — each value is a comma-separated failover chain, primary
   first (e.g. `role.implementer=codex,claude`). A fallback only ever
   activates once it has passed `orchid plugins test <engine> <role>` (the
@@ -97,6 +318,14 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   labels non-default bindings `unverified` until that suite passes them. See
   the [README's any-engine-any-role matrix](../README.md#any-engine-any-role)
   for the full picture and a worked swap example.
+- **`rework_max`** is the rework budget: the number of consumed `attempts` at
+  which `orchid drive` stops retrying a failing task and blocks it for a
+  human. It was a hardcoded `3` in the driver until v1.1. One task can be
+  given a larger budget of its own with `orchid task retry <id> --reason
+  "..." --attempts N` (recorded as `attempt_budget` in its frontmatter, and
+  journaled); this key is the repo-wide default everything else falls back
+  to. `infra_failures` never consume attempts, and neither does `orchid task
+  reverify`.
 - **`role.<id>.blocking=false`** marks a role (built-in or custom)
   non-blocking: a failed job for that role is journaled and the run
   continues rather than infra-failing (`docs/specs/operations.md`'s
@@ -104,11 +333,353 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 - **`review.<tier>`** chains drive risk-tiered review routing (see
   `docs/specs/kernel.md`, Task lifecycle → Independence): `low` wants one
   engine-independent reviewer; `medium`/`high` want two (worktree-capable
-  for depth + engine-independent for diversity).
+  for depth + engine-independent for diversity). At `medium`/`high` the
+  depth half of that pair is a requirement on the EVIDENCE, not only a
+  preference in this chain: `orchid jobs review-plan` labels every slot
+  `worktree` or `inline`, its depth pass searches past this chain (into
+  `role.reviewer`'s chain, then the implementer's own engine) to find a
+  worktree-capable slot wherever the install has one — but only while the
+  round still lacks one, since a second slot is worth more spent on engine
+  independence once slot 1 is already worktree-capable — and a drive pass will
+  not make a DETERMINISTIC approval at those tiers unless one of the counted
+  reviews is credited to a slot the attempt's PINNED plan calls `worktree`
+  — it stops at an arbitrable `review-evidence` boundary instead, which
+  `orchid task arbitrate` settles. Credit follows the pin — which records the
+  qualified engine id each slot was dispatched to, not just its configured
+  name — so re-binding or uninstalling an engine after its review is filed
+  neither withdraws that review's depth nor grants it any.
+  Nothing here is refused over depth: an install whose reviewers are all
+  inline still gets every slot and still reviews every task; what it does
+  not get is an approval no human read. See
+  [specs/kernel.md](./specs/kernel.md), "Review depth", for the decision and
+  the rejected alternatives.
+- **`pump_wake_max`** bounds how many pump passes ONE unchanged judgment
+  boundary may wake an orchestrator for before the pump stops waking a model
+  over it and the driver hands it to a human instead. "An orchestrator could
+  settle this" is a static property of the boundary's kind, the named task's
+  status and the resolved adapter's `command_surface`; it is satisfied
+  identically on the hundredth pass as on the first, and cannot notice that the
+  record has not changed by a character in between. The boundary record's own
+  `passes` counter can, and this is what it is compared against. It counts
+  WAKEUPS: a pass on which nobody could be woken — the pass was not a scheduled
+  one at all (`orchid drive` is also a verb you can run by hand, and only the
+  pump goes on to hand off to a tick), or the boundary is operator-only, or no
+  orchestrator engine resolves (rate-limited, ledger-disabled, none configured,
+  or refused the `orchestrate` step) — is recorded but not charged, so neither
+  an engine outage nor your own debugging can spend the budget without a model
+  ever being asked. In practice
+  the boundaries this bounds are `review-conflict`/`review-evidence` over an
+  `arbitrating` task — the only shape any surface admits a settling verb for. A
+  finished run is handled one gate earlier and never reaches the budget: no
+  surface admits `orchid run accept`, so `run-complete` is operator-only and
+  the pump declines it without spending a wakeup at all. Raise
+  it if your orchestrator legitimately needs more passes to settle a boundary;
+  a value of `0` or a malformed one falls back to the default rather than to
+  either extreme.
 - **`hook.<point>`** — an ordered, comma-separated list of plugin **names**
   (not qualified ids); append `:required` to a handler to make its failure
   block the edge (exit 15). No built-in defaults — an unbound point runs no
   handler at all.
+- **`handoff_before_verify`** (`off` by default) names the OPERATOR HAND-OFF
+  pause in [PROTOCOL.md](../PROTOCOL.md)'s THE TICK: the point, after an
+  implementer's envelope reconciles and before `orchid verify` runs, where a
+  candidate's execution-requiring mechanical work happens — applying a
+  linter's own fix, setting the mode bit on a newly added executable, running
+  a generator whose output is checked in (but never regenerating an artifact
+  derived from the whole tree, such as the release-archive checksum pinned
+  into `Formula/orchid.rb`: per-candidate re-derivation of a shared line
+  conflicts unresolvably on the second merge, so those belong to the
+  integration branch). Set it to `required` when your implementer is an
+  engine profile that denies on the command *string* and so can perform none
+  of those: a drive pass then stops at an `operator-handoff` boundary instead
+  of verifying a candidate that was never going to pass and spending one of
+  its rework rounds (`rework_max`, above) on the failure.
+  **A second arm asks for the same pause, and it does not replace this key.**
+  Where the `mechanical` step cannot be *routed* to the engine that built the
+  candidate, the pause is asked for without anyone configuring it (INV-16).
+  What that arm closes on its own is the actor orchid **cannot identify**: an
+  implementer that resolves to no installed manifest is held rather than waved
+  through, and the boundary says so in those words — a gate that cannot
+  identify an engine must never report that it has no objection.
+  What it does *not* do is set this key for you. Its other outcome — the engine
+  declares no `shell` — cannot arise for a candidate orchid dispatched, because
+  `roles/implementer.role` requires `workspace_write,shell,git`: an engine that
+  declares no `shell` is refused the implementer role (exit 14) before it can
+  build a candidate at all, so nothing reaches the hand-off to hold. That half
+  is defense in depth against the role descriptor changing, not a pause you
+  will meet. **The case this key exists for is the one no declaration shows** —
+  a profile that *declares* `shell` and is still not granted it, which the
+  shipped `claude` adapter is on its implement path. Nothing but you can tell
+  orchid about that one.
+  The two arms compose and never override: either can turn the pause on,
+  neither can turn the other off, so an engine that declares `shell` can never
+  clear a pause you asked for. A capability is a claim by the plugin, not a
+  grant. The unresolvable-actor arm is not the third-party case, though — an
+  engine is looked up both by the directory it is installed under and by the
+  qualified `id=` its manifest claims (`acme/foo`), so a third-party
+  implementer is priced from its own manifest like any other, and that refusal
+  means the plugin is genuinely not installed.
+  It ships `off`, and turning it on is
+  an operator decision landed through `orchid config commit --reason "..."`
+  like any other config change — never a line a task's candidate adds to the
+  live `orchid.config` of the run it is executing inside, which would switch a
+  new driver gate on mid-run, for every remaining task, with no reason
+  recorded. Perform the steps, commit them, then
+  `orchid task handoff <id> --ack --reason "..."` — which advances
+  `candidate_sha` to the commit the hand-off produced (so the record names the
+  tree verification will run, not the one captured before it; a `HEAD` that
+  does not descend from the current candidate, or does not sit on the task's
+  branch, is refused rather than adopted) and binds the acknowledgement to
+  that, so a resumed session or a second driver pass
+  proceeds. Acknowledge LAST: a commit made after the ack leaves the tree ahead
+  of what was acknowledged, which reopens the pause until you re-run the verb.
+  The verb refuses an ack over a tree with uncommitted changes (naming them),
+  over a tree whose state it could not read at all — a failed `git status` is
+  reported as an uninspected tree, never as a clean one — and
+  from any status but `testing`, where reviewers, an arbiter or a merge would
+  already be holding the commit it wants to advance; `--clear` carries neither
+  restriction.
+  A rebase or a fresh rework round invalidates it exactly as
+  INV-07 invalidates verify evidence. Any value
+  other than `off` reads as `required`, so a typo can only route more work to
+  a human, never less.
+- **Verification-failure classification** has **no signature surface**, and
+  that is the design rather than an omission. A repository cannot declare a
+  *failure sentence* that forgives its own rounds: earlier versions of this
+  feature offered one, and every signature list, directory-name list and
+  whole-round exemption in them ended up forgiving something it never meant
+  to. Four failures are waivable, and each is **proved against the world**
+  rather than read out of the failure's wording:
+  - **A package pin the repository's own freshness check reports stale**
+    (`handoff.pin_check`, below).
+  - **An executable this candidate left mode 644** — a file carrying a `#!`
+    line with no execute permission, either one it *added* at that mode or one
+    it *modified* that its `base_sha` recorded mode 755, which is what a
+    rewrite that loses an exec bit looks like and is just as much the
+    operator's `chmod`.
+  - **Gitignored build state the worktree never received** — a directory that
+    is present in the integration checkout, ignored by the repository's own
+    rules, and absent from the worktree the verification ran in. `git worktree
+    add` reproduces what git *tracks*, so `node_modules`, `vendor`, `.venv`
+    and a symlink into a sibling checkout simply are not there (lesson L003).
+    Orchid snapshots the package/command subjects that directory publishes
+    before verification too; post-command integration contents are not an
+    attribution authority.
+  - **An assertion the repository already recorded as known-flaky**
+    (`flaky.quarantine`, below).
+
+  A run whose recorded exit status says it **stopped short** (`orchid verify`
+  recorded exit 124, 137 or 143) is **reported and still charged**. It was a
+  fifth verdict once, on the reading that the harness had reaped a pass which
+  therefore never spoke about the candidate — and that reading was never
+  proved. The same trailer is what a candidate that *hangs* until a timeout
+  reaps it leaves, which is the very defect a `timeout` in a verification
+  command line exists to catch, and what a suite that exits with the status
+  deliberately leaves. Nothing in the log tells them apart, so it takes the
+  uncertain reading: the attempt is charged, and the reason says the run
+  stopped short so you are not left wondering why the log ends where it does.
+
+  Each needs **two halves, and neither is worth anything alone**:
+  - *The state, proved against the world* — `stat` for the mode bit, *running*
+    the freshness check for the pin, comparing the two checkouts for the
+    missing build state, and reading a register the candidate did not touch
+    for the flaky one. No sentence in the failure can answer any of those
+    questions, because `Permission denied`, `is not executable`, `checksum is
+    stale` and `Cannot find module` are all things an ordinary defect prints.
+  - *The attribution, from the failure to that artifact.* Per failing
+    **line**, and in two steps, because one fault does not produce one failure
+    — it produces a cascade. At least one failing line must **name that file**
+    and report its fault (refuse to execute it, or call it stale); that is the
+    proof the outstanding state blocked this run. Every failing line that then
+    names the file is part of its cascade, whether or not it repeats the
+    causal wording (`runners/orchid-drive must exist and be executable` is
+    unmistakably that mode bit's failure). The path must use its exact
+    repository-relative, `./`-relative, or worktree-root absolute spelling,
+    with a **boundary** after it: an outstanding `bin/tool` does not collect a
+    genuine `bin/tool-helper: Permission denied` or a distinct
+    `fixtures/bin/tool: Permission denied` by suffix.
+
+    For the missing build state the causal proof is the same shape asked of a
+    different fact: a line reporting that something **could not be resolved**,
+    where the thing it could not resolve **lives inside the absent
+    directory**. `error Command "jest" not found` attributes to
+    `mobile/node_modules` because `mobile/node_modules/.bin/jest` exists in the
+    checkout that still has it — and attributes to nothing at all when the
+    absent directory is a `.cache` with no `jest` in it, which is exactly the
+    coincidence that made the first version of this arm dangerous. Only the
+    diagnosed subject is looked up: `ENOENT: ... open 'src/config.json'` asks
+    about `src/config.json`, so an unrelated package named `open` cannot earn a
+    waiver. Yarn v1's version/help records are exact neutral context, but its
+    echoed package command and `error Command failed with exit code 127.` are
+    attributed only after that command is present in the trusted missing-tree
+    inventory and a causal resolution line has opened the route. This covers
+    `$ jest` and `$ tsx scripts/parseBooks.ts` without making arbitrary command
+    echoes or exit records neutral. Its cascade
+    claims a line that **names the directory**, or that names a path **inside**
+    it — `ENOENT: ... open '.../node_modules/x'` cannot be about anything but
+    the tree that is not there. That last part belongs to this arm alone,
+    because its artifact is a *directory* that is entirely absent; where the
+    artifact is a file, `bin/tool/child` is a different file and `bin/tool`
+    does not collect it either. For the
+    flaky register the signature *is* the proof, matched literally and
+    ordinarily claiming only the lines it matches. Exact registered companion
+    context can join only after that causal signature matches; it cannot open
+    the route and it cannot claim an unlisted line.
+
+  **Two of those proofs read a file out of your repository — the pin check and
+  the flaky register — and a file is normally an authority on a candidate only
+  while it is that candidate's own record of it.** Each is read only when it is
+  *untouched* across `base_sha..candidate_sha`, *tracked in* `candidate_sha` as
+  an ordinary file, and present in the verified worktree with the same bytes
+  and the same mode that commit records. The first clause alone is not the
+  question, because a diff of two commits cannot see the file that actually
+  ran: an edit left unstaged, an edit staged and never committed, a file
+  dropped in untracked, one deleted, and one whose mode has moved are all
+  invisible to it, and every one of them is a way to hand the driver a file the
+  implementer controls. Any of those, and any form of the question that cannot
+  be *answered* — a missing or unresolvable `base_sha`/`candidate_sha` produces
+  the same empty diff an untouched file does — closes the route and charges.
+
+  The flaky register alone has a bootstrap path for tasks already in flight
+  when the register is introduced. If both task commits resolve and both lack
+  the configured path, Orchid may read the integration checkout's tracked copy
+  while its index, bytes, and mode are clean at integration `HEAD`. A candidate
+  addition no longer lacks the path, and a candidate deletion had it in the
+  base, so neither can borrow that copy. An unanswerable history or dirty
+  integration register closes the route and charges.
+
+  Being outstanding is not being to blame — a repository whose sourced
+  libraries carry `#!` lines at mode 644 (orchid is one, in every `lib/*.sh`)
+  has that state outstanding on any candidate that adds one, and a stale pin
+  is outstanding on the whole tree for as long as it is stale. Where the state
+  is outstanding and the failure is not attributable to it, the attempt is
+  **charged** and the reason says attribution was not established.
+
+  **A round is never waived as a round.** It is waived only when *every*
+  failing line in it has been individually claimed, which lets one round hold
+  a mix *across classes*: a stale pin explaining six lines and an absent
+  dependency tree explaining four together account for all of it and it is
+  waived; one further unexplained line charges it and the reason quotes that
+  line. The class the journal *names* is the one somebody must act on first —
+  `handoff`, then `environment`, then `flaky` — and every contributing class
+  is named in the reason regardless. Unprefixed resolution refusals such as
+  `missing-helper: command not found`, `ENOENT`, and `Cannot find module` are
+  failing lines too, as are unmistakable fatal diagnostics such as `panic:`,
+  `RuntimeError:`, and `Segmentation fault`; an attributable fault beside one
+  cannot hide it. Word boundaries keep progress identifiers such as
+  `test_panic_recovery.sh` out. An unfamiliar non-empty line is not silently
+  dropped: unless it is one of the classifier's explicit progress, success,
+  or neutral NOT-TESTED records, it is uncertain, stays unattributed, and
+  charges. Orchid's terminal standalone `OK` and both NOT-TESTED output forms
+  are explicit members of that closed non-failure vocabulary. Its shipped
+  whole-suite/CI harness captures each child's output until the parent knows
+  its exit status. A passing child contributes only durable qualification
+  records and a terminal `<path>: OK`; a failing child contributes its output
+  verbatim. The classifier trusts no BEGIN/END text from candidate-controlled
+  output, so a test cannot print a success frame around a real defect. Anchored
+  NOT-TESTED/RED/GREEN records stay neutral when their labels describe a
+  `failure` or `failed` fixture; a generic terminal-OK line does not override
+  a failure match. Merely
+  naming the same artifact cannot pull an unknown line into that artifact's
+  cascade.
+  A separate outstanding state contributes no
+  attribution, but a waived reason still reports it when it is an operator
+  action the candidate owes, such as a dropped 755 bit. What remains forgiven,
+  and is bounded on purpose: a
+  candidate that produces *no failing line of its own* while one of those
+  states is outstanding is waived for that round — an operator clears the
+  state in seconds, the round is charged to `infra_failures`, and it stops for
+  a human if it recurs. Every non-candidate exit journals the canonical
+  `attempt not charged` reason: normally in the `infra failure #N`
+  intervention, or as a task note when the archetype declares no rework edge
+  and no infra charge is taken.
+
+  A waived round re-enters rework with `--waive-attempt`, and requires a
+  *fresh* implement envelope of its own: `--waive-attempt` leaves `attempts`
+  where it is, so without that the re-dispatched round would resolve the
+  previous round's envelope and re-verify a candidate that never moved. If a
+  waived fault recurs — a second waived round on the same task — the pass
+  stops at an operator boundary instead of re-dispatching, because a hand-off
+  is a fault an operator clears and an identical retry cannot. That guard
+  counts only this task's `attempt_waiver` entries rather than every journaled
+  non-candidate exit or `infra_failures`, which also counts unrelated harness
+  faults.
+- **`handoff.pin_check`** — an opt-in candidate-local package-pin freshness
+  check the `handoff` route runs, as a command line relative to the verified
+  tree (default `none`). It is only invoked when the
+  named script is a regular file there *and* states how to run it — directly
+  when it is executable, otherwise under the interpreter its own `#!` line
+  names; a file that is neither executable nor names a
+  working interpreter is never run, and that is no pin route. It is read as an
+  authority only under the rule above: the candidate must not have changed it
+  (a bug an implementer just introduced into a pinning script fails exactly
+  like a stale pin, and that is the implementer's), the candidate must
+  *record* it, and the worktree must still carry what was recorded.
+  **A nonzero exit does not prove the pin stale** — a
+  check that cannot find the formula, cannot find a git checkout, or trips
+  over packaging metadata the candidate itself corrupted exits nonzero too,
+  and re-pinning fixes none of those. The check must *say* something is stale
+  and *name* a file the repository tracks; that file is what the waiver is
+  attributed to, and a check that fails silently proves nothing and forgives
+  nothing. The legacy Orchid-format report carries the pinned checksum,
+  expected checksum, and one-command remedy on three continuation lines.
+  Those exact records are attributed with an opt-in checker's causal tracked-
+  file `... STALE` line; an unfamiliar continuation remains unknown and
+  charges. This compatibility grammar does not opt Orchid's Formula pin back
+  in.
+  Never point this at an artifact derived from the whole tree: obliging every
+  candidate to regenerate one makes every branch rewrite the same line and
+  stale-base rebases conflict (lesson L022). Orchid therefore leaves this at
+  `none`; its Formula checksum is regenerated on integration at release time
+  and checked by `scripts/release.sh`. A repository with a genuinely
+  candidate-local/per-file pin can opt in. `none` disables the route.
+- **`flaky.quarantine`** — the known-flaky register the `flaky` route reads,
+  relative to the verified tree (default `tests/QUARANTINE.md` — orchid ships
+  one, carrying two signatures for the two pre-T019 liveness-message families,
+  their closed old-runner companion set, and the reasoning written down).
+  One causal entry per line,
+  `FLAKE: <literal substring of the failing line>` at **column 0** and
+  optionally ` -- <why>`. An exact companion line is
+  `FLAKE-CONTEXT: <whole normalized output line>` at column 0; it has no reason
+  suffix because everything after the colon is matched. Everything else is
+  prose the route ignores (including an indented `FLAKE:`, so a register can
+  document its own format without that example becoming a live signature), so
+  it can be the document a human actually reads. **The safety here is not the
+  path, it is the timing:** a register *this candidate changed* is not an
+  authority on this candidate, so the moment a candidate touches the file the
+  route is gone and the round charges — an implementer cannot quarantine the
+  assertion it is failing, and cannot reach around that by leaving the entry
+  uncommitted in the worktree either, because the register is read only under
+  the authority rule above. The integration bootstrap described above reaches
+  only branches whose base and candidate both predate the path. Three more
+  things keep it narrow: a signature is
+  matched
+  **literally**, never as a pattern, so no entry can be written that
+  matches everything; it must be at least 16 characters, so no entry can match
+  everything by being short; and it ordinarily claims **only** the lines its
+  signature matches. Companion records remain inert until a trusted signature
+  matched the same body, then claim only exact whole lines. They are a closed
+  accommodation for deterministic successful-fixture chatter exposed by an
+  old failed child, not a cascade: an aggregate `3 tests failed`, a novel
+  diagnostic, or any genuine unlisted failure remains unexplained and charges.
+  `none` disables the route.
+  Quarantining is the *second*-best answer — a case that reports without
+  failing the suite is still an unresolved problem, and the register is what
+  keeps it visible instead of silent. Making the test deterministic is the
+  first.
+
+  It is not the only operator-owned stop at that point, and it is not the one
+  a schema task needs. `handoff_before_verify` is about mechanical work
+  INSIDE the candidate, so it is repository-wide config and its
+  acknowledgement moves `candidate_sha` onto the commit that work produced.
+  The OPERATOR PREREQUISITE (T024, dogfood F26) is about a step OUTSIDE the
+  repository that a candidate's verification depends on — applying a
+  migration to the database the suite runs against, provisioning a
+  credential — so it has **no config key**: it is declared per task at
+  planning time in `operator_prerequisite`, acknowledged with `orchid task
+  prereq-ack <id> --reason "..."`, and it never moves the candidate, because
+  nothing was committed. A task can be held by both, and clearing one says
+  nothing about the other. See PROTOCOL.md's `testing` step.
 - **`pack_diff_inline_max_bytes`** only relieves a `workspace_read`-capable
   reviewer/critic (the diff is swapped for a `diff.stat` summary, honestly
   recorded as omitted); an inline-only engine (agy, hermes) still gets the
@@ -119,11 +690,86 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   invoking the vendor CLI at all (they have no worktree-read fallback) —
   see [docs/engines/agy.md](./engines/agy.md) and
   [docs/engines/hermes.md](./engines/hermes.md).
-- **`push_guard`** governs whether `orchid init` installs a `.git/hooks/pre-push`
-  guard that refuses pushing `task/*` branches or the integration branch
+- **`push_guard`** governs whether orchid installs a `pre-push` guard — in
+  `.git/hooks/`, or wherever `core.hooksPath` points if you set it —
+  that refuses pushing `task/*` branches or the integration branch
   (defense-in-depth; PROTOCOL.md instructs the model not to push, but that
   prompt policy is not OS/network containment).
   `ORCHID_ALLOW_PUSH=1` overrides it for one push.
+  The same hook also refuses a push of *any other branch* that would publish
+  orchid's own run state (`.orchid/`) where the remote does not already have
+  it — the leak that reaches a product's `main` by riding
+  the merge chain rather than by anyone pushing an orchid-named branch. Both
+  the branch's **tip** and every commit the push makes **newly reachable** are
+  checked, because a push sends commits rather than a tree: `git rm -r .orchid
+  && git commit` leaves a clean tip over a history that still carries every
+  file, and that is the shape a tip-only check would wave straight through. A
+  branch whose remote copy already tracks run state is exempt automatically, so
+  a repository that carries its own run state on purpose (orchid's own does)
+  pushes it once with `ORCHID_ALLOW_PUSH=1` and is never asked again — the
+  commits are on the remote from then on, so the same exemption covers the
+  history check too. A
+  **Gerrit review upload counts as a branch** — `refs/for/<branch>`,
+  `refs/for/refs/heads/<branch>`, with or without a `%topic=…` push-option
+  suffix — because on a Gerrit-hosted project the upload *is* the push and the
+  change is submitted onto that branch afterwards, on the forge, where no local
+  hook runs. It fails closed: the remote never advertises a `refs/for/…` ref,
+  so there is no remote copy that could exempt it, and `ORCHID_ALLOW_PUSH=1` is
+  the only way through. Everything else is checked by name only: pushing a tag,
+  a note, or any other non-branch ref behaves exactly as plain git does,
+  whatever its commit carries, so tagging a release is never blocked by this.
+  See
+  [troubleshooting.md](./troubleshooting.md) — "Run state in your product's
+  history". `orchid init` installs the hook, and `orchid start` upgrades it on
+  an already-initialized repository: init runs exactly once in a repository's
+  life (it refuses once the integration branch exists), so a repository set up
+  before a newer hook shipped picks it up on the next `orchid start` rather
+  than keeping the old one forever. Once a run has left `planning`, `orchid
+  start` refuses as the setup command it is, so ask for the guard explicitly
+  instead: `orchid start --refresh-push-guard` re-installs it from the current
+  template at any `run_status`, takes no other argument, moves no branch,
+  writes no run state and takes no lock, and is idempotent. Wherever it is
+  installed from, the hook goes at the path **git** will run it from — an
+  absolute `core.hooksPath` *inside this repository's git directory* is
+  honored, and a linked worktree gets the main checkout's shared hooks
+  directory — so it is never written to a `.git/hooks/` git has been configured
+  to ignore. Two `core.hooksPath` layouts orchid does not guard, and it says so
+  instead of pretending otherwise:
+  - a **relative** value (`.githooks`, `hooks/`, anything not starting with
+    `/`), because git resolves it against *each worktree's own top level*, so
+    one setting names a different file in the main checkout, in the integration
+    worktree and in every task worktree, and no single file installed by orchid
+    covers the repository;
+  - an **absolute** value pointing *outside* this repository's git directory
+    (`~/.githooks`, a team mount, anything set in `--global` config), because
+    any number of repositories may read that same directory. Orchid's guard
+    carries *this* repository's integration branch baked in, so installing it
+    there would refuse pushes in repositories orchid was never pointed at, and
+    would overwrite — or be overwritten by — whatever another one installed for
+    the same reason.
+
+  In both, `orchid init`, `orchid start` and `orchid doctor` warn, naming the
+  risk; `orchid start --refresh-push-guard` exits non-zero; nothing is written
+  and nothing is reported as installed or current. Point the key at an absolute
+  directory inside this repository's git directory (`git config core.hooksPath
+  /path/to/repo/.git/hooks`) or drop it (`git config --unset core.hooksPath`)
+  and re-run the refresh — the messages name both, with your repository's own
+  path filled in. Orchid never edits that setting for
+  you — it is yours, like `orchid.config`. A hook orchid did not write is never
+  overwritten by either verb — it is left alone and reported — and one that
+  already matches the current template *and is executable* is left
+  byte-for-byte alone and reported not at all. Executability is not a detail:
+  git silently runs nothing when a hook is not executable, so a byte-current
+  guard with the execute bit missing is `chmod +x`'d in place and reported as
+  repaired (its contents untouched), and a `chmod` that fails is reported as a
+  failure rather than as a guard. Changing `integration_branch` is picked up the same
+  way, since the branch name is baked into the hook at install time. Orchid
+  recognizes its own hook only by the file's **second line starting with**
+  `# orchid pre-push guard`, so if you have edited that file in place, your
+  edit is what the upgrade replaces — keep your version in a hook of your own
+  instead. Any other file is never touched, including one that mentions
+  `orchid pre-push guard` somewhere else in its body: a hook of yours that
+  talks about orchid, or chains to it, is still yours.
 - **`status_page`** is where `orchid status --html` writes its
   self-contained static page — never served, open the file directly.
 - **`notify.plugin`** (default `openclaw`) selects WHICH `kind=notify`
