@@ -17,11 +17,13 @@ draft was frozen on 2026-08-25 after 15 tasks had merged; it correctly recorded
 why the run had stalled, but it could not describe the repairs and further
 failures found by the remaining tasks. This version was written from the
 assembled integration tree at `1686c5dc9513f139b4b3b2ff77f58e0cb89bed44`,
-which contains 39 task merges; T038, this document, is the fortieth task.
+which contains 39 task merges; T038, this document, became the fortieth task
+at final integration `d9b1cd15174c0e75b424ebf9b64a8f953aca91b0`.
 
 The shipped version remains **`1.0.0-beta.1`**, within the
 `1.0.0-beta.x` series. This retrospective is not run-acceptance evidence and is
-not a release announcement. The still-open acceptance observations are kept in
+not a release announcement. The post-merge observations and still-open
+acceptance rows are kept in
 [r-002-acceptance-evidence.md](./r-002-acceptance-evidence.md).
 
 ## The pattern, four times
@@ -246,10 +248,10 @@ it works around is not a papercut.
 
 | Proof status | Honest claim |
 |---|---|
-| **Enforced in code and represented by a RED case** | The four supported exits above; round-scoped rework evidence; candidate/verify binding; synthesis of a prose-only non-approve finding; durable arbiter objections; task-value newline refusal; pid-0 convergence; attempt grants; boundary walks that continue across tasks; release-only formula freshness. This task observed the code and cases but did not execute them. |
+| **Enforced in code and represented by a RED case** | The four supported exits above; round-scoped rework evidence; candidate/verify binding; synthesis of a prose-only non-approve finding; durable arbiter objections; task-value newline refusal; pid-0 convergence; attempt grants; boundary walks that continue across tasks; release-only formula freshness. T038 observed the code and cases but its implementer did not execute them; the post-merge evidence below records the operator's later gates. |
 | **Advisory** | The merge-time product-state containment warning; beta and acceptance checklists whose rows `orchid run accept` does not parse; the requirement not to verify while another Orchid mutates the same checkout; a manifest's positive capability declaration; the 1.0 criteria in this document. Advisory means a human must still act. |
-| **Proved only on this machine or in a local fixture** | r-002's own history; the operator's recorded focused checks; the 13m19s local release rehearsal; isolated scheduler, trust, hook and no-network fixtures; any live vendor or Telegram observation made during dogfood. These do not establish behavior on another operator's machine. |
-| **Operator-owned and unproved** | Final T038 docs verification; the canonical final-candidate CI run; the post-merge suite from the integration-branch checkout; hosted CI after a push; a live command-execution probe for every implementer profile; a complete notification return-leg qualification; a genuine third-party beta; and publication. Open means open, never pass. |
+| **Proved only on this machine or in a local fixture** | r-002's own history; the operator's recorded focused checks; T015's formal candidate `CI PASS`; the full local suite from the integration checkout at the 39-task SHA `1686c5dc9513f139b4b3b2ff77f58e0cb89bed44`; T038's docs verification and whole-tree static merge gate; the 13m19s local release rehearsal; isolated scheduler, trust, hook and no-network fixtures; any live vendor or Telegram observation made during dogfood. These do not establish behavior on another operator's machine. |
+| **Operator-owned and unproved** | A canonical full-CI run against the exact final 40-task integration SHA `d9b1cd15174c0e75b424ebf9b64a8f953aca91b0`; hosted CI after a push; a live command-execution probe for every implementer profile; a complete notification return-leg qualification; a genuine third-party beta; and publication. Open means open, never pass. |
 
 Most importantly, **no genuine third-party beta run has occurred**. webBooks
 and wasiyyat were real product repositories, but the author operated them and

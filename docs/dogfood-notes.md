@@ -614,3 +614,62 @@ integration branch, but a merge into main carries nothing, because the path is
 ignored there. Failing that, `orchid merge` should exclude `.orchid/` from what
 it hands back, or the docs should tell the operator to strip it before the final
 merge.
+
+## Run — wasiyyat-schedule-c, General forms (2026-08-11)
+
+Second run in the same repo (`r-002`, 16 tasks). Findings F35–F49 in
+**`dogfood-2026-08-11-wasiyyat-general-forms.md`**.
+
+Different character to the 2026-08-09 run. Those findings were environmental —
+worktrees, pack budgets, migrations. These are about **the planning loop being
+unobservable**: the run never reached THE TICK, because half the critique
+attempts died without writing an envelope and nothing said so.
+
+- **F35 (critical)** — a job can complete its work, write every result to its log,
+  and then exit without an envelope. Attempt `a4` produced eight findings that
+  `reconcile` never saw; I recovered them with `grep` from the runtime log.
+  Attempt `a3` died differently: heartbeats arriving while CPU stayed flat at
+  ~1s across five minutes, and `jobs check` never marked it `stalled` because
+  the process was alive. Two of four attempts produced nothing reachable
+  through the verbs. Suggests salvaging parseable log output into a degraded
+  envelope. The report later retracts CPU delta as a default liveness signal
+  after observing a healthy API-bound job with almost-flat CPU for 40 minutes.
+- **F36 (high)** — nothing distinguishes a running job from one that died twelve
+  hours ago. `orchid status` showed a healthy `planning` run whose only job had
+  been dead half a day. This is the second run where the absence of the
+  process-table view (feature request in the previous report) cost hours.
+- **F37 (high)** — `orchid run new` silently inherits the previous run's branch
+  tip. r-002's base was 18 commits behind main, carried r-001's still-unmerged
+  PR, and lacked the new requirements and fixtures entirely. Every task would
+  have branched from that. Wants `--base`, or a refusal when the integration
+  branch is behind its remote.
+- **F40 (high)** — the critique loop gives no convergence signal (four rounds,
+  8/8/8/8 findings) and structurally rewards appending, because amending a task
+  means read-modify-write. Several late-round findings were contradictions
+  introduced by how earlier findings had been applied. Wants per-round deltas
+  (new/repeat/resolved) and a convergence guard.
+- **F38/F39 (medium)** — no `runtime/epoch` file after `run new` though the
+  refusal names the epoch; and no `task get <id> <key>`, so reading one field
+  means parsing `task show` prose, which is what encourages the appending in F40.
+- **F41 (medium)** — `jobs gc` still cannot reap manifests for jobs that never
+  launched or died envelope-less. Reproducible; same manual cleanup as last run.
+- **F42–F49 (high/critical through medium)** — the tick added second-run branch
+  collisions, unusable null-verdict reviews, a dead-job recovery dead end,
+  state-gated help, write-once arbitration guidance, overwritten verify logs,
+  environment failures charged as candidate work, and green gates that hide
+  how narrowly they ran. The detailed report retains the exact evidence.
+
+Worth recording positively: run rollover and archival were clean, config
+(including the verify bootstrap and pack budget) carried over correctly between
+runs, and the critique's findings were high quality **when they arrived** — it
+caught real internal contradictions, a stale fixture path, and across both runs
+a migration numbering collision that would otherwise have shipped. The problem
+is the delivery mechanism, not the critic.
+
+**Resolution as of the end of r-002 (2026-08-31):** T019, T024, T027, T029,
+T035 and T040 closed the environment-accounting, operator-prerequisite,
+launch/gc, epoch-handoff, process-table and missing-envelope parts of these
+reports. The exact closed/open split is maintained in
+[`plans/r-003-requirements.md`](./plans/r-003-requirements.md); the source
+reports above remain historical observations rather than being rewritten as if
+the fixed behavior was present during dogfood.
