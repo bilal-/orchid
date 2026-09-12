@@ -45,5 +45,26 @@ fi
 # describes) -- this dispatcher doesn't know or care that the effectful
 # work actually happens one hop further down.
 exe="$ORCHID_ROOT/libexec/orchid-$cmd"
-[ -x "$exe" ] || { echo "orchid: unknown command '$cmd'" >&2; exit 2; }
+# A VERB THAT IS NOT EXECUTABLE IS NOT AN UNKNOWN VERB. Both used to fail the
+# same `[ -x ]` test and be reported the same way, and they are different facts
+# with different fixes: `unknown command` about a file that is sitting right
+# there sends the reader to look for something that was never missing.
+#
+# It is the routine outcome of ADDING a verb, not an exotic state. An
+# implementer profile may not run `chmod` (lesson L017) and several engines
+# recreate every file they touch at 0644, so a new libexec/orchid-<verb>
+# arriving mode 644 is ordinary -- lib/drive.sh already classifies exactly this
+# as an operator hand-off and declines to charge the attempt for it. This is the
+# one place that described it as something else.
+#
+# Still deliberately verb-agnostic: the dispatcher is reporting a fact about its
+# OWN dispatch decision, not branching on which verb it is.
+if [ ! -x "$exe" ]; then
+  if [ -e "$exe" ]; then
+    echo "orchid: '$cmd' is not executable: $exe exists but its mode bit is not set, so it cannot be dispatched. Set it: chmod +x $exe (and, if it is tracked, record the mode: git -C \"\$(dirname \"$exe\")/..\" update-index --chmod=+x libexec/orchid-$cmd)" >&2
+    exit 2
+  fi
+  echo "orchid: unknown command '$cmd'" >&2
+  exit 2
+fi
 exec /bin/bash -p "$exe" "$@"

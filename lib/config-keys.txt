@@ -3,6 +3,7 @@ verify
 merge_gate
 worktree_prepare
 worktree_prepare_timeout_s
+worktree_remove_on_merge
 concurrency
 role.orchestrator
 role.implementer

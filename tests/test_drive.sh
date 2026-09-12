@@ -920,10 +920,19 @@ run_drive() {
 # drive_until <task> <wanted-status> -- repeated deterministic passes. A pass
 # that stops at a boundary (16) or fails ends the loop immediately: the point
 # of these helpers is that NOTHING but `orchid drive` ever moves the task.
+# DRIVE_LAST_WORKTREE: the last non-empty `worktree` this task recorded during
+# the walk. Sampled here because a completed merge now RELEASES a done task's
+# checkout, so anything asked about that path after the task reaches `done` is
+# asking about a directory that is correctly gone. The dispatch-time claim --
+# that the driver puts the checkout at the deterministic sibling path -- is
+# still worth pinning, and this is the only place it can be observed without
+# racing the walk it is observing.
 drive_until() {
-  local id="$1" want="$2" i=0
+  local id="$1" want="$2" i=0 _du_wt
   while [ "$i" -lt 40 ]; do
     run_drive
+    _du_wt="$("$ORCHID_BIN" task show "$id" 2>/dev/null | grep '^worktree: ' | cut -d' ' -f2-)"
+    [ -z "$_du_wt" ] || DRIVE_LAST_WORKTREE="$_du_wt"
     if [ "$(status_of "$id")" = "$want" ]; then return 0; fi
     if [ "$DRIVE_RC" -ne 0 ]; then return 1; fi
     i=$((i + 1))
@@ -943,9 +952,24 @@ git show "$integ:stub_feature.txt" >/dev/null 2>&1 \
 # Worktree: the deterministic sibling path, registered to this repository.
 WORKP="$(cd_scratch "$WORK" && pwd -P)" \
   || { fail "cd_scratch refused the scratch root"; exit 1; }
-recorded_wt="$("$ORCHID_BIN" task show T001 | grep '^worktree: ' | cut -d' ' -f2-)"
-assert_eq "$WORKP/repo-T001" "$recorded_wt" "the dispatch worktree sits at the deterministic <repo>-<task> sibling path"
-[ -d "$recorded_wt" ] || fail "the recorded dispatch worktree must exist on disk"
+# ASKED OF THE WALK, NOT OF THE FINISHED TASK. The dispatch claim is about
+# where the driver PUT the checkout, and a completed merge now releases a done
+# task's checkout (libexec/orchid-merge's merge_release_worktree), so reading
+# the field after `done` reads a path that is correctly empty. The sample taken
+# during the walk is the same claim, observed while it is still true.
+assert_eq "$WORKP/repo-T001" "${DRIVE_LAST_WORKTREE:-}" \
+  "the dispatch worktree sits at the deterministic <repo>-<task> sibling path"
+# ...and the other half, which used to be implied by the directory still being
+# there: once the task is done, that checkout is gone and the task no longer
+# points at it. A stranded checkout per task is what made every later
+# `git branch -D` refuse.
+assert_eq "" "$("$ORCHID_BIN" task show T001 | grep '^worktree: ' | cut -d' ' -f2-)" \
+  "a done task records no checkout — its merge released the one it was dispatched into"
+[ ! -d "$WORKP/repo-T001" ] \
+  || fail "the dispatch worktree must be gone once the task is done, not merely unrecorded"
+t001_reg="$(git -C "$REPO" worktree list --porcelain)"
+grep -qF "worktree $WORKP/repo-T001" <<<"$t001_reg" \
+  && fail "...and deregistered, or it still holds task/T001 and the branch cannot be deleted"
 
 # Status generation went through the verb (THE TICK step 5), not a hand-rolled
 # page: the configured status_page exists after a pass.

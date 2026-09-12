@@ -47,6 +47,14 @@ verify=npm test
 # environment's problem be reported as the candidate's.
 # worktree_prepare=npm ci --silent
 # worktree_prepare_timeout_s=900
+# Remove a task's own checkout when its merge completes (on|off, default on).
+# A finished task's worktree is never touched by anything else, and a branch a
+# worktree holds cannot be deleted -- so without this a finished run leaves one
+# stranded checkout per task and every later `git branch -D` refuses. Only ever
+# removes a CLEAN checkout (untracked files count as dirty, because those bytes
+# exist nowhere else), never the directory the command is running in, and never
+# the branch. Set to `off` to keep every task checkout after its merge.
+# worktree_remove_on_merge=on
 # Roles are configuration — see docs/configuration.md. Each role.* value is a
 # comma-separated failover chain, primary first (e.g.
 # role.implementer=codex,claude): a fallback engine only ever activates once

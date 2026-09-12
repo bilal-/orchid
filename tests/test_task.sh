@@ -2998,3 +2998,66 @@ assert_match "stale epoch" "$f45_fence" "the fence still answers a mutating call
 "$ORCHID_BIN" task create T064 "f45-green" >/dev/null
 assert_eq pending "$(tfield T064 status)" "and an ordinary create with a valid epoch still works"
 green_case 'the epoch fence and the subverb arguments are untouched: only --help outruns the fence, and only an absent argument gets a usage string'
+
+# ============================================================================
+# Part AM -- F39: read ONE field without parsing the whole document.
+#
+# `task show` prints the entire task file, so every caller that wants one value
+# greps prose. That is fragile in three separate ways the dogfood hit: a value
+# containing the key's own name matches twice, a multi-line body line matches a
+# frontmatter pattern, and `cut -d' ' -f2` silently truncates any value with a
+# space in it. The report calls this the direct cause of the
+# append-instead-of-rewrite pattern that destroyed a task file.
+#
+# `task get <id> <key>` prints the raw value and nothing else, through the ONE
+# frontmatter parser (lib/frontmatter.sh's fm_get) rather than a second one.
+#
+# THE ABSENT/EMPTY DISTINCTION IS THE POINT. `fm_get` prints nothing for a key
+# that is absent AND for one set to the empty string, and a caller that cannot
+# tell those apart is back to guessing -- "no worktree recorded" and "this task
+# never had the field" call for different actions. So presence is carried by
+# the EXIT STATUS: 0 when the key is there, non-zero when it is not, with the
+# value itself on stdout either way.
+#
+# Read-only, like `show` and `list`: no verb lock, no epoch fence. Reading a
+# field is how an operator works out what to do when the run state is already
+# wrong, which is the same argument INV-17 makes about `--help`.
+# ============================================================================
+"$ORCHID_BIN" task create T070 "f39 read one field"
+"$ORCHID_BIN" task set T070 acceptance_criteria "a value with spaces, and: a colon"
+
+assert_eq "a value with spaces, and: a colon" "$("$ORCHID_BIN" task get T070 acceptance_criteria)" \
+  "F39: task get prints the raw value, whole — spaces and colons included, where cut -d' ' -f2 truncates"
+assert_eq pending "$("$ORCHID_BIN" task get T070 status)" "F39: and reads a kernel-owned field the same way"
+
+# Present-but-empty: value is empty, exit 0. The field EXISTS.
+assert_eq "" "$("$ORCHID_BIN" task get T070 worktree)" "F39: a present-but-empty field prints nothing"
+rc=0; "$ORCHID_BIN" task get T070 worktree >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "F39: ...and exits 0, because the field is there and its value is empty"
+
+# Absent: nothing on stdout, non-zero exit, and the reason on stderr.
+rc=0; f39_out="$("$ORCHID_BIN" task get T070 no_such_key 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "F39: an absent key must not exit 0 — a caller cannot otherwise tell it from a field set to empty"
+assert_eq "" "$("$ORCHID_BIN" task get T070 no_such_key 2>/dev/null)" \
+  "F39: ...and prints nothing on stdout, so a caller capturing it gets the empty string rather than an error message"
+assert_match "no_such_key" "$f39_out" "F39: ...and names the key it could not find, on stderr"
+red_case 'task get distinguishes a present-but-empty field (exit 0) from an absent one (non-zero, nothing on stdout), which is the distinction fm_get alone cannot express'
+
+# Read-only, and specifically ON A STALE EPOCH: the same argument INV-17 makes.
+rc=0
+f39_stale="$(ORCHID_EPOCH=999999 "$ORCHID_BIN" task get T070 status 2>&1)" || rc=$?
+assert_eq 0 "$rc" "F39: task get is read-only, so a stale epoch does not refuse it"
+assert_eq pending "$f39_stale" "F39: ...and it still answers"
+
+# GREEN twin: the refusals a sibling read-only verb makes are still made here.
+rc=0; f39_nope="$("$ORCHID_BIN" task get NOPE39 status 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "F39: task get on a nonexistent task must be refused"
+assert_match "no task NOPE39" "$f39_nope" "F39: ...naming the task, exactly as task show does"
+rc=0; f39_plan="$("$ORCHID_BIN" task get plan status 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "F39: task get plan must be refused (reserved id)"
+assert_match "reserved" "$f39_plan" "F39: ...and named as reserved"
+rc=0; f39_usage="$("$ORCHID_BIN" task get 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "F39: task get with no arguments must be refused"
+assert_match "usage: orchid task get" "$f39_usage" "F39: ...with its own usage, like every other subverb (INV-17)"
+green_case 'task get refuses a nonexistent id, the reserved id and a missing argument exactly as its read-only siblings do — reading one field adds a reader, not an exemption'

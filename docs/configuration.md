@@ -54,6 +54,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `merge_gate` | *(unset — no gate)* | repo | v1.1 |
 | `worktree_prepare` | *(unset — no preparation step)* | repo | v1.0 |
 | `worktree_prepare_timeout_s` | `900` | repo | v1.0 |
+| `worktree_remove_on_merge` | `on` | repo | v1.1 |
 | `concurrency` | `2` | repo or user | v0 (1) / v1-m2 (2 + scheduling) |
 | `role.orchestrator` | `claude` (fallback chain default: `claude,codex`) | repo or user | v0 |
 | `role.implementer` | `codex` (fallback chain default: `codex,claude`) | repo or user | v0 |
