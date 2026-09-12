@@ -218,6 +218,35 @@ a property of orchid, not of one dogfood run.
   `retry` legal from `implementing` when no live job exists, have `infra-fail`
   return the task to a dispatchable state, have `drive` redispatch or raise a
   boundary naming the dead job, and make the refusal name the actual escape.
+
+  **Re-measured against the shipped tree, 2026-09-12 — the loop was not closed,
+  and the third bullet was already done.** Two of the four claims above no
+  longer hold, and saying so is the point of re-measuring rather than
+  re-reporting:
+
+  - *An escape existed.* `to=blocked` is legal from EVERY status by
+    construction (`legal()` returns 0 for it before consulting any archetype),
+    and both recovery verbs are legal from `blocked`, so
+    `orchid task advance <id> blocked --reason "..."` followed by
+    `orchid task retry <id> --reason "..."` was always a supported, verb-only
+    route back to `rework`. Nothing at the point of refusal said so, which is
+    why it read as a dead end and was never found. The refusals now print it,
+    from one composer shared by `retry`, `reverify` and `infra-fail`, and
+    tests/test_task.sh Part AK EXECUTES the route it names so the sentence
+    stays evidence rather than advice.
+  - *`drive` does not walk past a dead job.* The dead-manifest escalation sweep
+    that T027/T035/T040 built collects a manifest whose pid is gone with no
+    spooled envelope, names the job, and charges exactly one rung of the
+    `infra_failures` ladder. This was never pinned either way; it is now, in
+    tests/test_drive.sh Part AK, with a live-job twin proving the ladder counts
+    deaths rather than passes. The report predates that machinery.
+
+  What is left of F44 is the part the two fixes above do not reach: `retry`
+  still requires the intermediate `blocked` hop, and `infra-fail` below its cap
+  still changes no status by design. Both are now NAMED at the point of
+  refusal, so the remaining question is whether to collapse the hop — which
+  means teaching a tier-1 verb a liveness rule that currently has exactly one
+  implementation, in tier-2. That is a design decision, not an outage.
 - **F42 — `run new` does not namespace task branches.** r-001's `task/T001…T010`
   survived the rollover, r-002 numbers from T001 too, and the first dispatch
   collided. Any repo that runs orchid twice hits this immediately. Orchid handled
@@ -239,6 +268,23 @@ a property of orchid, not of one dogfood run.
   **Reproduced in r-002**: `orchid task unblock` with no argument fails the same
   way at `libexec/orchid-task:788`. Help must never depend on run state — it is
   how you find out what to do when the state is already wrong.
+
+  **Closed 2026-09-12, and the sweep found a third shape worse than both.**
+  Six subverbs died on `$1` under `set -u`, printing a source file and a line
+  number at an operator; every one now prints its own usage, read out of a
+  single per-file table that the dispatch fallback shares. Every verb and
+  subverb answers `--help` itself, ahead of the epoch fence. The third shape:
+  several verbs read their first argument as data, so `orchid plugins lock
+  --help` WROTE `.orchid/plugins.lock`, `orchid plugins untrust --help`
+  reported untrusting a plugin named `--help`, and `orchid init --help` ran the
+  initialisation. Asking a question performed an action.
+
+  It is an invariant rather than a sweep: **INV-17**
+  (`tests/inv/test_INV-17_help_is_not_run_state.sh`) DERIVES its subject list
+  from `libexec/` and each file's own `case "$sub" in` blocks — 78 probes on
+  the current tree — runs every one under a deliberately stale epoch, and
+  compares a content digest of `.orchid/` across the whole sweep, so a verb
+  added tomorrow is covered without anyone extending the test.
 - **F46 — the arbitration reason is write-once.** An operator who writes a wrong
   fix direction into `--reason` cannot correct it: the transition is consumed,
   the field is not editable, and the running job already has the old text. The

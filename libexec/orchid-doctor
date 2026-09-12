@@ -37,6 +37,15 @@ source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/trust.sh"
 # here).
 source "$ORCHID_ROOT/lib/spawn.sh"
 repo="${ORCHID_REPO:-$PWD}"; fails=0
+
+# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
+# out what to do when the run state is ALREADY wrong, so it must not be
+# answered by INV-02 -- nor, on a verb that reads its first argument as data,
+# by DOING the thing being asked about. First position only, both spellings;
+# libexec/orchid-task's gate carries the full note.
+case "${1:-}" in
+  --help|-h) printf '%s\n' "usage: orchid doctor [--greenfield]"; exit 0 ;;
+esac
 ok()   { echo "ok: $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
 

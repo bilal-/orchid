@@ -2343,6 +2343,15 @@ semantic correctness beyond declared verification commands.
 - INV-16 a step is never dispatched to an actor whose manifest does not
   declare what that step's work needs; it becomes an operator hand-off with a
   named, journaled boundary instead
+- INV-17 `--help` is answered by the verb, ahead of the epoch fence and ahead
+  of anything the verb would otherwise do, and writes nothing. Help is how an
+  operator finds out what to do when the run state is already wrong, so it must
+  not be answered by INV-02's refusal, by a raw `set -u` error naming a source
+  file, or by performing the operation being asked about. Proved by a scan that
+  DERIVES its subject list — every `libexec/orchid-*` file, and every subverb in
+  that file's own `case "$sub" in` blocks — in
+  `tests/inv/test_INV-17_help_is_not_run_state.sh`, so a verb added later is
+  covered without anyone extending the test
 
 ## Proof discipline: every gate ships a RED case (v1.1)
 

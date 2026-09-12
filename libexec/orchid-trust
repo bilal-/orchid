@@ -154,6 +154,18 @@ EOF
 # operator authoring the acknowledgement rather than looking for one; the
 # reason is below it.
 sub="${1:-}"; [ "$#" -gt 0 ] && shift
+
+# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
+# out what to do when the run state is ALREADY wrong, so it must not be
+# answered by INV-02 -- nor, on the verbs below that read their first argument
+# as data, by DOING the thing being asked about. First position only, and both
+# spellings; libexec/orchid-task's gate carries the full note.
+case "$sub" in
+  --help|-h) printf '%s\n' "usage: orchid trust unattended <repo> --reason <reason> | orchid trust show [<repo>] | orchid trust revoke [<repo>]"; exit 0 ;;
+esac
+case "${1:-}" in
+  --help|-h) printf '%s\n' "usage: orchid trust unattended <repo> --reason <reason> | orchid trust show [<repo>] | orchid trust revoke [<repo>]"; exit 0 ;;
+esac
 case "$sub" in
   -h|--help|help|"")
     _trust_usage

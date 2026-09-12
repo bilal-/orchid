@@ -3,6 +3,14 @@ set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
 repo="${ORCHID_REPO:-$PWD}"
 
+# HELP AHEAD OF EVERYTHING THIS VERB DOES (dogfood F45, INV-17). `orchid init
+# --help` used to RUN the initialisation and fail on an existing integration
+# branch, which is the second F45 shape: a verb that reads its first argument
+# as data answers a request for help by doing the thing being asked about.
+case "${1:-}" in
+  --help|-h) printf '%s\n' "usage: orchid init [--greenfield]"; exit 0 ;;
+esac
+
 # --greenfield (v1-m2 Task 9): the ONLY new flag. On a repo with an unborn
 # HEAD (no commits yet -- `git rev-parse -q --verify HEAD` fails), init is
 # where the integration branch first needs a real HEAD to branch from

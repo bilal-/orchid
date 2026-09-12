@@ -2,6 +2,7 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 
+
 # v1.1 Track 2: `orchid start <requirements-file>` -- the ONE-COMMAND
 # existing-repo setup. Everything it does is already a supported lower-level
 # verb (`doctor`, `init`, `requirements import`, `trust unattended`) plus the
@@ -53,7 +54,7 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 
 _start_usage() {
   cat <<'EOF'
-usage:
+usage: orchid start
   orchid start <requirements-file> [--verify <command>] [--worktree <path>]
                                    [--ack-unattended --reason <text>]
   orchid start --refresh-push-guard
