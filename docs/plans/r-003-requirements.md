@@ -459,7 +459,49 @@ withdraws a stale boundary. Three follow-ons remain r-003/1.0 work:
 - **Task worktrees still need lifecycle cleanup.** Successful tasks leave
   sibling worktrees behind; removal exists for merge temporaries but is not
   wired to task completion.
+
+  **Closed 2026-09-12.** A completed merge now releases the task's own
+  checkout, under conditions that make it provably safe: the merge succeeded
+  (so the branch is contained in the integration branch), the checkout is clean
+  with `git status --porcelain` empty — untracked counts as dirty, because an
+  untracked file is the one case where those bytes exist nowhere else — and it
+  is not the directory the command is running in. Every other case KEEPS the
+  checkout and says so, naming the `git worktree remove` to run;
+  `git worktree remove` is called without `--force`, so git's own refusals
+  stand. The BRANCH is deliberately untouched: merge cleans up the checkout,
+  `run new`'s rollover guard cleans up the ref, and that division is what lets
+  the guard's remedy be a plain `git branch -D`. `worktree_remove_on_merge=off`
+  keeps the old behaviour. This does nothing for checkouts stranded by merges
+  that already happened — r-002's forty are still an operator cleanup.
 - **Supported exit is not yet a whole-tree invariant.** r-002 audited the four
   pattern-defining refusal points as 4/4 repaired, but did not derive an
   exhaustive inventory. A guard that refuses must name the supported action
   that clears it; if no verb provides one, the guard is unfinished.
+
+  **Sized on 2026-09-12, and deliberately not built, because the obvious
+  version of it would be a check that cannot fail.** The shipped tree has 418
+  `orchid_die` sites; 276 name no command. A gate asserting "every refusal names
+  an `orchid` or `git` command" would therefore demand one at 276 sites, and it
+  would be wrong at most of them:
+
+  - Most are CALLER errors — `--task requires a value`. There is no state on
+    the refused side. The supported action is to retype the command, and
+    pasting a verb onto that message manufactures the appearance of recovery
+    where nothing needs recovering.
+  - It is satisfiable by boilerplate. Once contributors learn to paste a
+    command, the gate passes for a reason unrelated to the property, which is
+    precisely the class docs/specs/kernel.md's proof-discipline section exists
+    to reject.
+  - Several sites die with `"$usage"` — a variable. Any text-matching rule is
+    blind to those and would pass them vacuously while failing honest
+    neighbours, so its RED case would be measuring the spelling of the call
+    rather than the quality of the message.
+
+  The rule that is actually load-bearing is narrower: a refusal must name a
+  clearing action **when the refused side leaves durable state the caller
+  cannot change by retyping**. That is a classification per refusal — can the
+  operator get back unaided? — not a property of the message text, so it cannot
+  be derived the way INV-17 derives its subject list. Whoever takes this should
+  budget for reading the refusals, not for writing a matcher. The four
+  pattern-defining points, and the `retry`/`reverify`/`infra-fail` messages
+  closed under F44, are the worked examples of what the answer looks like.

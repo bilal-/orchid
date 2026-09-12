@@ -1649,8 +1649,16 @@ prep7=".orchid/runtime/worktree-prepare/T107-merge.log"
 # in both checkouts, with nothing to strip.
 assert_match "^task: T107$" "$(cat "$prep7")" \
   "ORCHID_TASK is the bare task id in the merge worktree too, never the log's slug"
-n_wt7="$(git worktree list | wc -l | tr -d ' ')"
-assert_eq 2 "$n_wt7" "the prepared temp worktree is still torn down after the merge"
+# NAMED, NOT COUNTED. This used to assert a global worktree count of 2, which
+# was a proxy for "merge's own temp worktree is gone" and stopped being one the
+# moment a successful merge also began releasing the TASK's checkout: the count
+# then measured two unrelated facts at once and would have been satisfied by
+# the wrong one. `git worktree add` for validation mints
+# `$TMPDIR/orchid-merge.XXXXXX`, so ask about that directly.
+git worktree list --porcelain | grep -q 'orchid-merge\.' \
+  && fail "the prepared temp worktree is still registered after the merge"
+assert_eq "" "$("$ORCHID_BIN" task show T107 | grep '^worktree: ' | cut -d' ' -f2-)" \
+  "...and the task's OWN checkout was released by the completed merge, which is the other half of what the old count was silently conflating"
 
 # ---------------------------------------------------------------------------
 # A prepare step that FAILS must leave the operator pointing at evidence that
@@ -1686,8 +1694,11 @@ prep8=".orchid/runtime/worktree-prepare/T108-merge.log"
 assert_match "^exit: 9$" "$(cat "$prep8")" "that log records the command's own exit status"
 assert_match "worktree-prepare/T108-merge.log" "$(cat "$WORK/merge8.out")" \
   "the refusal names a log that actually exists, not the validation log it never wrote"
-n_wt8="$(git worktree list | wc -l | tr -d ' ')"
-assert_eq 2 "$n_wt8" "the temp worktree is torn down even when the prepare step fails"
+# Named rather than counted, for the reason given at T107 above. This task is
+# still in `merging` -- the environment failed -- so its own checkout is
+# deliberately untouched, and only merge's temp worktree is being asked about.
+git worktree list --porcelain | grep -q 'orchid-merge\.' \
+  && fail "the temp worktree is still registered even though the prepare step failed"
 
 # ...AND IT IS COUNTED. An environment that cannot be prepared is the failure
 # class this whole step exists to classify, so it goes on the infra ladder --
@@ -2194,3 +2205,115 @@ vendored_out="$( (
 assert_eq "$(printf 'product/main\nproduct/stripped')" "$vendored_out" \
   "an orchid vendored INSIDE a product repository is not that repository, and the advisory still reports"
 red_case 'only the checkout itself is self-hosted, never a directory within it'
+
+# ===========================================================================
+# TASK WORKTREES ARE NEVER CLEANED UP (r-002 Track 0 follow-on, and the reason
+# F42's rollover refusal has anything to refuse over).
+#
+# `merge_cleanup` tears down merge's OWN temp worktrees and has always left the
+# recorded task checkout standing -- correctly, because during a rebase or a
+# conflict that checkout is the only handle on the work. But nothing removes it
+# when the task is DONE either, so a finished run leaves one linked worktree per
+# task parked on a branch it will never touch again. This repository ended r-002
+# with forty of them, and because a worktree holds its branch, `git branch -D`
+# refuses every one: the rollover guard's own remedy has to name a worktree
+# removal before it can name a delete.
+#
+# So a merge that ends a task removes that task's checkout, and ONLY under
+# conditions that make it provably safe to remove:
+#
+#   * the merge succeeded, so the branch is contained in the integration branch
+#     and nothing in the checkout is the last copy of anything;
+#   * the checkout is CLEAN -- `git status --porcelain` empty, which covers
+#     untracked files as well as modifications, because an untracked file is
+#     the case where the bytes exist nowhere else;
+#   * it is not the directory the caller is standing in.
+#
+# Anything else is kept and SAID, never forced. `git worktree remove` without
+# --force is the verb: it has its own refusals, and this arm is not in the
+# business of overriding them.
+# ===========================================================================
+"$ORCHID_BIN" task create T090 "worktree removed when the task is done"
+git checkout -q -b task/T090 "$integ"
+echo ninety > feature90.txt && git add feature90.txt && git commit -q -m "feature 90"
+cand90="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base90="$(git rev-parse "$integ")"
+wt90="$WORK/wt90"
+git worktree add -q "$wt90" task/T090 || fail "fixture: could not add T090's worktree"
+"$ORCHID_BIN" task set T090 worktree "$wt90"
+"$ORCHID_BIN" task set T090 base_sha "$base90"
+"$ORCHID_BIN" task set T090 candidate_sha "$cand90"
+"$ORCHID_BIN" task set T090 verification_commands "test -f feature90.txt"
+"$ORCHID_BIN" task advance T090 implementing \
+  || fail "fixture: T090 dispatch into implementing refused"
+"$ORCHID_BIN" task advance T090 testing
+( cd "$wt90" && ORCHID_REPO="$WORK" "$ORCHID_BIN" verify T090 >/dev/null ) \
+  || fail "fixture: T090 must verify green in its own worktree"
+"$ORCHID_BIN" task advance T090 reviewing
+plant_reviewer_envelope T090
+"$ORCHID_BIN" task advance T090 arbitrating --reason "single reviewer approved"
+"$ORCHID_BIN" task arbitrate T090 --result approve --reason "approved for merge"
+
+[ -d "$wt90" ] || fail "fixture: T090's worktree must exist going into the merge"
+out90="$WORK/merge90.out"
+rc=0; "$ORCHID_BIN" merge T090 >"$out90" 2>&1 || rc=$?
+assert_eq 0 "$rc" "fixture: T090 merges cleanly (out: $(cat "$out90"))"
+assert_eq done "$("$ORCHID_BIN" task show T090 | grep '^status: ' | cut -d' ' -f2)" \
+  "fixture: and the task is done"
+
+[ ! -d "$wt90" ] \
+  || fail "a done task's clean worktree must be removed — leaving it is what strands one checkout per task and blocks every later branch delete"
+git worktree list --porcelain | grep -qF "worktree $wt90" \
+  && fail "...and it must be DEREGISTERED, not merely deleted from disk: a stale registration still holds the branch"
+assert_eq "" "$("$ORCHID_BIN" task show T090 | grep '^worktree: ' | cut -d' ' -f2-)" \
+  "...and the task no longer records a path that is gone"
+assert_match "wt90" "$(cat "$out90")" \
+  "...and the merge says which checkout it removed, rather than removing it silently"
+# The branch is deliberately untouched: it is the handle on this task's history,
+# and deleting refs at merge time is a different decision with a different
+# blast radius. The rollover guard owns that, and can only do its job once
+# nothing holds the branch -- which is what this arm just arranged.
+git rev-parse --verify -q refs/heads/task/T090 >/dev/null \
+  || fail "the task BRANCH must survive: merge cleans up the checkout, rollover cleans up the ref"
+red_case 'a merge that ends a task removes and deregisters that task clean worktree, clears the recorded path, names what it removed, and leaves the branch alone'
+
+# GREEN twin: a worktree with UNTRACKED bytes in it is kept, and the merge says
+# why. Untracked is the sharp case -- those bytes exist nowhere else, so this is
+# the one where a --force would destroy something irreplaceable.
+"$ORCHID_BIN" task create T091 "worktree kept when it is not clean"
+git checkout -q -b task/T091 "$integ"
+echo ninetyone > feature91.txt && git add feature91.txt && git commit -q -m "feature 91"
+cand91="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base91="$(git rev-parse "$integ")"
+wt91="$WORK/wt91"
+git worktree add -q "$wt91" task/T091 || fail "fixture: could not add T091's worktree"
+"$ORCHID_BIN" task set T091 worktree "$wt91"
+"$ORCHID_BIN" task set T091 base_sha "$base91"
+"$ORCHID_BIN" task set T091 candidate_sha "$cand91"
+"$ORCHID_BIN" task set T091 verification_commands "test -f feature91.txt"
+"$ORCHID_BIN" task advance T091 implementing \
+  || fail "fixture: T091 dispatch into implementing refused"
+"$ORCHID_BIN" task advance T091 testing
+( cd "$wt91" && ORCHID_REPO="$WORK" "$ORCHID_BIN" verify T091 >/dev/null ) \
+  || fail "fixture: T091 must verify green in its own worktree"
+"$ORCHID_BIN" task advance T091 reviewing
+plant_reviewer_envelope T091
+"$ORCHID_BIN" task advance T091 arbitrating --reason "single reviewer approved"
+"$ORCHID_BIN" task arbitrate T091 --result approve --reason "approved for merge"
+
+# The operator's own scratch file, never committed and never ignored.
+echo "notes an operator wanted to keep" > "$wt91/scratch-notes.txt"
+out91="$WORK/merge91.out"
+rc=0; "$ORCHID_BIN" merge T091 >"$out91" 2>&1 || rc=$?
+assert_eq 0 "$rc" "fixture: T091 merges cleanly too (out: $(cat "$out91"))"
+[ -d "$wt91" ] \
+  || fail "a worktree holding untracked bytes must be KEPT — those bytes exist nowhere else"
+[ -f "$wt91/scratch-notes.txt" ] \
+  || fail "...and the untracked file must still be there"
+assert_match "not clean|untracked|kept" "$(cat "$out91")" \
+  "...and the merge must say it kept it, so the operator is not left to notice the difference between two merges"
+assert_eq "$wt91" "$("$ORCHID_BIN" task show T091 | grep '^worktree: ' | cut -d' ' -f2-)" \
+  "...and the recorded path still points at the checkout that is still there"
+green_case 'the same merge keeps a worktree that is not clean, says so, and leaves the recorded path intact — the removal above is a decision about safety rather than a step that always runs'

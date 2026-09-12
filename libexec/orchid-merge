@@ -131,6 +131,83 @@ task_branch="$(fm_get "$tf" branch)"
 [ -n "$task_branch" ] || orchid_die "task $id has no branch recorded"
 
 integ="$(config_get "$repo" integration_branch orchid/integration)"
+
+# merge_release_worktree <task> -- remove the task's own checkout, now that the
+# task is done, under conditions that make removing it provably safe.
+#
+# WHY IT BELONGS HERE. `merge_cleanup` has always torn down merge's OWN temp
+# worktrees and always left the RECORDED task checkout standing -- correctly:
+# during a rebase, a conflict or a validation failure that checkout is the only
+# handle on the work, and tests/test_merge.sh pins it surviving the exit-5
+# stale-base path for exactly that reason. But nothing removed it when the task
+# ENDED either, and that omission is not cosmetic. A branch with a worktree on
+# it cannot be deleted, so every finished task left a checkout that in turn made
+# its branch undeletable: this repository ended r-002 with forty of them, and
+# `orchid run new`'s rollover guard has to name a `git worktree remove` before
+# it can name a `git branch -D`. Cleaning up here is what lets that guard have
+# something simple to say.
+#
+# THE BRANCH IS DELIBERATELY UNTOUCHED. It is the handle on this task's history,
+# and deleting refs at merge time is a different decision with a much larger
+# blast radius -- a mistake there is unrecoverable, while a removed clean
+# checkout can be recreated from the ref in one command. Merge cleans up the
+# checkout; rollover cleans up the ref.
+#
+# EVERY CONDITION IS A REASON TO KEEP IT, and each one is SAID rather than
+# silently acted on. The merge has already succeeded and the integration branch
+# has already moved by the time this runs, so nothing here may fail the verb:
+# every arm returns 0, and the worst case is a checkout left standing exactly
+# where it was, which is where it would have been anyway.
+merge_release_worktree() {
+  local mid="$1" mwt mdirty mhere mrc=0 mtf
+  [ "$(config_get "$repo" worktree_remove_on_merge on)" != off ] || return 0
+  mtf="$state/tasks/$mid.md"
+  [ -f "$mtf" ] || return 0
+  mwt="$(fm_get "$mtf" worktree)"
+  [ -n "$mwt" ] || return 0
+  # The repository itself is not a task checkout, whatever the field says.
+  [ "$mwt" != "$repo" ] || return 0
+  if [ ! -d "$mwt" ]; then
+    # Already gone -- by an operator, a previous run, or a `git worktree
+    # remove` somebody typed. The RECORD is still wrong, and a task pointing at
+    # a path that does not exist is what makes a later reader think a checkout
+    # is waiting for them.
+    ORCHID_ALLOW_STALE_ROOT=1 "$ORCHID_ROOT/bin/orchid" task set "$mid" worktree "" >/dev/null 2>&1 || true
+    git -C "$repo" worktree prune >/dev/null 2>&1 || true
+    return 0
+  fi
+  # NEVER THE GROUND THE CALLER IS STANDING ON. An operator who ran this verb
+  # from inside the task checkout would otherwise have the directory removed
+  # from under their shell, which on some platforms leaves every subsequent
+  # relative path in that session resolving to nothing.
+  mhere="$(pwd -P 2>/dev/null || printf '%s' "$PWD")"
+  case "$mhere/" in
+    "$mwt"/*)
+      echo "merged $mid: kept its worktree $mwt — this command is running inside it; remove it from elsewhere with: git -C $repo worktree remove $mwt"
+      return 0 ;;
+  esac
+  # CLEAN MEANS `--porcelain` EMPTY, which counts UNTRACKED files as dirty on
+  # purpose. An untracked file is the one case where the bytes in that checkout
+  # exist nowhere else -- not on the branch, not on integration, not in any
+  # reflog -- so it is the case a `--force` would destroy irreversibly. `git
+  # worktree remove` is called WITHOUT --force for the same reason: it has its
+  # own refusals, and this arm is not in the business of overriding them.
+  mdirty="$(git -C "$mwt" status --porcelain 2>/dev/null)" || mdirty="unreadable"
+  if [ -n "$mdirty" ]; then
+    echo "merged $mid: kept its worktree $mwt — it is not clean, and an untracked file there exists nowhere else. Deal with those bytes, then: git -C $repo worktree remove $mwt"
+    return 0
+  fi
+  git -C "$repo" worktree remove "$mwt" >/dev/null 2>&1 || mrc=$?
+  if [ "$mrc" -ne 0 ]; then
+    echo "merged $mid: kept its worktree $mwt — git refused to remove it (exit $mrc). Run 'git -C $repo worktree remove $mwt' to see what it objects to."
+    return 0
+  fi
+  ORCHID_ALLOW_STALE_ROOT=1 "$ORCHID_ROOT/bin/orchid" task set "$mid" worktree "" >/dev/null 2>&1 || true
+  echo "merged $mid: removed its worktree $mwt (clean, and its branch task/$mid is now deletable)"
+  return 0
+}
+
+
 git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
   || orchid_die "integration branch '$integ' does not exist"
 
@@ -996,6 +1073,7 @@ if [ "$rc" -eq 0 ]; then
   # Scoped to this single invocation, never exported for the whole verb.
   ORCHID_ALLOW_STALE_ROOT=1 "$ORCHID_ROOT/bin/orchid" task advance "$id" "done"
   echo "merged $id: $integ -> $merged_sha"
+  merge_release_worktree "$id"
   exit 0
 fi
 
