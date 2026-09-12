@@ -673,3 +673,36 @@ reports. The exact closed/open split is maintained in
 [`plans/r-003-requirements.md`](./plans/r-003-requirements.md); the source
 reports above remain historical observations rather than being rewritten as if
 the fixed behavior was present during dogfood.
+
+## Re-measured against the shipped tree (2026-09-12)
+
+Four of the still-open findings were re-run against the current tree before
+being worked on, rather than re-reported from the 2026-08-11 write-up. Two of
+them had already been repaired by machinery that landed later in r-002, and
+saying so is the point: a ledger that carries a fixed defect as open costs the
+next run the same investigation twice.
+
+- **F44 — partly stale.** The "closed loop" was not closed. `to=blocked` is
+  legal from every status by construction, so
+  `orchid task advance <id> blocked` then `orchid task retry <id>` was always a
+  supported route out of `implementing`; nothing at the point of refusal said
+  so. And `drive` does NOT walk past a dead job: the dead-manifest escalation
+  sweep names it and charges one rung of the `infra_failures` ladder. Both are
+  now pinned (tests/test_task.sh and tests/test_drive.sh, Part AK each), and
+  the three recovery verbs print the route from one shared composer.
+- **F45 — confirmed, and worse than reported.** Six subverbs died on `$1` under
+  `set -u`. Beyond the reported shapes, several verbs read their first argument
+  as data, so `orchid plugins lock --help` WROTE the lock file and
+  `orchid init --help` ran the initialisation: asking a question performed an
+  action. Closed as INV-17, derived rather than listed.
+- **F47 — partly stale.** T025's round-scoped capture already preserves a
+  FAILING round across the retry that recovers from it. What nothing retained
+  was a PASS, a refusal, or a second failing run inside one attempt — every
+  verify run is now also filed under its attempt.
+- **F42 — confirmed, and this repository is the reproduction.** 41 `task/*`
+  branches survive r-002; 40 are contained in the integration branch and held
+  by a linked worktree each, and `task/T024-preserve` is not contained. Because
+  a worktree holds them, the obvious remedy (`git branch -D`) fails on its
+  first line — so `orchid run new` now refuses the rollover and names the
+  worktree removal first, the delete second, and a rename for anything not
+  contained.

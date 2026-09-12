@@ -38,6 +38,17 @@ legal_run() { case "$1:$2" in
 esac; }
 
 sub="${1:-}"; shift || true
+
+# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
+# out what to do when the run state is ALREADY wrong, so it must not be
+# answered by INV-02. First position only, and both spellings -- see the fuller
+# note on libexec/orchid-task's gate, which is the authority for this rule.
+case "$sub" in
+  --help|-h) printf '%s\n' "usage: orchid run start|resume|refresh-lease|release-lease|boundary|advance|accept|new"; exit 0 ;;
+esac
+case "${1:-}" in
+  --help|-h) printf '%s\n' "usage: orchid run start|resume|refresh-lease|release-lease|boundary|advance|accept|new"; exit 0 ;;
+esac
 case "$sub" in
   start|resume)
     # v0b2: both start and resume require initialized state. resume exists to
@@ -605,6 +616,7 @@ case "$sub" in
       *) orchid_die "run new requires run_status complete|blocked (current: $from_status)" ;;
     esac
 
+
     old_run_id="$(fm_get "$roadmap" run_id)"; [ -n "$old_run_id" ] || old_run_id='r-001'
     # r-NNN -> r-(NNN+1), forced base-10 (a leading-zero string like "001"
     # would otherwise be misread as octal by bash arithmetic). Guarded
@@ -623,6 +635,79 @@ case "$sub" in
     integ="$(config_get "$repo" integration_branch orchid/integration)"
     git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
       || orchid_die "integration branch '$integ' does not exist"
+    # ---- SURVIVING TASK BRANCHES (dogfood F42) --------------------------
+    # Task ids restart at T001 in a new run, and nothing has ever deleted the
+    # last run's `task/*` refs. r-001 left task/T001..task/T010 behind, r-002
+    # planned its own T001, and the FIRST dispatch collided. Orchid handled
+    # that collision correctly -- a `worktree-conflict` boundary naming the
+    # branch and the path, stopping rather than guessing -- so this is not a
+    # correctness hole. It is that the collision arises at all, one dispatch
+    # into a fresh run, in every repository that runs orchid twice.
+    #
+    # ROLLOVER IS THE LAST MOMENT ANYONE CAN BE TOLD. After this verb returns,
+    # the branches belong to no run: their tasks have been archived under
+    # runs/<old>/ and the new roadmap knows nothing about them. The operator
+    # who could still say "those are last run's, delete them" is the one
+    # standing here.
+    #
+    # REFUSED BEFORE ANY MUTATION, and that placement is the recovery story:
+    # nothing has been archived, nothing swapped, no journal entry written, so
+    # deleting the branches and re-running the identical command is the entire
+    # remedy. The refusal prints the delete for the branches that are already
+    # contained in the integration branch -- those are the safe ones, and in
+    # practice they are all of them -- and lists any that are NOT contained
+    # separately, because deleting one of those would destroy unmerged work.
+    #
+    # NOT AUTO-DELETED, deliberately. A branch is the only handle on a
+    # candidate that was never merged, and a rollover silently reclaiming refs
+    # is exactly the class of unrecoverable helpfulness the r-002 retrospective
+    # is about. The verb refuses and names the action; the operator takes it.
+    new_survivors="$(git -C "$repo" for-each-ref --format='%(refname:short)' 'refs/heads/task/*' 2>/dev/null || true)"
+    if [ -n "$new_survivors" ]; then
+      # THE CHECKED-OUT ONES FIRST, because the remedy this refusal prints has
+      # to be a remedy that RUNS. `git branch -D` refuses a branch held by a
+      # linked worktree ("cannot delete branch 'task/T001' used by worktree at
+      # ..."), and a task branch from a finished run is exactly the branch most
+      # likely to still have one: `orchid merge` never removes a task's
+      # worktree, so a completed run leaves one per task standing. Naming the
+      # delete without naming the worktree removal would hand the operator a
+      # command that fails on the first line, at the one moment they are being
+      # told to trust the message.
+      new_wt_list="$(git -C "$repo" worktree list --porcelain 2>/dev/null || true)"
+      new_merged=""; new_unmerged=""; new_held=""; new_count=0
+      while IFS= read -r new_br; do
+        [ -n "$new_br" ] || continue
+        new_count=$(( new_count + 1 ))
+        # The porcelain form emits `branch refs/heads/<name>` for a checked-out
+        # branch; a detached worktree emits no branch line at all, so a task
+        # branch nothing has checked out simply does not match.
+        case "$new_wt_list" in
+          *"branch refs/heads/$new_br"$'\n'*|*"branch refs/heads/$new_br")
+            new_wt_path="$(printf '%s\n' "$new_wt_list" | awk -v b="refs/heads/$new_br" '
+              /^worktree /{ p = substr($0, 10) }
+              $0 == "branch " b { print p; exit }')"
+            new_held="$new_held $new_wt_path"
+            ;;
+        esac
+        if git -C "$repo" merge-base --is-ancestor "$new_br" "$integ" 2>/dev/null; then
+          new_merged="$new_merged $new_br"
+        else
+          new_unmerged="$new_unmerged $new_br"
+        fi
+      done <<< "$new_survivors"
+      new_msg="$new_count task branch(es) from $old_run_id still exist, and the new run's ids restart at T001 — its first dispatch would collide with one of them."
+      if [ -n "$new_held" ]; then
+        new_msg="$new_msg FIRST, because a branch a worktree holds cannot be deleted, remove the worktrees still checked out on them (each must be clean, or git will refuse and tell you which one is not): git -C $repo worktree remove$new_held"
+      fi
+      if [ -n "$new_merged" ]; then
+        new_msg="$new_msg Already contained in $integ, so deleting them loses nothing: git -C $repo branch -D$new_merged"
+      fi
+      if [ -n "$new_unmerged" ]; then
+        new_msg="$new_msg NOT contained in $integ (deleting one of these destroys work that never merged — rename it instead, e.g. git -C $repo branch -m <old> ${old_run_id}/<old>):$new_unmerged"
+      fi
+      new_msg="$new_msg Nothing has been archived or reset — clear or rename them and run this exact command again."
+      orchid_die "$new_msg"
+    fi
     integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")"
 
     wt=""

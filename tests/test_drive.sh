@@ -10755,3 +10755,98 @@ assert_eq 17 "$aj_brk_rc" \
 assert_match "unexpected flag '--objection' to notify" "$aj_brk_out" \
   "T032: ...and refuse it as the FLAG, so the refusal is legible as 'a model may raise a page, but not one that lends its own arbitration a human's authority' rather than as notify being closed"
 red_case 'notify --objection through the brokered command surface: refused, which is what makes the record evidence about the operator rather than about the model'
+
+# ===========================================================================
+# Part AK -- F44's third bullet, measured rather than assumed: a task in
+# `implementing` whose implement job DIED must not be walked past in silence.
+#
+# The 2026-08-11 report says `drive` "did not redispatch T010; walked straight
+# past it". That was observed before the dead-manifest ladder existed, and the
+# claim has never been pinned either way against the shipped tree. It is pinned
+# here, because "drive notices" is the load-bearing half of F44: the refusal
+# messages the recovery verbs now print (tests/test_task.sh Part AK) are what
+# an ATTENDED operator reads, and this is what an UNATTENDED run depends on.
+#
+# The fixture is the dead-pid class specifically, not the pid-0 class Part
+# above already owns: a manifest that stamped a real pid, whose process is
+# gone, with no envelope in the spool and no exit recorded. That is exactly
+# what a crash, an OOM kill, or the report's own deliberate `kill` leaves.
+# ===========================================================================
+DEADJ="$WORK/deadjob"
+mkdir -p "$DEADJ"
+cd "$DEADJ" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$DEADJ" "$ORCHID_BIN" init >/dev/null || fail "orchid init (dead-job fixture)"
+git checkout -q orchid/integration
+DJEPOCH="$(ORCHID_REPO="$DEADJ" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+dj_orchid() { ORCHID_REPO="$DEADJ" ORCHID_EPOCH="$DJEPOCH" "$ORCHID_BIN" "$@"; }
+dj_orchid requirements import "$WORK/requirements.md" >/dev/null
+dj_orchid task create D010 "an implement job died without an envelope" >/dev/null
+dj_orchid task set D010 verification_commands "test -f stub_feature.txt" >/dev/null
+dj_orchid plan apply --reason "initial plan" >/dev/null
+dj_orchid task advance D010 implementing >/dev/null
+
+# A REAL pid that is REALLY gone. Spawned and reaped here rather than invented,
+# so `kill -0` answers about a process this test actually watched exit -- an
+# arbitrary high number could belong to something live on the machine running
+# the suite, and the fixture would then be measuring the wrong branch.
+( exit 0 ) & DJPID=$!
+wait "$DJPID" 2>/dev/null || true
+
+mkdir -p "$DEADJ/.orchid/runtime/jobs" "$DEADJ/.orchid/runtime/logs"
+DJLOG="$DEADJ/.orchid/runtime/logs/j-e1-D010-a1-dead.log"
+printf 'starting implement\n' > "$DJLOG"
+DJMF="$DEADJ/.orchid/runtime/jobs/j-e1-D010-a1-dead.json"
+jq -n --argjson pid "$DJPID" --arg log "$DJLOG" \
+  '{job_id:"j-e1-D010-a1-dead", task:"D010", attempt:1, role:"implementer",
+    operation:"implement", engine:"stubimpl", pid:$pid, pgid:$pid,
+    started_at:1, log:$log, output:"/dev/null",
+    base_sha:"", candidate_sha:"", hook_point:""}' > "$DJMF"
+
+DJ_RC=0
+DJ_OUT="$(ORCHID_REPO="$DEADJ" ORCHID_EPOCH="$DJEPOCH" "$DRIVE" 2>&1)" || DJ_RC=$?
+djfield() { ORCHID_REPO="$DEADJ" "$ORCHID_BIN" task show D010 | grep "^$1: " | cut -d' ' -f2-; }
+
+# The pass must ACCOUNT for the death. Any of the three shapes below is an
+# accounting -- a rung spent, the job named, or a boundary raised -- and the
+# failure this pins is the absence of all three, which is what "walked straight
+# past it" means.
+dj_accounted=0
+[ "$(djfield infra_failures)" = 0 ] || dj_accounted=1
+case "$DJ_OUT" in *j-e1-D010-a1-dead*) dj_accounted=1 ;; esac
+[ "$dj_accounted" -eq 1 ] \
+  || fail "F44: a dead implement job must not be walked past in silence (infra_failures=$(djfield infra_failures), rc=$DJ_RC, out: $DJ_OUT)"
+assert_match "j-e1-D010-a1-dead" "$DJ_OUT" \
+  "F44: the pass names the dead job, so an operator reading the pass log learns which job died"
+assert_eq 1 "$(djfield infra_failures)" \
+  "F44: and spends exactly one rung of the escalation ladder on it — a death is one event, not one per pass"
+red_case 'a dead implement job with no envelope: the pass names it and charges one rung, rather than reporting nothing and leaving the task parked in implementing'
+
+# GREEN twin: the SAME walk over the SAME task with a LIVE job must charge
+# nothing and name no death -- otherwise the check above is a matcher that
+# fires on any pass at all, and the ladder would burn a rung per pass on a job
+# that is working.
+dj_orchid task create D011 "a live implement job is still running" >/dev/null
+dj_orchid task set D011 verification_commands "true" >/dev/null
+dj_orchid task advance D011 implementing >/dev/null
+sleep 120 & DJLIVE=$!
+DJLOG2="$DEADJ/.orchid/runtime/logs/j-e1-D011-a1-live.log"
+printf 'working\n' > "$DJLOG2"
+jq -n --argjson pid "$DJLIVE" --arg log "$DJLOG2" \
+  '{job_id:"j-e1-D011-a1-live", task:"D011", attempt:1, role:"implementer",
+    operation:"implement", engine:"stubimpl", pid:$pid, pgid:$pid,
+    started_at:1, log:$log, output:"/dev/null",
+    base_sha:"", candidate_sha:"", hook_point:""}' \
+  > "$DEADJ/.orchid/runtime/jobs/j-e1-D011-a1-live.json"
+DJ2_OUT="$(ORCHID_REPO="$DEADJ" ORCHID_EPOCH="$DJEPOCH" "$DRIVE" 2>&1)" || true
+kill "$DJLIVE" 2>/dev/null || true
+wait "$DJLIVE" 2>/dev/null || true
+assert_eq 0 "$(ORCHID_REPO="$DEADJ" "$ORCHID_BIN" task show D011 | grep '^infra_failures: ' | cut -d' ' -f2-)" \
+  "a LIVE implement job is charged nothing — the ladder counts deaths, not passes"
+case "$DJ2_OUT" in
+  *"j-e1-D011-a1-live"*" died"*) fail "a live job must never be reported as dead" ;;
+esac
+green_case 'the same walk over a live implement job charges no rung and reports no death'

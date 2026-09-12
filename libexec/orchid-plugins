@@ -14,6 +14,18 @@ source "$ORCHID_ROOT/lib/spawn.sh"; source "$ORCHID_ROOT/lib/conform.sh"
 repo="${ORCHID_REPO:-$PWD}"
 sub="${1:-}"; shift || true
 
+# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
+# out what to do when the run state is ALREADY wrong, so it must not be
+# answered by INV-02 -- nor, on the verbs below that read their first argument
+# as data, by DOING the thing being asked about. First position only, and both
+# spellings; libexec/orchid-task's gate carries the full note.
+case "$sub" in
+  --help|-h) printf '%s\n' "usage: orchid plugins list|validate [<id>|--all]|trust [--update] <dir>|untrust <dir>|test <engine-id> <role>|--all-defaults|conform <plugin-dir>|lock|verify-lock|install <src> [--kind <k>]|update <name>|remove <name>|audit [<name>|--all]"; exit 0 ;;
+esac
+case "${1:-}" in
+  --help|-h) printf '%s\n' "usage: orchid plugins list|validate [<id>|--all]|trust [--update] <dir>|untrust <dir>|test <engine-id> <role>|--all-defaults|conform <plugin-dir>|lock|verify-lock|install <src> [--kind <k>]|update <name>|remove <name>|audit [<name>|--all]"; exit 0 ;;
+esac
+
 # Discovery search path (docs/specs/plugins.md, Trust model): $ORCHID_PLUGIN_PATH
 # (colon-delimited; each entry is a root laid out exactly like the two below,
 # i.e. <entry>/<kind>s/<name>/ -- origin=path) -> ~/.orchid/plugins/<kind>s/

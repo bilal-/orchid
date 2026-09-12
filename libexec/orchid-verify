@@ -4,6 +4,14 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/drive.sh"
 source "$ORCHID_ROOT/lib/handoff.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
+
+# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
+# out what to do when the run state is ALREADY wrong, so it must not be
+# answered by INV-02. First position only, and both spellings -- see the fuller
+# note on libexec/orchid-task's gate, which is the authority for this rule.
+case "${1:-}" in
+  --help|-h) printf '%s\n' "usage: orchid verify <task-id>"; exit 0 ;;
+esac
 epoch_require "$repo"
 
 id="${1:-}"
@@ -52,7 +60,28 @@ fi
 # Command source: task frontmatter first, config fallback second; neither
 # present is a hard error (there is nothing deterministic to run).
 cmd="$(fm_get "$tf" verification_commands)"
-[ -n "$cmd" ] || cmd="$(config_get "$repo" verify)"
+# WHICH GATE THIS IS, recorded as a field rather than left to be inferred from
+# the command string (dogfood F49).
+#
+# Thirteen r-001 tasks merged reporting a green gate having run between 4 and
+# 86 of the suite's 2,305 tests, because each carried a `--filter` authored
+# during planning. Narrowing is a reasonable drafting convenience; by merge
+# time it had silently become the definition of correctness for that task, and
+# `verify passed` read identically either way.
+#
+# Orchid cannot count a stranger's tests. The verification command is arbitrary
+# shell, and inventing a number would be exactly the fabricated-evidence class
+# this run exists to close. What it can state, out of facts it already holds,
+# is WHICH question was asked: the repository's own configured gate, or a
+# per-task substitute for it. A reader of the evidence then learns, without
+# leaving the log, that a green describes a narrower question than the
+# repository asks -- and `command:` on the line above says what the substitute
+# was.
+verify_scope=task
+if [ -z "$cmd" ]; then
+  cmd="$(config_get "$repo" verify)"
+  verify_scope=repo
+fi
 [ -n "$cmd" ] || orchid_die "no verification_commands on task $id and no config 'verify' set — nothing to run"
 
 # Working dir: the task's worktree when set, else the repo root.
@@ -161,6 +190,53 @@ log="$state/reviews/$id-verify.log"
 # forward and stayed there, which is what an engine finishing a round does. The
 # bracket covers that shape exactly.
 # ---------------------------------------------------------------------------
+# verify_archive_log -- file a per-attempt COPY of the evidence this run just
+# wrote (dogfood F47).
+#
+# `<id>-verify.log` is the LIVE gate file and stays exactly where it is: INV-11's
+# testing -> reviewing gate reads it, `capture_rework_evidence` reads it, the
+# driver's briefs read it, and teaching any of them a second name would be four
+# readers to keep in step for one problem. What is missing is HISTORY: that one
+# path is overwritten by the next run of the verifier and deleted outright by
+# the three verbs that enter `rework` (INV-07 invalidation).
+#
+# THE REPORT'S HEADLINE IS ALREADY FIXED, and this is deliberately not a second
+# fix for it. T025's `capture_rework_evidence` files a FAILING round at
+# `<id>-r<n>-rework.log` on every door into `rework`, so the failure a retry
+# recovers from does survive that retry. What no capture reaches is everything
+# that takes no rework door: a PASS (nothing retains which tree passed on
+# attempt N, or what it printed), a REFUSAL (exit 20, the tree is not the
+# candidate), and a second failing run inside one attempt after `task reverify`.
+# Those are the cases this closes.
+#
+# KEYED LIKE THE ATTEMPT'S OTHER EVIDENCE. `attempts + 1` is the in-flight
+# attempt everywhere else in the kernel (lib/drive.sh's envelope selectors
+# compute it the same way), so this copy lands beside that attempt's implementer
+# envelope, `<id>-a<n>-implementer.json`, and an operator reading either one can
+# find the other by name. A second verify WITHIN one attempt -- a `task
+# reverify` after fixing the tree by hand -- takes a `.2`, `.3` sibling rather
+# than clobbering the first, the same collision rule reconcile uses for
+# envelopes: within an attempt as between them, this file only ever adds.
+#
+# NEVER FATAL, and never silent either. The live log is what every gate reads;
+# a failure to keep a copy must not turn a passing verification into a failing
+# one, but it must not be swallowed, because then the archive would silently
+# stop existing and be discovered the next time somebody needed it.
+verify_archive_log() {
+  local n dest i=2
+  [ -f "$log" ] || return 0
+  n="$(fm_get "$tf" attempts 2>/dev/null || echo 0)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  n=$(( n + 1 ))
+  dest="$state/reviews/$id-a$n-verify.log"
+  while [ -e "$dest" ]; do
+    dest="$state/reviews/$id-a$n-verify.$i.log"
+    i=$(( i + 1 ))
+  done
+  cp "$log" "$dest" 2>/dev/null \
+    || echo "orchid: warning — could not keep a per-attempt copy of $id's verify evidence at $dest; the live log at $log is still authoritative, but a retry will delete it" >&2
+}
+
 verify_refuse() {
   local why="$1"
   {
@@ -175,9 +251,11 @@ verify_refuse() {
     echo "candidate: $cand"
     echo "cwd: $cwd"
     echo "command: $cmd"
+    echo "scope: $verify_scope"
     echo "---"
     echo "refused: $why"
   } | atomic_write "$log"
+  verify_archive_log
   echo "orchid: verify refused for $id: $why" >&2
   echo "REFUSED"
   exit 20
@@ -230,6 +308,7 @@ drifted=0
   echo "candidate: $cand"
   echo "cwd: $cwd"
   echo "command: $cmd"
+  echo "scope: $verify_scope"
   printf '%s\n' "$prestate_headers"
   echo "---"
   cat "$out_tmp"
@@ -240,6 +319,7 @@ drifted=0
   [ "$drifted" -eq 0 ] || \
     echo "refused: $cwd moved from $sha to $sha_after WHILE the suite ran — this evidence describes no single tree"
 } | atomic_write "$log"
+verify_archive_log
 
 if [ "$drifted" -eq 1 ]; then
   echo "orchid: verify refused for $id: $cwd moved from $sha to $sha_after while the suite ran" >&2

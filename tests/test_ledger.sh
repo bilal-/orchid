@@ -262,3 +262,68 @@ empty="$WORK/emptyrepo"
 mkdir -p "$empty"; (cd "$empty" && git init -q . && git commit -q --allow-empty -m root)
 empty_out="$(ORCHID_REPO="$empty" "$ORCHID_BIN" status)"
 assert_match "\(no engine events yet\)" "$empty_out" "empty/missing ledger prints the placeholder line"
+
+# ============================================================================
+# THE FAILING STATE HAD NO WAY OUT (r-002 Track 0 follow-on).
+#
+# `consecutive_failures` reaches `engine_fail_threshold` and the engine becomes
+# unavailable. It resets on an `ok` mark -- which only a dispatch can produce,
+# and the resolver will not dispatch to an unavailable engine. The state clears
+# itself only by way of a step it forbids. ledger_effective_status' own comment
+# said it out loud: "a `failing` one stays unavailable until an `ok` mark it
+# can only earn by being dispatched".
+#
+# That is the r-002 retrospective's characteristic defect exactly -- a locally
+# correct guard (do not keep dispatching to something that has failed three
+# times running) whose refused side has no supported way back. A vendor outage,
+# an expired credential, a machine that was offline for an hour: each ends with
+# an engine excluded for the rest of the run, and the operator's only recourse
+# is to hand-edit runtime/engines.json.
+#
+# The exit is a HALF-OPEN PROBE, not a new verb: once `engine_fail_cooldown_s`
+# has passed since the last mark, ONE dispatch is let through. It succeeds and
+# the `ok` mark clears the count; it fails and the mark re-arms the same
+# cooldown. Nothing accumulates, no operator step is required for the ordinary
+# case, and a genuinely dead engine is retried at a bounded rate rather than
+# excluded forever.
+# ============================================================================
+hor="$WORK/halfopen"; mkdir -p "$hor/.orchid"
+horf="$hor/.orchid/runtime/engines.json"
+printf 'engine_fail_threshold=2\nengine_fail_cooldown_s=600\n' > "$hor/orchid.config"
+
+ledger_mark "$hor" flaky failed
+ledger_mark "$hor" flaky failed
+ledger_available "$hor" flaky \
+  && fail "fixture: two failures at threshold 2 must make the engine unavailable"
+assert_eq failing "$(ledger_effective_status "$hor" flaky)" \
+  "fixture: and the derived status must say failing, not rate_limited"
+
+# Age the record past the cooldown. `updated_at` is the ISO stamp ledger_mark
+# writes; the probe is keyed on it, so moving it back is exactly "time passed".
+old_iso="$(date -u -r "$(( $(date +%s) - 4000 ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || date -u -d "@$(( $(date +%s) - 4000 ))" +%Y-%m-%dT%H:%M:%SZ)"
+jq --arg t "$old_iso" '.flaky.updated_at = $t' "$horf" > "$horf.tmp" && mv "$horf.tmp" "$horf"
+
+ledger_available "$hor" flaky \
+  || fail "the failing state has no exit: past engine_fail_cooldown_s the engine must be let through for ONE probe"
+assert_eq half_open "$(ledger_effective_status "$hor" flaky)" \
+  "...and the derived status must name it a probe rather than reporting a plain ok, so an operator reading it is not told the engine recovered when nothing has been tried yet"
+red_case 'an engine at its failure threshold becomes available again for one probe once the cooldown passes, instead of being excluded for the rest of the run by a state only a dispatch it is barred from could clear'
+
+# GREEN twin, both directions. The cooldown must still HOLD before it expires
+# -- otherwise the threshold is decorative -- and a probe that fails must
+# re-arm it rather than leaving the engine permanently probeable.
+ledger_mark "$hor" flaky failed
+ledger_available "$hor" flaky \
+  && fail "a failed probe must re-arm the cooldown, not leave the engine available"
+assert_eq failing "$(ledger_effective_status "$hor" flaky)" \
+  "...and the derived status goes back to failing"
+# ...and a probe that SUCCEEDS clears the count outright, which is the whole
+# point of letting one through.
+jq --arg t "$old_iso" '.flaky.updated_at = $t' "$horf" > "$horf.tmp" && mv "$horf.tmp" "$horf"
+ledger_available "$hor" flaky || fail "fixture: the re-aged record must be probeable again"
+ledger_mark "$hor" flaky ok
+assert_eq 0 "$(jq -r '.flaky.consecutive_failures' "$horf")" \
+  "a successful probe resets the failure count"
+assert_eq ok "$(ledger_effective_status "$hor" flaky)" "...and the engine is plainly ok again"
+green_case 'the cooldown holds before it expires, a failed probe re-arms it, and a successful probe clears the count'

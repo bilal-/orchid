@@ -1969,3 +1969,45 @@ esac
 drive_envelope_has_blocking_finding "$filed2" medium \
   && fail "an approving review with no findings must not block: nothing may be invented into it"
 green_case "an approving review with findings: [] is filed byte-for-byte as written, and still blocks nothing"
+
+# ============================================================================
+# F45, the jobs half: `prepare` crashed instead of printing usage, and `--help`
+# crashed one argument later.
+#
+# The report caught these while recovering from F44, and `jobs prepare` is the
+# specific verb that recovery turned out to need -- so the one command that
+# could have unstuck the operator answered with `libexec/orchid-jobs: line
+# 1019: $1: unbound variable` when typed without arguments, and with the same
+# error on `$2` when asked for help. libexec/orchid-task's Part AL is the twin
+# of this; both read their usage out of one table per file.
+# ============================================================================
+for f45j_sub in prepare record-exit review-plan; do
+  rc=0; f45j_out="$("$ORCHID_BIN" jobs "$f45j_sub" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "F45: 'orchid jobs $f45j_sub' with no arguments must be refused, not accepted"
+  grep -q "unbound variable" <<<"$f45j_out" \
+    && fail "F45: 'orchid jobs $f45j_sub' with no arguments leaked a raw shell error: $f45j_out"
+  grep -q "libexec/orchid-jobs" <<<"$f45j_out" \
+    && fail "F45: 'orchid jobs $f45j_sub' with no arguments named an implementation file to an operator: $f45j_out"
+  assert_match "usage: orchid jobs $f45j_sub" "$f45j_out" \
+    "F45: 'orchid jobs $f45j_sub' with no arguments prints its own usage"
+
+  rc=0
+  f45j_help="$(ORCHID_EPOCH=999999 "$ORCHID_BIN" jobs "$f45j_sub" --help 2>&1)" || rc=$?
+  assert_eq 0 "$rc" \
+    "F45: 'orchid jobs $f45j_sub --help' must succeed even on a stale epoch"
+  assert_match "usage: orchid jobs $f45j_sub" "$f45j_help" \
+    "F45: ...and print that subverb's own usage"
+  grep -q "stale epoch" <<<"$f45j_help" \
+    && fail "F45: 'orchid jobs $f45j_sub --help' was answered by the epoch fence instead of by the verb"
+done
+red_case 'jobs prepare, record-exit and review-plan print usage with no arguments and answer --help ahead of the epoch fence'
+
+# GREEN twin: the fence is intact for a real prepare on a stale epoch, and a
+# well-formed prepare on a valid one still mints a manifest.
+rc=0
+f45j_fence="$(ORCHID_EPOCH=999999 "$ORCHID_BIN" jobs prepare T001 implementer implement 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "F45: --help must not have opened a hole in the epoch fence — a real prepare on a stale epoch is still refused"
+assert_match "stale epoch" "$f45j_fence" "the fence still answers a mutating jobs call on a stale epoch"
+green_case 'only --help and an absent argument outrun the epoch fence: a real jobs prepare on a stale epoch is refused exactly as before'

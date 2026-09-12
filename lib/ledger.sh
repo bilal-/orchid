@@ -146,19 +146,63 @@ ledger_mark() {
   echo "$out" | atomic_write "$f"
 }
 
+# _ledger_cooldown_s <repo> -- how long a `failing` engine waits before ONE
+# dispatch is let through again. 0 disables the probe entirely, restoring the
+# pre-existing behaviour for anyone who wants it.
+#
+# THE STATE THIS EXISTS TO END. `consecutive_failures` reaches
+# `engine_fail_threshold`, the engine goes unavailable, and the count resets
+# only on an `ok` mark -- which only a dispatch produces, and the resolver will
+# not dispatch to an unavailable engine. The exit condition was reachable only
+# through the step the state forbids, so a vendor outage, an expired
+# credential or an hour offline excluded an engine for the rest of the run and
+# left hand-editing runtime/engines.json as the only recourse. That is the
+# r-002 retrospective's characteristic defect: a locally correct guard whose
+# refused side has no supported way back.
+#
+# A HALF-OPEN PROBE RATHER THAN A NEW VERB. Once this many seconds have passed
+# since the last mark, availability returns true for that engine, one dispatch
+# happens, and its own mark decides what comes next: `ok` clears the count
+# outright, a failure bumps it and re-stamps `updated_at`, which re-arms this
+# same window. No new field, no new state, nothing to reset by hand, and a
+# genuinely dead engine is retried at a bounded rate instead of never.
+#
+# MEMOIZED, and read only where it is used. `ledger_available` sits in the
+# resolver's per-engine chain loop, so an unconditional `config_get` here is a
+# file read (and a fork) on the hottest path in dispatch, in a process that
+# will ask for the same answer again a moment later. The value cannot change
+# within one process -- config is read, never written, by anything that calls
+# this -- so the first answer stands for the whole invocation.
+_ledger_cooldown_s() {
+  local v
+  if [ -n "${_ORCHID_LEDGER_COOLDOWN_S:-}" ]; then
+    printf '%s\n' "$_ORCHID_LEDGER_COOLDOWN_S"
+    return 0
+  fi
+  v="$(config_get "$1" engine_fail_cooldown_s 3600)"
+  case "$v" in ''|*[!0-9]*) v=3600 ;; esac
+  _ORCHID_LEDGER_COOLDOWN_S="$v"
+  printf '%s\n' "$v"
+}
+
 # ledger_available <repo> <engine> -- exit 0 iff no record for this engine,
 # or its rate-limit window has passed (even if never followed by an `ok`
 # mark -- the window reopening is what matters) AND it hasn't hit the
 # consecutive-failure threshold.
 ledger_available() {
-  local repo="$1" engine="$2" f now threshold
+  local repo="$1" engine="$2" f now threshold cooldown
   f="$(_ledger_file "$repo")"
   [ -f "$f" ] || return 0
   now="$(date +%s)"
   threshold="$(config_get "$repo" engine_fail_threshold 3)"
-  jq -e --arg e "$engine" --argjson now "$now" --argjson thr "$threshold" '
+  cooldown="$(_ledger_cooldown_s "$repo")"
+  jq -e --arg e "$engine" --argjson now "$now" --argjson thr "$threshold" \
+        --argjson cool "$cooldown" '
     (.[$e] // {rate_limited_until:0, consecutive_failures:0}) as $r
-    | (($r.rate_limited_until // 0) <= $now) and (($r.consecutive_failures // 0) < $thr)
+    | (($r.updated_at // "" | if . == "" then 0 else (fromdateiso8601? // 0) end)) as $upd
+    | (($r.rate_limited_until // 0) <= $now)
+      and ((($r.consecutive_failures // 0) < $thr)
+           or ($cool > 0 and $upd > 0 and ($now - $upd) >= $cool))
   ' "$f" >/dev/null
 }
 
@@ -181,16 +225,28 @@ ledger_available() {
 # but a loop keyword standing where a reader expects a variable is a trap for
 # the next person editing this, and costs nothing to avoid.
 _ledger_effective() {
-  local repo="$1" rl_until="${2:-0}" fails="${3:-0}" now threshold
+  local repo="$1" rl_until="${2:-0}" fails="${3:-0}" upd="${4:-0}" now threshold cooldown
   now="$(date +%s)"
   threshold="$(config_get "$repo" engine_fail_threshold 3)"
   case "$rl_until" in ''|*[!0-9]*) rl_until=0 ;; esac
   case "$fails" in ''|*[!0-9]*) fails=0 ;; esac
+  case "$upd" in ''|*[!0-9]*) upd=0 ;; esac
   # A garbled `engine_fail_threshold` falls back to the same default the
   # config lookup itself declares, rather than letting `[` fail with a
   # syntax error and report `ok` on the way out.
   case "$threshold" in ''|*[!0-9]*) threshold=3 ;; esac
-  if [ "$fails" -ge "$threshold" ]; then echo failing
+  if [ "$fails" -ge "$threshold" ]; then
+    cooldown="$(_ledger_cooldown_s "$repo")"
+    # `half_open`, never `ok`, and the distinction is the whole reason this
+    # branch exists as its own word. The engine is dispatchable again, but
+    # nothing has been tried: reporting `ok` would tell an operator reading
+    # `orchid status` that a failing engine RECOVERED, when all that happened
+    # is that a timer expired. One probe decides which it is.
+    if [ "$cooldown" -gt 0 ] && [ "$upd" -gt 0 ] && [ $(( now - upd )) -ge "$cooldown" ]; then
+      echo half_open
+    else
+      echo failing
+    fi
   elif [ "$rl_until" -gt "$now" ]; then echo rate_limited
   else echo ok
   fi
@@ -206,11 +262,17 @@ ledger_effective_status() {
   local repo="$1" engine="$2" f rec
   f="$(_ledger_file "$repo")"
   [ -f "$f" ] || { echo ok; return 0; }
+  # `updated_at` comes along as a third column: the half-open probe is keyed on
+  # how long ago the last mark was, so a derivation that cannot see it reports
+  # `failing` about an engine dispatch has already let through -- the exact
+  # status/dispatch disagreement T039 fixed this function to prevent.
   rec="$(jq -r --arg e "$engine" '
-    (.[$e] // {}) | [((.rate_limited_until // 0)|tostring), ((.consecutive_failures // 0)|tostring)] | @tsv' \
+    (.[$e] // {}) | [((.rate_limited_until // 0)|tostring), ((.consecutive_failures // 0)|tostring),
+                     ((.updated_at // "" | if . == "" then 0 else (fromdateiso8601? // 0) end)|tostring)] | @tsv' \
     "$f" 2>/dev/null || true)"
   [ -n "$rec" ] || { echo ok; return 0; }
-  _ledger_effective "$repo" "$(printf '%s' "$rec" | cut -f1)" "$(printf '%s' "$rec" | cut -f2)"
+  _ledger_effective "$repo" "$(printf '%s' "$rec" | cut -f1)" "$(printf '%s' "$rec" | cut -f2)" \
+    "$(printf '%s' "$rec" | cut -f3)"
 }
 
 # ledger_show <repo> -- one line per engine: <engine>\t<status>\t<detail>,
@@ -235,14 +297,15 @@ ledger_show() {
   [ -f "$f" ] || return 0
   jq -r 'to_entries[] |
     [.key, (.value.status // "ok"), (.value.rate_limited_until // 0),
-     (.value.consecutive_failures // 0), (.value.capability_refusals // 0)]
+     (.value.consecutive_failures // 0), (.value.capability_refusals // 0),
+     (.value.updated_at // "" | if . == "" then 0 else (fromdateiso8601? // 0) end)]
     | @tsv' "$f" |
-  while IFS=$'\t' read -r engine status until fails refusals; do
+  while IFS=$'\t' read -r engine status until fails refusals updated; do
     # T039: report the status the record ACTUALLY has now, not the last one
     # marked -- `ledger_mark` writes "rate_limited" once and nothing rewrites
     # it when the window closes. T008: a capability refusal is not an engine
     # fault, so it is counted and shown separately from failures. Both.
-    eff="$(_ledger_effective "$repo" "$until" "$fails")"
+    eff="$(_ledger_effective "$repo" "$until" "$fails" "$updated")"
     if [ "$eff" = rate_limited ]; then
       detail="until $(_ledger_epoch_to_iso "$until")"
     else

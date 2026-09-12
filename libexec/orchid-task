@@ -17,6 +17,61 @@ tf() { echo "$tasks/$1.md"; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 journal() { ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add "$@"; }
 
+# task_usage [sub] -- the usage line for one subverb, or the verb's own summary
+# when <sub> is absent or unknown. ONE table, read by three callers: the
+# `--help` gate below, every arm that refuses a missing argument, and the
+# dispatch fallback at the foot of the file. Before it there was no table at
+# all -- four arms carried a usage string inline, six carried none, and the
+# six without one died on `$1` under `set -u`, printing this file's path and a
+# line number at an operator (dogfood F45).
+#
+# Returns 1 for an unrecognised subverb so a caller can tell "here is the
+# usage" from "there is no such subverb" without matching on the text.
+task_usage() {
+  case "${1:-}" in
+    create)      printf '%s\n' 'usage: orchid task create <id> "<title>" [--archetype <name>]' ;;
+    show)        printf '%s\n' 'usage: orchid task show <id>' ;;
+    list)        printf '%s\n' 'usage: orchid task list' ;;
+    set)         printf '%s\n' 'usage: orchid task set <id> <key> <value> [--reason "..."]' ;;
+    advance)     printf '%s\n' 'usage: orchid task advance <id> <status> [--reason "..."] [--waive-attempt|--charge-attempt]' ;;
+    arbitrate)   printf '%s\n' 'usage: orchid task arbitrate <id> --result approve|request-changes --reason "..." [--waive-attempt]' ;;
+    handoff)     printf '%s\n' 'usage: orchid task handoff <id> --ack|--clear --reason "..."' ;;
+    prereq-ack)  printf '%s\n' 'usage: orchid task prereq-ack <id> --reason "..."' ;;
+    unblock)     printf '%s\n' 'usage: orchid task unblock <id> --reason "..."' ;;
+    retry)       printf '%s\n' 'usage: orchid task retry <id> --reason "..." [--attempts N]' ;;
+    reverify)    printf '%s\n' 'usage: orchid task reverify <id> --reason "..."' ;;
+    infra-fail)  printf '%s\n' 'usage: orchid task infra-fail <id> --reason "..."' ;;
+    *)           printf '%s\n' 'usage: orchid task create|show|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|infra-fail'
+                 return 1 ;;
+  esac
+}
+
+# HELP IS ANSWERED BEFORE THE RUN STATE IS CONSULTED (dogfood F45).
+#
+# Every mutating arm below opens with `verb_lock_guard` and `epoch_require`, so
+# `orchid task arbitrate --help` used to be answered by INV-02: `stale epoch
+# 'unset' (current 0) -- refused`, and no usage at all. Help is how an operator
+# finds out what to do when the state is ALREADY wrong -- it was reached for,
+# in the report that named this, while recovering from a task nothing could
+# move -- so gating it on that state inverts the one job it has.
+#
+# ONLY IN FIRST POSITION, and only for the two spellings. `--help` further
+# along a command line is an argument to whatever flag precedes it, and a
+# `--reason --help` that printed usage and exited 0 would silently discard a
+# recorded reason. The fence itself is untouched: nothing here reads, writes or
+# unlocks anything, and a mutating call on a stale epoch is refused exactly as
+# before (tests/test_task.sh Part AL pins both directions).
+case "${1:-}" in
+  --help|-h)
+    task_usage "$sub" || true
+    exit 0 ;;
+esac
+case "$sub" in
+  ''|--help|-h)
+    task_usage || true
+    exit 0 ;;
+esac
+
 # _no_newline <what> <value> [remedy] -- dies cleanly, BEFORE anything is
 # written, if value contains an embedded newline. Same guard (and same wording
 # shape) as
@@ -143,6 +198,31 @@ legal() {
   # turning a legal edge into a reported illegal one.
   transitions="$(archetype_transitions "$archetype")" || return 1
   grep -qxF "$from:$to" <<< "$transitions"
+}
+
+# blocked_route <id> <verb> -- the supported two-step route out of a status
+# this file's recovery verbs refuse from, in one sentence, from ONE composer.
+#
+# Dogfood F44 is the whole reason it exists. A task sat in `implementing` with
+# a dead implement job; the operator tried every documented recovery verb and
+# each one refused in its own words, naming nothing. `retry` said `illegal
+# retry from implementing` and stopped. From the outside that reads as a closed
+# loop -- and the escape was eventually found by reading source, which is the
+# one place an operator should never have to look for a supported action.
+#
+# The route was there the entire time, and it is the same one `infra-fail`
+# takes when its cap is reached: `to=blocked` is legal from EVERY status by
+# construction (legal() above returns 0 for it before consulting any archetype
+# at all), and both recovery verbs are legal FROM `blocked`. So the refusal has
+# a true, verb-only answer to give, and this composes it.
+#
+# ONE COMPOSER, TWO CALLERS (`retry` and `reverify`). Both refuse on the same
+# state for the same reason, and a route that drifts between them is a route an
+# operator cannot trust -- tests/test_task.sh Part AK pins the text at the
+# refusal AND then executes the route it names, so the sentence stays evidence
+# rather than advice.
+blocked_route() {
+  printf '%s' "This is not a dead end: 'orchid task advance $1 blocked --reason \"...\"' is legal from every status, and 'orchid task $2 $1 --reason \"...\"' is legal from blocked. Those two verbs are the supported route, and nothing under .orchid/ is ever hand-edited."
 }
 
 needs_reason() {
@@ -634,6 +714,7 @@ warn_rework_nonconverged() {
 
 case "$sub" in
   create)
+    [ $# -ge 2 ] || orchid_die "$(task_usage create)"
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; title="$2"; shift 2 || true
     # `plan` is a RESERVED task id (v1-m3): it names the plan-scoped critique
@@ -775,6 +856,7 @@ case "$sub" in
       printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"
     done ;;
   set)
+    [ $# -ge 3 ] || orchid_die "$(task_usage set)"
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; key="$2"; val="$3"; shift 3 || true
     # Reserved-id + existence guards BEFORE any read/write of the task
@@ -972,6 +1054,7 @@ case "$sub" in
     fi
     fm_set "$f" "$key" "$val"; fm_set "$f" updated "$(now)" ;;
   advance)
+    [ $# -ge 2 ] || orchid_die "$(task_usage advance)"
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; to="$2"; shift 2
     reason=""; waive=0; charge=0
@@ -1403,16 +1486,49 @@ case "$sub" in
       gate_tier="$(fm_get "$f" risk_tier)"; [ -n "$gate_tier" ] || gate_tier=low
       gate_need="$(review_required_count "$gate_tier")"
       gate_cand="$(fm_get "$f" candidate_sha)"
-      gate_have=0
+      # WHY EACH SKIPPED ENVELOPE WAS SKIPPED, counted as the loop goes
+      # (dogfood F43). The gate's own arithmetic is unchanged -- only `ok`
+      # envelopes bound to the CURRENT candidate have ever counted -- but the
+      # number it reported was the only one an operator was given, and it
+      # contradicts what they see in the directory. r-002's own T010-a2 holds
+      # six reviewer envelopes: four `status: failed` from one engine, two
+      # usable. Nothing was miscounted and nothing said so, which is how "an
+      # arbitration that appeared to rest on five reviews" gets written down.
+      #
+      # The two skip reasons are different problems with different fixes, so
+      # they are counted apart rather than summed: a non-ok envelope means an
+      # engine failed and the slot needs re-running, while a sha mismatch means
+      # the candidate moved underneath evidence that was fine, and re-running
+      # is the LAST thing that helps.
+      gate_have=0; gate_filed=0; gate_skip_status=0; gate_skip_cand=0
       for gate_rf in "$state/reviews/$id-a$gate_attempt-reviewer"*.json; do
         [ -e "$gate_rf" ] || continue
+        gate_filed=$((gate_filed + 1))
         gate_rf_cand="$(envelope_field "$gate_rf" '.candidate_sha // empty' 2>/dev/null || true)"
         gate_rf_status="$(envelope_field "$gate_rf" '.status // empty' 2>/dev/null || true)"
-        [ -n "$gate_cand" ] && [ "$gate_rf_cand" = "$gate_cand" ] && [ "$gate_rf_status" = ok ] || continue
+        if [ "$gate_rf_status" != ok ]; then
+          gate_skip_status=$((gate_skip_status + 1)); continue
+        fi
+        if [ -z "$gate_cand" ] || [ "$gate_rf_cand" != "$gate_cand" ]; then
+          gate_skip_cand=$((gate_skip_cand + 1)); continue
+        fi
         gate_have=$((gate_have + 1))
       done
-      [ "$gate_have" -ge "$gate_need" ] || \
-        orchid_die "arbitrating requires $gate_need reconciled review envelope(s) for risk_tier $gate_tier (have $gate_have)"
+      if [ "$gate_have" -lt "$gate_need" ]; then
+        # APPENDED AFTER the existing sentence, never substituted for it: three
+        # assertions in two suites pin `(have N)` with its closing paren, and a
+        # refusal is a poor place to discover that a message was rewritten.
+        gate_msg="arbitrating requires $gate_need reconciled review envelope(s) for risk_tier $gate_tier (have $gate_have)"
+        if [ "$gate_filed" -gt "$gate_have" ]; then
+          gate_msg="$gate_msg — $gate_filed filed for attempt $gate_attempt, and the difference is not a miscount:"
+          [ "$gate_skip_status" -eq 0 ] || \
+            gate_msg="$gate_msg $gate_skip_status skipped for a non-ok status (the engine failed; that slot has to run again),"
+          [ "$gate_skip_cand" -eq 0 ] || \
+            gate_msg="$gate_msg $gate_skip_cand skipped as bound to a superseded candidate (the review was fine and the candidate moved under it — re-running is what does NOT help; see the reviews' own candidate_sha against $gate_cand),"
+          gate_msg="${gate_msg%,}. They are in .orchid/reviews/$id-a$gate_attempt-reviewer*.json if you want to read what they said."
+        fi
+        orchid_die "$gate_msg"
+      fi
     fi
     # The task wall-clock anchor `jobs check` reads for its budget-exceeded
     # backstop. Re-stamped on every DISPATCH edge — pending/rework INTO an
@@ -2242,6 +2358,7 @@ case "$sub" in
     fm_set "$f" prerequisite_ack "$cand"; fm_set "$f" updated "$(now)"
     echo "$id: prerequisite acknowledged for candidate $cand" ;;
   unblock)
+    [ $# -ge 1 ] || orchid_die "$(task_usage unblock)"
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
     if [ "${1:-}" = "--reason" ]; then
@@ -2371,7 +2488,7 @@ case "$sub" in
     from="$(fm_get "$f" status)"
     case "$from" in
       blocked|rework) ;;
-      *) echo "orchid: illegal retry from $from" >&2; exit 3 ;;
+      *) echo "orchid: illegal retry from $from (retry is legal from blocked or rework). $(blocked_route "$id" retry)" >&2; exit 3 ;;
     esac
     # Read BEFORE anything is written, exactly as `unblock` above does it and
     # for the same reason: schedule_attempt_budget dies on a misconfigured
@@ -2517,7 +2634,7 @@ case "$sub" in
     from="$(fm_get "$f" status)"
     case "$from" in
       blocked|rework) ;;
-      *) echo "orchid: illegal reverify from $from (blocked or rework only)" >&2; exit 3 ;;
+      *) echo "orchid: illegal reverify from $from (blocked or rework only). $(blocked_route "$id" reverify)" >&2; exit 3 ;;
     esac
     # ---- EVERY refusal first, THEN the mutations -------------------------
     # This verb writes candidate_sha and journals two entries, and it is the
@@ -2631,6 +2748,7 @@ case "$sub" in
     # counter needs its own journal-first discipline and its own auto-block
     # threshold, not a bare frontmatter write. Epoch-fenced like every other
     # mutating verb here.
+    [ $# -ge 1 ] || orchid_die "$(task_usage infra-fail)"
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
     if [ "${1:-}" = "--reason" ]; then
@@ -2655,7 +2773,15 @@ case "$sub" in
       fm_set "$f" status blocked; fm_set "$f" updated "$(now)"
       echo "$id: infra_failures $n/$max — $from -> blocked: infra_failures cap reached"
     else
+      # THE COUNTER IS NOT THE ANSWER THE CALLER CAME FOR (dogfood F44). This
+      # arm is correct to change no status -- the ladder exists precisely so
+      # that one environmental failure does not move a task -- but it is also
+      # the verb an operator reaches for when a job has died and the task has
+      # stopped, and reporting only that a number moved is what made the third
+      # of F44's three "escapes" read as a dead end too. So the route travels
+      # with the counter, from the same composer the two recovery verbs use.
       echo "$id: infra_failures $n/$max"
+      echo "$id: no status change below the cap ($max). If this task needs to move now: $(blocked_route "$id" retry)"
     fi ;;
   *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|infra-fail" ;;
 esac

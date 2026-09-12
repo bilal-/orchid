@@ -211,6 +211,54 @@ assert_match "arbitrating requires 2 reconciled review envelope\(s\) for risk_ti
   "reviewing->arbitrating gate names required/actual counts and risk_tier"
 assert_eq reviewing "$(fm_get "$repoL/.orchid/tasks/TL1.md" status)" "refused arbitrating leaves status at reviewing"
 
+# ---------------------------------------------------------------------------
+# F43 -- the count an operator sees and the count the gate uses are different
+# numbers, and nothing said so.
+#
+# In r-002, `T010-a2` has SIX reviewer envelopes on disk: four `status: failed`
+# from one engine, and two usable ones. The kernel was never fooled -- the gate
+# below counts only `status: ok` envelopes bound to the current candidate, and
+# an ok review envelope carrying a null verdict fails envelope_validate and is
+# quarantined at reconcile rather than stored. So the report's "an arbitration
+# that appeared to rest on five reviews rested on two" was never true of the
+# DECISION.
+#
+# It was entirely true of the REPORT. An operator listing the directory sees
+# six files, the refusal says `have 1`, and nothing connects the two numbers.
+# The three envelopes that contributed nothing are indistinguishable, at a
+# glance, from the ones that did. So the refusal now states the split and why
+# each envelope was skipped -- appended AFTER the existing sentence, so every
+# assertion already pinned on `(have N)` keeps meaning what it meant.
+# ---------------------------------------------------------------------------
+jq -n --arg cand "$head_sha" '{contract:1, job_id:"j-plant-dud", task:"TL1", operation:"review",
+        status:"failed", verdict:null, summary:"an engine that failed", candidate_sha:$cand}' \
+  > "$repoL/.orchid/reviews/TL1-a1-reviewer.9.json"
+jq -n '{contract:1, job_id:"j-plant-stale", task:"TL1", operation:"review", status:"ok",
+        verdict:"approve", scope_complete:true, summary:"bound to a superseded candidate",
+        candidate_sha:"0000000000000000000000000000000000000000"}' \
+  > "$repoL/.orchid/reviews/TL1-a1-reviewer.8.json"
+rc=0; f43_err="$("$ORCHID_BIN" task advance TL1 arbitrating --reason "still one usable" 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "F43: fixture must still be short of the required count"
+assert_match "arbitrating requires 2 reconciled review envelope\(s\) for risk_tier medium \(have 1\)" "$f43_err" \
+  "F43: the sentence the existing gate assertions pin is unchanged — the disclosure is appended, not substituted"
+assert_match "3 filed" "$f43_err" \
+  "F43: ...and the refusal now states how many envelopes are on disk for this attempt, so 'have 1' and a directory listing of 3 stop disagreeing silently"
+assert_match "non-ok status" "$f43_err" \
+  "F43: ...naming the failed envelope as a non-ok status rather than leaving it unexplained"
+assert_match "superseded candidate" "$f43_err" \
+  "F43: ...and the sha-mismatched one as bound to a superseded candidate, which is a different problem with a different fix"
+red_case 'the arbitration evidence refusal discloses filed-versus-usable and why each envelope was skipped, instead of reporting a count that contradicts the directory'
+
+rm -f "$repoL/.orchid/reviews/TL1-a1-reviewer.9.json" "$repoL/.orchid/reviews/TL1-a1-reviewer.8.json"
+# GREEN twin: with nothing skipped, the refusal must NOT invent a split. A
+# disclosure that fires unconditionally tells an operator that healthy evidence
+# is suspect, which is the same defect pointed the other way.
+rc=0; f43_clean="$("$ORCHID_BIN" task advance TL1 arbitrating --reason "one review only" 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "F43: fixture must still refuse with one usable envelope"
+grep -q "skipped" <<<"$f43_clean" \
+  && fail "F43: with every filed envelope counted, the refusal must not report skips: $f43_clean"
+green_case 'the same refusal with nothing skipped states no split at all, so the disclosure marks the unusual case rather than decorating every refusal'
+
 jq -n --arg cand "$head_sha" '{contract:1, job_id:"j-plant-3", task:"TL1", operation:"review", status:"ok",
         verdict:"approve", scope_complete:true, summary:"planted review 2", candidate_sha:$cand}' \
   > "$repoL/.orchid/reviews/TL1-a1-reviewer.2.json"

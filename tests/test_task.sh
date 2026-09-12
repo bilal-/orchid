@@ -2874,3 +2874,127 @@ assert_eq "" "$(t4x_objection T052)" "...and the objection is cleared"
 [ -f "$(t4x_authority "$q52")" ] \
   || fail "T032: the record for the round the operator was shown must survive an arbitration it did not authorise — spending it would let a later sweep read 'that answer was used' about an answer nothing ever acted on"
 green_case 'the page raised for the round as it stands: a different evidence digest, answered, relayed, spent — while the record it superseded is left exactly where it was'
+
+# ============================================================================
+# Part AK -- F44: a refusal must name the supported route out of the status it
+# refuses.
+#
+# Dogfood F44 (2026-08-11, webBooks): a task whose implement job died without
+# an envelope looked unrecoverable. Every verb the operator reached for
+# refused, and the refusals said only that they refused -- `retry` printed
+# `illegal retry from implementing` and stopped there. A route out existed the
+# whole time: `advance <id> blocked` is legal from EVERY status (the state
+# machine's `*:blocked` catch-all) and `retry` is legal from `blocked`. Nothing
+# at the point of refusal said so, so the closed loop read as a dead end and
+# the escape was eventually found by reading source.
+#
+# This pins the r-002 retrospective's own design rule at this refusal: a guard
+# that can refuse must name, at the point of refusal, the supported action that
+# clears it. The RED case is the refusal naming the route; the GREEN twin is
+# the route it names actually working, so the message is evidence rather than
+# advice.
+# ============================================================================
+"$ORCHID_BIN" task create T060 "f44-refusal-names-the-route"
+"$ORCHID_BIN" task advance T060 implementing
+
+rc=0; f44_out="$("$ORCHID_BIN" task retry T060 --reason "its implement job died" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "retry from implementing is still refused"
+assert_match "task advance T060 blocked" "$f44_out" "the retry refusal names the verb that is legal from every status"
+assert_match "task retry T060" "$f44_out" "...and names this verb as the second step, so the route it prints is complete"
+red_case 'retry refused from implementing names advance-to-blocked and then retry, rather than reporting only that it refused'
+
+# GREEN twin: the route the refusal names is the route that actually works.
+# Without this, the RED case only proves a matcher fires on some prose.
+"$ORCHID_BIN" task advance T060 blocked --reason "the implement job died without an envelope"
+"$ORCHID_BIN" task retry T060 --reason "re-dispatching after the dead job"
+assert_eq rework "$(tfield T060 status)" "the route the refusal names returns the task to a dispatchable status"
+green_case 'the two verbs that refusal names take a task stranded in implementing back to rework'
+
+# The SAME route, from the sibling recovery verb, through the same composer.
+# `reverify` refuses on exactly the state `retry` does and used to name just as
+# little; two verbs that refuse for one reason must not print two answers.
+"$ORCHID_BIN" task create T061 "f44-reverify-names-the-route"
+"$ORCHID_BIN" task advance T061 implementing
+rc=0; f44_rv_out="$("$ORCHID_BIN" task reverify T061 --reason "tree is already green" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "reverify from implementing is still refused"
+assert_match "task advance T061 blocked" "$f44_rv_out" "the reverify refusal names the same universally-legal verb"
+assert_match "task reverify T061" "$f44_rv_out" "...and names itself as the second step"
+red_case 'reverify refused from implementing names the same two-step route, so the two recovery verbs cannot drift into two different answers'
+
+# ...and from `infra-fail`, the third verb F44 names. Below its cap this verb
+# records a counter and changes no status, which is correct -- but an operator
+# reaching for it to free a stranded task is told only that a number moved.
+"$ORCHID_BIN" task create T062 "f44-infra-fail-names-the-route"
+"$ORCHID_BIN" task advance T062 implementing
+f44_if_out="$("$ORCHID_BIN" task infra-fail T062 --reason "its implement job died without an envelope" 2>&1)"
+assert_match "infra_failures 1/" "$f44_if_out" "infra-fail still reports the counter it moved"
+assert_eq implementing "$(tfield T062 status)" "...and still changes no status below the cap"
+assert_match "task advance T062 blocked" "$f44_if_out" "...but now names the route for an operator who needs the task moving again"
+red_case 'infra-fail below its cap names the supported route as well as the counter, so the one verb that deliberately changes nothing does not read as the third dead end'
+
+# ============================================================================
+# Part AL -- F45: help is not run state, and a missing argument is not a crash.
+#
+# Two papercuts from the 2026-08-11 report, both of which cost real minutes
+# because they were hit while recovering from F44 -- i.e. at exactly the moment
+# the operator was already lost.
+#
+#   1. `orchid task <sub>` with no arguments died with a RAW BASH ERROR:
+#      `libexec/orchid-task: line 2271: $1: unbound variable`. That is `set -u`
+#      leaking the implementation's file and line number in place of the usage
+#      string the verb already knows how to print. Four other subverbs in this
+#      same file did the right thing, which is what makes it a defect rather
+#      than a convention.
+#
+#   2. `orchid task <sub> --help` was answered by the EPOCH FENCE, not by the
+#      verb: on a stale or unset epoch it refused with INV-02 and printed no
+#      usage at all. Help is how an operator finds out what to do when the
+#      state is already wrong, so gating it on that state inverts its purpose.
+#
+# Both halves are pinned per subverb rather than once, because the shipped tree
+# had them right in four arms and wrong in six -- a single spot check would
+# have passed against the broken file.
+# ============================================================================
+f45_subs="create show set advance arbitrate handoff prereq-ack unblock retry reverify infra-fail"
+
+for f45_sub in $f45_subs; do
+  rc=0; f45_out="$("$ORCHID_BIN" task "$f45_sub" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "F45: 'orchid task $f45_sub' with no arguments must be refused, not accepted"
+  grep -q "unbound variable" <<<"$f45_out" \
+    && fail "F45: 'orchid task $f45_sub' with no arguments leaked a raw shell error instead of its usage: $f45_out"
+  grep -q "libexec/orchid-task" <<<"$f45_out" \
+    && fail "F45: 'orchid task $f45_sub' with no arguments named an implementation file to an operator: $f45_out"
+  assert_match "usage: orchid task $f45_sub" "$f45_out" \
+    "F45: 'orchid task $f45_sub' with no arguments prints its own usage"
+done
+red_case 'every task subverb invoked with no arguments prints its usage — six of the eleven used to die on $1 with set -u, naming a source file and a line number'
+
+# --help, and specifically WITH THE RUN STATE WRONG. A deliberately stale epoch
+# is the condition F45 was reported under; if help is answered before the
+# fence, this is the same output an operator gets with a healthy epoch.
+for f45_sub in $f45_subs; do
+  rc=0
+  f45_help="$(ORCHID_EPOCH=999999 "$ORCHID_BIN" task "$f45_sub" --help 2>&1)" || rc=$?
+  assert_eq 0 "$rc" \
+    "F45: 'orchid task $f45_sub --help' must succeed even on a stale epoch (help is how you find out what to do when the state is already wrong)"
+  assert_match "usage: orchid task $f45_sub" "$f45_help" \
+    "F45: ...and print that subverb's own usage"
+  grep -q "stale epoch" <<<"$f45_help" \
+    && fail "F45: 'orchid task $f45_sub --help' was answered by the epoch fence instead of by the verb: $f45_help"
+done
+red_case 'every task subverb answers --help itself, ahead of the epoch fence, so a wrong run state cannot hide the usage string'
+
+# GREEN twin for both halves: the fence and the argument checks are still
+# armed. Help is the ONLY thing that outruns INV-02 -- an ordinary mutating
+# call on the same stale epoch must still be refused, and a real invocation
+# must still do its work.
+rc=0
+f45_fence="$(ORCHID_EPOCH=999999 "$ORCHID_BIN" task create T063 "must not be created" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "F45: --help must not have opened a hole in the epoch fence — a real task create on a stale epoch is still refused"
+assert_match "stale epoch" "$f45_fence" "the fence still answers a mutating call on a stale epoch"
+[ ! -f ".orchid/tasks/T063.md" ] || fail "F45: the refused create must have written nothing"
+"$ORCHID_BIN" task create T064 "f45-green" >/dev/null
+assert_eq pending "$(tfield T064 status)" "and an ordinary create with a valid epoch still works"
+green_case 'the epoch fence and the subverb arguments are untouched: only --help outruns the fence, and only an absent argument gets a usage string'

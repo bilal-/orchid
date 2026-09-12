@@ -253,6 +253,17 @@ it works around is not a papercut.
 | **Proved only on this machine or in a local fixture** | r-002's own history; the operator's recorded focused checks; T015's formal candidate `CI PASS`; the full local suite from the integration checkout at the 39-task SHA `1686c5dc9513f139b4b3b2ff77f58e0cb89bed44`; T038's docs verification and whole-tree static merge gate; the 13m19s local release rehearsal; isolated scheduler, trust, hook and no-network fixtures; any live vendor or Telegram observation made during dogfood. These do not establish behavior on another operator's machine. |
 | **Operator-owned and unproved** | A canonical full-CI run against the exact final 40-task integration SHA `d9b1cd15174c0e75b424ebf9b64a8f953aca91b0`; hosted CI after a push; a live command-execution probe for every implementer profile; a complete notification return-leg qualification; a genuine third-party beta; and publication. Open means open, never pass. |
 
+**Addendum, 2026-09-11 — one of those rows moved, and not all the way.** The
+operator pushed `main` and hosted CI has since been observed green: run
+[33577759163](https://github.com/bilal-/orchid/actions/runs/33577759163) at
+`7dcb58bc`. That closes "hosted CI after a push" and leaves the row above it
+open, because they are different claims: `7dcb58bc` is the 40-task integration
+SHA plus three later commits, two of which exist *because* the first two hosted
+runs on that merge failed. The exact `d9b1cd15` tree has still never been run
+on hosted CI. Every other item in this row is untouched. The full record,
+including the two failures, is in
+[r-002-acceptance-evidence.md](./r-002-acceptance-evidence.md).
+
 Most importantly, **no genuine third-party beta run has occurred**. webBooks
 and wasiyyat were real product repositories, but the author operated them and
 supplied the recovery knowledge. No public release has occurred either. Nothing

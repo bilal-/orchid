@@ -2,6 +2,16 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
+# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
+# out what to do when the run state is ALREADY wrong, so it must not be
+# answered by INV-02. First position only, and both spellings -- see the fuller
+# note on libexec/orchid-task's gate, which is the authority for this rule.
+case "${1:-}" in
+  --help|-h) printf '%s\n' "usage: orchid requirements import <file>"; exit 0 ;;
+esac
+case "${2:-}" in
+  --help|-h) printf '%s\n' "usage: orchid requirements import <file>"; exit 0 ;;
+esac
 epoch_require "$repo"
 # Re-exported explicitly (already present from the caller, since
 # epoch_require only validates it) so the fact that `journal add` below
@@ -9,6 +19,7 @@ epoch_require "$repo"
 export ORCHID_EPOCH
 
 sub="${1:-}"; shift || true
+
 case "$sub" in
   import)
     verb_lock_guard "$repo"
