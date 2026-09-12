@@ -81,23 +81,30 @@ assert_eq "$WORKP" "$(cat "$root_probe" 2>/dev/null || echo missing)" \
   "the verification command is handed the repository's own canonical path in ORCHID_REPO_ROOT"
 
 # ============================================================================
-# F47 -- the verify log is keyed per TASK, so a retry erased the evidence of
-# the failure that caused it.
+# F47 -- the verify log is keyed per TASK, so only the most recent run of it
+# is ever readable under its own name.
 #
-# From the 2026-08-11 report, and live in r-002's own operation: the operator
-# read `.orchid/reviews/<id>-verify.log` for every diagnosis all run and only
-# ever saw the most recent attempt. `<id>-verify.log` is a single path that the
-# next run overwrites, and `orchid task retry` -- the verb an operator reaches
-# for after `attempts exhausted` -- deletes it outright on its way through
-# (INV-07 invalidation). So the one artifact describing WHY a round failed was
-# destroyed by the recovery from that round, and three byte-identical failures
-# looked like three new attempts.
+# MEASURED BEFORE IT WAS FIXED, and the report's headline is stale: T025
+# already captures a FAILING round at `<id>-r<n>-rework.log` on every one of
+# the three doors into `rework`, so "a retry erases the evidence of the failure
+# that caused it" is no longer true of the shipped tree. Saying otherwise here
+# would make this file a monument to a defect somebody else repaired.
 #
-# The live path is unchanged: INV-11's gate, the rework capture and the driver
-# all read `<id>-verify.log` and none of them should learn a second name. What
-# is added is a per-attempt COPY beside it, keyed exactly like the attempt's
-# implementer envelope (`<id>-a<n>-...`), so the history survives whatever the
-# recovery verbs do to the live file.
+# What is still true, and what this pins, is narrower and real: that capture
+# fires only when a rework door is TAKEN. Nothing retains
+#
+#   * a PASSING run -- the next attempt overwrites it, so "which tree passed on
+#     attempt 2, and what did it print" is unanswerable an attempt later; or
+#   * a REFUSED run (exit 20, the tree is not the candidate), which takes no
+#     rework door at all; or
+#   * a second failing run inside one attempt, after `task reverify`.
+#
+# So every run of the verifier now files a copy keyed by ATTEMPT --
+# `<id>-a<n>-verify.log`, the same `a<n>` the attempt's implementer envelope
+# uses -- beside the round-keyed rework capture, which is a different axis and
+# stays exactly as it is. The live `<id>-verify.log` is untouched: INV-11's
+# gate, the rework capture and the driver all read it, and none of them should
+# learn a second name.
 # ============================================================================
 "$ORCHID_BIN" task create T090 "f47-per-attempt-verify-evidence"
 "$ORCHID_BIN" task set T090 verification_commands "echo round-one-output; exit 1"
@@ -133,10 +140,15 @@ assert_match "round-one-output" "$(cat "$f47_a1" 2>/dev/null || echo)" \
 [ ! -f "$f47_live" ] \
   || fail "fixture: retry is supposed to invalidate the live verify log — if it no longer does, this case is not testing F47"
 [ -f "$f47_a1" ] \
-  || fail "F47: the recovery verb destroyed the only record of the failure it was recovering from — that is the defect"
+  || fail "F47: the attempt-keyed copy did not survive the recovery verbs"
 assert_match "round-one-output" "$(cat "$f47_a1" 2>/dev/null || echo)" \
-  "F47: ...and the surviving copy still holds the output the next implementer needs to read"
-red_case 'a failing verify round survives the retry that recovers from it: the live log is invalidated as before, and the attempt-keyed copy is still readable'
+  "F47: ...and it still holds the output the next implementer needs to read"
+# T025's round-keyed capture, asserted HERE so this file states what it did not
+# fix. If this ever stops existing, the claim in the header above is wrong and
+# the person reading it should find that out from a failing test.
+[ -f ".orchid/reviews/T090-r1-rework.log" ] \
+  || fail "F47: T025's round-scoped rework capture is missing — the header of this block claims it already covers the failing-round case, and that claim is now false"
+red_case 'a failing verify round is readable after the recovery verbs under BOTH keys: T025 round capture, and the attempt-keyed copy added here'
 
 # GREEN twin: a SECOND round files its own copy under its own attempt, rather
 # than overwriting the first. Without this the check above would pass just as
@@ -209,3 +221,20 @@ f49_repo="$(cat .orchid/reviews/T092-verify.log 2>/dev/null || echo)"
 assert_match "^scope: repo" "$f49_repo" \
   "F49: a task with no verification_commands of its own records that it ran the repository gate"
 green_case 'the same field reads repo for a task that ran the configured repository gate: the disclosure distinguishes the two rather than labelling everything'
+
+# The case T025's capture cannot reach: a PASS. No rework door is taken, so
+# nothing is captured, and the next attempt overwrites the live log -- which
+# makes "what did the tree that passed on attempt N actually print" a question
+# the run cannot answer one attempt later. This is the part of F47 that was
+# genuinely open.
+"$ORCHID_BIN" task create T093 "f47-a-pass-is-evidence-too"
+"$ORCHID_BIN" task set T093 verification_commands "echo THE-PASSING-ROUND; exit 0"
+rc=0; "$ORCHID_BIN" verify T093 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "fixture: the round passes"
+[ -f ".orchid/reviews/T093-a1-verify.log" ] \
+  || fail "F47: a PASSING verify left no attempt-keyed copy — a pass is evidence about a tree and nothing else retains it"
+assert_match "THE-PASSING-ROUND" "$(cat .orchid/reviews/T093-a1-verify.log 2>/dev/null || echo)" \
+  "F47: ...and the copy carries what the passing round printed"
+[ ! -f ".orchid/reviews/T093-r1-rework.log" ] \
+  || fail "F47: a passing round must not have taken a rework door — if it did, this case is measuring T025's capture rather than the gap beside it"
+green_case 'a passing round is retained under its attempt as well, which is the case the round-scoped rework capture cannot reach because it fires only on entry to rework'

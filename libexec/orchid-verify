@@ -188,13 +188,18 @@ log="$state/reviews/$id-verify.log"
 # `<id>-verify.log` is the LIVE gate file and stays exactly where it is: INV-11's
 # testing -> reviewing gate reads it, `capture_rework_evidence` reads it, the
 # driver's briefs read it, and teaching any of them a second name would be four
-# readers to keep in step for one problem. What was missing is HISTORY. That one
-# path is overwritten by the next round and deleted outright by the three verbs
-# that enter `rework` (INV-07 invalidation) -- so `orchid task retry`, the verb an
-# operator runs precisely because a round failed, destroyed the only description
-# of the failure it was recovering from. For a whole run the operator read this
-# file for every diagnosis and only ever saw the most recent attempt; three
-# byte-identical failures were indistinguishable from three new ones.
+# readers to keep in step for one problem. What is missing is HISTORY: that one
+# path is overwritten by the next run of the verifier and deleted outright by
+# the three verbs that enter `rework` (INV-07 invalidation).
+#
+# THE REPORT'S HEADLINE IS ALREADY FIXED, and this is deliberately not a second
+# fix for it. T025's `capture_rework_evidence` files a FAILING round at
+# `<id>-r<n>-rework.log` on every door into `rework`, so the failure a retry
+# recovers from does survive that retry. What no capture reaches is everything
+# that takes no rework door: a PASS (nothing retains which tree passed on
+# attempt N, or what it printed), a REFUSAL (exit 20, the tree is not the
+# candidate), and a second failing run inside one attempt after `task reverify`.
+# Those are the cases this closes.
 #
 # KEYED LIKE THE ATTEMPT'S OTHER EVIDENCE. `attempts + 1` is the in-flight
 # attempt everywhere else in the kernel (lib/drive.sh's envelope selectors
