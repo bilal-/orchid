@@ -967,7 +967,8 @@ assert_eq "" "$("$ORCHID_BIN" task show T001 | grep '^worktree: ' | cut -d' ' -f
   "a done task records no checkout — its merge released the one it was dispatched into"
 [ ! -d "$WORKP/repo-T001" ] \
   || fail "the dispatch worktree must be gone once the task is done, not merely unrecorded"
-git -C "$REPO" worktree list --porcelain | grep -qF "worktree $WORKP/repo-T001" \
+t001_reg="$(git -C "$REPO" worktree list --porcelain)"
+grep -qF "worktree $WORKP/repo-T001" <<<"$t001_reg" \
   && fail "...and deregistered, or it still holds task/T001 and the branch cannot be deleted"
 
 # Status generation went through the verb (THE TICK step 5), not a hand-rolled

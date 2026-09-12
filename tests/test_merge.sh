@@ -1655,7 +1655,12 @@ assert_match "^task: T107$" "$(cat "$prep7")" \
 # then measured two unrelated facts at once and would have been satisfied by
 # the wrong one. `git worktree add` for validation mints
 # `$TMPDIR/orchid-merge.XXXXXX`, so ask about that directly.
-git worktree list --porcelain | grep -q 'orchid-merge\.' \
+# A HERESTRING, never `producer | grep -q ... && fail` (INV-15). grep exits at
+# its first match and SIGPIPEs the producer; under `set -o pipefail` that
+# kill-by-signal status becomes the pipeline's, so the `&&` is NOT taken and
+# this assertion is skipped in exactly the case it exists to catch.
+merge_wts="$(git worktree list --porcelain)"
+grep -q 'orchid-merge\.' <<<"$merge_wts" \
   && fail "the prepared temp worktree is still registered after the merge"
 assert_eq "" "$("$ORCHID_BIN" task show T107 | grep '^worktree: ' | cut -d' ' -f2-)" \
   "...and the task's OWN checkout was released by the completed merge, which is the other half of what the old count was silently conflating"
@@ -1697,7 +1702,8 @@ assert_match "worktree-prepare/T108-merge.log" "$(cat "$WORK/merge8.out")" \
 # Named rather than counted, for the reason given at T107 above. This task is
 # still in `merging` -- the environment failed -- so its own checkout is
 # deliberately untouched, and only merge's temp worktree is being asked about.
-git worktree list --porcelain | grep -q 'orchid-merge\.' \
+merge_wts8="$(git worktree list --porcelain)"
+grep -q 'orchid-merge\.' <<<"$merge_wts8" \
   && fail "the temp worktree is still registered even though the prepare step failed"
 
 # ...AND IT IS COUNTED. An environment that cannot be prepared is the failure
@@ -2264,7 +2270,8 @@ assert_eq "done" "$("$ORCHID_BIN" task show T090 | grep '^status: ' | cut -d' ' 
 
 [ ! -d "$wt90" ] \
   || fail "a done task's clean worktree must be removed — leaving it is what strands one checkout per task and blocks every later branch delete"
-git worktree list --porcelain | grep -qF "worktree $wt90" \
+wt90_reg="$(git worktree list --porcelain)"
+grep -qF "worktree $wt90" <<<"$wt90_reg" \
   && fail "...and it must be DEREGISTERED, not merely deleted from disk: a stale registration still holds the branch"
 assert_eq "" "$("$ORCHID_BIN" task show T090 | grep '^worktree: ' | cut -d' ' -f2-)" \
   "...and the task no longer records a path that is gone"
