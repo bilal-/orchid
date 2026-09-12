@@ -2,14 +2,6 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 
-# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
-# out what to do when the run state is ALREADY wrong, so it must not be
-# answered by INV-02 -- nor, on a verb that reads its first argument as data,
-# by DOING the thing being asked about. First position only, both spellings;
-# libexec/orchid-task's gate carries the full note.
-case "${1:-}" in
-  --help|-h) printf '%s\n' "usage: orchid start"; exit 0 ;;
-esac
 
 # v1.1 Track 2: `orchid start <requirements-file>` -- the ONE-COMMAND
 # existing-repo setup. Everything it does is already a supported lower-level
@@ -62,7 +54,7 @@ esac
 
 _start_usage() {
   cat <<'EOF'
-usage:
+usage: orchid start
   orchid start <requirements-file> [--verify <command>] [--worktree <path>]
                                    [--ack-unattended --reason <text>]
   orchid start --refresh-push-guard

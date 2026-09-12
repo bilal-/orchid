@@ -34,6 +34,19 @@ source "$(dirname "$0")/../helpers.sh"
 #   4. Nothing is written. The repository state is captured before and after
 #      the whole sweep and must be byte-identical -- this is the check that
 #      would have caught `plugins lock --help`.
+#
+# RED: a verb that answers `--help` with anything other than its own usage line
+#      must be REJECTED by this scan -- whether it answers with INV-02's stale
+#      epoch refusal, with a raw `set -u` error naming a source file and a line
+#      number, or by simply doing what it was asked about instead of describing
+#      it. The rejection is demonstrated against a shim verb that prints
+#      something else entirely, so the check is known to be able to fail rather
+#      than merely observed to pass over a tree that already conforms.
+# GREEN: every verb and subverb DERIVED from the shipped tree must be admitted
+#      by that same scan, on the same deliberately stale epoch, and the epoch
+#      fence must still refuse an ordinary mutating call made under it -- so
+#      the sweep's silence is evidence that help outruns the fence and nothing
+#      else does, rather than evidence that the fence is gone.
 
 cd_scratch "$WORK" || exit 1
 git init -q .
