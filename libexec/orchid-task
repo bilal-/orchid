@@ -145,6 +145,31 @@ legal() {
   grep -qxF "$from:$to" <<< "$transitions"
 }
 
+# blocked_route <id> <verb> -- the supported two-step route out of a status
+# this file's recovery verbs refuse from, in one sentence, from ONE composer.
+#
+# Dogfood F44 is the whole reason it exists. A task sat in `implementing` with
+# a dead implement job; the operator tried every documented recovery verb and
+# each one refused in its own words, naming nothing. `retry` said `illegal
+# retry from implementing` and stopped. From the outside that reads as a closed
+# loop -- and the escape was eventually found by reading source, which is the
+# one place an operator should never have to look for a supported action.
+#
+# The route was there the entire time, and it is the same one `infra-fail`
+# takes when its cap is reached: `to=blocked` is legal from EVERY status by
+# construction (legal() above returns 0 for it before consulting any archetype
+# at all), and both recovery verbs are legal FROM `blocked`. So the refusal has
+# a true, verb-only answer to give, and this composes it.
+#
+# ONE COMPOSER, TWO CALLERS (`retry` and `reverify`). Both refuse on the same
+# state for the same reason, and a route that drifts between them is a route an
+# operator cannot trust -- tests/test_task.sh Part AK pins the text at the
+# refusal AND then executes the route it names, so the sentence stays evidence
+# rather than advice.
+blocked_route() {
+  printf '%s' "This is not a dead end: 'orchid task advance $1 blocked --reason \"...\"' is legal from every status, and 'orchid task $2 $1 --reason \"...\"' is legal from blocked. Those two verbs are the supported route, and nothing under .orchid/ is ever hand-edited."
+}
+
 needs_reason() {
   case "$1:$2" in
     *:merging|*:blocked|arbitrating:rework|arbitrating:done) return 0 ;;
@@ -2371,7 +2396,7 @@ case "$sub" in
     from="$(fm_get "$f" status)"
     case "$from" in
       blocked|rework) ;;
-      *) echo "orchid: illegal retry from $from" >&2; exit 3 ;;
+      *) echo "orchid: illegal retry from $from (retry is legal from blocked or rework). $(blocked_route "$id" retry)" >&2; exit 3 ;;
     esac
     # Read BEFORE anything is written, exactly as `unblock` above does it and
     # for the same reason: schedule_attempt_budget dies on a misconfigured
@@ -2517,7 +2542,7 @@ case "$sub" in
     from="$(fm_get "$f" status)"
     case "$from" in
       blocked|rework) ;;
-      *) echo "orchid: illegal reverify from $from (blocked or rework only)" >&2; exit 3 ;;
+      *) echo "orchid: illegal reverify from $from (blocked or rework only). $(blocked_route "$id" reverify)" >&2; exit 3 ;;
     esac
     # ---- EVERY refusal first, THEN the mutations -------------------------
     # This verb writes candidate_sha and journals two entries, and it is the
@@ -2655,7 +2680,15 @@ case "$sub" in
       fm_set "$f" status blocked; fm_set "$f" updated "$(now)"
       echo "$id: infra_failures $n/$max — $from -> blocked: infra_failures cap reached"
     else
+      # THE COUNTER IS NOT THE ANSWER THE CALLER CAME FOR (dogfood F44). This
+      # arm is correct to change no status -- the ladder exists precisely so
+      # that one environmental failure does not move a task -- but it is also
+      # the verb an operator reaches for when a job has died and the task has
+      # stopped, and reporting only that a number moved is what made the third
+      # of F44's three "escapes" read as a dead end too. So the route travels
+      # with the counter, from the same composer the two recovery verbs use.
       echo "$id: infra_failures $n/$max"
+      echo "$id: no status change below the cap ($max). If this task needs to move now: $(blocked_route "$id" retry)"
     fi ;;
   *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|infra-fail" ;;
 esac

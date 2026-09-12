@@ -2874,3 +2874,61 @@ assert_eq "" "$(t4x_objection T052)" "...and the objection is cleared"
 [ -f "$(t4x_authority "$q52")" ] \
   || fail "T032: the record for the round the operator was shown must survive an arbitration it did not authorise — spending it would let a later sweep read 'that answer was used' about an answer nothing ever acted on"
 green_case 'the page raised for the round as it stands: a different evidence digest, answered, relayed, spent — while the record it superseded is left exactly where it was'
+
+# ============================================================================
+# Part AK -- F44: a refusal must name the supported route out of the status it
+# refuses.
+#
+# Dogfood F44 (2026-08-11, webBooks): a task whose implement job died without
+# an envelope looked unrecoverable. Every verb the operator reached for
+# refused, and the refusals said only that they refused -- `retry` printed
+# `illegal retry from implementing` and stopped there. A route out existed the
+# whole time: `advance <id> blocked` is legal from EVERY status (the state
+# machine's `*:blocked` catch-all) and `retry` is legal from `blocked`. Nothing
+# at the point of refusal said so, so the closed loop read as a dead end and
+# the escape was eventually found by reading source.
+#
+# This pins the r-002 retrospective's own design rule at this refusal: a guard
+# that can refuse must name, at the point of refusal, the supported action that
+# clears it. The RED case is the refusal naming the route; the GREEN twin is
+# the route it names actually working, so the message is evidence rather than
+# advice.
+# ============================================================================
+"$ORCHID_BIN" task create T060 "f44-refusal-names-the-route"
+"$ORCHID_BIN" task advance T060 implementing
+
+rc=0; f44_out="$("$ORCHID_BIN" task retry T060 --reason "its implement job died" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "retry from implementing is still refused"
+assert_match "task advance T060 blocked" "$f44_out" "the retry refusal names the verb that is legal from every status"
+assert_match "task retry T060" "$f44_out" "...and names this verb as the second step, so the route it prints is complete"
+red_case 'retry refused from implementing names advance-to-blocked and then retry, rather than reporting only that it refused'
+
+# GREEN twin: the route the refusal names is the route that actually works.
+# Without this, the RED case only proves a matcher fires on some prose.
+"$ORCHID_BIN" task advance T060 blocked --reason "the implement job died without an envelope"
+"$ORCHID_BIN" task retry T060 --reason "re-dispatching after the dead job"
+assert_eq rework "$(tfield T060 status)" "the route the refusal names returns the task to a dispatchable status"
+green_case 'the two verbs that refusal names take a task stranded in implementing back to rework'
+
+# The SAME route, from the sibling recovery verb, through the same composer.
+# `reverify` refuses on exactly the state `retry` does and used to name just as
+# little; two verbs that refuse for one reason must not print two answers.
+"$ORCHID_BIN" task create T061 "f44-reverify-names-the-route"
+"$ORCHID_BIN" task advance T061 implementing
+rc=0; f44_rv_out="$("$ORCHID_BIN" task reverify T061 --reason "tree is already green" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "reverify from implementing is still refused"
+assert_match "task advance T061 blocked" "$f44_rv_out" "the reverify refusal names the same universally-legal verb"
+assert_match "task reverify T061" "$f44_rv_out" "...and names itself as the second step"
+red_case 'reverify refused from implementing names the same two-step route, so the two recovery verbs cannot drift into two different answers'
+
+# ...and from `infra-fail`, the third verb F44 names. Below its cap this verb
+# records a counter and changes no status, which is correct -- but an operator
+# reaching for it to free a stranded task is told only that a number moved.
+"$ORCHID_BIN" task create T062 "f44-infra-fail-names-the-route"
+"$ORCHID_BIN" task advance T062 implementing
+f44_if_out="$("$ORCHID_BIN" task infra-fail T062 --reason "its implement job died without an envelope" 2>&1)"
+assert_match "infra_failures 1/" "$f44_if_out" "infra-fail still reports the counter it moved"
+assert_eq implementing "$(tfield T062 status)" "...and still changes no status below the cap"
+assert_match "task advance T062 blocked" "$f44_if_out" "...but now names the route for an operator who needs the task moving again"
+red_case 'infra-fail below its cap names the supported route as well as the counter, so the one verb that deliberately changes nothing does not read as the third dead end'
+
