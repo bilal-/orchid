@@ -85,6 +85,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `effort` | `medium` | repo or user | v0 |
 | `rate_limit_backoff_s` | `3600` | repo | v1-m2 |
 | `engine_fail_threshold` | `3` | repo | v1-m2 |
+| `engine_fail_cooldown_s` | `3600` | repo | v1.1 |
 | `pump_stale_s` | `900` | repo | v1-m2 |
 | `pump_interval_s` | `240` | repo | v1-m4 |
 | `pump_wake_max` | `3` | repo | v1.1 |

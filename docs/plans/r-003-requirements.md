@@ -253,6 +253,17 @@ a property of orchid, not of one dogfood run.
   it correctly — a `worktree-conflict` boundary naming branch and path, stopping
   rather than guessing — so the finding is only that the collision should not
   arise. Namespace by run, or have `run new` detect surviving `task/*` branches.
+
+  **Closed 2026-09-12 by the detect-and-refuse half, and this repository is the
+  reproduction.** `orchid run new` refuses the rollover while `task/*` refs
+  survive, before anything is archived — so deleting them and re-running the
+  identical command is the whole remedy. The refusal names the worktrees FIRST:
+  41 branches survive r-002 here, 40 held by a linked worktree each, and
+  `git branch -D` refuses a branch a worktree holds, so a message naming only
+  the delete would have failed on its first line. Contained branches get
+  `branch -D`; anything not contained (here, `task/T024-preserve`) gets a rename,
+  because deleting it destroys work that never merged. Namespacing by run is
+  still the other option and is not done.
 - **F43 — reviewer envelopes with `verdict: null` are stored and counted.**
   Three agy envelopes contributed nothing, so an arbitration that appeared to
   rest on five reviews rested on two. **Reproduced in r-002**: five null-verdict
@@ -262,6 +273,25 @@ a property of orchid, not of one dogfood run.
   repository. Quarantine a null-verdict envelope as malformed at reconcile rather
   than storing it, and surface *effective* reviewer count ("2 usable of 5") in
   the boundary record and `task show`.
+
+  **Re-measured 2026-09-12 — the kernel was never fooled; the report was.**
+  `envelope_validate` already requires `verdict IN("approve","request-changes")`
+  for any `status: ok` review or critique envelope, and reconcile quarantines a
+  failing one as `malformed` rather than storing it, so the first half of this
+  finding is closed. The five envelopes named here are `status: failed` (four
+  agy, one claude), where a null verdict is correct and expected, and the
+  arbitration gate has always counted only `ok` envelopes bound to the current
+  candidate. No arbitration ever rested on them.
+
+  What was real is the reporting: six files in `reviews/`, a refusal that says
+  `have 1`, and nothing connecting the two numbers. That refusal now states the
+  split and why each envelope was skipped — a non-ok status (the engine failed;
+  re-run the slot) and a superseded `candidate_sha` (the review was fine and the
+  candidate moved under it; re-running is the one thing that does not help)
+  counted apart, because they are different problems with different fixes.
+  Appended after the existing sentence, so the three assertions pinned on
+  `(have N)` still mean what they meant. Still open: the same split in
+  `task show` and in the boundary record.
 - **F45 — `--help` is gated on run state, and argument-less subverbs crash.**
   `orchid task arbitrate --help` refuses on a stale epoch; `jobs prepare` with no
   args dies on `$1: unbound variable` before reaching its own usage string.
@@ -301,6 +331,18 @@ a property of orchid, not of one dogfood run.
   write on failure first, include the tail in the journal entry, and pass it into
   the rework pack — the implementer is currently asked to fix a failure it is not
   shown.
+
+  **Re-measured 2026-09-12 — the headline is stale.** T025's
+  `capture_rework_evidence` already files a failing round at
+  `<id>-r<n>-rework.log` on all three doors into `rework` and feeds it into the
+  next brief, so "a retry erases the evidence of the failure that caused it" is
+  no longer true of the shipped tree. What nothing retained was everything that
+  takes no rework door: a PASS (so "which tree passed on attempt N, and what did
+  it print" was unanswerable an attempt later), a refusal (exit 20), and a second
+  failing run inside one attempt after `task reverify`. Every run of the verifier
+  now also files `<id>-a<n>-verify.log`, keyed by the same `a<n>` as that
+  attempt's implementer envelope. The live `<id>-verify.log` is untouched,
+  because four readers depend on it.
 - **F49 — "verify PASS" never shows how narrow the gate was.** Per-task
   `verification_commands` carried `--filter`s authored during planning; thirteen
   tasks merged reporting a green gate having run between 4 and 86 of the suite's
@@ -313,6 +355,15 @@ a property of orchid, not of one dogfood run.
   cannot add up to an unverified whole.* Record and display the effective scope
   of a verify; `verify passed (25 tests)` and `verify passed (2305 tests)` are
   different claims and must not read identically.
+
+  **Partly closed 2026-09-12.** Orchid cannot count a stranger's tests — the
+  verification command is arbitrary shell, and inventing a number would be the
+  fabricated-evidence class this whole run is about. What it can state from
+  facts it already holds is WHICH question was asked, so the evidence log now
+  carries `scope: task` or `scope: repo` beside `command:`. A reader of a green
+  log learns, without leaving the log, that the green describes a narrower
+  question than the repository asks. The count itself stays open, and would need
+  the verification command to report it.
 
 ## Track G — what the operator had to build, and what remains
 
