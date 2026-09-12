@@ -653,10 +653,31 @@ case "$sub" in
     # is about. The verb refuses and names the action; the operator takes it.
     new_survivors="$(git -C "$repo" for-each-ref --format='%(refname:short)' 'refs/heads/task/*' 2>/dev/null || true)"
     if [ -n "$new_survivors" ]; then
-      new_merged=""; new_unmerged=""; new_count=0
+      # THE CHECKED-OUT ONES FIRST, because the remedy this refusal prints has
+      # to be a remedy that RUNS. `git branch -D` refuses a branch held by a
+      # linked worktree ("cannot delete branch 'task/T001' used by worktree at
+      # ..."), and a task branch from a finished run is exactly the branch most
+      # likely to still have one: `orchid merge` never removes a task's
+      # worktree, so a completed run leaves one per task standing. Naming the
+      # delete without naming the worktree removal would hand the operator a
+      # command that fails on the first line, at the one moment they are being
+      # told to trust the message.
+      new_wt_list="$(git -C "$repo" worktree list --porcelain 2>/dev/null || true)"
+      new_merged=""; new_unmerged=""; new_held=""; new_count=0
       while IFS= read -r new_br; do
         [ -n "$new_br" ] || continue
         new_count=$(( new_count + 1 ))
+        # The porcelain form emits `branch refs/heads/<name>` for a checked-out
+        # branch; a detached worktree emits no branch line at all, so a task
+        # branch nothing has checked out simply does not match.
+        case "$new_wt_list" in
+          *"branch refs/heads/$new_br"$'\n'*|*"branch refs/heads/$new_br")
+            new_wt_path="$(printf '%s\n' "$new_wt_list" | awk -v b="refs/heads/$new_br" '
+              /^worktree /{ p = substr($0, 10) }
+              $0 == "branch " b { print p; exit }')"
+            new_held="$new_held $new_wt_path"
+            ;;
+        esac
         if git -C "$repo" merge-base --is-ancestor "$new_br" "$integ" 2>/dev/null; then
           new_merged="$new_merged $new_br"
         else
@@ -664,6 +685,9 @@ case "$sub" in
         fi
       done <<< "$new_survivors"
       new_msg="$new_count task branch(es) from $old_run_id still exist, and the new run's ids restart at T001 — its first dispatch would collide with one of them."
+      if [ -n "$new_held" ]; then
+        new_msg="$new_msg FIRST, because a branch a worktree holds cannot be deleted, remove the worktrees still checked out on them (each must be clean, or git will refuse and tell you which one is not): git -C $repo worktree remove$new_held"
+      fi
       if [ -n "$new_merged" ]; then
         new_msg="$new_msg Already contained in $integ, so deleting them loses nothing: git -C $repo branch -D$new_merged"
       fi

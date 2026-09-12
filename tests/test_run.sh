@@ -123,6 +123,14 @@ rc=0; "$ORCHID_BIN" run new >/dev/null 2>&1 || rc=$?
 # deleting the branches and re-running is the whole remedy.
 # ---------------------------------------------------------------------------
 git branch task/T001 HEAD 2>/dev/null || fail "fixture: could not plant a surviving task branch"
+# ...and a worktree holding it, which is the shape this repository is actually
+# in after a run: `orchid merge` never removes a task's checkout, so a finished
+# run leaves one standing per task. It matters because `git branch -D` REFUSES
+# a branch a worktree holds, so a refusal that named only the delete would hand
+# the operator a command that fails on its first line.
+f42_wt="$WORK/rn-survivor-wt"
+git worktree add -q "$f42_wt" task/T001 2>/dev/null \
+  || fail "fixture: could not add a worktree holding the surviving branch"
 rc=0; f42_out="$("$ORCHID_BIN" run new --reason "rollover with survivors" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "F42: run new must refuse while task/* branches from the previous run survive"
 assert_match "task/T001" "$f42_out" "F42: the refusal names the surviving branch, not just its count"
@@ -130,6 +138,14 @@ assert_match "task/T001" "$f42_out" "F42: the refusal names the surviving branch
 # uncontained one with `branch -m` (renaming rather than destroying work that
 # never merged). What must never happen is a refusal that names neither.
 assert_match "branch -[Dm]" "$f42_out" "F42: ...and names the action that clears it, for whichever of the two kinds the survivor is (out: $f42_out)"
+assert_match "worktree remove" "$f42_out" \
+  "F42: ...and names the worktree removal FIRST, because git refuses to delete a branch a worktree holds"
+assert_match "$f42_wt" "$f42_out" \
+  "F42: ...naming the worktree by path, so the printed command can be run as printed"
+# The remedy is not merely printed, it is EXECUTED here. A refusal whose
+# instructions have never been run is a sentence, not an exit.
+git worktree remove "$f42_wt" >/dev/null 2>&1 \
+  || fail "F42: the worktree removal the refusal names must actually work on the worktree it names"
 [ ! -d .orchid/runs ] || fail "F42: the refusal must happen before anything is archived"
 red_case 'run new refuses a rollover that would hand the next run a colliding task/T001, names the surviving branch and the command that clears it, and archives nothing'
 
