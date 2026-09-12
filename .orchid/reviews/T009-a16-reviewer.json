@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a16-4a4a",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "34edca09e0913d68489b4f32a3d9c32d2dfe013a",
+  "candidate_sha": "5a824ff45a4e242748557a55cdb19cb5641afaaf",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "`orchid notify` now rejects a message text beginning with `-` and offers no `--` terminator"
+    }
+  ]
+}

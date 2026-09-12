@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a5-3f3f",
+  "task": "T009",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "19ecd59916c9cbda2bec302db9e58c9d35fa0c79",
+  "candidate_sha": "08b5d2dd58cd2e18db3469a6e05fadd107b9d923",
+  "summary": "Declare answer sets on orchestrator pages and mint the gate first",
+  "commits": [
+    "08b5d2dd58cd2e18db3469a6e05fadd107b9d923"
+  ]
+}

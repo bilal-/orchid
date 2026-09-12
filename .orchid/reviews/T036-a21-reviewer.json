@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a21-4ab2",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "18075c11085c2e32f2f41a0ec6a62af89a1a2e6e",
+  "candidate_sha": "5608a39e169f7b17ac86b979a49da598d08ee29f",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Objection a19 is addressed: moved-path install now refuses before writes or scheduler calls, preserves the original schedule records, and has non-vacuous RED/GREEN coverage for reinstall, ownership, a"
+}

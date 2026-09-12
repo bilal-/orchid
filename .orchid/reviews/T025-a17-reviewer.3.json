@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a17-e15c",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "a713d3431d238464ff53a861fb05b0f66a452280",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: A retry or unblock can capture the threshold-crossing identical signature, but the next drive pass dispatches another implementer instead of blocking the non-converging loop.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "A retry or unblock can capture the threshold-crossing identical signature, but the next drive pass dispatches another implementer instead of blocking the non-converging loop."
+    }
+  ],
+  "summary": "A retry or unblock can capture the threshold-crossing identical signature, but the next drive pass dispatches another implementer instead of blocking the non-converging loop."
+}

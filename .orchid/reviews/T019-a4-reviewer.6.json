@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-95d1",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "ca22505a36ba8ac940e03187f09336f05c38f2bf",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Waived rework re-dispatch resolves the previous round's implement envelope and re-verifies a stale candidate"
+    },
+    {
+      "severity": "low",
+      "title": "The stale-pin hand-off route corroborates only that the named file exists, not that the pin is actually stale"
+    },
+    {
+      "severity": "low",
+      "title": "The recurrence guard reads the shared `infra_failures` counter, so an unrelated earlier infra failure suppresses the first waived round"
+    }
+  ]
+}

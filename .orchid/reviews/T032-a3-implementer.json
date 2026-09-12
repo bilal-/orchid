@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a3-402b",
+  "task": "T032",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "e830e6d5ba18e62d15bcb9eabdc96c5a4397461c",
+  "summary": "Distinguish an operator's objection from the orchestrator's own",
+  "commits": [
+    "e830e6d5ba18e62d15bcb9eabdc96c5a4397461c"
+  ]
+}

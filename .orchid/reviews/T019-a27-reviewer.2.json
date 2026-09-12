@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a27-3ab6",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "5a04b1eace9bf5a6718a4ab5840d4b519c128d6b",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "tests/run.sh buffers each test's output and prints it only after the child exits, so a timed-out or reaped suite — the exact \"stopped short\" case this classifier reports on exit 124/137/143 — leaves the in-flight test's diagnostics out of the verify evidence log entirely"
+    },
+    {
+      "severity": "low",
+      "title": "docs/configuration.md describes `handoff.pin_check` as \"the check the `handoff` route runs\", but it is now executed before every `orchid verify`, passing or failing, and the shipped default builds a full release archive; the per-verify cost and timing are only stated in a code comment"
+    }
+  ]
+}

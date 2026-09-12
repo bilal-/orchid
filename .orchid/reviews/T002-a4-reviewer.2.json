@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T002-a4-7dec",
+  "task": "T002",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "74ab099b3c181d2a76ecbe3ce69efebd6a9bc921",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "Refusal message at libexec/orchid-start:551 still states the pre-T002 premise (\"task files reach the integration branch only through 'orchid plan apply'\"); in the helper's declined shapes with no plan on the branch (e.g. an operator who merged a planless $integ into their own branch mid-planning) the refusal fires with that untrue premise and a `run resume`/`run new` recovery that does not apply — the surrounding comments were corrected but the operator-facing string was not"
+    },
+    {
+      "severity": "low",
+      "title": "`_start_tasks_inherited` proxies the init-time fork point with the operator's *current* HEAD (merge-base against HEAD, libexec/orchid-start:524); if the operator checks out a different branch between two otherwise-identical `orchid start` runs, the merge base moves and the second run can falsely refuse inherited-only task state — the failure direction is safe (refusal, no state damage) and the shape requires an operator branch switch, but it is a residual non-idempotence the recorded-fork-point alternative would not have"
+    }
+  ]
+}

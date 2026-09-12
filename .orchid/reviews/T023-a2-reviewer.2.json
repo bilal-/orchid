@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T023-a2-46da",
+  "task": "T023",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "7a0c12689bdec4607917cb7f4f7c31b41ec526a7",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "worktree_prepare runs the operator's command with the driver's walk-loop stdin, so a prompting bootstrap silently eats the task list"
+    },
+    {
+      "severity": "low",
+      "title": "merge passes `<id>-merge` as ORCHID_TASK and log slug, contradicting the documented \"task id\" contract and `<task>.log` path"
+    },
+    {
+      "severity": "low",
+      "title": "PROTOCOL.md's \"Every checkout this protocol creates gets a preparation step\" is untrue of the integration checkout `orchid start` creates"
+    },
+    {
+      "severity": "low",
+      "title": "on a merge prepare failure the driver still points the operator at `.orchid/reviews/<id>-merge.log`, which is absent or stale for that failure"
+    }
+  ]
+}

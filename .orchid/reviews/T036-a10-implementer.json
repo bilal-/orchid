@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a10-cccb",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "b6279c26d8f3240a50ecf086449a9b98f7244e1f",
+  "summary": "Fail closed when the machine-local binding path is obstructed",
+  "commits": [
+    "b6279c26d8f3240a50ecf086449a9b98f7244e1f"
+  ]
+}

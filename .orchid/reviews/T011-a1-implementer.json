@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T011-a1-cffa",
+  "task": "T011",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "38faf8776816b91099f4cc87a7c5d7f23f425b62",
+  "summary": "Decide qualification needs no trust step; record it in the specs",
+  "commits": [
+    "38faf8776816b91099f4cc87a7c5d7f23f425b62"
+  ]
+}

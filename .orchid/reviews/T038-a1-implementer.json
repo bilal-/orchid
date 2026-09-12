@@ -1,0 +1,11 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T038-a1-546b",
+  "task": "T038",
+  "operation": "implement",
+  "status": "failed",
+  "engine": "orchid/codex",
+  "base_sha": "1686c5dc9513f139b4b3b2ff77f58e0cb89bed44",
+  "candidate_sha": "",
+  "summary": "engine produced no changes"
+}

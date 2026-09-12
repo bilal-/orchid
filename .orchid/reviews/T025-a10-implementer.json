@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a10-3184",
+  "task": "T025",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "fec39e48994580b21c42439a9bb2f5d8a5911043",
+  "candidate_sha": "3d28ca00f691912ad49a88d73eb0c46d95e8670c",
+  "summary": "Refuse a re-read rework log and a gate-red engine indictment",
+  "commits": [
+    "3d28ca00f691912ad49a88d73eb0c46d95e8670c"
+  ]
+}

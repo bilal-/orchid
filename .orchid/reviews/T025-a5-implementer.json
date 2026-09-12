@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a5-6d42",
+  "task": "T025",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "c94278f034f4d3658b80c31fb187fc7a19f8df17",
+  "summary": "Keep the rework brief's convergence preamble out of the trim",
+  "commits": [
+    "c94278f034f4d3658b80c31fb187fc7a19f8df17"
+  ]
+}

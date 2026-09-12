@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T021-a10-9721",
+  "task": "T021",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "63947e81da6f7d12c55cf456eccf3d3e5503cace",
+  "candidate_sha": "3983e76659c6ee25363bb674481329cceec97a6f",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "A path anchor whose post-slash text is punctuation strips to a bare directory (`tests/`, `roles/`) and passes the six-character filter, becoming a universal anchor"
+    },
+    {
+      "severity": "low",
+      "title": "PROTOCOL.md and kernel.md state `plan_deferral` is \"writable only by `orchid plan defer`\", but `orchid journal add --kind plan_deferral` is unvalidated and the codex orchestrate adapter is not brokered — the exclusion is prompt policy there, not a mechanism"
+    }
+  ]
+}

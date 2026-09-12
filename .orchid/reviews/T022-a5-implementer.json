@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a5-b13c",
+  "task": "T022",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "ca372bd6254ff11cf967a12da5d736afec4a98eb",
+  "summary": "Make a refused no-op envelope unselectable, defer to its relaunch",
+  "commits": [
+    "ca372bd6254ff11cf967a12da5d736afec4a98eb"
+  ]
+}

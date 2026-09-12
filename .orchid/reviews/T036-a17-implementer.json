@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a17-cea2",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "18075c11085c2e32f2f41a0ec6a62af89a1a2e6e",
+  "candidate_sha": "274421dad6bd828fe4a5c623432e49fd1a2526ee",
+  "summary": "T036: Silence SC2034 and SC2100 on the service identity globals",
+  "commits": [
+    "274421dad6bd828fe4a5c623432e49fd1a2526ee"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-eeed",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "4e8fbc35b21a02f9b4e1d0bc293c9bcb3ffc6080",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Round-exclusivity makes the exec-bit hand-off arm inert for the cascade it was built for"
+    },
+    {
+      "severity": "medium",
+      "title": "The recurrence guard counts `flaky` waivers, stopping the first genuine hand-off round for an operator"
+    },
+    {
+      "severity": "low",
+      "title": "`verify_class.flaky` and Part N2c cite lesson L020, which `.orchid/lessons.md` does not contain"
+    }
+  ]
+}

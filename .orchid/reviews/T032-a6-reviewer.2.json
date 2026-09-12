@@ -1,0 +1,19 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a6-6b32",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "52a89dfae348c6c68a28ceb7cf4f2ff8738e0ff3",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "the objection page never names `orchid answer <qid> approve`, so the relay is only discoverable from troubleshooting.md"
+    }
+  ],
+  "summary": "The objection is now durable task state that outranks every review arm, cannot be cleared by `task set`, `advance`, `unblock`, `retry` or `reverify`, is routed to an operator-only stop when an operato"
+}

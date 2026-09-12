@@ -1,0 +1,23 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a8-f66c",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "c0df278829ca621a748caf8a0bfcad884fc7a930",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "merge's containment warning has no exemption for a deliberately self-hosted repo"
+    },
+    {
+      "severity": "low",
+      "title": "the containment scan reads only local branches, so a forge-side leak is never named"
+    }
+  ],
+  "summary": "The change answers both problems the brief separates, with the deliberate `orchid.config` stance preserved and reasoned, but `orchid merge`'s containment warning will name `main` (and `task/T024-prese"
+}

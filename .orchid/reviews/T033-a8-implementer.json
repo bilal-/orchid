@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T033-a8-6c7e",
+  "task": "T033",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "d7f213397951035166f553646f63be15511a56c7",
+  "candidate_sha": "400da9d30ea50950ba8bf6be7c2b787a573bbf6f",
+  "summary": "Fold the stale-claim sweep at discovery, not just at the match",
+  "commits": [
+    "400da9d30ea50950ba8bf6be7c2b787a573bbf6f"
+  ]
+}

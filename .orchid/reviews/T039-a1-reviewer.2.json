@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T039-a1-63c3",
+  "task": "T039",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "94202ef2afc5abcfdf3228afaacc91e5de99c45a",
+  "candidate_sha": "68cef8f5eca34595696bffbaeeae077b090cc611",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "`--pin`/`--repin` journal a pin they cannot store when the task has no candidate_sha, instead of refusing as PROTOCOL.md and the helper docstring both promise"
+    },
+    {
+      "severity": "medium",
+      "title": "new failure-injection tests overwrite the tracked `libexec/orchid-journal` in the repo under test with no EXIT-trap restore"
+    },
+    {
+      "severity": "low",
+      "title": "`routing=\"$(... jobs review-plan --pin 2>&1)\"` folds stderr into the slot table on the success path, so any diagnostic from a degraded read (e.g. a malformed engines.json reaching `ledger_available`'s unredirected jq) becomes a junk routing row the dispatch loop then walks"
+    }
+  ]
+}

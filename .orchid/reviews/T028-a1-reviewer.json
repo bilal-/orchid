@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T028-a1-e9f4",
+  "task": "T028",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "74f4b3f5ecd03d45b837a727b76b5218f6c6b55d",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "`orchid task set <id> depends_on T002 T003` unquoted silently keeps only `T002` — the `set` arm takes `val=\"$3\"` and never rejects leftover args, so the whitespace form the new die message advertises drops dependencies and lets a task dispatch ahead of them"
+    },
+    {
+      "severity": "low",
+      "title": "the write-time gate still accepts a self-dependency or a cycle (both files exist), and a hand-edited frontmatter never passes through it at all — those ids stay permanently unsatisfiable and still render as an ordinary `waiting-deps (<id>)`"
+    },
+    {
+      "severity": "low",
+      "title": "PROTOCOL.md's PLANNING step 2 still says to create a task then fill in `depends_on`, without noting the new ordering constraint that every referenced id must already exist — kernel.md documents it, the actor-facing protocol does not"
+    }
+  ]
+}

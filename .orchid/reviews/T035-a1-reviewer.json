@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T035-a1-4742",
+  "task": "T035",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "71c2f7cc68f0a07ea78370da0a42cfc4c39a7680",
+  "candidate_sha": "9c168403fbb741951733c677e64ce70e3983569a",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The patch cleanly implements computed liveness, staleness warnings, budget tracking, and process/history visibility across `orchid jobs ls` and `orchid status --jobs` with thorough test coverage."
+}

@@ -1,0 +1,24 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a5-b5f2",
+  "task": "T006",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "451950f9f523e91f88a417602f2c0e6c725f7992",
+  "summary": "Audit rework brief items; all four already landed, no change needed",
+  "commits": [
+    "451950f9f523e91f88a417602f2c0e6c725f7992",
+    "803980c0ba3c50b3d057a32d0b850fa4f4815b52",
+    "5d685509f8c1bf7a018c35ca11e93e7fbcc82b3f",
+    "cd067e7d4eb63be532bd7859d79b10f972cc20e1",
+    "3c6159e9a77d135c086690853d26c73a2a1e6f6c",
+    "c644e5bf2ba8430c98ff52d36b7259312db07e0d",
+    "86ae9e1f24aff069ab97748767e7dc08bc6759a6",
+    "7cff31f4458f9f56a73e074c03617df0e68c7863",
+    "58b80e27b674e8b99ab5421705c9b506576b29fe",
+    "af357391012ab99df0033219bae15d52fa872e3a",
+    "583626f80f33cd8df6382a7f70d233e8a551d8e3"
+  ]
+}

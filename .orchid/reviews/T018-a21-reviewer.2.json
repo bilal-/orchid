@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T018-a21-f11e",
+  "task": "T018",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "8096647448aed8e6b7906cca32aff0d8e1954b04",
+  "candidate_sha": "104cc03b0de4a78a6197e5ca83a9585465cf480e",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Capability checks now block unsupported dispatches and journal operator hand-offs without weakening existing gates or treating claims as grants."
+}

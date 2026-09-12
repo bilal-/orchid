@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a1-5601",
+  "task": "T024",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "3379b60d594fe8813e91eef24bf5096ed6958511",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "prerequisite_ack is never compared to candidate_sha, so merge's rebase-reset (merging→testing, new candidate) leaves a stale ack satisfying the gate"
+    },
+    {
+      "severity": "low",
+      "title": "the redeclare-clears-ack path in `task set` writes kernel-owned prerequisite_ack with no journal entry, unlike every other writer of that field"
+    },
+    {
+      "severity": "low",
+      "title": "PROTOCOL's PLANNING step 2 — where a planner is told which fields to fill — never names operator_prerequisite, so only migrate-archetype tasks carry the instruction"
+    }
+  ]
+}

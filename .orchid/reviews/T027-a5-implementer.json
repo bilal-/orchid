@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T027-a5-e00b",
+  "task": "T027",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "f875aee1781be8283044e0c1ed58dec290882fae",
+  "candidate_sha": "217b93df244605a4380e41292491a44f1fb5c365",
+  "summary": "T027: count a launch failure once and converge the unstamped manifest",
+  "commits": [
+    "217b93df244605a4380e41292491a44f1fb5c365"
+  ]
+}

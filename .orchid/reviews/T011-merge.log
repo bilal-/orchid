@@ -1,0 +1,7 @@
+date: 2026-08-28T16:49:03Z
+sha: 19ecd59916c9cbda2bec302db9e58c9d35fa0c79
+candidate: 6c2e91f3f25e6cfdfb0779d5fc6278b757683c86
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.ew8Wyj
+command: /bin/bash tests/test_beta_qualification.sh && /bin/bash tests/test_docs.sh
+---
+exit: 0

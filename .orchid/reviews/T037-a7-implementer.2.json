@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a7-d9db",
+  "task": "T037",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "63f759439d12c4e6122248550bbd8d242c0fbf5d",
+  "summary": "Treat a Gerrit upload as a branch, and contain the hooks path",
+  "commits": [
+    "63f759439d12c4e6122248550bbd8d242c0fbf5d"
+  ]
+}

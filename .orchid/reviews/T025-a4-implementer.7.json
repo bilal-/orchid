@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e49-T025-a4-9ec3",
+  "task": "T025",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "25944fe51309089201484dd9bdb18887230f0e97",
+  "summary": "Feed the previous attempt's failure back into the rework pack",
+  "commits": [
+    "25944fe51309089201484dd9bdb18887230f0e97"
+  ]
+}

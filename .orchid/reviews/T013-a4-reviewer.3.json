@@ -1,0 +1,10 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T013-a4-92ce",
+  "task": "T013",
+  "operation": "review",
+  "status": "malformed",
+  "engine": "orchid/claude",
+  "base_sha": "830151d6de69524b952a91272fcfcba625229075",
+  "candidate_sha": "4bb8d0383d9c43207fd2bf09355a058b895514bf"
+}

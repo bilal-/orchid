@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a4-9844",
+  "task": "T024",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "364327c606ea6e4ed3be16d35a6e980641556629",
+  "summary": "T024: rebuild the operator prerequisite on T010's hand-off base",
+  "commits": [
+    "364327c606ea6e4ed3be16d35a6e980641556629"
+  ]
+}

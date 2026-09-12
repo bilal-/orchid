@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a13-2f85",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "a9a423d08f1831cfb37ebc372eb8311d5ece03bf",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: The 32-entry counter cap evicts older spent boundaries, so 33 persistent boundaries recycle as “unspent” and resume orchestrator wakeups indefinitely.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "The 32-entry counter cap evicts older spent boundaries, so 33 persistent boundaries recycle as “unspent” and resume orchestrator wakeups indefinitely."
+    }
+  ],
+  "summary": "The 32-entry counter cap evicts older spent boundaries, so 33 persistent boundaries recycle as “unspent” and resume orchestrator wakeups indefinitely."
+}

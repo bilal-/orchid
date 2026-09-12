@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a8-9e6d",
+  "task": "T037",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "c0df278829ca621a748caf8a0bfcad884fc7a930",
+  "summary": "Pin the relative-hooksPath recovery at start's door as init does",
+  "commits": [
+    "c0df278829ca621a748caf8a0bfcad884fc7a930"
+  ]
+}

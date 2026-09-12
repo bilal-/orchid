@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T040-a1-3435",
+  "task": "T040",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "1a4fadcd6a8d5a2ae04a6ed8fb64897aca24afdc",
+  "summary": "Distinguish an already-delivered candidate from a no-op delivery",
+  "commits": [
+    "1a4fadcd6a8d5a2ae04a6ed8fb64897aca24afdc"
+  ]
+}

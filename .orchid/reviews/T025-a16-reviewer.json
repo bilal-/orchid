@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a16-1b73",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "d7f213397951035166f553646f63be15511a56c7",
+  "candidate_sha": "b24f5f8d7277f174dd11264587fe392905dda7fc",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "`task unblock`/`task retry` delete `<id>-merge.log` without ever capturing it — a task blocked by `orchid merge`'s gate-exhaustion arm loses its only failure evidence at the recovery verb that arm recommends"
+    },
+    {
+      "severity": "low",
+      "title": "`pack.sh`'s context.md arm has no `room <= 0` guard, so a budget-consuming `rework.md` makes it ship a zero-byte context.md recorded as delivered rather than omitted"
+    },
+    {
+      "severity": "low",
+      "title": "the non-convergence block reason overruns `_DRIVE_QUOTE_MAX` (120) on the merge_gate arm once the task id is ≥8 characters, clipping the captured-log path mid-name"
+    },
+    {
+      "severity": "low",
+      "title": "after `testing -> reviewing` resets `rework_signature_repeats` to 0 but keeps `rework_signature`, a returning identical failure is journalled as \"identical to the previous round\" while the brief tells the implementer it is \"the first time this particular failure has been seen\""
+    }
+  ]
+}

@@ -1,0 +1,577 @@
+date: 2026-08-11T19:05:20Z
+sha: df47066e67f5467fc32664337804016aa1acc4e3
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.Dem4Ww
+command: /bin/bash tests/test_drive.sh && /bin/bash tests/test_docs.sh && /bin/bash scripts/ci-local.sh --bash /bin/bash
+---
+== Bash syntax (150 shipped scripts; /bin/bash)
+== ShellCheck exception policy
+== Portability policy (POSIX find only)
+== Portability policy (mtime via lib/common.sh file_mtime)
+== ShellCheck (zero warnings)
+== Full test suite
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_archetype_suite.sh
+W001: pending -> implementing
+W001: implementing -> testing
+W001: testing -> rework
+W001: rework -> implementing
+W001: implementing -> testing
+W001: testing -> reviewing
+W001: reviewing -> arbitrating
+W001: arbitrating -> rework
+W001: rework -> implementing
+W001: implementing -> testing
+W001: testing -> reviewing
+W001: reviewing -> arbitrating
+W001: arbitrating -> merging
+W001: merging -> testing
+W001: testing -> reviewing
+W001: reviewing -> arbitrating
+W001: arbitrating -> merging
+W001: merging -> rework
+W001: rework -> implementing
+W001: implementing -> testing
+W001: testing -> reviewing
+W001: reviewing -> arbitrating
+W001: arbitrating -> merging
+W001: merging -> done
+W002: pending -> implementing
+W002: implementing -> testing
+W002: testing -> rework
+W002: rework -> implementing
+W002: implementing -> testing
+W002: testing -> reviewing
+W002: reviewing -> arbitrating
+W002: arbitrating -> rework
+W002: rework -> implementing
+W002: implementing -> testing
+W002: testing -> reviewing
+W002: reviewing -> arbitrating
+W002: arbitrating -> merging
+W002: merging -> testing
+W002: testing -> reviewing
+W002: reviewing -> arbitrating
+W002: arbitrating -> merging
+W002: merging -> rework
+W002: rework -> implementing
+W002: implementing -> testing
+W002: testing -> reviewing
+W002: reviewing -> arbitrating
+W002: arbitrating -> merging
+W002: merging -> done
+W003: pending -> implementing
+W003: implementing -> testing
+W003: testing -> rework
+W003: rework -> implementing
+W003: implementing -> testing
+W003: testing -> reviewing
+W003: reviewing -> arbitrating
+W003: arbitrating -> rework
+W003: rework -> implementing
+W003: implementing -> testing
+W003: testing -> reviewing
+W003: reviewing -> arbitrating
+W003: arbitrating -> merging
+W003: merging -> testing
+W003: testing -> reviewing
+W003: reviewing -> arbitrating
+W003: arbitrating -> merging
+W003: merging -> rework
+W003: rework -> implementing
+W003: implementing -> testing
+W003: testing -> reviewing
+W003: reviewing -> arbitrating
+W003: arbitrating -> merging
+W003: merging -> done
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_archetype.sh
+R001: pending -> reviewing
+R001: reviewing -> arbitrating
+R001: arbitrating -> done
+R003: pending -> reviewing
+R003: reviewing -> arbitrating
+R003: arbitrating -> rework
+R003: rework -> reviewing
+R003: reviewing -> arbitrating
+R003: arbitrating -> done
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_beta_qualification.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_capsuite.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_ci_release.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_common.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_config_keys.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_config_resolver.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_conform.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_custom_roles.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_dispatcher.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_docs.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_drive_hooks_archetypes.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_drive_worktrees.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_drive.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_e2e_concurrency.sh
+e2e concurrency: OK
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_e2e_crash_fence.sh
+WARNING: integration checkout is stale — refresh with "git checkout HEAD -- . ':(exclude).orchid'" before committing anything here
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_e2e_lifecycle.sh
+WARNING: integration checkout is stale — refresh with "git checkout HEAD -- . ':(exclude).orchid'" before committing anything here
+WARNING: integration checkout is stale — refresh with "git checkout HEAD -- . ':(exclude).orchid'" before committing anything here
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_e2e_release_rehearsal.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_engine_agy.sh
+looks fine
+VERDICT: approve
+VERDICT: approve
+VERDICT: approve (draft, ignore)
+one more look...
+VERDICT: request-changes
+rambling, no reply contract
+orchid/agy: malformed reply (no VERDICT line); raw output follows:
+rambling, no reply contract
+429 usage limit exceeded
+orchid/agy: diff.patch is 200000 bytes (> agy_max_bytes=100000); route to a worktree-capable reviewer
+orchid/agy: diff.patch is 500 bytes (> agy_max_bytes=100); route to a worktree-capable reviewer
+thinking it over...
+VERDICT: approve OR request-changes
+orchid/agy: malformed reply (no VERDICT line); raw output follows:
+thinking it over...
+VERDICT: approve OR request-changes
+orchid/agy: unsupported operation 'implement' (review|critique only)
+orchid/agy: unsupported operation 'implement' (review|critique only)
+VERDICT: approve
+REASON: tests pass and the diff is scoped tightly
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_engine_claude.sh
+looks fine
+VERDICT: approve
+reviewed the diff
+FINDING: high: doctor claims inbound ok from an outbound-only fact
+FINDING: low: comment says v1-m3 but the change is v1-m4
+FINDING: bogus: severity token is not one of the three
+FINDING: <low|medium|high>: <title>
+FINDING: medium: 
+VERDICT: request-changes
+nothing to report
+VERDICT: approve
+VERDICT: approve
+429 usage limit exceeded
+Unauthorized: please login
+some rambling output with no reply contract
+working...
+
+Implemented the feature end to end.
+working...
+
+Implemented the feature end to end.
+working...
+Nothing to do here.
+advancing the task
+ORCHID-ACTION: orchid task advance T001 implementing --reason tick
+tick complete
+nothing to do this tick
+thinking it over...
+VERDICT: approve OR request-changes
+orchid/claude: unsupported operation 'research'
+orchid/claude: unsupported operation 'research'
+tick complete
+VERDICT: request-changes
+FINDING: medium: missing rollback plan for T002
+FINDING: low: acceptance criteria too vague on T003
+VERDICT: approve
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_engine_codex.sh
+looks fine
+VERDICT: approve
+429 usage limit exceeded
+Unauthorized: please login
+some rambling output with no reply contract
+working...
+
+Implemented the feature end to end.
+Implemented the caching layer end to end.
+```
+- `git diff --check` passes.
+```
+```
+working...
+Nothing to do here.
+Implemented and committed.
+advancing the task
+ORCHID-ACTION: orchid task advance T001 implementing --reason tick
+tick complete
+nothing to do this tick
+thinking it over...
+VERDICT: approve OR request-changes
+Implemented via stdin.
+VERDICT: approve
+orchid/codex: unsupported operation 'research'
+orchid/codex: unsupported operation 'research'
+looks fine
+VERDICT: approve
+orchid/codex-review: operation 'implement' not permitted for orchid/codex-review
+Implemented via plain codex.
+VERDICT: approve
+REASON: tests pass and the diff is scoped tightly
+VERDICT: approve
+REASON: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+VERDICT: approve
+tick complete
+VERDICT: request-changes
+FINDING: medium: missing rollback plan for T002
+FINDING: low: acceptance criteria too vague on T003
+VERDICT: approve
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_engine_hermes.sh
+looks fine
+VERDICT: approve
+VERDICT: approve
+VERDICT: approve (draft, ignore)
+one more look...
+VERDICT: request-changes
+rambling, no reply contract
+orchid/hermes: malformed reply (no VERDICT line); raw output follows:
+rambling, no reply contract
+429 usage limit exceeded
+Unauthorized: please login
+orchid/hermes: diff.patch is 200000 bytes (> hermes_max_bytes=100000); route to a worktree-capable reviewer
+orchid/hermes: diff.patch is 500 bytes (> hermes_max_bytes=100); route to a worktree-capable reviewer
+thinking it over...
+VERDICT: approve OR request-changes
+orchid/hermes: malformed reply (no VERDICT line); raw output follows:
+thinking it over...
+VERDICT: approve OR request-changes
+orchid/hermes: unsupported operation 'implement' (review|critique only -- see docs/engines/hermes.md)
+orchid/hermes: unsupported operation 'orchestrate' (review|critique only -- see docs/engines/hermes.md)
+orchid/hermes: unsupported operation 'research' (review|critique only -- see docs/engines/hermes.md)
+orchid/hermes: unsupported operation 'bogus' (review|critique only -- see docs/engines/hermes.md)
+orchid/hermes: unsupported operation 'implement' (review|critique only -- see docs/engines/hermes.md)
+VERDICT: approve
+REASON: tests pass and the diff is scoped tightly
+VERDICT: approve
+REASON: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+VERDICT: request-changes
+FINDING: medium: missing rollback plan for T002
+FINDING: low: acceptance criteria too vague on T003
+FINDING: bogus-severity: should be dropped
+VERDICT: request-changes
+FINDING: medium: missing rollback plan for T002
+VERDICT: approve
+VERDICT: approve
+FINDING: high: ignored for review
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_envelope.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_failover.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_frontmatter.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_greenfield.sh
+greenfield: OK
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_helpers.sh
+helpers.sh WORK guard: OK
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_hermetic_suite.sh
+  vendor-CLI-free PATH: 4 of 31 PATH entries needed mirroring
+  GREEN-CASE: every tool the suite legitimately needs still resolves on the rebuilt PATH, so the vendor CLIs being unresolvable above is a targeted removal rather than a PATH that resolves nothing
+  RED-CASE: a mirrored wrapper visibly changed what it reports, and the detector flagged it
+  GREEN-CASE: a tool that does not read its own location answered identically through the mirror and the detector left it alone, so the flag above is location-sensitivity rather than a detector that says yes to everything
+  NOT-TESTED: mirrored-binary-self-location -- whether a mirrored tool that is a compiled BINARY resolves its own location from argv[0]. The detector above reads a shebang and then the text, so it sees scripts only. git is the interesting case and is safe: it canonicalizes argv[0] through symlinks before deriving its exec-path, so it finds the real one. A binary that did NOT canonicalize would be invisible here, and the symptom would be that tool failing inside the nested run rather than anything naming the mirror
+  GREEN-CASE: the EXACT recursion-guard token stood a re-entry down cleanly, early, and in the not-tested vocabulary -- without which the rejections below would only prove the guard rejects everything
+  RED-CASE: every stray and near-miss ORCHID_HERMETIC_PROOF value fell through the recursion guard, while the exact token stood a re-entry down
+  RED-CASE: a child launched exactly as the nested run is wrote only into its own HOME, read none of the decoy's poisoned Orchid state, and received no durable run identity even when one was exported at it
+  GREEN-CASE: the failure diagnostic carried a real failed assertion and the file it came from, so the three degenerate-log reports below are fallbacks rather than all this report can ever produce
+  RED-CASE: the failure diagnostic reports an assertion-free run, an empty log and a missing log instead of printing nothing
+  RED-CASE: a preserved failure log outlived the deletion of the scratch directory its original lived in, with its content intact
+  RED-CASE: the scratch-root test recognizes $WORK as a directory this run deletes, and the failure log's destination is not one
+  NOT-TESTED: vendor-cli-behaviour -- what the real codex/claude/agy CLIs DO. This proof removes them; it does not exercise them. Whether a vendor CLI is installed, authenticated and answers correctly stays an operator-owned, out-of-band qualification (`orchid plugins test --all-defaults` on a machine that has them), deliberately outside the deterministic suite
+  NOT-TESTED: bootstrap-path-vendor-clis -- whether a vendor CLI is reachable through bin/orchid's FIXED bootstrap PATH. This proof restricts PATH, and that list is not built from PATH, so it is outside what any PATH restriction can reach. It is empty of consequence only for as long as no binary lookup runs ahead of lib/common.sh's _orchid_entry_restore_operator_path; a lookup placed there would find a developer's installed CLI and not a runner's, which is the divergence class this file exists to close
+  NOT-TESTED: concurrent-orchid-mutating-this-checkout -- a second Orchid mutating this checkout's working tree or .orchid/ state DURING the run. Section 4b closes the shared-HOME channel and 4d exercises it under a concurrent writer, but a driver that rebases, re-pins or rewrites the repository mid-run changes the code under test itself, and a test cannot both provoke that and stay safe to run. Operator-owned: do not verify this repository while a drive loop is dispatching against the same worktree (lesson L024)
+  running the FULL suite with codex claude agy hermes openclaw unresolvable, in a disposable HOME, while a concurrent writer rewrites the ambient home's Orchid state (a second, nested tests/run.sh; its output is captured, not streamed)
+  concurrent ambient-home writer: 886 tick(s) across the nested run
+  red-cases: 6 demonstrated in this file (green-cases: 4)
+  not-tested: 4 claim(s) in this file were recorded as not-tested, never as passes
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_hooks.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_init_doctor.sh
+Deleted branch orchid/integration (was 1e94e3a).
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_install.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_jobs.sh
+/var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_jobs.sh: line 51: 83905 Terminated: 15          sleep 100
+PGID_GUARD: caller survived jobs check
+/var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_jobs.sh: line 150: 83966 Terminated: 15          sleep 100
+TBUDGET: pending -> implementing
+TOKBUDGET: pending -> implementing
+TIDLE: pending -> implementing
+TIDLE: implementing -> blocked
+TIDLE: blocked -> rework
+TIDLE: rework -> implementing
+TRUNAWAY: pending -> implementing
+/var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_jobs.sh: line 327: 87436 Terminated: 15          sleep 100
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_launch.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_ledger.sh
+WARNING: split-brain checkout (.orchid state without roadmap.md — run from the integration branch)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_lessons.sh
+L001: added
+L002: added
+L001: updated
+L002: updated
+L002: active -> retired
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_manifest.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_merge.sh
+T001: pending -> implementing
+T001: implementing -> testing
+T001: testing -> reviewing
+T001: reviewing -> arbitrating
+T001: arbitrating -> merging
+T002: pending -> implementing
+T002: implementing -> testing
+T002: testing -> reviewing
+T002: reviewing -> arbitrating
+T002: arbitrating -> merging
+T003: pending -> implementing
+T003: implementing -> testing
+T003: testing -> reviewing
+T003: reviewing -> arbitrating
+T003: arbitrating -> merging
+T004: pending -> implementing
+T004: implementing -> testing
+T004: testing -> reviewing
+T004: reviewing -> arbitrating
+T004: arbitrating -> merging
+T005: pending -> implementing
+T005: implementing -> testing
+T005: testing -> reviewing
+T005: reviewing -> arbitrating
+T005: arbitrating -> merging
+T005: testing -> reviewing
+T005: reviewing -> arbitrating
+T005: arbitrating -> merging
+T006: pending -> implementing
+T006: implementing -> testing
+T006: testing -> reviewing
+T006: reviewing -> arbitrating
+T006: arbitrating -> merging
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_notify_answer.sh
+q-2-4571: no
+q-2-e9c3: sure
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_notify_channel.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_notify_hermes_channel.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_orchestrator_command.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_ownership_verbs.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_pack.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_plugins_lifecycle.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_plugins_list.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_plugins_lock.sh
+orchid: plugins lock: engine 'agy' for role 'reviewer' not found on search path (skipped)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_plugins_test.sh
+  NOT-TESTED: vendor-cli-battery -- whether the REAL codex/agy/claude CLIs are installed, executable and authenticated on this machine. The passing battery below resolves PATH-planted stubs on purpose, because a deterministic suite that answers a machine-installation question passes or fails on where it runs rather than on what this repository does -- exactly the divergence that kept hosted CI red. Qualify it out of band, on a machine that has the vendor CLIs: `orchid plugins test --all-defaults`
+  not-tested: 1 claim(s) in this file were recorded as not-tested, never as passes
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_plugins_trust.sh
+orchid: engine 'repoeng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.cRsOM9NGuG/repo/.orchid/plugins/engines/repoeng' to enable it (skipped, INV-09)
+orchid: engine 'repoeng' found in <repo>/.orchid/plugins/engines but is mismatch -- run 'orchid plugins trust --update /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.cRsOM9NGuG/repo/.orchid/plugins/engines/repoeng' to enable it (skipped, INV-09)
+orchid: engine 'repoeng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.cRsOM9NGuG/repo/.orchid/plugins/engines/repoeng' to enable it (skipped, INV-09)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_pump.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_red_case_rule.sh
+  GREEN-CASE: the linter accepted a gate file carrying all four things the rule requires
+  RED-CASE: the linter rejects a gate file missing its RED annotation, its GREEN annotation, its red_case call or its green_case call
+  RED-CASE: the linter reports a missing enrolled file instead of passing it
+  RED-CASE: helpers.sh fails a required file that records neither case, one that records only a RED case, and one that records only a GREEN case
+  GREEN-CASE: helpers.sh passes a required file that records both a RED and a GREEN case, and prints both labels plus the summary line
+  RED-CASE: an inv-shaped file recording no case failed by location alone through all three invocations -- absolute, relative and bare -- including the two that used to be skipped in silence
+  GREEN-CASE: the same location with both cases recorded passed and printed its summary through all three invocations, so the failures above are enrolment reaching the file rather than the spelling breaking it
+  GREEN-CASE: a real shipped tests/inv/ gate was enrolled and printed its red-case summary through all three invocations, not only the absolute one
+  GREEN-CASE: the enrolment predicate says yes to a real tests/inv/ path and to a by-name enrolled whole-file proof
+  RED-CASE: the enrolment predicate refuses an ordinary suite file, a non-test file under tests/inv/, and the unresolved relative spelling that is exactly why the path must be resolved before it is asked
+  red-case rule: 16 enrolled gate file(s) checked (14 under tests/inv/, 2 by name)
+  NOT-TESTED: red-case-annotation-truthfulness -- whether a recorded RED or GREEN case is HONEST -- whether the input fed to the check was really one the check must reject (or accept), and whether the `# RED:`/`# GREEN:` sentences describe them. Structure is checkable; meaning is not. This stays reviewer-owned, and it is the question to ask of any new gate: what input did you feed it, and did you watch it fail
+  NOT-TESTED: red-case-rule-beyond-the-enrolled-gates -- the rule over the rest of tests/test_*.sh. Enforcement covers tests/inv/ (by path, at run time) and the whole-file proofs named in tests/helpers.sh's PROOF_ENROLLED_FILES; the other suite files predate the rule and are held to it by review, not by this check. A new GATE belongs in tests/inv/ or in that list, where the enforcement reaches it
+  NOT-TESTED: red-case-enrolment-beyond-the-three-invocations -- spellings of a test file's path other than the three section 4 exercises. Absolute, tree-relative and bare-name are what tests/run.sh, scripts/ci-local.sh and a person at a shell actually produce, and enrolment is now decided from a RESOLVED physical path rather than from the command line, so exotic spellings (`./x/../inv/test_y.sh`, a symlinked checkout) resolve to the same place by construction -- but only the three are demonstrated
+  red-cases: 5 demonstrated in this file (green-cases: 5)
+  not-tested: 3 claim(s) in this file were recorded as not-tested, never as passes
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_review_routing.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_roles.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_run_boundary.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_run.sh
+run rolled over: r-001 -> r-002 (archived to runs/r-001/)
+imported: requirements.md -> requirements.md
+applied: orchid/integration -> 9441f59001bcab1364f57790095a9071dce52a8f
+lease released
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_schedule.sh
+unit: schedule_dispatch_blockers predicates OK
+WARNING: split-brain checkout (.orchid state without roadmap.md — run from the integration branch)
+WARNING: split-brain checkout (.orchid state without roadmap.md — run from the integration branch)
+WARNING: split-brain checkout (.orchid state without roadmap.md — run from the integration branch)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_service.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_start_fencing.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_start.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_status.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_task_arbitrate.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_task.sh
+T001: pending -> implementing
+T001: implementing -> blocked
+T001: blocked -> rework
+T003: pending -> implementing
+T003: implementing -> blocked
+T003: blocked -> rework
+T004: pending -> implementing
+T004: implementing -> blocked
+T004: blocked -> rework
+T004: rework -> implementing
+T004: implementing -> testing
+T006: pending -> implementing
+T006: infra_failures 1/3
+T006: infra_failures 2/3
+T007: pending -> implementing
+T007: implementing -> testing
+T007: testing -> rework
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> rework
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T007: merging -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T007: merging -> rework
+T007: rework -> rework
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T007: merging -> done
+T009: pending -> implementing
+T009: implementing -> testing
+T009: testing -> reviewing
+T009: reviewing -> arbitrating
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_tick.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_unattended_trust.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_verb_lock.sh
+verb lock: OK
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/test_verify.sh
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-01_no_spawn_in_tier1.sh
+  RED-CASE: INV-01's background detector fired on a real trailing '&'
+  GREEN-CASE: the same detector left 'foo &&' -- a logical AND -- alone, so the RED case above is detection rather than a pattern that flags every line
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-02_epoch_fencing.sh
+  GREEN-CASE: a mutating verb under the CURRENT epoch succeeded and its durable write landed
+  RED-CASE: the epoch fence refused task set, journal add and run new under a stale epoch, and none of their durable writes landed
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-03_envelope_binding.sh
+  GREEN-CASE: an envelope genuinely bound to its own launch was ACCEPTED, so the quarantines around it are evidence of binding rather than of a reconciler that rejects everything
+  RED-CASE: envelope binding quarantined a forged job_id, a task mismatch and a replay, while accepting the one envelope actually bound to its launch
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-04_state_guard.sh
+  RED-CASE: the state guard refused entry to testing for a candidate that commits .orchid/, and for a task with no range to judge at all
+  GREEN-CASE: a candidate range touching no .orchid/ path, with both SHAs set, was allowed into testing by the same verb that refused the two inputs above
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-05_no_name_branching.sh
+  RED-CASE: INV-05's scan matched a real 'if ... = codex' engine-name branch
+/var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-05_no_name_branching.sh: line 36: config_get: command not found
+  GREEN-CASE: the same scan let a  default through, so the match above is detection rather than a pattern that hits every line naming an engine
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-06_launcher_only.sh
+  RED-CASE: INV-06's scan found a direct plugins/engines spawn in a synthetic tier-1 file
+  GREEN-CASE: the same scan exempted a comment and a resolve_engine_exe call -- the legal ways the string appears -- so the hit above is detection rather than a pipeline that flags every mention
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-07_rebase_reverify.sh
+T001: pending -> implementing
+T001: implementing -> testing
+T001: testing -> reviewing
+T001: reviewing -> arbitrating
+T001: arbitrating -> merging
+T001: testing -> reviewing
+T001: reviewing -> arbitrating
+T001: arbitrating -> merging
+  RED-CASE: a moved candidate SHA made merge exit 5, destroyed the stale verify evidence and blocked re-entry to reviewing until a real re-verify ran
+  GREEN-CASE: after a real re-verify on the rebased candidate the SAME merge succeeded and the task reached done, so the refusal above is a re-verify requirement rather than a merge that refuses every rebased candidate
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-08_reasons.sh
+T001: arbitrating -> merging
+  GREEN-CASE: the SAME advance WITH a reason succeeded and journalled an arbitration entry with a kernel-derived actor, so the refusal above is the reason guard discriminating rather than the verb being dead
+  GREEN-CASE: a non-kernel-owned key was accepted by the same task set that refused status, attempts, updated and schema, and its value landed
+  RED-CASE: every reason-bearing verb refused a missing or valueless --reason, and every kernel-owned key refused a direct set with its value unchanged
+  red-cases: 1 demonstrated in this file (green-cases: 2)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-09_repo_local_trust.sh
+orchid: engine 'inveng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.VeLjoyTsbj/repo/.orchid/plugins/engines/inveng' to enable it (skipped, INV-09)
+orchid: engine 'inveng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.VeLjoyTsbj/repo/.orchid/plugins/engines/inveng' to enable it (skipped, INV-09)
+orchid: engine 'inveng' found in <repo>/.orchid/plugins/engines but is mismatch -- run 'orchid plugins trust --update /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.VeLjoyTsbj/repo/.orchid/plugins/engines/inveng' to enable it (skipped, INV-09)
+orchid: engine 'inveng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.VeLjoyTsbj/repo/.orchid/plugins/engines/inveng' to enable it (skipped, INV-09)
+  GREEN-CASE: a genuinely trusted, digest-matching repo-local engine RESOLVED, so the refusals around it are trust decisions rather than a resolver that refuses every repo-local plugin
+orchid: engine 'symeng' found in <repo>/.orchid/plugins/engines but is mismatch -- run 'orchid plugins trust --update /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.VeLjoyTsbj/sym-repo/.orchid/plugins/engines/symeng' to enable it (skipped, INV-09)
+  RED-CASE: an untrusted, wrongly-trusted, digest-mismatched, symlink-repointed and revoked repo-local engine each refused to resolve, while a genuinely trusted one resolved
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-10_no_shadow.sh
+  GREEN-CASE: two DISTINCT plugin ids across the same two discovery roots listed cleanly and exited 0, so the failures above are collision detection rather than discovery being broken outright
+  RED-CASE: a duplicate plugin id across two discovery roots failed both plugins list and doctor, with neither colliding entry silently shadowed away
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-11_verify_evidence.sh
+  RED-CASE: verify evidence recorded a real FAIL, flipped to PASS only when the underlying condition changed, and flipped back when it changed again
+  GREEN-CASE: with the condition satisfied, the same command PASSed, the evidence logged 'exit: 0', and the same gate let the advance to reviewing THROUGH -- so the refusals above are the gate reading a real outcome rather than a verb that always refuses
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-12_pack_overflow.sh
+  RED-CASE: an over-budget, non-truncatable pack exited 12 and left no partial destination behind
+  GREEN-CASE: the same repo, task and operation under a budget large enough to hold the diff built a pack and kept its destination, so the exit 12 above is a budget refusal
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-13_driver_verb_only.sh
+  RED-CASE: INV-13's comment stripper KEPT a real fm_set line, so the negative scans below are reading executable code rather than nothing
+  GREEN-CASE: the same stripper DROPPED the commented-out fm_set, so its exclusion still works and the RED case above is not a stripper that keeps everything
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-14_engine_neutrality.sh
+  RED-CASE: INV-14's comparison pattern matched a real engine-name branch, so the scan above is capable of finding one
+  GREEN-CASE: the same pattern left an assignment (v=<engine>,other, a config default table) alone, so the match above is detection rather than a pattern that hits every line naming an engine
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== Invariant tests
+  RED-CASE: INV-01's background detector fired on a real trailing '&'
+  GREEN-CASE: the same detector left 'foo &&' -- a logical AND -- alone, so the RED case above is detection rather than a pattern that flags every line
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+  GREEN-CASE: a mutating verb under the CURRENT epoch succeeded and its durable write landed
+  RED-CASE: the epoch fence refused task set, journal add and run new under a stale epoch, and none of their durable writes landed
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+  GREEN-CASE: an envelope genuinely bound to its own launch was ACCEPTED, so the quarantines around it are evidence of binding rather than of a reconciler that rejects everything
+  RED-CASE: envelope binding quarantined a forged job_id, a task mismatch and a replay, while accepting the one envelope actually bound to its launch
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+  RED-CASE: the state guard refused entry to testing for a candidate that commits .orchid/, and for a task with no range to judge at all
+  GREEN-CASE: a candidate range touching no .orchid/ path, with both SHAs set, was allowed into testing by the same verb that refused the two inputs above
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+  RED-CASE: INV-05's scan matched a real 'if ... = codex' engine-name branch
+/var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/orchid-merge.Dem4Ww/tests/inv/test_INV-05_no_name_branching.sh: line 36: config_get: command not found
+  GREEN-CASE: the same scan let a  default through, so the match above is detection rather than a pattern that hits every line naming an engine
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+  RED-CASE: INV-06's scan found a direct plugins/engines spawn in a synthetic tier-1 file
+  GREEN-CASE: the same scan exempted a comment and a resolve_engine_exe call -- the legal ways the string appears -- so the hit above is detection rather than a pipeline that flags every mention
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+T001: pending -> implementing
+T001: implementing -> testing
+T001: testing -> reviewing
+T001: reviewing -> arbitrating
+T001: arbitrating -> merging
+T001: testing -> reviewing
+T001: reviewing -> arbitrating
+T001: arbitrating -> merging
+  RED-CASE: a moved candidate SHA made merge exit 5, destroyed the stale verify evidence and blocked re-entry to reviewing until a real re-verify ran
+  GREEN-CASE: after a real re-verify on the rebased candidate the SAME merge succeeded and the task reached done, so the refusal above is a re-verify requirement rather than a merge that refuses every rebased candidate
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+T001: arbitrating -> merging
+  GREEN-CASE: the SAME advance WITH a reason succeeded and journalled an arbitration entry with a kernel-derived actor, so the refusal above is the reason guard discriminating rather than the verb being dead
+  GREEN-CASE: a non-kernel-owned key was accepted by the same task set that refused status, attempts, updated and schema, and its value landed
+  RED-CASE: every reason-bearing verb refused a missing or valueless --reason, and every kernel-owned key refused a direct set with its value unchanged
+  red-cases: 1 demonstrated in this file (green-cases: 2)
+orchid: engine 'inveng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.sCCznObOqT/repo/.orchid/plugins/engines/inveng' to enable it (skipped, INV-09)
+orchid: engine 'inveng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.sCCznObOqT/repo/.orchid/plugins/engines/inveng' to enable it (skipped, INV-09)
+orchid: engine 'inveng' found in <repo>/.orchid/plugins/engines but is mismatch -- run 'orchid plugins trust --update /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.sCCznObOqT/repo/.orchid/plugins/engines/inveng' to enable it (skipped, INV-09)
+orchid: engine 'inveng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.sCCznObOqT/repo/.orchid/plugins/engines/inveng' to enable it (skipped, INV-09)
+  GREEN-CASE: a genuinely trusted, digest-matching repo-local engine RESOLVED, so the refusals around it are trust decisions rather than a resolver that refuses every repo-local plugin
+orchid: engine 'symeng' found in <repo>/.orchid/plugins/engines but is mismatch -- run 'orchid plugins trust --update /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.sCCznObOqT/sym-repo/.orchid/plugins/engines/symeng' to enable it (skipped, INV-09)
+  RED-CASE: an untrusted, wrongly-trusted, digest-mismatched, symlink-repointed and revoked repo-local engine each refused to resolve, while a genuinely trusted one resolved
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+  GREEN-CASE: two DISTINCT plugin ids across the same two discovery roots listed cleanly and exited 0, so the failures above are collision detection rather than discovery being broken outright
+  RED-CASE: a duplicate plugin id across two discovery roots failed both plugins list and doctor, with neither colliding entry silently shadowed away
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+  RED-CASE: verify evidence recorded a real FAIL, flipped to PASS only when the underlying condition changed, and flipped back when it changed again
+  GREEN-CASE: with the condition satisfied, the same command PASSed, the evidence logged 'exit: 0', and the same gate let the advance to reviewing THROUGH -- so the refusals above are the gate reading a real outcome rather than a verb that always refuses
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+  RED-CASE: an over-budget, non-truncatable pack exited 12 and left no partial destination behind
+  GREEN-CASE: the same repo, task and operation under a budget large enough to hold the diff built a pack and kept its destination, so the exit 12 above is a budget refusal
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+  RED-CASE: INV-13's comment stripper KEPT a real fm_set line, so the negative scans below are reading executable code rather than nothing
+  GREEN-CASE: the same stripper DROPPED the commented-out fm_set, so its exclusion still works and the RED case above is not a stripper that keeps everything
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+  RED-CASE: INV-14's comparison pattern matched a real engine-name branch, so the scan above is capable of finding one
+  GREEN-CASE: the same pattern left an assignment (v=<engine>,other, a config default table) alone, so the match above is detection rather than a pattern that hits every line naming an engine
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+== Documentation checks
+CI PASS
+exit: 0

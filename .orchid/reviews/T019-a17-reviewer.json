@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a17-1adf",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "697d0ba93532b1730307b82c5537c1dc504f4b17",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Because classification inspects only post-verification state, candidate code that removes ignored dependencies or strips a committed executable bit can be wrongly waived as environment or handoff inst"
+}

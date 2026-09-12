@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a6-5db5",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "52a89dfae348c6c68a28ceb7cf4f2ff8738e0ff3",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: `orchid-notify` uses an unguarded 16-bit qid and preserves any colliding `.answer`, so a new objection authority can bind an unrelated old `approve` and clear the objection without fresh operator appr",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "`orchid-notify` uses an unguarded 16-bit qid and preserves any colliding `.answer`, so a new objection authority can bind an unrelated old `approve` and clear the objection without fresh operator appr"
+    }
+  ],
+  "summary": "`orchid-notify` uses an unguarded 16-bit qid and preserves any colliding `.answer`, so a new objection authority can bind an unrelated old `approve` and clear the objection without fresh operator appr"
+}

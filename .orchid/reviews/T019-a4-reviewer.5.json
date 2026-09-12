@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-8dd9",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "ca22505a36ba8ac940e03187f09336f05c38f2bf",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Because no `verify_class.flaky` entry covers L020 and lessons are not consulted, the known streaming flake still consumes an attempt."
+}

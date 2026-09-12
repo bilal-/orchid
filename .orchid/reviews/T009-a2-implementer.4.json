@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T009-a2-bf0a",
+  "task": "T009",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "fad566f20fb67d2dcdbd7da803d348b38fdaeeae",
+  "summary": "T009: Model answer choice sets and give the judgment page a body",
+  "commits": [
+    "fad566f20fb67d2dcdbd7da803d348b38fdaeeae"
+  ]
+}

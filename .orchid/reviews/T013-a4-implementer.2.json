@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T013-a4-104b",
+  "task": "T013",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2e1f689aac023e59eb479a2f1eee1aaac7ffb964",
+  "candidate_sha": "680cfc074583866cdb989410873f6e8c3ee08004",
+  "summary": "One thing worth flagging before you run it: the nested run now starts from an empty `HOME`, so it no longer sees your `~/.orchid/config` (which exists on this machine) or `~/.gitconfig`. That is the C",
+  "commits": [
+    "680cfc074583866cdb989410873f6e8c3ee08004"
+  ]
+}

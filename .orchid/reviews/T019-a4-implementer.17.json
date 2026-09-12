@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e40-T019-a4-65f1",
+  "task": "T019",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "e33968d9f64aafbe820686873290ae716fc89e14",
+  "summary": "Port the preserved T019 classifier onto the current integration tip",
+  "commits": [
+    "e33968d9f64aafbe820686873290ae716fc89e14"
+  ]
+}

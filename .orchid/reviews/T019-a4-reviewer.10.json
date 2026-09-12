@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-c540",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "239df135c8d1066eddbf55c78f912963f7802133",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The built-in handoff classifier waives unrelated candidate assertions whenever a new shebang lacks an exec bit or the pin check exits nonzero, violating strict attribution and charging requirements."
+}

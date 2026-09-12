@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T018-a3-8222",
+  "task": "T018",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "fc1a7647b9b4192c4aea90b3e8e0176d69d9d8cb",
+  "summary": "Stop the suite from manufacturing rework-brief locations",
+  "commits": [
+    "fc1a7647b9b4192c4aea90b3e8e0176d69d9d8cb"
+  ]
+}

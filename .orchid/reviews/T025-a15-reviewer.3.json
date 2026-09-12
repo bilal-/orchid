@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a15-5899",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "4e911711d25fcb9d829e3bcef7b3a870eba722eb",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "An implement envelope without optional `.engine` leaves `implementer_engine_id` stale, so the second identical failure can exclude the wrong engine and reroute back to the engine that just failed."
+}

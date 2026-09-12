@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T021-a1-7a8e",
+  "task": "T021",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "8141d32bd38e4be00360464c8bafd839d2b59e36",
+  "candidate_sha": "d4fcf1b6f004934f59ec758c32c24c4c418f4105",
+  "summary": "3. **Run the verifier.** Per L017 I executed nothing — **verification was not run**. `/bin/bash tests/test_plan.sh && /bin/bash tests/test_lessons.sh && /bin/bash scripts/ci-local.sh --bash /bin/bash`",
+  "commits": [
+    "d4fcf1b6f004934f59ec758c32c24c4c418f4105"
+  ]
+}

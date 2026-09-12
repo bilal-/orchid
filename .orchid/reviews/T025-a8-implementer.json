@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a8-2403",
+  "task": "T025",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "8096647448aed8e6b7906cca32aff0d8e1954b04",
+  "candidate_sha": "f35635d9cf4c18ce482b178b9d3765758ddd3e81",
+  "summary": "T025: Bind rework feedback to its candidate and refuse an empty one",
+  "commits": [
+    "f35635d9cf4c18ce482b178b9d3765758ddd3e81"
+  ]
+}

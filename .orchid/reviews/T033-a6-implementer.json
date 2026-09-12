@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T033-a6-5212",
+  "task": "T033",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "2a15fe0c07837bd2ead7e14abd1f86e417592612",
+  "summary": "T033: Carry the summary into the record's scope_complete arm",
+  "commits": [
+    "2a15fe0c07837bd2ead7e14abd1f86e417592612"
+  ]
+}

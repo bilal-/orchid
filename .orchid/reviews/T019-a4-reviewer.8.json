@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-6176",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "644b2fb6e03a4a1c99e53b75d38474bdcf41fdec",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "stale-pin hand-off corroborates only that the named path exists, unlike the exec-bit route's file+`#!`+not-executable conjunction"
+    },
+    {
+      "severity": "low",
+      "title": "`drive_testing` waives on any `cls` that is not literally `candidate`, so an unexpected classifier output would forgive rather than charge"
+    }
+  ]
+}

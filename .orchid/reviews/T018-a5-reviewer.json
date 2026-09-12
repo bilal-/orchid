@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T018-a5-3372",
+  "task": "T018",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "7fa9072da0c5ad08b684509ef872fedac55789af",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "docs claim an automatic hand-off pause that cannot fire, because the implementer role gate already requires `shell`"
+    },
+    {
+      "severity": "low",
+      "title": "a refused reviewer slot is advised to change `role.reviewer` even when the slot engine came from the `review.<tier>` chain"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T030-a2-4a6d",
+  "task": "T030",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "9fb0dd22f5d542b36915bae8861298eb202f81f4",
+  "candidate_sha": "e3c0f094c91c12934934e6b1598ecfa901b05e96",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "kernel.md still guarantees both hand-offs are recognized \"with no per-repo configuration at all\" and that the driver \"RUNS the repository's own pin freshness check\", which is false now that `handoff.pin_check` defaults to `none`"
+    },
+    {
+      "severity": "low",
+      "title": "lib/drive.sh:1642 \"Every other proof here has no configuration at all\" contradicts the opt-in pin route rewritten 30 lines below"
+    },
+    {
+      "severity": "low",
+      "title": "lib/handoff.sh:197 still offers \"a formula they re-pinned after re-reading the diff\" as a legitimate post-ack hand-off commit, the one example PROTOCOL.md's twin sentence was changed away from"
+    },
+    {
+      "severity": "low",
+      "title": "docs/troubleshooting.md:539 still instructs the operator to \"Perform the hand-off (re-pin, `chmod +x`)\", missed by the phrase-literal tripwire in §6"
+    },
+    {
+      "severity": "low",
+      "title": "the new §6 doc tripwires use line-based `grep -Fq` on sentences that straddle a hard wrap, so an innocuous re-wrap fails every task's verification chain; test_docs.sh's folded-line idiom exists for this"
+    }
+  ]
+}

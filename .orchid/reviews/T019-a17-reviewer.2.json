@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a17-a838",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "697d0ba93532b1730307b82c5537c1dc504f4b17",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Classifier's closed progress vocabulary charges the named L003 case for a real test runner's banner lines"
+    },
+    {
+      "severity": "low",
+      "title": "tests/run.sh buffering discards passing-test output and loses the in-flight test's output on a killed suite"
+    }
+  ]
+}

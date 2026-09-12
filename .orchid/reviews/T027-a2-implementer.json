@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T027-a2-629b",
+  "task": "T027",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "ef179f47b041cb222336f8cd19d9c7ab2d154b4a",
+  "summary": "`tests/test_init_doctor.sh` now invokes `doctor` once against `$REPO_ROOT` to exercise the self-driving branch. I confirmed statically that doctor performs no writes (no `mkdir`/`atomic_write`/`touch`",
+  "commits": [
+    "ef179f47b041cb222336f8cd19d9c7ab2d154b4a"
+  ]
+}

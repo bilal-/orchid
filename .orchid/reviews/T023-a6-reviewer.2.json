@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T023-a6-3e4c",
+  "task": "T023",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "6ac927719fe31bea560593258c47cc86d98cca64",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Although stdin is correctly closed and covered by the two-task RED, dispatch-side worktree_prepare runs outside the lease heartbeat with a 900-second budget equal to pump_stale_s, allowing another pum"
+}

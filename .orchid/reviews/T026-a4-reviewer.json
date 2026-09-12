@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a4-fc54",
+  "task": "T026",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "e11e25370f2fb7a507448eed3c4f5601929d93c1",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The public `task advance` now accepts `blocked|rework → testing`, bypassing reverify’s reason, clean-tree, candidate-restamp, and evidence-invalidation safeguards and allowing verification to certify "
+}

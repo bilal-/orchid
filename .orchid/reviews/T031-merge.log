@@ -1,0 +1,35 @@
+date: 2026-08-30T04:10:26Z
+sha: 0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a
+candidate: 8567cd5a4e3606a6c26c4c7a5d99e3b9dd66827d
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.qb6Sae
+command: /bin/bash tests/inv/test_INV-11_verify_evidence.sh && /bin/bash tests/test_drive.sh
+command_status: 0
+gate: /bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+gate_status: ran
+gate_exit: 0
+---
+  RED-CASE: verify evidence recorded a real FAIL, flipped to PASS only when the underlying condition changed, and flipped back when it changed again
+  GREEN-CASE: with the condition satisfied, the same command PASSed, the evidence logged 'exit: 0', and the same gate let the advance to reviewing THROUGH -- so the refusals above are the gate reading a real outcome rather than a verb that always refuses
+  RED-CASE: a verification aimed at a worktree that is not the recorded candidate exits 20, names both shas, and produces evidence the INV-11 gate cannot admit
+  GREEN-CASE: the identical task, verified with its recorded candidate actually checked out, PASSes and advances -- so the refusal above is a drift check reading a real disagreement, not a verb that always refuses
+  RED-CASE: a suite that PASSed while the worktree moved under it is refused too, and its own exit 0 is not enough to get it past the testing to reviewing gate
+  RED-CASE: the evidence sha is bound immediately before the verification command, with nothing between the read and the run but the drift comparison itself
+  GREEN-CASE: the recorded sha is the commit the verification command itself reported standing on, at both ends of the run -- so the ordering pinned above positions the field the gate actually reads
+  red-cases: 4 demonstrated in this file (green-cases: 3)
+boundary cleared: operator-decision
+  RED-CASE: an implement envelope filed by a still-running job advances nothing and captures no candidate
+  GREEN-CASE: once the job has genuinely exited the same envelope advances the task, on its LAST commit
+  RED-CASE: a stall-killed job whose envelope is still spooled costs no infra_failure and spawns no second implementer
+  GREEN-CASE: the deferred envelope still reconciles and supplies the candidate the killed job really produced
+  RED-CASE: a pid-0 job that filed an envelope and went silent is neither believed nor relaunched over: one rung, one boundary, one engine
+  GREEN-CASE: the held envelope files itself as soon as the job's own exit is recorded — the refusal is about evidence, not about waiting
+  RED-CASE: both of drive_testing's verify-refusal arms return instead of falling into the rework accounting
+
+== merge_gate: /bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+== Bash syntax (159 shipped scripts; /bin/bash)
+== ShellCheck exception policy
+== Portability policy (POSIX find only)
+== Portability policy (mtime via lib/common.sh file_mtime)
+== ShellCheck (zero warnings)
+CI PASS (static checks only; --no-tests)
+exit: 0

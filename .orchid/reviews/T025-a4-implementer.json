@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T025-a4-c24b",
+  "task": "T025",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "755b07cdfae17bd9eb1a05abdfd0d32e8e3f60e9",
+  "summary": "Test the implement prompt actually carries rework.md",
+  "commits": [
+    "755b07cdfae17bd9eb1a05abdfd0d32e8e3f60e9"
+  ]
+}

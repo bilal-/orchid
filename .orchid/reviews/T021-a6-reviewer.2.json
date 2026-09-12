@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T021-a6-2b3e",
+  "task": "T021",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "6bbb0437b783fd052a12888a69359f56588a2683",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "A resurfaced deferral carries only its reason text, so no task can ever cover it"
+    },
+    {
+      "severity": "low",
+      "title": "An incidental cardinal (\"two failing items\") marks a single-finding entry UNDECOMPOSED"
+    },
+    {
+      "severity": "low",
+      "title": "Read-only `orchid plan crosscheck` still requires a current ORCHID_EPOCH"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a5-1011",
+  "task": "T003",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "9bf480ebe347702f6548510c13c767e755db5399",
+  "candidate_sha": "8a791fe0e472d85b0796699a2884120d3545225d",
+  "verdict": "approve",
+  "scope_complete": false,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "Part G leaves role.reviewer unbound, so pass 2 may dispatch the real default-chain reviewer (agy) machine-dependently"
+    }
+  ]
+}

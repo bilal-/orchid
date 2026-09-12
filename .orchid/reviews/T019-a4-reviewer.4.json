@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-54ab",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "85516079f9efb2b1a6284d3945cfd879620c7ef7",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The broad default handoff regex can waive genuine candidate defects, while truncating state gaps before attribution can wrongly charge an L003 environmental failure beyond the first five paths."
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a5-e831",
+  "task": "T006",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "451950f9f523e91f88a417602f2c0e6c725f7992",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The live-PID `kernel-refresh` bypass lets concurrent verbs execute the stale pre-merge tree during the CAS/refresh window, so the chosen refusal does not satisfy L018."
+}

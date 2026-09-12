@@ -1,0 +1,27 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a13-635b",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "a9a423d08f1831cfb37ebc372eb8311d5ece03bf",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "`service install --dry-run` leaves a durable binding that `doctor` reports as an installed schedule"
+    },
+    {
+      "severity": "low",
+      "title": "the boundary-record schema comment in libexec/orchid-run omits `counters` while claiming parity with PROTOCOL.md and kernel.md"
+    },
+    {
+      "severity": "low",
+      "title": "pump step 0 emits an operator-actionable refusal and writes a machine-local record ahead of the stale-root gate the same file requires above such answers"
+    }
+  ],
+  "summary": "Every required behaviour is implemented with shared predicates rather than duplicated tests, and the two mandated RED cases are present and non-vacuous; the three remaining issues are cosmetic or self"
+}

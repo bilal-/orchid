@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T001-a1-4172",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "8141d32bd38e4be00360464c8bafd839d2b59e36",
+  "candidate_sha": "83d46b78d06ee45b80ba809835cd008f2f685f1e",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "drive_escalate's pass key (task:op:point) merges two genuinely distinct concurrent job failures — two reviewer slots, or two bindings at one hook point — into a single rung"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T033-a6-dee6",
+  "task": "T033",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "2a15fe0c07837bd2ead7e14abd1f86e417592612",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "The synthesized finding's title re-quotes the summary the verdict entry already carried, so the conflict record prints the same prose twice"
+    }
+  ]
+}

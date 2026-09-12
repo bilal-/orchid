@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a6-2868",
+  "task": "T026",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "54e641faf93001bca81b5151fb7916347fabbf69",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "`task reverify` re-binds `handoff_ack` onto a commit no operator ever acknowledged, reopening the L025/fail-open direction `handoff_state` documents (\"a HEAD that has moved past the ack reopens the pause\"); the stated rationale — that clearing would strand a boundary \"no idle-status verb can clear\" — is contradicted by `handoff --ack` being legal from `testing`, exactly the status reverify lands the task in, so the safe alternative costs one operator command while the carry-forward silently certifies that the operator's new commits need no mechanical step (chmod, formula re-pin) and buys a guaranteed-FAIL verify that charges a rework round"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T002-a3-081c",
+  "task": "T002",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "74ab099b3c181d2a76ecbe3ce69efebd6a9bc921",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`_start_tasks_inherited` mistakes the current merge base for the immutable fork point, so an operator branch containing an earlier post-plan integration commit can make unchanged task trees compare eq"
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e44-T023-a5-02a7",
+  "task": "T023",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "01595e75393b9d08a5d84698b6e89b9702da0f4a",
+  "summary": "Port the preserved worktree-prepare candidate onto the rebased base",
+  "commits": [
+    "01595e75393b9d08a5d84698b6e89b9702da0f4a"
+  ]
+}

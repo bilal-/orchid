@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T033-a2-30ad",
+  "task": "T033",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "814fa45001b34833cb191f2148ab5b2788a92a30",
+  "candidate_sha": "3539ef2313a0adb69486d94f4ba39fb0ab38104e",
+  "summary": "Disclose how many findings a deterministic approval weighed",
+  "commits": [
+    "3539ef2313a0adb69486d94f4ba39fb0ab38104e"
+  ]
+}

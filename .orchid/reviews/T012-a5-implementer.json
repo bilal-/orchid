@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T012-a5-b4af",
+  "task": "T012",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "19ecd59916c9cbda2bec302db9e58c9d35fa0c79",
+  "candidate_sha": "c33cc08a0d54d546a72ed33af1c1ef6acb5b7475",
+  "summary": "Correct the docs' high-tier queueing claim and pin it in tests",
+  "commits": [
+    "c33cc08a0d54d546a72ed33af1c1ef6acb5b7475"
+  ]
+}

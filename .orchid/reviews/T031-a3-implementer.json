@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T031-a3-d195",
+  "task": "T031",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "134cfdd8e73c05d1e3dd113e2847d9d403177195",
+  "summary": "T031: assert the drift refusal names both SHAs",
+  "commits": [
+    "134cfdd8e73c05d1e3dd113e2847d9d403177195"
+  ]
+}

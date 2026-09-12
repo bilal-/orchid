@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T023-a4-7b64",
+  "task": "T023",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "a178de72c5f2907c2612dffce3a3c8862926bc69",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "ORCHID_REPO_ROOT is exported only to prepare, not to the verify environment the criterion also names"
+    },
+    {
+      "severity": "low",
+      "title": "a stale `<id>-merge.log` still survives merge failures that die before the new `rm -f`, so the driver's new \"file present ⇒ this run validated\" rule can still misdirect"
+    }
+  ]
+}

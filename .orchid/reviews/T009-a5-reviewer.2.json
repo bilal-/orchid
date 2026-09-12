@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a5-f6da",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "19ecd59916c9cbda2bec302db9e58c9d35fa0c79",
+  "candidate_sha": "08b5d2dd58cd2e18db3469a6e05fadd107b9d923",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "review-evidence pages declare an arbitration set that does not answer what they ask"
+    },
+    {
+      "severity": "medium",
+      "title": "blocked-task page recommends `reverify` but its declared set refuses it"
+    },
+    {
+      "severity": "low",
+      "title": "hermes.md overclaims that an unknown-subcommand build can never report NOT REACHABLE"
+    }
+  ]
+}

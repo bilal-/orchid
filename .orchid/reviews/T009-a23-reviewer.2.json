@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a23-c8f5",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "8096647448aed8e6b7906cca32aff0d8e1954b04",
+  "candidate_sha": "7118080f02042a238708eab30463da3f6d068c75",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The actual gate-failed judgment path is reclassified as operator-decision, so it emits no declared or human-readable permitted answers, while the test hard-codes blocked-task and misses that real path"
+}

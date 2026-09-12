@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T023-a5-fd8f",
+  "task": "T023",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "c77f1b5662d14f34f3e655e0bb25af137f2e5534",
+  "summary": "Use cd_scratch for the ORCHID_REPO_ROOT expectation in test_verify",
+  "commits": [
+    "c77f1b5662d14f34f3e655e0bb25af137f2e5534"
+  ]
+}

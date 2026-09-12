@@ -1,0 +1,34 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a3-b839",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "c45557638d676081d87a5b362466f5053414d071",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "gitignored build state that is a symlink — L003's named case — is never detected"
+    },
+    {
+      "severity": "medium",
+      "title": "while a state gap is open, every verify failure in that task is forgiven, including real defects"
+    },
+    {
+      "severity": "medium",
+      "title": "the repo's own orchid.config declares no verify_class signature, so T014's stale-pin hand-off still charges an attempt"
+    },
+    {
+      "severity": "low",
+      "title": "infra_failures is charged before the testing→rework edge is known to exist, so a refused advance still spends environment budget"
+    },
+    {
+      "severity": "low",
+      "title": "_drive_verify_body strips every `exit: N` line from the body, not only the trailing one the verb appends"
+    }
+  ]
+}

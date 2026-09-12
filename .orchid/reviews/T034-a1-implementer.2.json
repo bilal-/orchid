@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T034-a1-dcdb",
+  "task": "T034",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "c4b80d2cbdf9902446886dc686e3b015ad59da33",
+  "summary": "Make the awk-leak assertions fire instead of failing open",
+  "commits": [
+    "c4b80d2cbdf9902446886dc686e3b015ad59da33"
+  ]
+}

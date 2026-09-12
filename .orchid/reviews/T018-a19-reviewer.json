@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T018-a19-0e29",
+  "task": "T018",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2658972632012c3332a34e17dce9fb295d7bf5ff",
+  "candidate_sha": "213759fd4284eacf41a1b7455130412aff8d5608",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "`review_slot_engine_source` can name `role.reviewer` for a slot that came from the session-independent fallback, contradicting its documented status-1 contract"
+    },
+    {
+      "severity": "low",
+      "title": "`orchid_journal_once`'s dedup window is described as 40 journal entries, but `journal show --task` reads `tail -n 40` lines, i.e. about 20 entries"
+    },
+    {
+      "severity": "low",
+      "title": "`drive_capability_refusal` calls `orchid_journal_once` unguarded, so a failed journal write aborts the pass before the `operator-handoff` boundary is set, unlike `orchid-launch`'s stated best-effort degrade"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-b1b2",
+  "task": "T019",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "a4b122708a299bb6d8bebbad0a62c1c4d26b4483",
+  "summary": "One residual I did not eliminate, stated rather than hidden: a candidate that invokes a tracked, shebang-carrying, mode-644 file it was meant to run with `bash x.sh` would still be classified as a han",
+  "commits": [
+    "a4b122708a299bb6d8bebbad0a62c1c4d26b4483"
+  ]
+}

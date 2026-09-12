@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a7-b414",
+  "task": "T032",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "25bae387d3cba69867ce08293235c753a2848533",
+  "summary": "Claim a question id before anything is filed under it",
+  "commits": [
+    "25bae387d3cba69867ce08293235c753a2848533"
+  ]
+}

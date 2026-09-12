@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a14-2dfa",
+  "task": "T025",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "27dc2fb1d9b347a08306c655d88da77031a7ecbd",
+  "summary": "Capture the rework failure at every door, not just the advance",
+  "commits": [
+    "27dc2fb1d9b347a08306c655d88da77031a7ecbd"
+  ]
+}

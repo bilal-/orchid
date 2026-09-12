@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e44-T023-a5-e51d",
+  "task": "T023",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "c224744b4b0505eae7df19fb3f391b0cbf7037a9",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "infra_max on a merge-worktree prepare failure dumps a blameless candidate into rework"
+    }
+  ]
+}

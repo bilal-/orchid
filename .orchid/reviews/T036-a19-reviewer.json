@@ -1,0 +1,27 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a19-9e8a",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "18075c11085c2e32f2f41a0ec6a62af89a1a2e6e",
+  "candidate_sha": "413f4677a495b545b7abc02b1e02101b9d252abd",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "`pump_target_healthy` is set to 1 and never cleared, so the trap guard it documents is inert"
+    },
+    {
+      "severity": "low",
+      "title": "`libexec/orchid-run`'s boundary-record schema comment omits the `counters` field that same arm writes"
+    },
+    {
+      "severity": "low",
+      "title": "`install --dry-run` leaves both binding halves that `uninstall --dry-run` will not clear, so a preview makes doctor report a schedule that was never installed"
+    }
+  ],
+  "summary": "Both halves of the finding are fixed at the mechanism rather than in prose, with shared predicates and non-vacuous RED/GREEN coverage; the three remaining items are cosmetic or self-correcting and non"
+}

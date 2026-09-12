@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e44-T019-a5-5bef",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "77d23d07b58f64d4aa1e8be6919c6019a37a5d6d",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Three of the four named liveness-flake sites are untouched and unquarantined — only test_engine_agy.sh's grown-while case was fixed (agy heartbeat:298, claude:363 and :413, codex:395 and :445 still sample one instant), and `log_grew_while_alive` is local to test_engine_agy.sh instead of a shared helper"
+    },
+    {
+      "severity": "high",
+      "title": "The classifier recognises only the two operator hand-offs; harness faults and repository-known-flaky tests are explicitly charged, and tests/test_drive.sh:3348-3351 pins the L020 streaming signature and a reaped-manifest harness fault as `candidate`, the direct opposite of the mandatory clause \"the classifier half of this task must recognise this failure signature as a non-candidate failure\""
+    },
+    {
+      "severity": "medium",
+      "title": "The NAMED CASE from L003 — a fresh worktree missing gitignored build state — is pinned as CHARGED (tests/test_drive.sh:3346, docs/troubleshooting.md \"Anything else charges\") rather than classified environmental and waived as the acceptance criteria require"
+    },
+    {
+      "severity": "low",
+      "title": "Dispatch neither reproduces nor detects absent gitignored build state; PROTOCOL.md only adds prose telling the operator to provision it, so each project still rediscovers the gap by losing a round"
+    }
+  ]
+}

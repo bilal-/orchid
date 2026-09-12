@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T010-a5-ec52",
+  "task": "T010",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "6b6ad7c28e3a2f8e87c2e473f670275e4f886671",
+  "summary": "T010: gate the hand-off's advance and age out superseded briefs",
+  "commits": [
+    "6b6ad7c28e3a2f8e87c2e473f670275e4f886671"
+  ]
+}
