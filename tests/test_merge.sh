@@ -2259,7 +2259,7 @@ plant_reviewer_envelope T090
 out90="$WORK/merge90.out"
 rc=0; "$ORCHID_BIN" merge T090 >"$out90" 2>&1 || rc=$?
 assert_eq 0 "$rc" "fixture: T090 merges cleanly (out: $(cat "$out90"))"
-assert_eq done "$("$ORCHID_BIN" task show T090 | grep '^status: ' | cut -d' ' -f2)" \
+assert_eq "done" "$("$ORCHID_BIN" task show T090 | grep '^status: ' | cut -d' ' -f2)" \
   "fixture: and the task is done"
 
 [ ! -d "$wt90" ] \
