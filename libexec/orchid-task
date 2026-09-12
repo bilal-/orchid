@@ -31,7 +31,8 @@ task_usage() {
   case "${1:-}" in
     create)      printf '%s\n' 'usage: orchid task create <id> "<title>" [--archetype <name>]' ;;
     show)        printf '%s\n' 'usage: orchid task show <id>' ;;
-    list)        printf '%s\n' 'usage: orchid task list' ;;
+    get)         printf '%s\n' 'usage: orchid task get <id> <key>' ;;
+      list)        printf '%s\n' 'usage: orchid task list' ;;
     set)         printf '%s\n' 'usage: orchid task set <id> <key> <value> [--reason "..."]' ;;
     advance)     printf '%s\n' 'usage: orchid task advance <id> <status> [--reason "..."] [--waive-attempt|--charge-attempt]' ;;
     arbitrate)   printf '%s\n' 'usage: orchid task arbitrate <id> --result approve|request-changes --reason "..." [--waive-attempt]' ;;
@@ -41,7 +42,7 @@ task_usage() {
     retry)       printf '%s\n' 'usage: orchid task retry <id> --reason "..." [--attempts N]' ;;
     reverify)    printf '%s\n' 'usage: orchid task reverify <id> --reason "..."' ;;
     infra-fail)  printf '%s\n' 'usage: orchid task infra-fail <id> --reason "..."' ;;
-    *)           printf '%s\n' 'usage: orchid task create|show|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|infra-fail'
+    *)           printf '%s\n' 'usage: orchid task create|show|get|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|infra-fail'
                  return 1 ;;
   esac
 }
@@ -815,6 +816,48 @@ case "$sub" in
       orchid_die "task $show_id is DAMAGED, not empty: $show_why ($show_f). Recover the frontmatter rather than re-creating the task: 'git log --all --oneline -- .orchid/tasks/$show_id.md' then 'git checkout <sha> -- .orchid/tasks/$show_id.md'; a review pack under .orchid/runtime/packs/ may also carry a copy of it."
     fi
     cat "$show_f" ;;
+  get)
+    # F39: ONE FIELD, WITHOUT PARSING THE DOCUMENT.
+    #
+    # `task show` prints the whole file, so every caller wanting a single value
+    # greps prose -- and the dogfood report names that habit as the direct cause
+    # of the append-instead-of-rewrite pattern that destroyed a task file. The
+    # grep is fragile in three independent ways: a value containing its own key
+    # name matches twice, a BODY line shaped like `key: value` matches a
+    # frontmatter pattern, and the near-universal `cut -d' ' -f2` truncates
+    # every value with a space in it.
+    #
+    # PRESENCE IS THE EXIT STATUS, and that is the whole reason this is a verb
+    # rather than a documented grep. `fm_get` prints nothing for an ABSENT key
+    # and nothing for one set to the EMPTY STRING; a caller that cannot separate
+    # those is guessing about two situations with different responses ("this
+    # task records no worktree" vs "this task has no worktree field"). So the
+    # value goes to stdout and the answer to "is it there" goes to the exit
+    # status, which is the one channel a shell caller always has.
+    #
+    # READ-ONLY, like `show` and `list`: no verb lock, no epoch fence. Reading a
+    # field is how an operator works out what to do when the run state is
+    # already wrong, and gating it on that state inverts its purpose -- the same
+    # argument INV-17 makes about `--help`.
+    get_id="${1:-}"; get_key="${2:-}"
+    [ -n "$get_id" ] && [ -n "$get_key" ] || orchid_die "$(task_usage get)"
+    [ "$get_id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    get_f="$(tf "$get_id")"
+    [ -f "$get_f" ] || orchid_die "no task $get_id"
+    # The same damage check `show` makes, for the same T034 reason: a zero-byte
+    # task file must be reported as DAMAGED rather than answered about as a task
+    # whose every field happens to be missing.
+    if ! get_why="$(fm_check "$get_f" id)"; then
+      orchid_die "task $get_id is DAMAGED, not empty: $get_why ($get_f). Recover the frontmatter rather than re-creating the task: 'git log --all --oneline -- .orchid/tasks/$get_id.md' then 'git checkout <sha> -- .orchid/tasks/$get_id.md'."
+    fi
+    if ! fm_has "$get_f" "$get_key"; then
+      # Nothing on stdout, deliberately: a caller doing `v="$(orchid task get
+      # ...)"` gets the empty string rather than an error message pasted into
+      # whatever it was about to do with the value.
+      echo "orchid: task $get_id has no '$get_key' field — 'orchid task show $get_id' lists the fields it does have" >&2
+      exit 1
+    fi
+    fm_get "$get_f" "$get_key" ;;
   list)
     # A DAMAGED task file gets a row that SAYS SO (T034, dogfood F34), never a
     # row of empty fields. Three columns read straight out of frontmatter that
@@ -2783,5 +2826,5 @@ case "$sub" in
       echo "$id: infra_failures $n/$max"
       echo "$id: no status change below the cap ($max). If this task needs to move now: $(blocked_route "$id" retry)"
     fi ;;
-  *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|infra-fail" ;;
+  *) orchid_die "usage: orchid task create|show|get|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|infra-fail" ;;
 esac

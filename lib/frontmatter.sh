@@ -3,6 +3,32 @@ fm_get() {
   awk -v k="$2" '/^---$/{n++;next} n==1 && index($0,k": ")==1{print substr($0,length(k)+3);exit} n>=2{exit}' "$1"
 }
 
+# fm_has <file> <key> -- 0 iff <key> is a line in the FIRST frontmatter block.
+#
+# fm_get cannot answer this. It prints nothing for a key that is absent and
+# nothing for one whose value is the empty string, and those are different
+# facts with different actions behind them: "this task records no worktree" and
+# "this task has never had a worktree field" call for different responses from
+# a caller, and every consumer that had to guess between them guessed by
+# grepping the whole document -- the parsing-prose habit F39 exists to end.
+#
+# THE SAME SCAN, deliberately. It is the identical awk walk with `print`
+# replaced by an exit status, so a key fm_get can read is by construction a key
+# this reports present, and a second reader can never drift from the first about
+# where the frontmatter block ends. Adding a differently-shaped matcher here --
+# a grep over the file, say -- would answer `yes` for a key name appearing in
+# the BODY, which is the exact failure the one-parser rule exists to prevent.
+# BOTH SPELLINGS OF AN EMPTY VALUE. The task template writes an unset field as
+# `key:` with no trailing space, while a field SET to the empty string and every
+# populated field are written `key: `. fm_get matches only the second, which is
+# right for a VALUE (it returns empty for either) and wrong for PRESENCE -- with
+# the trailing-space form alone, every unset field in a fresh task would be
+# reported absent, which is precisely the distinction this function exists to
+# make. Matching both is what makes "present, and empty" expressible.
+fm_has() {
+  awk -v k="$2" '/^---$/{n++;next} n==1 && (index($0,k": ")==1 || $0==k":"){found=1;exit} n>=2{exit} END{exit(found?0:1)}' "$1"
+}
+
 # fm_check <file> [required-key] -- 0 when <file> can be read as a frontmatter
 # document; otherwise prints ONE line saying what is wrong with it and returns
 # 1. The reason is printed rather than returned as a code because every caller

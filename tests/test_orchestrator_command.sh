@@ -305,3 +305,35 @@ assert_eq rework "$(status_of T001)" "the judgment verb is admitted, and its dec
 admit 'run boundary clear' run boundary clear --reason "arbitrated: sent back for rework" >/dev/null
 rc=0; "$ORCHID_BIN" run boundary show >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "the brokered clear really released the boundary"
+
+# ============================================================================
+# F39 -- `task get` through the brokered surface.
+#
+# The broker is an allowlist, so a new subverb is refused by default until it
+# is argued for. This one is argued for on the narrowest possible ground: the
+# surface ALREADY admits `task show <id>`, which returns the whole task
+# document, so one field out of that document discloses strictly less. What it
+# buys is that a model reading one value stops grepping the document to get it.
+#
+# The arity and both arguments are still checked here, because bounding what an
+# untrusted caller may say is this file's entire job.
+# ============================================================================
+bc_rc=0
+bc_out="$("$BROKER" task get T001 status 2>&1)" || bc_rc=$?
+[ "$bc_rc" -ne 17 ] \
+  || fail "F39: the broker must admit 'task get <id> <key>' — it discloses strictly less than the task show it already allows (out: $bc_out)"
+
+for bc_bad in "task get" "task get T001" "task get T001 status extra"; do
+  bc_rc=0
+  # shellcheck disable=SC2086
+  bc_out="$($BROKER $bc_bad 2>&1)" || bc_rc=$?
+  assert_eq 17 "$bc_rc" "F39: the broker refuses the wrong arity for '$bc_bad'"
+done
+bc_rc=0
+bc_out="$("$BROKER" task get 'not a task id' status 2>&1)" || bc_rc=$?
+assert_eq 17 "$bc_rc" "F39: the broker refuses an id that is not one"
+bc_rc=0
+bc_out="$("$BROKER" task get T001 '../../etc/passwd' 2>&1)" || bc_rc=$?
+assert_eq 17 "$bc_rc" "F39: the broker refuses a key that is not a frontmatter key"
+assert_match "not a valid frontmatter key" "$bc_out" "F39: ...naming what it objected to"
+red_case 'the brokered task get is bounded on both arguments and on arity: a bad id, a path-shaped key and every wrong arity are refused with the brokered-command refusal'

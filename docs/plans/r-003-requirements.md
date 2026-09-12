@@ -155,6 +155,28 @@ being unobservable**. The run never reached the tick at all.
   consider `task append <id> <key> <text>` so amendment is explicit rather than
   reconstructed by the caller.
 
+  **The read half is closed, 2026-09-12; the amend half is not.**
+  `orchid task get <id> <key>` prints the raw value through the one frontmatter
+  parser and is read-only — no verb lock, no epoch fence, so it answers when the
+  run state is already wrong (the INV-17 argument). It is also admitted through
+  the brokered orchestrator surface, on the ground that `task show` is already
+  admitted and returns the whole document, so one field out of it discloses
+  strictly less; arity, the id and the key shape are all bounded there.
+
+  The design decision worth carrying forward is the ABSENT/EMPTY split.
+  `fm_get` prints nothing for a key that is absent and nothing for one set to
+  the empty string, and those are different facts with different responses
+  behind them. So presence is the EXIT STATUS and the value is stdout, and
+  `fm_has` was added beside `fm_get` in lib/frontmatter.sh as the same awk scan
+  with `print` replaced by a status — never a second matcher, which would answer
+  `yes` for a key name appearing in the task BODY. It matches both spellings of
+  an empty field (`key:` as the template writes an unset one, `key: ` as a write
+  leaves it), because the trailing-space form alone would report every unset
+  field in a fresh task as absent.
+
+  `task append` remains open, and is the half that actually closes the
+  append-instead-of-rewrite hazard.
+
 - **Readable epoch after setup and rollover (F38) — closed in r-002.** The
   dogfood observed `.orchid/runtime/epoch` missing immediately after `run new`
   while the refusal named current epoch 0. T029 made `orchid start` materialize

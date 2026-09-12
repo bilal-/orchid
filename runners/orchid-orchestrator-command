@@ -19,6 +19,7 @@ set -euo pipefail
 #
 # ADMITTED -- exact reads:
 #     task show <id>
+#     task get <id> <key>
 #     task list
 #     status [--explain]
 #     jobs ls [--all]
@@ -67,6 +68,7 @@ usage: orchid-orchestrator-command <admitted orchid verb form>
 The brokered, judgment-only command surface. Admitted forms:
 
   task show <id>                     task list
+  task get <id> <key>
   status [--explain]                 jobs review-plan <id>
   jobs ls [--all]
   journal tail [-n <count>]          journal show --task <id>
@@ -175,6 +177,22 @@ case "$verb" in
       show)
         [ "$#" -eq 3 ] || refuse "task show takes exactly one task id"
         is_id "$3" || refuse "'$3' is not a valid task id"
+        ;;
+      get)
+        # READ-ONLY, AND STRICTLY NARROWER THAN `show`, which this surface
+        # already admits: `task show <id>` hands back the entire task document,
+        # so one field out of it discloses nothing new. What it buys is that a
+        # model reading a single value no longer has to grep the document to do
+        # it -- the habit F39 names as the direct cause of a destroyed task file.
+        #
+        # The KEY is validated as a key, not passed through. It never becomes a
+        # path, but it does become an awk pattern, and a surface whose whole job
+        # is to bound what an untrusted caller may say should not be the one
+        # place that stops checking the shape of an argument.
+        [ "$#" -eq 4 ] || refuse "task get takes exactly one task id and one key"
+        is_id "$3" || refuse "'$3' is not a valid task id"
+        grep -qE '^[A-Za-z_][A-Za-z0-9_-]{0,63}$' <<<"$4" \
+          || refuse "'$4' is not a valid frontmatter key"
         ;;
       list)
         [ "$#" -eq 2 ] || refuse "task list takes no arguments"
