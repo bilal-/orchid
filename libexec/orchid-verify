@@ -52,7 +52,28 @@ fi
 # Command source: task frontmatter first, config fallback second; neither
 # present is a hard error (there is nothing deterministic to run).
 cmd="$(fm_get "$tf" verification_commands)"
-[ -n "$cmd" ] || cmd="$(config_get "$repo" verify)"
+# WHICH GATE THIS IS, recorded as a field rather than left to be inferred from
+# the command string (dogfood F49).
+#
+# Thirteen r-001 tasks merged reporting a green gate having run between 4 and
+# 86 of the suite's 2,305 tests, because each carried a `--filter` authored
+# during planning. Narrowing is a reasonable drafting convenience; by merge
+# time it had silently become the definition of correctness for that task, and
+# `verify passed` read identically either way.
+#
+# Orchid cannot count a stranger's tests. The verification command is arbitrary
+# shell, and inventing a number would be exactly the fabricated-evidence class
+# this run exists to close. What it can state, out of facts it already holds,
+# is WHICH question was asked: the repository's own configured gate, or a
+# per-task substitute for it. A reader of the evidence then learns, without
+# leaving the log, that a green describes a narrower question than the
+# repository asks -- and `command:` on the line above says what the substitute
+# was.
+verify_scope=task
+if [ -z "$cmd" ]; then
+  cmd="$(config_get "$repo" verify)"
+  verify_scope=repo
+fi
 [ -n "$cmd" ] || orchid_die "no verification_commands on task $id and no config 'verify' set — nothing to run"
 
 # Working dir: the task's worktree when set, else the repo root.
@@ -217,6 +238,7 @@ verify_refuse() {
     echo "candidate: $cand"
     echo "cwd: $cwd"
     echo "command: $cmd"
+    echo "scope: $verify_scope"
     echo "---"
     echo "refused: $why"
   } | atomic_write "$log"
@@ -273,6 +295,7 @@ drifted=0
   echo "candidate: $cand"
   echo "cwd: $cwd"
   echo "command: $cmd"
+  echo "scope: $verify_scope"
   printf '%s\n' "$prestate_headers"
   echo "---"
   cat "$out_tmp"

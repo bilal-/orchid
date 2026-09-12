@@ -161,3 +161,51 @@ assert_match "round-two-output" "$(cat "$f47_a2" 2>/dev/null || echo)" \
 assert_match "round-one-output" "$(cat "$f47_a1" 2>/dev/null || echo)" \
   "F47: ...and the first round's copy is untouched by it"
 green_case 'two failing rounds leave two readable logs, one per attempt, instead of one path each overwriting the last'
+
+# ============================================================================
+# F49 -- "verify PASS" never showed how narrow the gate was.
+#
+# Thirteen r-001 tasks merged reporting a green gate having run between 4 and
+# 86 of the suite's 2,305 tests. Each task's `verification_commands` carried a
+# `--filter` authored during planning, when narrowing was a reasonable drafting
+# convenience; by merge time that filter had silently become the definition of
+# correctness for the task. `verify passed (25 tests)` and `verify passed
+# (2305 tests)` are different claims and read identically.
+#
+# Orchid cannot count a stranger's tests -- the verification command is
+# arbitrary shell, and inventing a number would be exactly the fabricated-
+# evidence class the whole run is about. What it CAN state, from facts it
+# holds, is whether the gate that ran was the repository's own or a per-task
+# substitute for it. That is the decision-relevant half: a reviewer reading a
+# green log learns, without leaving the log, that the green describes a
+# narrower question than the repository asks.
+#
+# `scope: repo` when the task ran the configured repository gate, `scope: task`
+# when it ran something else, and the command itself is already on the line
+# above so the reader can see WHAT else.
+# ============================================================================
+"$ORCHID_BIN" task create T091 "f49-scope-disclosure"
+"$ORCHID_BIN" task set T091 verification_commands "true"
+rc=0; "$ORCHID_BIN" verify T091 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "fixture: the narrow task gate passes"
+f49_narrow="$(cat .orchid/reviews/T091-verify.log 2>/dev/null || echo)"
+assert_match "^scope: task" "$f49_narrow" \
+  "F49: a task that substitutes its own verification_commands records that its gate was task-scoped"
+assert_match "^command: true" "$f49_narrow" \
+  "F49: ...beside the command itself, so the reader can see what was substituted"
+red_case 'a green verify log filed against a per-task verification command declares its gate task-scoped, so a narrow pass cannot read like the repository gate'
+
+# GREEN twin: a task with NO substitute runs the repository's configured gate,
+# and must say so. Without this the marker could be a constant that says
+# "task" about everything, which discloses nothing.
+# The repository gate this fixture has not needed until now: a task with no
+# verification_commands of its own falls back to it, and that fallback is the
+# whole distinction being pinned.
+printf 'verify=true\n' > orchid.config
+"$ORCHID_BIN" task create T092 "f49-repo-scope"
+rc=0; "$ORCHID_BIN" verify T092 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "fixture: the repository gate passes for a task that declares none of its own"
+f49_repo="$(cat .orchid/reviews/T092-verify.log 2>/dev/null || echo)"
+assert_match "^scope: repo" "$f49_repo" \
+  "F49: a task with no verification_commands of its own records that it ran the repository gate"
+green_case 'the same field reads repo for a task that ran the configured repository gate: the disclosure distinguishes the two rather than labelling everything'
