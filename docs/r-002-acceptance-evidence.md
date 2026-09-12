@@ -263,16 +263,47 @@ unaccepted. After T015 merged, the operator retired L029 through
 - The shipped version remains `1.0.0-beta.1` (`1.0.0-beta.x` posture). Nothing
   in this evidence claims a public release or `1.0.0` qualification.
 
+## Hosted CI — observed 2026-09-02, and what it does and does not cover
+
+The hosted row above is now filled by observation rather than by inference,
+and the observation includes the two runs that failed.
+
+| Run | Head SHA | Branch | Conclusion |
+|---|---|---|---|
+| [33459387731](https://github.com/bilal-/orchid/actions/runs/33459387731) | `c080bf35` | `main` | **failure** |
+| [33566887753](https://github.com/bilal-/orchid/actions/runs/33566887753) | `aae7e9b9` | `main` | **failure** |
+| [33577759163](https://github.com/bilal-/orchid/actions/runs/33577759163) | `7dcb58bcf333627a1f50e428834d03b6b52b80fe` | `main` | **success**, 58m34s, workflow `CI` |
+
+Read it exactly as it stands:
+
+- **The green run is on `main`, not on the 40-task integration SHA.**
+  `7dcb58bc` contains `d9b1cd15` (through merge `eb719732`) plus three later
+  commits. The tree the run assembled was never itself observed on hosted CI.
+- **The 40-task tree as merged did not pass hosted CI.** Two commits were
+  required to make it green: `aae7e9b9` (Ubuntu ShellCheck 0.9 compatibility,
+  touching `lib/common.sh` and two test files) and `7dcb58bc` (deterministic
+  service platform fixtures). Both were authored directly on `main` by the
+  operator, outside the run's task machinery, so neither carries a task record,
+  a review, or a journal entry.
+- The retrospective's "canonical full-CI run against the exact final 40-task
+  integration SHA `d9b1cd15`" row is therefore **still open**, and closing it
+  would require pushing that SHA and observing its own workflow run.
+
 ## Remaining operator completion block
 
 The final T015 SHA, candidate-local CI, integration-branch CI,
-bootstrap-journal audit, lesson reconciliation, and L029 retirement are now
-recorded above. Before `orchid run accept`, the operator still must record:
+bootstrap-journal audit, lesson reconciliation, L029 retirement, and now the
+hosted workflow rows are recorded above. Before `orchid run accept`, the
+operator still must record:
 
-1. the hosted workflow id/URL and conclusion after a push, or an explicit
-   policy decision that hosted CI is not required — never a fabricated green
-   result; and
-2. the operator's acceptance reason.
+1. the operator's acceptance reason; and
+2. a decision on the exact-SHA row: either push `d9b1cd15` and observe its own
+   hosted run, or record the explicit judgment that the green run at
+   `7dcb58bc` — that SHA plus three post-merge commits — is the tree being
+   accepted. Never a fabricated green result, and never a green run on one tree
+   reported as a green run on another.
 
 Until all required rows are complete, this file is evidence of an honest
-candidate hand-off, not evidence of run acceptance.
+candidate hand-off, not evidence of run acceptance. As of 2026-09-11 no
+`orchid run accept` has been run, and `.orchid/roadmap.md` still reads
+`run_status: accepting` with the `run-complete` boundary open.
