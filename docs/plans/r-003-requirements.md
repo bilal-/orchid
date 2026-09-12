@@ -410,6 +410,25 @@ user actually touches is the layer where it loses them.
   file staged at mode 644**, for the same reason — the implementer cannot
   `chmod`. r-002 handled this through explicit operator hand-offs; 1.0 still
   needs runtime capability proof or a supported automatic hand-off.
+
+  **Re-measured 2026-09-12 — detection and non-charging already exist; only the
+  automation is open.** `lib/drive.sh`'s hand-off classifier STATs the files a
+  candidate ADDED *and* the files it MODIFIED whose base recorded mode 755,
+  treats a regular file carrying a `#!` line with no execute permission as the
+  hand-off state, and requires CAUSAL attribution — a failing line that names
+  the file and reports a refusal to execute it — before waiving the attempt. So
+  a 644 executable does not silently cost a round. What no verb can do is fix
+  it, and that is the part needing capability proof.
+
+  One reporting gap beside it was closed: `bin/orchid` gated on `[ -x ]` and
+  reported a verb file present at mode 644 as `unknown command '<verb>'`. The
+  file is there and only its mode is wrong, so that message sent the reader
+  looking for something that was never missing — and since an implementer may
+  not `chmod` and several engines recreate every file they touch at 0644, a new
+  verb arriving 644 is the ORDINARY outcome of adding one. The dispatcher now
+  names the mode, the path, `chmod +x`, and the `git update-index --chmod=+x`
+  that records it; a genuinely absent verb is still `unknown command` and is
+  never advised to chmod a file that does not exist.
 - **Still open — rebase in-flight tasks onto a moved integration branch, but only in `rework`
   or `implementing`.** INV-07 invalidates verify and review evidence on a moved
   base, so rebasing eagerly where no evidence exists yet avoids an invalidation
