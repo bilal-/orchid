@@ -231,6 +231,14 @@ pack_budget_bytes=65536
 # effort=medium
 # rate_limit_backoff_s=3600
 # engine_fail_threshold=3
+# How long a `failing` engine (one at engine_fail_threshold consecutive
+# failures) waits before ONE dispatch is let through again -- a half-open
+# probe. Without it the failing state has no exit: the count resets only on a
+# success, and an unavailable engine is never dispatched to, so a vendor
+# outage or an expired credential excluded an engine for the rest of the run.
+# A successful probe clears the count; a failed one re-arms this window.
+# 0 disables the probe and restores the permanent exclusion.
+# engine_fail_cooldown_s=3600
 # pump_stale_s=900
 # v1-m4: `orchid service install` bakes this into the rendered launchd
 # StartInterval (seconds) or the cron fallback's `*/N * * * *` line
