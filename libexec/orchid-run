@@ -38,6 +38,17 @@ legal_run() { case "$1:$2" in
 esac; }
 
 sub="${1:-}"; shift || true
+
+# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
+# out what to do when the run state is ALREADY wrong, so it must not be
+# answered by INV-02. First position only, and both spellings -- see the fuller
+# note on libexec/orchid-task's gate, which is the authority for this rule.
+case "$sub" in
+  --help|-h) printf '%s\n' "usage: orchid run start|resume|refresh-lease|release-lease|boundary|advance|accept|new"; exit 0 ;;
+esac
+case "${1:-}" in
+  --help|-h) printf '%s\n' "usage: orchid run start|resume|refresh-lease|release-lease|boundary|advance|accept|new"; exit 0 ;;
+esac
 case "$sub" in
   start|resume)
     # v0b2: both start and resume require initialized state. resume exists to

@@ -17,6 +17,61 @@ tf() { echo "$tasks/$1.md"; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 journal() { ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add "$@"; }
 
+# task_usage [sub] -- the usage line for one subverb, or the verb's own summary
+# when <sub> is absent or unknown. ONE table, read by three callers: the
+# `--help` gate below, every arm that refuses a missing argument, and the
+# dispatch fallback at the foot of the file. Before it there was no table at
+# all -- four arms carried a usage string inline, six carried none, and the
+# six without one died on `$1` under `set -u`, printing this file's path and a
+# line number at an operator (dogfood F45).
+#
+# Returns 1 for an unrecognised subverb so a caller can tell "here is the
+# usage" from "there is no such subverb" without matching on the text.
+task_usage() {
+  case "${1:-}" in
+    create)      printf '%s\n' 'usage: orchid task create <id> "<title>" [--archetype <name>]' ;;
+    show)        printf '%s\n' 'usage: orchid task show <id>' ;;
+    list)        printf '%s\n' 'usage: orchid task list' ;;
+    set)         printf '%s\n' 'usage: orchid task set <id> <key> <value> [--reason "..."]' ;;
+    advance)     printf '%s\n' 'usage: orchid task advance <id> <status> [--reason "..."] [--waive-attempt|--charge-attempt]' ;;
+    arbitrate)   printf '%s\n' 'usage: orchid task arbitrate <id> --result approve|request-changes --reason "..." [--waive-attempt]' ;;
+    handoff)     printf '%s\n' 'usage: orchid task handoff <id> --ack|--clear --reason "..."' ;;
+    prereq-ack)  printf '%s\n' 'usage: orchid task prereq-ack <id> --reason "..."' ;;
+    unblock)     printf '%s\n' 'usage: orchid task unblock <id> --reason "..."' ;;
+    retry)       printf '%s\n' 'usage: orchid task retry <id> --reason "..." [--attempts N]' ;;
+    reverify)    printf '%s\n' 'usage: orchid task reverify <id> --reason "..."' ;;
+    infra-fail)  printf '%s\n' 'usage: orchid task infra-fail <id> --reason "..."' ;;
+    *)           printf '%s\n' 'usage: orchid task create|show|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|infra-fail'
+                 return 1 ;;
+  esac
+}
+
+# HELP IS ANSWERED BEFORE THE RUN STATE IS CONSULTED (dogfood F45).
+#
+# Every mutating arm below opens with `verb_lock_guard` and `epoch_require`, so
+# `orchid task arbitrate --help` used to be answered by INV-02: `stale epoch
+# 'unset' (current 0) -- refused`, and no usage at all. Help is how an operator
+# finds out what to do when the state is ALREADY wrong -- it was reached for,
+# in the report that named this, while recovering from a task nothing could
+# move -- so gating it on that state inverts the one job it has.
+#
+# ONLY IN FIRST POSITION, and only for the two spellings. `--help` further
+# along a command line is an argument to whatever flag precedes it, and a
+# `--reason --help` that printed usage and exited 0 would silently discard a
+# recorded reason. The fence itself is untouched: nothing here reads, writes or
+# unlocks anything, and a mutating call on a stale epoch is refused exactly as
+# before (tests/test_task.sh Part AL pins both directions).
+case "${1:-}" in
+  --help|-h)
+    task_usage "$sub" || true
+    exit 0 ;;
+esac
+case "$sub" in
+  ''|--help|-h)
+    task_usage || true
+    exit 0 ;;
+esac
+
 # _no_newline <what> <value> [remedy] -- dies cleanly, BEFORE anything is
 # written, if value contains an embedded newline. Same guard (and same wording
 # shape) as
@@ -659,6 +714,7 @@ warn_rework_nonconverged() {
 
 case "$sub" in
   create)
+    [ $# -ge 2 ] || orchid_die "$(task_usage create)"
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; title="$2"; shift 2 || true
     # `plan` is a RESERVED task id (v1-m3): it names the plan-scoped critique
@@ -800,6 +856,7 @@ case "$sub" in
       printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"
     done ;;
   set)
+    [ $# -ge 3 ] || orchid_die "$(task_usage set)"
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; key="$2"; val="$3"; shift 3 || true
     # Reserved-id + existence guards BEFORE any read/write of the task
@@ -997,6 +1054,7 @@ case "$sub" in
     fi
     fm_set "$f" "$key" "$val"; fm_set "$f" updated "$(now)" ;;
   advance)
+    [ $# -ge 2 ] || orchid_die "$(task_usage advance)"
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; to="$2"; shift 2
     reason=""; waive=0; charge=0
@@ -2267,6 +2325,7 @@ case "$sub" in
     fm_set "$f" prerequisite_ack "$cand"; fm_set "$f" updated "$(now)"
     echo "$id: prerequisite acknowledged for candidate $cand" ;;
   unblock)
+    [ $# -ge 1 ] || orchid_die "$(task_usage unblock)"
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
     if [ "${1:-}" = "--reason" ]; then
@@ -2656,6 +2715,7 @@ case "$sub" in
     # counter needs its own journal-first discipline and its own auto-block
     # threshold, not a bare frontmatter write. Epoch-fenced like every other
     # mutating verb here.
+    [ $# -ge 1 ] || orchid_die "$(task_usage infra-fail)"
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
     if [ "${1:-}" = "--reason" ]; then

@@ -42,6 +42,15 @@ source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/review.sh"
 source "$ORCHID_ROOT/lib/capability.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 
+# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
+# out what to do when the run state is ALREADY wrong, so it must not be
+# answered by INV-02 -- nor, on a verb that reads its first argument as data,
+# by DOING the thing being asked about. First position only, both spellings;
+# libexec/orchid-task's gate carries the full note.
+case "${1:-}" in
+  --help|-h) printf '%s\n' "usage: orchid status [--explain] [--jobs]"; exit 0 ;;
+esac
+
 # --explain, --html and --jobs are independent flags (any combination may be
 # given) -- a loop over every arg rather than the old single `[ "${1:-}"
 # = --explain ]` check, so `status --html` (a second, brand-new invocation

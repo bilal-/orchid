@@ -3,6 +3,17 @@ set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
 repo="${ORCHID_REPO:-$PWD}"
 sub="${1:-list}"; shift || true
+
+# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
+# out what to do when the run state is ALREADY wrong, so it must not be
+# answered by INV-02. First position only, and both spellings -- see the fuller
+# note on libexec/orchid-task's gate, which is the authority for this rule.
+case "$sub" in
+  --help|-h) printf '%s\n' "usage: orchid config list|commit --reason \"...\""; exit 0 ;;
+esac
+case "${1:-}" in
+  --help|-h) printf '%s\n' "usage: orchid config list|commit --reason \"...\""; exit 0 ;;
+esac
 case "$sub" in
   list)
     # Read-only, no lock, no epoch fence -- unchanged from pre-v1m4: just

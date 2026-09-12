@@ -2932,3 +2932,69 @@ assert_eq implementing "$(tfield T062 status)" "...and still changes no status b
 assert_match "task advance T062 blocked" "$f44_if_out" "...but now names the route for an operator who needs the task moving again"
 red_case 'infra-fail below its cap names the supported route as well as the counter, so the one verb that deliberately changes nothing does not read as the third dead end'
 
+# ============================================================================
+# Part AL -- F45: help is not run state, and a missing argument is not a crash.
+#
+# Two papercuts from the 2026-08-11 report, both of which cost real minutes
+# because they were hit while recovering from F44 -- i.e. at exactly the moment
+# the operator was already lost.
+#
+#   1. `orchid task <sub>` with no arguments died with a RAW BASH ERROR:
+#      `libexec/orchid-task: line 2271: $1: unbound variable`. That is `set -u`
+#      leaking the implementation's file and line number in place of the usage
+#      string the verb already knows how to print. Four other subverbs in this
+#      same file did the right thing, which is what makes it a defect rather
+#      than a convention.
+#
+#   2. `orchid task <sub> --help` was answered by the EPOCH FENCE, not by the
+#      verb: on a stale or unset epoch it refused with INV-02 and printed no
+#      usage at all. Help is how an operator finds out what to do when the
+#      state is already wrong, so gating it on that state inverts its purpose.
+#
+# Both halves are pinned per subverb rather than once, because the shipped tree
+# had them right in four arms and wrong in six -- a single spot check would
+# have passed against the broken file.
+# ============================================================================
+f45_subs="create show set advance arbitrate handoff prereq-ack unblock retry reverify infra-fail"
+
+for f45_sub in $f45_subs; do
+  rc=0; f45_out="$("$ORCHID_BIN" task "$f45_sub" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "F45: 'orchid task $f45_sub' with no arguments must be refused, not accepted"
+  grep -q "unbound variable" <<<"$f45_out" \
+    && fail "F45: 'orchid task $f45_sub' with no arguments leaked a raw shell error instead of its usage: $f45_out"
+  grep -q "libexec/orchid-task" <<<"$f45_out" \
+    && fail "F45: 'orchid task $f45_sub' with no arguments named an implementation file to an operator: $f45_out"
+  assert_match "usage: orchid task $f45_sub" "$f45_out" \
+    "F45: 'orchid task $f45_sub' with no arguments prints its own usage"
+done
+red_case 'every task subverb invoked with no arguments prints its usage — six of the eleven used to die on $1 with set -u, naming a source file and a line number'
+
+# --help, and specifically WITH THE RUN STATE WRONG. A deliberately stale epoch
+# is the condition F45 was reported under; if help is answered before the
+# fence, this is the same output an operator gets with a healthy epoch.
+for f45_sub in $f45_subs; do
+  rc=0
+  f45_help="$(ORCHID_EPOCH=999999 "$ORCHID_BIN" task "$f45_sub" --help 2>&1)" || rc=$?
+  assert_eq 0 "$rc" \
+    "F45: 'orchid task $f45_sub --help' must succeed even on a stale epoch (help is how you find out what to do when the state is already wrong)"
+  assert_match "usage: orchid task $f45_sub" "$f45_help" \
+    "F45: ...and print that subverb's own usage"
+  grep -q "stale epoch" <<<"$f45_help" \
+    && fail "F45: 'orchid task $f45_sub --help' was answered by the epoch fence instead of by the verb: $f45_help"
+done
+red_case 'every task subverb answers --help itself, ahead of the epoch fence, so a wrong run state cannot hide the usage string'
+
+# GREEN twin for both halves: the fence and the argument checks are still
+# armed. Help is the ONLY thing that outruns INV-02 -- an ordinary mutating
+# call on the same stale epoch must still be refused, and a real invocation
+# must still do its work.
+rc=0
+f45_fence="$(ORCHID_EPOCH=999999 "$ORCHID_BIN" task create T063 "must not be created" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "F45: --help must not have opened a hole in the epoch fence — a real task create on a stale epoch is still refused"
+assert_match "stale epoch" "$f45_fence" "the fence still answers a mutating call on a stale epoch"
+[ ! -f ".orchid/tasks/T063.md" ] || fail "F45: the refused create must have written nothing"
+"$ORCHID_BIN" task create T064 "f45-green" >/dev/null
+assert_eq pending "$(tfield T064 status)" "and an ordinary create with a valid epoch still works"
+green_case 'the epoch fence and the subverb arguments are untouched: only --help outruns the fence, and only an absent argument gets a usage string'

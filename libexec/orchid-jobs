@@ -21,6 +21,43 @@ jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
 hist_file="$rt/jobs-history.tsv"
 sub="${1:-}"; shift || true
 
+# jobs_usage [sub] -- the one usage line per subverb, and the same three-caller
+# rule libexec/orchid-task's task_usage carries: the `--help` gate below, the
+# arms that refuse a missing argument, and the dispatch fallback. `prepare` is
+# the arm dogfood F45 caught -- with no arguments it died on `$1` under `set -u`
+# and printed this file's path and a line number, and `prepare --help` did the
+# same thing one argument later on `$2`.
+#
+# Returns 1 for an unrecognised subverb, so a caller can distinguish "here is
+# the usage" from "there is no such subverb" without matching on the text.
+jobs_usage() {
+  case "${1:-}" in
+    ls)          printf '%s\n' 'usage: orchid jobs ls [--all] [--tsv|--warnings] [--watch [--interval N]]' ;;
+    prepare)     printf '%s\n' 'usage: orchid jobs prepare <task> <role> <op> [--engine <name>] [--hook <point>]' ;;
+    check)       printf '%s\n' 'usage: orchid jobs check' ;;
+    reconcile)   printf '%s\n' 'usage: orchid jobs reconcile' ;;
+    gc)          printf '%s\n' 'usage: orchid jobs gc [--older-than-s N] [--prepared-older-than-s N] | orchid jobs gc --reap-prepared [--older-than-s N] [--prepared-older-than-s N]' ;;
+    record-exit) printf '%s\n' 'usage: orchid jobs record-exit <job-id> <exit-code>' ;;
+    review-plan) printf '%s\n' 'usage: orchid jobs review-plan <task> [--pin|--repin|--adopt-evidence]' ;;
+    *)           printf '%s\n' 'usage: orchid jobs ls|prepare|check|reconcile|gc|record-exit|review-plan'
+                 return 1 ;;
+  esac
+}
+
+# Help ahead of the epoch fence and the verb lock, first position only -- see
+# the same gate in libexec/orchid-task for why both halves of that are
+# deliberate.
+case "${1:-}" in
+  --help|-h)
+    jobs_usage "$sub" || true
+    exit 0 ;;
+esac
+case "$sub" in
+  ''|--help|-h)
+    jobs_usage || true
+    exit 0 ;;
+esac
+
 # Moves $src into quarantine as <basename>.reason-<reason>, never clobbering
 # a prior drop of the same basename: on collision, appends .2, .3, ... until
 # a free path is found. A same-named forged/replayed file must never destroy
@@ -1014,6 +1051,7 @@ case "$sub" in
     # anything" (identity + this verb's own output). See the refusal below,
     # which is keyed on the shared job_unlaunched_reapable predicate so it can
     # only ever fire over a manifest the reaper is about to retire anyway.
+    [ $# -ge 3 ] || orchid_die "$(jobs_usage prepare)"
     verb_lock_guard "$repo"
     epoch_require "$repo"
     task="$1"; role="$2"; operation="$3"; shift 3

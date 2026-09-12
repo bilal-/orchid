@@ -4,6 +4,17 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/lessons.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; lf="$state/lessons.md"
 sub="${1:-}"; shift || true
+
+# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
+# out what to do when the run state is ALREADY wrong, so it must not be
+# answered by INV-02. First position only, and both spellings -- see the fuller
+# note on libexec/orchid-task's gate, which is the authority for this rule.
+case "$sub" in
+  --help|-h) printf '%s\n' "usage: orchid lessons add|update|retire|consolidate|list"; exit 0 ;;
+esac
+case "${1:-}" in
+  --help|-h) printf '%s\n' "usage: orchid lessons add|update|retire|consolidate|list"; exit 0 ;;
+esac
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 journal() { ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind lesson "$@"; }
 # _no_newline <field-name> <value> -- dies cleanly if value contains an

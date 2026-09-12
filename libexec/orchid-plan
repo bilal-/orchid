@@ -5,10 +5,21 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 # boundary IS `lessons consolidate`'s, and there must be exactly one of them.
 source "$ORCHID_ROOT/lib/lessons.sh"; source "$ORCHID_ROOT/lib/plancheck.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
+# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
+# out what to do when the run state is ALREADY wrong, so it must not be
+# answered by INV-02. First position only, and both spellings -- see the fuller
+# note on libexec/orchid-task's gate, which is the authority for this rule.
+case "${1:-}" in
+  --help|-h) printf '%s\n' "usage: orchid plan apply --reason \"...\" | orchid plan crosscheck | orchid plan defer <item-id> --reason \"...\""; exit 0 ;;
+esac
+case "${2:-}" in
+  --help|-h) printf '%s\n' "usage: orchid plan apply --reason \"...\" | orchid plan crosscheck | orchid plan defer <item-id> --reason \"...\""; exit 0 ;;
+esac
 epoch_require "$repo"
 export ORCHID_EPOCH
 
 sub="${1:-}"; shift || true
+
 case "$sub" in
   apply)
     # v1-m3: `apply` is the LAST step of PROTOCOL PLANNING, run only once the
