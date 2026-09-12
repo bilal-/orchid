@@ -323,12 +323,15 @@ bc_out="$("$BROKER" task get T001 status 2>&1)" || bc_rc=$?
 [ "$bc_rc" -ne 17 ] \
   || fail "F39: the broker must admit 'task get <id> <key>' — it discloses strictly less than the task show it already allows (out: $bc_out)"
 
-for bc_bad in "task get" "task get T001" "task get T001 status extra"; do
-  bc_rc=0
-  # shellcheck disable=SC2086
-  bc_out="$($BROKER $bc_bad 2>&1)" || bc_rc=$?
-  assert_eq 17 "$bc_rc" "F39: the broker refuses the wrong arity for '$bc_bad'"
-done
+# Spelled out rather than looped over a string, which would need deliberate
+# word splitting and a ShellCheck suppression to express: three arities, three
+# calls, each passing its arguments as arguments.
+bc_rc=0; "$BROKER" task get >/dev/null 2>&1 || bc_rc=$?
+assert_eq 17 "$bc_rc" "F39: the broker refuses 'task get' with no id and no key"
+bc_rc=0; "$BROKER" task get T001 >/dev/null 2>&1 || bc_rc=$?
+assert_eq 17 "$bc_rc" "F39: the broker refuses 'task get <id>' with no key"
+bc_rc=0; "$BROKER" task get T001 status extra >/dev/null 2>&1 || bc_rc=$?
+assert_eq 17 "$bc_rc" "F39: the broker refuses a trailing argument after the key"
 bc_rc=0
 bc_out="$("$BROKER" task get 'not a task id' status 2>&1)" || bc_rc=$?
 assert_eq 17 "$bc_rc" "F39: the broker refuses an id that is not one"
