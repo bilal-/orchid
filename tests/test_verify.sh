@@ -79,3 +79,85 @@ WORKP="$(cd_scratch "$WORK" && pwd -P)" \
   || { fail "cd_scratch refused the scratch root"; exit 1; }
 assert_eq "$WORKP" "$(cat "$root_probe" 2>/dev/null || echo missing)" \
   "the verification command is handed the repository's own canonical path in ORCHID_REPO_ROOT"
+
+# ============================================================================
+# F47 -- the verify log is keyed per TASK, so a retry erased the evidence of
+# the failure that caused it.
+#
+# From the 2026-08-11 report, and live in r-002's own operation: the operator
+# read `.orchid/reviews/<id>-verify.log` for every diagnosis all run and only
+# ever saw the most recent attempt. `<id>-verify.log` is a single path that the
+# next run overwrites, and `orchid task retry` -- the verb an operator reaches
+# for after `attempts exhausted` -- deletes it outright on its way through
+# (INV-07 invalidation). So the one artifact describing WHY a round failed was
+# destroyed by the recovery from that round, and three byte-identical failures
+# looked like three new attempts.
+#
+# The live path is unchanged: INV-11's gate, the rework capture and the driver
+# all read `<id>-verify.log` and none of them should learn a second name. What
+# is added is a per-attempt COPY beside it, keyed exactly like the attempt's
+# implementer envelope (`<id>-a<n>-...`), so the history survives whatever the
+# recovery verbs do to the live file.
+# ============================================================================
+"$ORCHID_BIN" task create T090 "f47-per-attempt-verify-evidence"
+"$ORCHID_BIN" task set T090 verification_commands "echo round-one-output; exit 1"
+# `testing` refuses without both shas, and a refused advance is SILENT in a
+# test file with no `set -e` -- the fixture would then charge no attempt and
+# the twin below would compare one round against itself.
+f47_head="$(git rev-parse HEAD)"
+"$ORCHID_BIN" task set T090 base_sha "$f47_head"
+"$ORCHID_BIN" task set T090 candidate_sha "$f47_head"
+rc=0; "$ORCHID_BIN" verify T090 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "fixture: the first round fails"
+
+f47_live=".orchid/reviews/T090-verify.log"
+f47_a1=".orchid/reviews/T090-a1-verify.log"
+[ -f "$f47_live" ] || fail "fixture: the live verify log must exist after a failing round"
+[ -f "$f47_a1" ] \
+  || fail "F47: a failing verify must leave a per-attempt copy at $f47_a1"
+assert_match "round-one-output" "$(cat "$f47_a1" 2>/dev/null || echo)" \
+  "F47: the per-attempt copy carries the failing round's own output"
+
+# Now the recovery that used to destroy it. `advance <id> rework` is the edge a
+# failing round takes -- it charges the attempt AND deletes the live log -- and
+# `retry` deletes it again on the way back from `blocked`. Both doors are taken
+# here, because F47 is about the evidence surviving whichever one is used.
+"$ORCHID_BIN" task advance T090 implementing >/dev/null \
+  || fail "fixture: pending -> implementing"
+"$ORCHID_BIN" task advance T090 testing --reason "round one ran" >/dev/null \
+  || fail "fixture: implementing -> testing (needs base_sha and candidate_sha)"
+"$ORCHID_BIN" task advance T090 rework --reason "round one failed (fixture)" >/dev/null \
+  || fail "fixture: testing -> rework, the edge that charges the attempt"
+"$ORCHID_BIN" task advance T090 blocked --reason "attempts exhausted (fixture)" >/dev/null
+"$ORCHID_BIN" task retry T090 --reason "diagnosed; try again" >/dev/null
+[ ! -f "$f47_live" ] \
+  || fail "fixture: retry is supposed to invalidate the live verify log — if it no longer does, this case is not testing F47"
+[ -f "$f47_a1" ] \
+  || fail "F47: the recovery verb destroyed the only record of the failure it was recovering from — that is the defect"
+assert_match "round-one-output" "$(cat "$f47_a1" 2>/dev/null || echo)" \
+  "F47: ...and the surviving copy still holds the output the next implementer needs to read"
+red_case 'a failing verify round survives the retry that recovers from it: the live log is invalidated as before, and the attempt-keyed copy is still readable'
+
+# GREEN twin: a SECOND round files its own copy under its own attempt, rather
+# than overwriting the first. Without this the check above would pass just as
+# well against a single archive path that every round clobbers -- which is the
+# defect wearing a different name.
+f47_attempts="$("$ORCHID_BIN" task show T090 | grep '^attempts: ' | cut -d' ' -f2)"
+[ "$f47_attempts" -ge 1 ] \
+  || fail "fixture: the rework edge must have charged an attempt, or the twin below compares one round against itself (attempts=$f47_attempts)"
+"$ORCHID_BIN" task set T090 verification_commands "echo round-two-output; exit 1"
+"$ORCHID_BIN" task advance T090 implementing >/dev/null \
+  || fail "fixture: rework -> implementing for the second round"
+"$ORCHID_BIN" task advance T090 testing --reason "second round" >/dev/null \
+  || fail "fixture: implementing -> testing for the second round"
+rc=0; "$ORCHID_BIN" verify T090 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "fixture: the second round fails too"
+f47_a2=".orchid/reviews/T090-a$(( f47_attempts + 1 ))-verify.log"
+[ "$f47_a2" != "$f47_a1" ] \
+  || fail "fixture: the second round must be a different attempt, or this twin proves nothing (attempts=$f47_attempts)"
+[ -f "$f47_a2" ] || fail "F47: the second round filed no copy of its own at $f47_a2"
+assert_match "round-two-output" "$(cat "$f47_a2" 2>/dev/null || echo)" \
+  "F47: the second round's copy carries the second round's output"
+assert_match "round-one-output" "$(cat "$f47_a1" 2>/dev/null || echo)" \
+  "F47: ...and the first round's copy is untouched by it"
+green_case 'two failing rounds leave two readable logs, one per attempt, instead of one path each overwriting the last'

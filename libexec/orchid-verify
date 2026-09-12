@@ -161,6 +161,48 @@ log="$state/reviews/$id-verify.log"
 # forward and stayed there, which is what an engine finishing a round does. The
 # bracket covers that shape exactly.
 # ---------------------------------------------------------------------------
+# verify_archive_log -- file a per-attempt COPY of the evidence this run just
+# wrote (dogfood F47).
+#
+# `<id>-verify.log` is the LIVE gate file and stays exactly where it is: INV-11's
+# testing -> reviewing gate reads it, `capture_rework_evidence` reads it, the
+# driver's briefs read it, and teaching any of them a second name would be four
+# readers to keep in step for one problem. What was missing is HISTORY. That one
+# path is overwritten by the next round and deleted outright by the three verbs
+# that enter `rework` (INV-07 invalidation) -- so `orchid task retry`, the verb an
+# operator runs precisely because a round failed, destroyed the only description
+# of the failure it was recovering from. For a whole run the operator read this
+# file for every diagnosis and only ever saw the most recent attempt; three
+# byte-identical failures were indistinguishable from three new ones.
+#
+# KEYED LIKE THE ATTEMPT'S OTHER EVIDENCE. `attempts + 1` is the in-flight
+# attempt everywhere else in the kernel (lib/drive.sh's envelope selectors
+# compute it the same way), so this copy lands beside that attempt's implementer
+# envelope, `<id>-a<n>-implementer.json`, and an operator reading either one can
+# find the other by name. A second verify WITHIN one attempt -- a `task
+# reverify` after fixing the tree by hand -- takes a `.2`, `.3` sibling rather
+# than clobbering the first, the same collision rule reconcile uses for
+# envelopes: within an attempt as between them, this file only ever adds.
+#
+# NEVER FATAL, and never silent either. The live log is what every gate reads;
+# a failure to keep a copy must not turn a passing verification into a failing
+# one, but it must not be swallowed, because then the archive would silently
+# stop existing and be discovered the next time somebody needed it.
+verify_archive_log() {
+  local n dest i=2
+  [ -f "$log" ] || return 0
+  n="$(fm_get "$tf" attempts 2>/dev/null || echo 0)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  n=$(( n + 1 ))
+  dest="$state/reviews/$id-a$n-verify.log"
+  while [ -e "$dest" ]; do
+    dest="$state/reviews/$id-a$n-verify.$i.log"
+    i=$(( i + 1 ))
+  done
+  cp "$log" "$dest" 2>/dev/null \
+    || echo "orchid: warning — could not keep a per-attempt copy of $id's verify evidence at $dest; the live log at $log is still authoritative, but a retry will delete it" >&2
+}
+
 verify_refuse() {
   local why="$1"
   {
@@ -178,6 +220,7 @@ verify_refuse() {
     echo "---"
     echo "refused: $why"
   } | atomic_write "$log"
+  verify_archive_log
   echo "orchid: verify refused for $id: $why" >&2
   echo "REFUSED"
   exit 20
@@ -240,6 +283,7 @@ drifted=0
   [ "$drifted" -eq 0 ] || \
     echo "refused: $cwd moved from $sha to $sha_after WHILE the suite ran — this evidence describes no single tree"
 } | atomic_write "$log"
+verify_archive_log
 
 if [ "$drifted" -eq 1 ]; then
   echo "orchid: verify refused for $id: $cwd moved from $sha to $sha_after while the suite ran" >&2
