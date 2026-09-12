@@ -166,10 +166,22 @@ ledger_mark() {
 # outright, a failure bumps it and re-stamps `updated_at`, which re-arms this
 # same window. No new field, no new state, nothing to reset by hand, and a
 # genuinely dead engine is retried at a bounded rate instead of never.
+#
+# MEMOIZED, and read only where it is used. `ledger_available` sits in the
+# resolver's per-engine chain loop, so an unconditional `config_get` here is a
+# file read (and a fork) on the hottest path in dispatch, in a process that
+# will ask for the same answer again a moment later. The value cannot change
+# within one process -- config is read, never written, by anything that calls
+# this -- so the first answer stands for the whole invocation.
 _ledger_cooldown_s() {
   local v
+  if [ -n "${_ORCHID_LEDGER_COOLDOWN_S:-}" ]; then
+    printf '%s\n' "$_ORCHID_LEDGER_COOLDOWN_S"
+    return 0
+  fi
   v="$(config_get "$1" engine_fail_cooldown_s 3600)"
   case "$v" in ''|*[!0-9]*) v=3600 ;; esac
+  _ORCHID_LEDGER_COOLDOWN_S="$v"
   printf '%s\n' "$v"
 }
 
@@ -223,8 +235,8 @@ _ledger_effective() {
   # config lookup itself declares, rather than letting `[` fail with a
   # syntax error and report `ok` on the way out.
   case "$threshold" in ''|*[!0-9]*) threshold=3 ;; esac
-  cooldown="$(_ledger_cooldown_s "$repo")"
   if [ "$fails" -ge "$threshold" ]; then
+    cooldown="$(_ledger_cooldown_s "$repo")"
     # `half_open`, never `ok`, and the distinction is the whole reason this
     # branch exists as its own word. The engine is dispatchable again, but
     # nothing has been tried: reporting `ok` would tell an operator reading
