@@ -1486,16 +1486,49 @@ case "$sub" in
       gate_tier="$(fm_get "$f" risk_tier)"; [ -n "$gate_tier" ] || gate_tier=low
       gate_need="$(review_required_count "$gate_tier")"
       gate_cand="$(fm_get "$f" candidate_sha)"
-      gate_have=0
+      # WHY EACH SKIPPED ENVELOPE WAS SKIPPED, counted as the loop goes
+      # (dogfood F43). The gate's own arithmetic is unchanged -- only `ok`
+      # envelopes bound to the CURRENT candidate have ever counted -- but the
+      # number it reported was the only one an operator was given, and it
+      # contradicts what they see in the directory. r-002's own T010-a2 holds
+      # six reviewer envelopes: four `status: failed` from one engine, two
+      # usable. Nothing was miscounted and nothing said so, which is how "an
+      # arbitration that appeared to rest on five reviews" gets written down.
+      #
+      # The two skip reasons are different problems with different fixes, so
+      # they are counted apart rather than summed: a non-ok envelope means an
+      # engine failed and the slot needs re-running, while a sha mismatch means
+      # the candidate moved underneath evidence that was fine, and re-running
+      # is the LAST thing that helps.
+      gate_have=0; gate_filed=0; gate_skip_status=0; gate_skip_cand=0
       for gate_rf in "$state/reviews/$id-a$gate_attempt-reviewer"*.json; do
         [ -e "$gate_rf" ] || continue
+        gate_filed=$((gate_filed + 1))
         gate_rf_cand="$(envelope_field "$gate_rf" '.candidate_sha // empty' 2>/dev/null || true)"
         gate_rf_status="$(envelope_field "$gate_rf" '.status // empty' 2>/dev/null || true)"
-        [ -n "$gate_cand" ] && [ "$gate_rf_cand" = "$gate_cand" ] && [ "$gate_rf_status" = ok ] || continue
+        if [ "$gate_rf_status" != ok ]; then
+          gate_skip_status=$((gate_skip_status + 1)); continue
+        fi
+        if [ -z "$gate_cand" ] || [ "$gate_rf_cand" != "$gate_cand" ]; then
+          gate_skip_cand=$((gate_skip_cand + 1)); continue
+        fi
         gate_have=$((gate_have + 1))
       done
-      [ "$gate_have" -ge "$gate_need" ] || \
-        orchid_die "arbitrating requires $gate_need reconciled review envelope(s) for risk_tier $gate_tier (have $gate_have)"
+      if [ "$gate_have" -lt "$gate_need" ]; then
+        # APPENDED AFTER the existing sentence, never substituted for it: three
+        # assertions in two suites pin `(have N)` with its closing paren, and a
+        # refusal is a poor place to discover that a message was rewritten.
+        gate_msg="arbitrating requires $gate_need reconciled review envelope(s) for risk_tier $gate_tier (have $gate_have)"
+        if [ "$gate_filed" -gt "$gate_have" ]; then
+          gate_msg="$gate_msg — $gate_filed filed for attempt $gate_attempt, and the difference is not a miscount:"
+          [ "$gate_skip_status" -eq 0 ] || \
+            gate_msg="$gate_msg $gate_skip_status skipped for a non-ok status (the engine failed; that slot has to run again),"
+          [ "$gate_skip_cand" -eq 0 ] || \
+            gate_msg="$gate_msg $gate_skip_cand skipped as bound to a superseded candidate (the review was fine and the candidate moved under it — re-running is what does NOT help; see the reviews' own candidate_sha against $gate_cand),"
+          gate_msg="${gate_msg%,}. They are in .orchid/reviews/$id-a$gate_attempt-reviewer*.json if you want to read what they said."
+        fi
+        orchid_die "$gate_msg"
+      fi
     fi
     # The task wall-clock anchor `jobs check` reads for its budget-exceeded
     # backstop. Re-stamped on every DISPATCH edge — pending/rework INTO an
