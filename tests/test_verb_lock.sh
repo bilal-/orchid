@@ -40,27 +40,54 @@ export ORCHID_EPOCH
 # lock doing its job and requires exactly 30 -- proving the LOCK, not
 # something else, is what closes the race.
 # ---------------------------------------------------------------------------
-red_dir="$WORK/red"; mkdir -p "$red_dir/.orchid"
-(
-  export ORCHID_REPO="$red_dir" ORCHID_EPOCH=0 ORCHID_VERB_LOCK_HELD=1
-  for i in $(seq 1 30); do
-    "$ORCHID_BIN" journal add --kind note "entry $i" >/dev/null 2>&1 &
-  done
-  wait
-)
-red_count="$(grep -c '^## ' "$red_dir/.orchid/journal.md" 2>/dev/null || echo 0)"
-[ "$red_count" -lt 30 ] || fail "RED: 30 parallel journal adds WITHOUT the lock should lose entries (got all $red_count -- race not demonstrated here)"
+# COUNTED AGAINST WHAT SUCCEEDED, never against 30.
+#
+# The lock's guarantee is that no acquirer's write is lost or corrupted by
+# another's. It is NOT that thirty processes all win the lock inside
+# `verb_lock_wait_s` (default 10) -- a caller that waits longer than that is
+# REFUSED, loudly, with "verb lock contention unresolved", and its entry was
+# never written because the verb never ran. That is the lock working.
+#
+# Asserting a flat 30 conflated the two, and measured the machine: on hosted
+# macOS under load this case failed with 19 of 30, which is eleven correct
+# refusals being read as eleven lost writes. Reproduced deliberately with
+# `verb_lock_wait_s=1`: 25 entries landed and 5 calls refused, 25 + 5 = 30, and
+# nothing was lost at all.
+#
+# So both arms below count entries against the number of calls that actually
+# SUCCEEDED. That denominator is what makes the RED and GREEN comparable, and
+# it is immune to how fast the machine is.
+lock_run_30() {  # <dir> -- 30 parallel journal adds; echoes how many exited 0
+  local dir="$1" oks=0 i
+  mkdir -p "$dir/.orchid" "$dir/rc"
+  (
+    export ORCHID_REPO="$dir" ORCHID_EPOCH=0
+    [ -z "${LOCK_BYPASS:-}" ] || export ORCHID_VERB_LOCK_HELD=1
+    for i in $(seq 1 30); do
+      ( "$ORCHID_BIN" journal add --kind note "entry $i" >/dev/null 2>&1 \
+          && : > "$dir/rc/$i" ) &
+    done
+    wait
+  )
+  for i in $(seq 1 30); do [ ! -e "$dir/rc/$i" ] || oks=$(( oks + 1 )); done
+  printf '%s\n' "$oks"
+}
 
-green_dir="$WORK/green"; mkdir -p "$green_dir/.orchid"
-(
-  export ORCHID_REPO="$green_dir" ORCHID_EPOCH=0
-  for i in $(seq 1 30); do
-    "$ORCHID_BIN" journal add --kind note "entry $i" >/dev/null 2>&1 &
-  done
-  wait
-)
+red_dir="$WORK/red"
+red_oks="$(LOCK_BYPASS=1 lock_run_30 "$red_dir")"
+red_count="$(grep -c '^## ' "$red_dir/.orchid/journal.md" 2>/dev/null || echo 0)"
+[ "$red_oks" -gt 0 ] \
+  || fail "RED fixture: no unlocked call succeeded at all, so there is no lost-update race to demonstrate"
+[ "$red_count" -lt "$red_oks" ] \
+  || fail "RED: without the lock, $red_oks calls reported success and $red_count entries survived -- a lost-update race must lose at least one, or this measurement proves nothing about the lock below"
+
+green_dir="$WORK/green"
+green_oks="$(lock_run_30 "$green_dir")"
 green_count="$(grep -c '^## ' "$green_dir/.orchid/journal.md" 2>/dev/null || echo 0)"
-assert_eq 30 "$green_count" "GREEN: 30 parallel journal adds WITH the verb lock land exactly 30 entries"
+[ "$green_oks" -gt 0 ] \
+  || fail "GREEN fixture: every locked call was refused, so the count below would be a vacuous 0 == 0"
+assert_eq "$green_oks" "$green_count" \
+  "GREEN: with the verb lock, every journal add that SUCCEEDED is in the file -- $green_oks succeeded, $green_count landed (a call refused for lock contention never ran, and has no entry to lose)"
 
 # ---------------------------------------------------------------------------
 # 1b. Direct mutual-exclusion stress, same 30-way contention: each acquirer
