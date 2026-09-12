@@ -151,13 +151,35 @@ cand4="$(git rev-parse HEAD)"
 git checkout -q "$integ"
 base4="$(git rev-parse "$integ")"
 
-# Slow verification command opens a real window between merge's integ_head
-# read (at script top) and its update-ref (after the merge + verify steps).
-walk_to_merging T004 task/T004 "$base4" "$cand4" "sleep 1 && test -f feature4.txt"
+# A CAUSAL WAIT, NOT A SLEEP. This case needs the concurrent commit to land
+# AFTER `orchid merge` has read the integration head and answered the
+# stale-base question, and BEFORE its update-ref -- that window IS the CAS race
+# and it is the whole subject here.
+#
+# It used to be timed with `sleep 0.3` against a validation that sleeps 1s. On
+# a loaded runner 0.3s is not enough: the commit lands before merge reads the
+# ref, merge correctly sees a STALE BASE, and this case fails with exit 5 and a
+# task in `testing` -- reporting a race it never ran rather than the one it
+# means to. Hosted macOS failed exactly that way while ubuntu and a local macOS
+# run both passed, which is the signature of a fixture timed on a guess.
+#
+# libexec/orchid-merge reads `integ_head` and answers the stale-base question
+# immediately after it, both BEFORE any validation command runs. So a marker
+# written BY the validation command proves both already happened, and waiting
+# for it puts the concurrent commit inside the window by construction.
+t4_started="$WORK/t004-validation-started"
+walk_to_merging T004 task/T004 "$base4" "$cand4" "touch '$t4_started' && sleep 1 && test -f feature4.txt"
+# `walk_to_merging` runs `orchid verify` itself, so the marker exists already
+# from that run. Clear it, or the wait below returns before merge has read
+# anything and the sleep is back with extra steps.
+rm -f "$t4_started"
 
 "$ORCHID_BIN" merge T004 >"$WORK/merge4.out" 2>&1 &
 merge_pid=$!
-sleep 0.3
+t4_i=0
+while [ ! -e "$t4_started" ] && [ "$t4_i" -lt 300 ]; do sleep 0.1; t4_i=$((t4_i + 1)); done
+[ -e "$t4_started" ] \
+  || fail "fixture: merge validation never started, so the CAS window was never entered"
 # Race: land a concurrent commit on integ WHILE merge's slow verification is
 # still running in its own detached temp worktree.
 echo concurrent > concurrent4.txt && git add concurrent4.txt && git commit -q -m "concurrent landing"
