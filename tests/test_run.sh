@@ -105,8 +105,42 @@ rc=0; "$ORCHID_BIN" run new >/dev/null 2>&1 || rc=$?
 # archives + resets on a legal status (blocked here; complete is covered by
 # the same code path -- run_status is read once, up front, and only its
 # membership in {complete, blocked} is checked).
+# ---------------------------------------------------------------------------
+# F42 -- task branches survive a rollover, and the next run numbers from T001
+# again.
+#
+# r-001 left `task/T001...task/T010` behind; r-002 planned its own T001 and the
+# very first dispatch collided. Orchid handled the collision correctly -- a
+# `worktree-conflict` boundary naming the branch and the path, stopping rather
+# than guessing -- so the defect is not that it was mishandled, it is that the
+# collision arises at all, one dispatch into a fresh run, in any repository
+# that runs orchid twice. This repository is carrying 42 such branches right
+# now.
+#
+# Rollover is the last moment anyone can be told, so `run new` refuses over
+# surviving `task/*` refs and names them. The refusal happens BEFORE any
+# archiving, which is what makes it recoverable: nothing has been moved, so
+# deleting the branches and re-running is the whole remedy.
+# ---------------------------------------------------------------------------
+git branch task/T001 HEAD 2>/dev/null || fail "fixture: could not plant a surviving task branch"
+rc=0; f42_out="$("$ORCHID_BIN" run new --reason "rollover with survivors" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "F42: run new must refuse while task/* branches from the previous run survive"
+assert_match "task/T001" "$f42_out" "F42: the refusal names the surviving branch, not just its count"
+# Either arm satisfies this: a contained branch is named with `branch -D`, an
+# uncontained one with `branch -m` (renaming rather than destroying work that
+# never merged). What must never happen is a refusal that names neither.
+assert_match "branch -[Dm]" "$f42_out" "F42: ...and names the action that clears it, for whichever of the two kinds the survivor is (out: $f42_out)"
+[ ! -d .orchid/runs ] || fail "F42: the refusal must happen before anything is archived"
+red_case 'run new refuses a rollover that would hand the next run a colliding task/T001, names the surviving branch and the command that clears it, and archives nothing'
+
+# The remedy the refusal names, applied -- and then the rollover below is the
+# GREEN twin: the same command, the same run state, succeeding once the
+# survivors are gone. Without it this guard could be a wall rather than a gate.
+git branch -D task/T001 >/dev/null 2>&1 || fail "fixture: could not delete the planted branch"
+
 old_journal_before="$(cat .orchid/journal.md)"
 "$ORCHID_BIN" run new --reason "rollover to r-002" || fail "run new on a legal (blocked) run_status"
+green_case 'the same rollover proceeds once the surviving task branches are deleted: the guard is a gate, not a wall'
 
 assert_eq "r-002" "$(grep '^run_id: ' .orchid/roadmap.md | cut -d' ' -f2)" \
   "roadmap.md run_id incremented to r-002"
