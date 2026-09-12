@@ -2,11 +2,12 @@
 
 Status: **NOT YET ACCEPTED. Operator completion is required after merge.**
 
-This file is the candidate's honest hand-off, not a claim that the run is
-complete. A commit cannot observe the merged tree that will contain itself,
-and this task's mandatory implementer hand-off forbids running the verifier.
-Every unobserved fact below is therefore marked open rather than inferred.
-Only the operator-completed copy is suitable for `orchid run accept`.
+This file began as the candidate's honest hand-off, not a claim that the run
+was complete. A commit cannot observe the merged tree that will contain
+itself, and T015's mandatory implementer hand-off forbade running the verifier.
+The candidate-time matrix therefore remains unchanged as historical evidence;
+the operator observations made after merge are recorded separately below.
+Only an operator-completed copy is suitable for `orchid run accept`.
 
 ## Identity and scope
 
@@ -15,9 +16,10 @@ Only the operator-completed copy is suitable for `orchid run accept`.
 - Integration base inspected by this task: `51f5fa3c59cfe2b18d756ab99318b0730a5629b7`
 - Partial candidate preserved at task start:
   `d0690c85349a4c5f129bdcc006832b7ff908ddbd`
-- Candidate under review: the task-branch HEAD containing this file. The
-  operator must record its resolved SHA after the final task commit; a file
-  cannot truthfully embed the hash of the commit that embeds the file.
+- Final T015 candidate: `d38e8ed8a16903b949613de8aa405b9b4cfe8447`
+- T015 merged integration: `1686c5dc9513f139b4b3b2ff77f58e0cb89bed44`
+- Final 40-task integration after T038:
+  `d9b1cd15174c0e75b424ebf9b64a8f953aca91b0`
 - Source release metadata remains `1.0.0-beta.1`, within the required
   `1.0.0-beta.x` posture. No version was promoted by this task.
 
@@ -31,6 +33,28 @@ Only the operator-completed copy is suitable for `orchid run accept`.
 | Merged-tree check | **NOT POSSIBLE FROM THIS CANDIDATE** | After T015 merges, resolve the assembled integration HEAD and inspect the merged documentation/code there. Record the commit. |
 | Suite on the integration branch itself | **NOT RUN; REQUIRED AFTER MERGE** | From a checkout actually parked on the configured integration branch at the assembled HEAD, run `/bin/bash scripts/ci-local.sh --bash /bin/bash`; record branch, HEAD, exit status, and log path. A task worktree or merge temp worktree does not satisfy this row. |
 | Hosted GitHub Actions | **NOT OBSERVED BY THIS RUN** | After the operator pushes, identify the workflow run and use `gh run watch <run-id> --exit-status`; record the run URL/id and conclusion. The candidate contacted no remote and makes no green-CI claim. |
+
+## Post-merge operator follow-up — 2026-08-31
+
+- T015's exact candidate `d38e8ed8a16903b949613de8aa405b9b4cfe8447`
+  passed its formal verifier with `CI PASS`, exit 0, including the
+  PATH-restricted hermetic suite. The bound run evidence is
+  `.orchid/reviews/T015-verify.log`.
+- T015 merged at integration
+  `1686c5dc9513f139b4b3b2ff77f58e0cb89bed44`. From a checkout actually parked
+  on `orchid/integration` at that SHA, the operator ran
+  `/bin/bash scripts/ci-local.sh --bash /bin/bash`; it exited 0 with `CI PASS`.
+  The local log is
+  `/private/tmp/orchid-r002-post-t015-integration-1686c5dc.log`, and the durable
+  journal records the same command, branch, SHA, and result.
+- T038 changed only `docs/r-002-retrospective.md`. Its declared
+  `/bin/bash tests/test_docs.sh` verification passed, its whole-tree static
+  merge gate passed, and it merged as the fortieth task at
+  `d9b1cd15174c0e75b424ebf9b64a8f953aca91b0`.
+- The driver then moved the 40/40 run to `run_status: accepting` and raised the
+  operator-only `run-complete` boundary. No `orchid run accept` was run.
+- Hosted CI, genuine third-party beta qualification, publication, and release
+  remain unobserved and open.
 
 The local equivalent of the workflow is not an approximation invented here:
 `.github/workflows/ci.yml` invokes `/bin/bash scripts/ci-local.sh --bash
@@ -218,11 +242,13 @@ through Orchid's lesson verbs:
   failure;
 - reviewed and retained L036's constructed-condition/integration-branch rule;
   and
-- left L029 active until T015 itself merges, because its invalidation condition
-  is the repaired documentation gate landing on integration.
+- left L029 active at candidate hand-off until T015 itself merged, because its
+  invalidation condition was the repaired documentation gate landing on
+  integration.
 
 Operator result: **COMPLETE FOR THE CURRENT CANDIDATE.** The run remains
-unaccepted, and L029 still requires retirement after this task merges.
+unaccepted. After T015 merged, the operator retired L029 through
+`orchid lessons retire`; the durable journal records the transition and reason.
 
 ## Mandatory task hand-offs and release posture
 
@@ -237,20 +263,16 @@ unaccepted, and L029 still requires retirement after this task merges.
 - The shipped version remains `1.0.0-beta.1` (`1.0.0-beta.x` posture). Nothing
   in this evidence claims a public release or `1.0.0` qualification.
 
-## Operator completion block
+## Remaining operator completion block
 
-Before `orchid run accept`, append all of the following to the operator-owned
-copy of this file:
+The final T015 SHA, candidate-local CI, integration-branch CI,
+bootstrap-journal audit, lesson reconciliation, and L029 retirement are now
+recorded above. Before `orchid run accept`, the operator still must record:
 
-1. final T015 candidate SHA and merged integration SHA;
-2. candidate-local docs/CI command results and log paths;
-3. the integration-branch checkout name, HEAD, command result, and log path;
-4. bootstrap-journal audit result, including every unmatched dispatch or
-   `none` after comparison;
-5. lesson ids updated/retired/added;
-6. hosted workflow id/URL and conclusion after push, or an explicit policy
-   decision that hosted CI is not required — never a fabricated green result;
-7. the operator's acceptance reason.
+1. the hosted workflow id/URL and conclusion after a push, or an explicit
+   policy decision that hosted CI is not required — never a fabricated green
+   result; and
+2. the operator's acceptance reason.
 
 Until all required rows are complete, this file is evidence of an honest
 candidate hand-off, not evidence of run acceptance.

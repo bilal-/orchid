@@ -1049,18 +1049,18 @@ ORCHID_REPO="$STARVE" "$ORCHID_BIN" init >/dev/null || fail "orchid init (starva
 git checkout -q orchid/integration
 
 SEPOCH="$(ORCHID_REPO="$STARVE" "$ORCHID_BIN" run start | sed 's/epoch: //')"
-sorchid() { ORCHID_REPO="$STARVE" ORCHID_EPOCH="$SEPOCH" "$ORCHID_BIN" "$@"; }
+starve_orchid() { ORCHID_REPO="$STARVE" ORCHID_EPOCH="$SEPOCH" "$ORCHID_BIN" "$@"; }
 
 cat > "$WORK/requirements-starve.md" <<'EOF'
 # Requirements
 - REQ-1: a parked task never hides a decidable one.
 EOF
-sorchid requirements import "$WORK/requirements-starve.md" >/dev/null
-sorchid task create S010 "parked by an operator" >/dev/null
-sorchid task create S020 "contested, and later in id order" >/dev/null
-sorchid plan apply --reason "initial plan" >/dev/null
-sorchid task advance S010 blocked --reason "fixture: an operator must resolve this" >/dev/null
-sorchid task advance S020 blocked --reason "fixture: parked for now" >/dev/null
+starve_orchid requirements import "$WORK/requirements-starve.md" >/dev/null
+starve_orchid task create S010 "parked by an operator" >/dev/null
+starve_orchid task create S020 "contested, and later in id order" >/dev/null
+starve_orchid plan apply --reason "initial plan" >/dev/null
+starve_orchid task advance S010 blocked --reason "fixture: an operator must resolve this" >/dev/null
+starve_orchid task advance S020 blocked --reason "fixture: parked for now" >/dev/null
 
 SDRIVE_RC=0
 SDRIVE_OUT=""
@@ -1319,7 +1319,7 @@ EOF
 chmod +x "$WORK/eng/stubwait/run"
 
 WEPOCH="$(ORCHID_REPO="$WAITREPO" "$ORCHID_BIN" run start | sed 's/epoch: //')"
-worchid() { ORCHID_REPO="$WAITREPO" ORCHID_EPOCH="$WEPOCH" "$ORCHID_BIN" "$@"; }
+wait_orchid() { ORCHID_REPO="$WAITREPO" ORCHID_EPOCH="$WEPOCH" "$ORCHID_BIN" "$@"; }
 # THE DISQUALIFIER, and it is the one that reopens on its own. The engine is
 # capable of the work and merely rate-limited, so resolve_role_available finds
 # no survivor and `jobs prepare` exits 14 -- a wait, with nothing for an
@@ -1332,19 +1332,19 @@ fi
 wcap_rc=0; capability_routing_refusal implement stubwait >/dev/null || wcap_rc=$?
 assert_eq 0 "$wcap_rc" \
   "fixture: the step table must have NO objection to stubwait — a chain refused for a MISSING CAPABILITY is INV-16's exit-19 hand-off, and this Part is about the wait that clears itself"
-worchid requirements import "$WORK/requirements.md" >/dev/null
-worchid task create W010 "dispatch must wait for an engine" >/dev/null
-worchid task set W010 verification_commands "test -f stub_feature.txt" >/dev/null
-worchid plan apply --reason "initial plan" >/dev/null
+wait_orchid requirements import "$WORK/requirements.md" >/dev/null
+wait_orchid task create W010 "dispatch must wait for an engine" >/dev/null
+wait_orchid task set W010 verification_commands "test -f stub_feature.txt" >/dev/null
+wait_orchid plan apply --reason "initial plan" >/dev/null
 
 WDRIVE_RC=0; WDRIVE_OUT=""
-run_wdrive() {
+run_wait_drive() {
   WDRIVE_RC=0
   WDRIVE_OUT="$(ORCHID_REPO="$WAITREPO" ORCHID_EPOCH="$WEPOCH" "$DRIVE" 2>&1)" || WDRIVE_RC=$?
 }
 wstatus_of() { ORCHID_REPO="$WAITREPO" "$ORCHID_BIN" task show "$1" | grep '^status: ' | cut -d' ' -f2; }
 
-run_wdrive
+run_wait_drive
 assert_eq 0 "$WDRIVE_RC" "no eligible engine is a WAIT state, not a judgment boundary"
 assert_eq pending "$(wstatus_of W010)" \
   "a dispatch whose launch never spawned leaves the task in its PRIOR status, still dispatchable"
@@ -1362,7 +1362,7 @@ assert_match "staying in pending" "$WDRIVE_OUT" \
 ledger_mark "$WAITREPO" stubwait ok
 ledger_available "$WAITREPO" stubwait \
   || fail "fixture: clearing the rate limit must make stubwait ledger-available again, or the pass below is waiting on something else"
-run_wdrive
+run_wait_drive
 assert_eq implementing "$(wstatus_of W010)" \
   "the next pass dispatches the very same task — the wait cost nothing but a pass (rc=$WDRIVE_RC, out: $WDRIVE_OUT)"
 [ -n "$(list_dir_files "$WAITREPO/.orchid/runtime/jobs")" ] \
@@ -1435,11 +1435,11 @@ git commit -q -m "fixture: config"
 ORCHID_REPO="$SLOTS" "$ORCHID_BIN" init >/dev/null || fail "orchid init (slot fixture)"
 git checkout -q orchid/integration
 LEPOCH="$(ORCHID_REPO="$SLOTS" "$ORCHID_BIN" run start | sed 's/epoch: //')"
-lorchid() { ORCHID_REPO="$SLOTS" ORCHID_EPOCH="$LEPOCH" "$ORCHID_BIN" "$@"; }
-lorchid requirements import "$WORK/requirements.md" >/dev/null
-lorchid task create L010 "two slots, two engines" >/dev/null
-lorchid plan apply --reason "initial plan" >/dev/null
-lorchid task set L010 risk_tier medium --reason "fixture: two reviewer slots" >/dev/null
+slot_orchid() { ORCHID_REPO="$SLOTS" ORCHID_EPOCH="$LEPOCH" "$ORCHID_BIN" "$@"; }
+slot_orchid requirements import "$WORK/requirements.md" >/dev/null
+slot_orchid task create L010 "two slots, two engines" >/dev/null
+slot_orchid plan apply --reason "initial plan" >/dev/null
+slot_orchid task set L010 risk_tier medium --reason "fixture: two reviewer slots" >/dev/null
 
 LCAND=7777777777777777777777777777777777777777
 fm_set "$SLOTS/.orchid/tasks/L010.md" status reviewing
@@ -1763,10 +1763,10 @@ git commit -q -m "fixture: config"
 ORCHID_REPO="$BROK" "$ORCHID_BIN" init >/dev/null || fail "orchid init (brokered-completion fixture)"
 git checkout -q orchid/integration
 BEPOCH="$(ORCHID_REPO="$BROK" "$ORCHID_BIN" run start | sed 's/epoch: //')"
-borchid() { ORCHID_REPO="$BROK" ORCHID_EPOCH="$BEPOCH" "$ORCHID_BIN" "$@"; }
-borchid requirements import "$WORK/requirements.md" >/dev/null
-borchid task create B010 "the only task, and it is finished" >/dev/null
-borchid plan apply --reason "initial plan" >/dev/null
+brokered_orchid() { ORCHID_REPO="$BROK" ORCHID_EPOCH="$BEPOCH" "$ORCHID_BIN" "$@"; }
+brokered_orchid requirements import "$WORK/requirements.md" >/dev/null
+brokered_orchid task create B010 "the only task, and it is finished" >/dev/null
+brokered_orchid plan apply --reason "initial plan" >/dev/null
 fm_set "$BROK/.orchid/tasks/B010.md" status "done"
 
 assert_eq brokered "$(drive_orchestrator_surface "$BROK")" \
@@ -1932,11 +1932,11 @@ git commit -q -m "fixture: config"
 ORCHID_REPO="$PREP" "$ORCHID_BIN" init >/dev/null || fail "orchid init (prepared-manifest fixture)"
 git checkout -q orchid/integration
 PEPOCH="$(ORCHID_REPO="$PREP" "$ORCHID_BIN" run start | sed 's/epoch: //')"
-porchid() { ORCHID_REPO="$PREP" ORCHID_EPOCH="$PEPOCH" "$ORCHID_BIN" "$@"; }
-porchid requirements import "$WORK/requirements.md" >/dev/null
-porchid task create P010 "a crashed launch left a prepared manifest" >/dev/null
-porchid task set P010 verification_commands "test -f stub_feature.txt" >/dev/null
-porchid plan apply --reason "initial plan" >/dev/null
+prepared_orchid() { ORCHID_REPO="$PREP" ORCHID_EPOCH="$PEPOCH" "$ORCHID_BIN" "$@"; }
+prepared_orchid requirements import "$WORK/requirements.md" >/dev/null
+prepared_orchid task create P010 "a crashed launch left a prepared manifest" >/dev/null
+prepared_orchid task set P010 verification_commands "test -f stub_feature.txt" >/dev/null
+prepared_orchid plan apply --reason "initial plan" >/dev/null
 
 # Exactly the shape `jobs prepare` mints and `orchid-launch` never got to
 # stamp: pid 0, pgid 0, started_at 0, and no log (the launcher creates the log
@@ -2027,11 +2027,11 @@ git commit -q -m "fixture: config"
 ORCHID_REPO="$HB" "$ORCHID_BIN" init >/dev/null || fail "orchid init (heartbeat fixture)"
 git checkout -q orchid/integration
 HEPOCH="$(ORCHID_REPO="$HB" "$ORCHID_BIN" run start | sed 's/epoch: //')"
-horchid() { ORCHID_REPO="$HB" ORCHID_EPOCH="$HEPOCH" "$ORCHID_BIN" "$@"; }
-horchid requirements import "$WORK/requirements.md" >/dev/null
-horchid task create H010 "its suite outlives the staleness window" >/dev/null
-horchid task set H010 verification_commands "sleep $(( HB_STALE_S * 4 )); exit 1" >/dev/null
-horchid plan apply --reason "initial plan" >/dev/null
+heartbeat_orchid() { ORCHID_REPO="$HB" ORCHID_EPOCH="$HEPOCH" "$ORCHID_BIN" "$@"; }
+heartbeat_orchid requirements import "$WORK/requirements.md" >/dev/null
+heartbeat_orchid task create H010 "its suite outlives the staleness window" >/dev/null
+heartbeat_orchid task set H010 verification_commands "sleep $(( HB_STALE_S * 4 )); exit 1" >/dev/null
+heartbeat_orchid plan apply --reason "initial plan" >/dev/null
 
 # Parked at `testing` with a suite that runs for ~4x pump_stale_s and then
 # fails, so the pass stops at `rework` without spawning anything.
@@ -2136,14 +2136,14 @@ chmod +x "$WORK/eng/stubdup/run"
 ORCHID_REPO="$DUP" "$ORCHID_BIN" init >/dev/null || fail "orchid init (duplicate-implementer fixture)"
 git checkout -q orchid/integration
 DEPOCH="$(ORCHID_REPO="$DUP" "$ORCHID_BIN" run start | sed 's/epoch: //')"
-dorchid() { ORCHID_REPO="$DUP" ORCHID_EPOCH="$DEPOCH" "$ORCHID_BIN" "$@"; }
-dorchid requirements import "$WORK/requirements.md" >/dev/null
-dorchid task create D010 "its first implementer reports failure" >/dev/null
-dorchid task set D010 verification_commands "true" >/dev/null
-dorchid plan apply --reason "initial plan" >/dev/null
+duplicate_orchid() { ORCHID_REPO="$DUP" ORCHID_EPOCH="$DEPOCH" "$ORCHID_BIN" "$@"; }
+duplicate_orchid requirements import "$WORK/requirements.md" >/dev/null
+duplicate_orchid task create D010 "its first implementer reports failure" >/dev/null
+duplicate_orchid task set D010 verification_commands "true" >/dev/null
+duplicate_orchid plan apply --reason "initial plan" >/dev/null
 
 DDRIVE_RC=0; DDRIVE_OUT=""
-run_ddrive() {
+run_duplicate_drive() {
   DDRIVE_RC=0
   DDRIVE_OUT="$(ORCHID_REPO="$DUP" ORCHID_EPOCH="$DEPOCH" "$DRIVE" 2>&1)" || DDRIVE_RC=$?
 }
@@ -2176,7 +2176,7 @@ dwait_starts() {
 # anything the driver decides -- so it is a wait, not an assertion.
 di=0
 while [ "$di" -lt 40 ]; do
-  run_ddrive
+  run_duplicate_drive
   [ "$(dfield infra_failures)" = 0 ] || break
   [ "$DDRIVE_RC" -eq 0 ] || break
   di=$((di + 1))
@@ -2194,7 +2194,7 @@ assert_eq 1 "$(dlive_implement)" \
 
 # THE PASS UNDER TEST. The relaunched implementer is parked and provably
 # alive, and the attempt's first, non-ok envelope is still on disk beside it.
-run_ddrive
+run_duplicate_drive
 assert_eq 1 "$(dlive_implement)" \
   "a pass over a LIVE relaunch must not spawn a second implementer into the worktree the first is still writing to (rc=$DDRIVE_RC, out: $DDRIVE_OUT)"
 assert_eq 1 "$(dfield infra_failures)" \
@@ -2215,7 +2215,7 @@ assert_eq 2 "$(dstarts)" \
 : > "$DUPCTL/release"
 di=0
 while [ "$di" -lt 60 ]; do
-  run_ddrive
+  run_duplicate_drive
   [ "$(dfield infra_failures)" = 1 ] || break
   di=$((di + 1))
   sleep 0.3
@@ -3258,7 +3258,7 @@ norchid plan apply --reason "initial plan" >/dev/null
 
 NTF="$NOOP/.orchid/tasks/N010.md"
 NDRIVE_OUT=""; NDRIVE_RC=0
-run_ndrive() {
+run_noop_drive() {
   NDRIVE_RC=0
   NDRIVE_OUT="$(ORCHID_REPO="$NOOP" ORCHID_EPOCH="$NEPOCH" "$DRIVE" 2>&1)" || NDRIVE_RC=$?
 }
@@ -3269,7 +3269,7 @@ nstatus() { fm_get "$NTF" status; }
 # reached even once IS the defect, whatever the run does afterwards.
 npass=0
 while [ "$(fm_get "$NTF" infra_failures)" = 0 ] && [ "$npass" -lt 30 ]; do
-  run_ndrive
+  run_noop_drive
   case "$(nstatus)" in
     pending|implementing) ;;
     *) fail "N010 must never leave implementing on a dispatch that delivered nothing (got '$(nstatus)', out: $NDRIVE_OUT)"
@@ -3321,7 +3321,7 @@ assert_match "N010-a1-implementer.json" "$(fm_get "$NTF" refused_envelopes)" \
 # open. The envelope the next pass reads is therefore STILL the one already
 # refused -- refusing it again would charge one infra_failure per pass and race
 # a second implementer against the live one.
-run_ndrive
+run_noop_drive
 assert_eq 1 "$(fm_get "$NTF" infra_failures)" \
   "the same refused envelope is never escalated twice while its own relaunch is still outstanding"
 assert_match "a relaunched implement job is still running" "$NDRIVE_OUT" \
@@ -3343,7 +3343,7 @@ NWT="$(fm_get "$NTF" worktree)"
 git -C "$NWT" commit -q --allow-empty -m "fixture: the live relaunch's first commit"
 NMOVED="$(git -C "$NWT" rev-parse HEAD)"
 [ "$NMOVED" != "$NBASE" ] || fail "the fixture commit must really move the worktree HEAD"
-run_ndrive
+run_noop_drive
 assert_eq implementing "$(nstatus)" \
   "a HEAD moved by the LIVE relaunch is not delivery by the envelope already refused (out: $NDRIVE_OUT)"
 assert_eq "" "$(fm_get "$NTF" candidate_sha)" \
@@ -3362,7 +3362,7 @@ git -C "$NWT" reset -q --hard "$NBASE"
 : > "$WORK/nctl/release"
 npass=0
 while [ "$(nstatus)" != blocked ] && [ "$npass" -lt 40 ]; do
-  run_ndrive
+  run_noop_drive
   case "$(nstatus)" in
     implementing|blocked) ;;
     *) fail "a repeated no-op delivery must still never advance (got '$(nstatus)', out: $NDRIVE_OUT)"
@@ -3400,7 +3400,7 @@ done
 # reported: the next pass over the blocked task stops at a judgment boundary and
 # says so in its exit status. This is the assertion that the refusal path ends
 # somewhere, rather than driving on forever over a task no engine can move.
-run_ndrive
+run_noop_drive
 assert_eq 16 "$NDRIVE_RC" \
   "the pass after the cap stops at a judgment boundary, the one exit status that fetches an operator (out: $NDRIVE_OUT)"
 assert_eq blocked-task "$(ORCHID_REPO="$NOOP" "$ORCHID_BIN" run boundary show 2>/dev/null | jq -r '.kind // ""')" \
@@ -3471,15 +3471,15 @@ EOF
 chmod +x "$WORK/eng/stubdirty/run"
 
 UEPOCH="$(ORCHID_REPO="$UNCM" "$ORCHID_BIN" run start | sed 's/epoch: //')"
-uorchid() { ORCHID_REPO="$UNCM" ORCHID_EPOCH="$UEPOCH" "$ORCHID_BIN" "$@"; }
-uorchid requirements import "$WORK/requirements.md" >/dev/null
-uorchid task create U010 "its implementer edits the tree and never commits" >/dev/null
-uorchid task set U010 verification_commands "false" >/dev/null
-uorchid plan apply --reason "initial plan" >/dev/null
+uncommitted_orchid() { ORCHID_REPO="$UNCM" ORCHID_EPOCH="$UEPOCH" "$ORCHID_BIN" "$@"; }
+uncommitted_orchid requirements import "$WORK/requirements.md" >/dev/null
+uncommitted_orchid task create U010 "its implementer edits the tree and never commits" >/dev/null
+uncommitted_orchid task set U010 verification_commands "false" >/dev/null
+uncommitted_orchid plan apply --reason "initial plan" >/dev/null
 
 UTF="$UNCM/.orchid/tasks/U010.md"
 UDRIVE_OUT=""; UDRIVE_RC=0
-run_udrive() {
+run_uncommitted_drive() {
   UDRIVE_RC=0
   UDRIVE_OUT="$(ORCHID_REPO="$UNCM" ORCHID_EPOCH="$UEPOCH" "$DRIVE" 2>&1)" || UDRIVE_RC=$?
 }
@@ -3489,7 +3489,7 @@ ustatus() { fm_get "$UTF" status; }
 # there is no candidate, whatever is sitting in the tree.
 upass=0
 while [ "$UDRIVE_RC" -ne 16 ] && [ "$upass" -lt 30 ]; do
-  run_udrive
+  run_uncommitted_drive
   case "$(ustatus)" in
     pending|implementing) ;;
     *) fail "U010 must never leave implementing on a dispatch that committed nothing (got '$(ustatus)', out: $UDRIVE_OUT)"
@@ -3556,7 +3556,7 @@ assert_eq "the fix this round was dispatched to make" "$(cat "$UWT/half-done.txt
 
 # A second pass changes none of that. The boundary is re-raised from the same
 # facts rather than escalating: an unanswered stop is not a fresh event.
-run_udrive
+run_uncommitted_drive
 assert_eq 16 "$UDRIVE_RC" "the stop holds until a human answers it (out: $UDRIVE_OUT)"
 assert_eq 0 "$(fm_get "$UTF" infra_failures)" "and re-reading the same tree spends nothing"
 assert_eq 1 "$(cat "$WORK/uctl/n")" "still one implementer, still no relaunch"
@@ -3570,7 +3570,7 @@ git -C "$UWT" add -- half-done.txt
 git -C "$UWT" commit -q -m "operator: commit the work the dispatch left behind"
 UCOMMIT="$(git -C "$UWT" rev-parse HEAD)"
 [ "$UCOMMIT" != "$UBASE" ] || fail "the operator's commit must really move the worktree HEAD"
-run_udrive
+run_uncommitted_drive
 assert_eq "$UCOMMIT" "$(fm_get "$UTF" candidate_sha)" \
   "the committed work is recorded as the candidate — the refusal was about a tree with no commit in it, not about this envelope (out: $UDRIVE_OUT)"
 if [ "$(ustatus)" = implementing ]; then

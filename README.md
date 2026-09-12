@@ -14,24 +14,25 @@ unaffiliated tool that shells out to each vendor's own CLI).
 curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
 ```
 
-That command stays on the immutable `v1.0.0-beta.1` release, independent of
-the caller's current directory (including inside a dirty Orchid checkout). To
-upgrade, use the new version's equally pinned URL; following `main` is an
-explicitly labeled development channel. Flags, channels, `--uninstall`, the
-prepared Homebrew tap, and the git-clone method:
+That is the prepared release-day command; r-002 did not publish it. Once the
+operator publishes the immutable `v1.0.0-beta.1` tag, the command stays pinned
+to that version independent of the caller's current directory (including
+inside a dirty Orchid checkout). To upgrade, use the new version's equally
+pinned URL; following `main` is an explicitly labeled development channel.
+Flags, channels, `--uninstall`, the prepared Homebrew tap, and the git-clone
+method:
 [docs/install.md](./docs/install.md).
 
-> **This ships as `1.0.0-beta.1`, not `1.0.0`.** A `1.0.0` would claim the
-> kernel is hardened and in use; neither is true yet. Nothing outside this
-> repository has run orchid, and no external beta has happened. The hardening
-> pass that produced this version found, among other defects, a shell
-> injection reachable from repository content, a headless deadlock, two
-> concurrent implementers dispatched into one worktree, a release gate nothing
-> was invoking, and orchid executing pre-merge code from a stale checkout.
-> `1.0.0` is what an external beta earns.
+> **The prepared tree remains `1.0.0-beta.1`, not `1.0.0`.** Orchid has now
+> been dogfooded on itself and on the webBooks and wasiyyat application
+> repositories, but every run was operated by Orchid's author. That is useful
+> external-repository evidence, not a genuine third-party beta. A `1.0.0`
+> would claim an unfamiliar operator can run and recover it unattended; r-002
+> proved that claim is not earned yet. No genuine third-party beta or public
+> release has happened.
 
-> Orchid is in final private dogfooding — the one-liner goes live the day
-> this repo does. Until then, install from a clone
+> Orchid remains in private, author-operated dogfood. Until the operator
+> publishes the prepared tag, install from a clone
 > ([docs/install.md](./docs/install.md#git-clone-for-hacking-on-orchid-itself)); that is the
 > exact path the timed rehearsal below used.
 

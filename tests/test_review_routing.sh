@@ -423,7 +423,7 @@ head_p="$(git -C "$repoP" rev-parse HEAD)"
 
 # A medium-tier task with a candidate on it: two reviewer slots, and a round
 # of evidence for a plan to be bound to.
-mk_p_task() {
+mk_pinned_task() {
   "$ORCHID_BIN" task create "$1" "pinned plan fixture" >/dev/null
   "$ORCHID_BIN" task set "$1" risk_tier medium --reason "two reviewer slots" >/dev/null
   "$ORCHID_BIN" task set "$1" candidate_sha "$head_p" >/dev/null
@@ -475,7 +475,7 @@ assert_eq 0 "$(p_pin_lines TP0)" \
 # candidate; a second `--pin` is a no-op an idempotent driver can make every
 # pass.
 # ---------------------------------------------------------------------------
-mk_p_task TP1
+mk_pinned_task TP1
 planP="$("$ORCHID_BIN" jobs review-plan TP1 --pin)"
 assert_eq "$TWO_ENGINE_PLAN" "$planP" "--pin returns the table it pinned"
 pinP="$repoP/.orchid/reviews/TP1-a1.review-plan.json"
@@ -547,7 +547,7 @@ assert_eq "" "$(review_plan_unsatisfied "$repoP" TP1 "$(review_plan "$repoP" TP1
 # exactly the same-engine pair the independence policy exists to refuse.
 # ---------------------------------------------------------------------------
 ledger_mark "$repoP" agy ok   # a healthy ledger again, so TP2 really routes two engines
-mk_p_task TP2
+mk_pinned_task TP2
 planR="$("$ORCHID_BIN" jobs review-plan TP2 --pin)"
 assert_eq "$TWO_ENGINE_PLAN" "$planR" "fixture: TP2's plan routes two DIFFERENT engines"
 mk_p_review TP2 "" orchid/codex-review
@@ -558,7 +558,7 @@ assert_match "lower the tier's engine independence" "$err" "...and names which o
 assert_eq "$planR" "$("$ORCHID_BIN" jobs review-plan TP2)" "a refused adoption leaves the pin exactly as it was"
 
 # The other refusal: a slot with no review at all is DISPATCHED, not adopted.
-mk_p_task TP5
+mk_pinned_task TP5
 "$ORCHID_BIN" jobs review-plan TP5 --pin >/dev/null
 mk_p_review TP5 "" orchid/agy
 rc=0; err="$("$ORCHID_BIN" jobs review-plan TP5 --adopt-evidence 2>&1 1>/dev/null)" || rc=$?
@@ -571,7 +571,7 @@ assert_match "must be dispatched, not adopted" "$err" "...and says so"
 # independence at all. This is the exit for a task already wedged in that
 # state, and it is a verb, not an operator editing durable state by hand.
 # ---------------------------------------------------------------------------
-mk_p_task TP3
+mk_pinned_task TP3
 "$ORCHID_BIN" jobs review-plan TP3 --pin >/dev/null
 mk_p_review TP3 "" orchid/codex-review
 mk_p_review TP3 ".2" orchid/claude
@@ -602,7 +602,7 @@ assert_match "review plan pinned for attempt 1 \(adopt\)" "$(p_journal TP3)" \
 # recomputed every row would re-route a covered slot and orphan its review a
 # second time -- the defect, offered as its own remedy.
 # ---------------------------------------------------------------------------
-mk_p_task TP4
+mk_pinned_task TP4
 planT="$("$ORCHID_BIN" jobs review-plan TP4 --pin)"
 assert_eq "$TWO_ENGINE_PLAN" "$planT" "fixture: TP4 pins agy (slot 1) and codex-review (slot 2)"
 mk_p_review TP4 "" orchid/agy
@@ -622,7 +622,7 @@ ledger_mark "$repoP" codex-review ok
 # distinctness across every filed envelope and then taking the first N is not
 # enough: A,A,B contains two distinct engines, but its first two do not.
 # ---------------------------------------------------------------------------
-mk_p_task TP7
+mk_pinned_task TP7
 planU="$("$ORCHID_BIN" jobs review-plan TP7 --pin)"
 assert_eq "$TWO_ENGINE_PLAN" "$planU" "fixture: TP7 requires two distinct engines"
 mk_p_review TP7 "" orchid/codex-review
@@ -640,7 +640,7 @@ assert_eq "" "$(review_plan_unsatisfied "$repoP" TP7 "$(review_plan "$repoP" TP7
 # implementation leaves the pin behind and this RED case catches it; the same
 # command with the real journal restored is the GREEN twin.
 # ---------------------------------------------------------------------------
-mk_p_task TP6
+mk_pinned_task TP6
 pinV="$(review_plan_file "$repoP" TP6)"
 journal_bin="$REPO_ROOT/libexec/orchid-journal"
 journal_backup="$WORK/orchid-journal.backup"

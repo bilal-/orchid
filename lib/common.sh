@@ -4670,7 +4670,7 @@ orchid_root_stale_gate() {
   _orchid_root_stale_fire
 }
 
-if [ "${ORCHID_ALLOW_STALE_ROOT:-}" != 1 ] && orchid_root_stale; then
+if [ "${ORCHID_ALLOW_STALE_ROOT:-}" != 1 ] && orchid_root_stale "${ORCHID_ROOT:-}"; then
   _ORCHID_ROOT_STALE_ARMED=1
   if [ "${__orchid_entry_defer_restore:-0}" != 1 ] && _orchid_kernel_entry_point; then
     _ORCHID_ROOT_STALE_ARMED=0

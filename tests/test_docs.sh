@@ -917,9 +917,34 @@ QUALIFY_SH="$REPO_ROOT/scripts/beta-qualify.sh"
 REHEARSAL_SH="$REPO_ROOT/tests/test_e2e_release_rehearsal.sh"
 BETA_MD="$REPO_ROOT/docs/beta-qualification.md"
 ACCEPTANCE_MD="$REPO_ROOT/docs/r-002-acceptance-evidence.md"
+AGENTS_MD="$REPO_ROOT/AGENTS.md"
 [ -f "$QUALIFY_SH" ] || fail "scripts/beta-qualify.sh missing — the beta docs describe a harness that does not exist"
 [ -f "$REHEARSAL_SH" ] || fail "tests/test_e2e_release_rehearsal.sh missing — the release docs describe a rehearsal that does not exist"
 [ -f "$ACCEPTANCE_MD" ] || fail "r-002 acceptance evidence missing — the candidate/post-merge boundary has no owning record"
+[ -f "$AGENTS_MD" ] || fail "AGENTS.md missing — coding agents have no repository-local safety and verification guide"
+
+# r-002 ran on two application repositories, but only under the author's
+# operation. The top-level onboarding surfaces must distinguish that evidence
+# from a genuine third-party beta instead of retaining r-001's now-false claim
+# that nothing outside this repository has run Orchid.
+for maturity_doc in "$REPO_ROOT/README.md" "$REPO_ROOT/docs/install.md" "$REPO_ROOT/docs/quickstart.md"; do
+  # Strip Markdown blockquote prefixes before flattening; otherwise a wrapped
+  # sentence in README becomes "public > release" and the semantic assertion
+  # fails on presentation markup rather than prose.
+  maturity_one_line="$(sed 's/^> *//' "$maturity_doc" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+  grep -qF 'author-operated' <<<"$maturity_one_line" \
+    || fail "$maturity_doc must name the external-repository runs as author-operated dogfood"
+  grep -qiF 'no genuine third-party beta or public release has happened' <<<"$maturity_one_line" \
+    || fail "$maturity_doc must preserve the unproved beta/release boundary"
+  grep -qF 'Nothing outside this repository has run' "$maturity_doc" \
+    && fail "$maturity_doc retains the false pre-dogfood claim that nothing outside this repository ran Orchid"
+  grep -qF 'no one outside this repository has run' "$maturity_doc" \
+    && fail "$maturity_doc retains the false pre-dogfood claim that no one outside this repository ran Orchid"
+done
+grep -qF '/bin/bash scripts/ci-local.sh --bash /bin/bash' "$AGENTS_MD" \
+  || fail "AGENTS.md must name the canonical local CI command"
+grep -qF 'Never hand-edit durable `.orchid/` state.' "$AGENTS_MD" \
+  || fail "AGENTS.md must preserve the durable-state ownership rule"
 
 # The harness's own --help is part of the documentation surface: it is what an
 # operator reads before running it against a repository they cannot share. So

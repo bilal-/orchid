@@ -12,6 +12,10 @@ source "$(dirname "$0")/helpers.sh"
 SERVICE="$REPO_ROOT/runners/orchid-service"
 PUMP="$REPO_ROOT/runners/orchid-pump"
 
+# Exercise platform branches explicitly rather than inheriting the host OS.
+# Linux sections below override this and restore Darwin when they finish.
+export ORCHID_SERVICE_OS=Darwin
+
 cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"; mkdir -p "$HOME"
 export ORCHID_ROOT="$REPO_ROOT"
@@ -155,7 +159,7 @@ assert_match 'service installation refused: unattended trust is denied' "$out" \
 trust_repo "$WORK"
 
 # ===========================================================================
-# B -- macOS (default host branch, no ORCHID_SERVICE_OS override): install
+# B -- macOS (explicit Darwin branch, independent of the host OS): install
 # renders the launchd plist template with the correct label, ORCHID_REPO,
 # TMPDIR (the repo's PARENT dir -- the live-run TMPDIR incident), interval,
 # a scheduler-safe output sink, then PRINTS (never runs) the launchctl load
@@ -465,7 +469,7 @@ assert_eq "$seam_cmd" "$dry_cmd" \
 assert_match '\|\| true' "$seam_cmd" "uninstall's shared pipeline string also carries the || true guard"
 
 unset ORCHID_SERVICE_DEBUG_CRON_CMD_FILE
-unset ORCHID_SERVICE_OS
+export ORCHID_SERVICE_OS=Darwin
 
 # ===========================================================================
 # H4 -- unattended-boundary regression: installed launchd/cron artifacts must
@@ -597,7 +601,7 @@ assert_eq pump.log "$(list_dir_entries "$ATTACK_REPO/.orchid/runtime")" \
 
 rm -f "$attack_plist"
 rm -rf "$ATTACK_ROOT"
-unset ORCHID_SERVICE_OS
+export ORCHID_SERVICE_OS=Darwin
 
 # ===========================================================================
 # I -- multiple repos = multiple distinct labels, never colliding, and each
@@ -1672,7 +1676,7 @@ orchid_service_removal_guard "$LBIND" >/dev/null 2>&1 || rc=$?
 svc_uninstall_real --repo "$LBIND" >/dev/null 2>&1
 [ -f "$LBIND/.orchid/runtime/service.json" ] \
   && fail "linux uninstall must remove the binding record it wrote"
-unset ORCHID_SERVICE_OS
+export ORCHID_SERVICE_OS=Darwin
 
 # -- K12: the teardown is ONE conditional operation ------------------------
 # EVERY REFUSAL K7/K8/K11 PROVE WAS UNENFORCEABLE, and that is what this
@@ -2973,7 +2977,7 @@ assert_eq 0 "$rc" "the identical uninstall succeeds with the artifact install wr
 [ -f "$lvict_cron" ] || fail "while the neighbour's cron record is still standing"
 green_case "the same uninstall removes this checkout's own cron record when the artifact is the one install wrote for it"
 
-unset ORCHID_SERVICE_OS
+export ORCHID_SERVICE_OS=Darwin
 
 # -- K17: install does not stack a second schedule on a moved checkout ------
 # K13 made every REMOVING arm resolve its schedule from the binding rather than
@@ -3350,7 +3354,7 @@ assert_eq "$tw_new_label" "$(jq -r '.label' "$tw_rec")" "and the repo-local half
 assert_eq 1 "$(tw_schedules)" "and the machine left with exactly ONE schedule for this checkout"
 green_case 'repairing the record the refusal named makes the binding resolve again, and the documented recovery then leaves the moved checkout with exactly one schedule'
 
-unset ORCHID_SERVICE_OS
+export ORCHID_SERVICE_OS=Darwin
 
 # ===========================================================================
 # J -- --help / usage documents idempotence for install and uninstall, and

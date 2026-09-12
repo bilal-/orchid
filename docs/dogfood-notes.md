@@ -449,3 +449,227 @@ phone→orchid answer leg of the hero demo is now proven end-to-end over
 hermes-telegram. (The suite flake seen once during this branch's gate —
 test_engine_claude's midpoint-liveness assertion — passed 3/3 isolated and
 is unrelated to this diff.)
+
+## webBooks — Pathway to Peace enrichment run (external production repo, 2026-08-05 → 08)
+
+Six tasks (schema change, three content-authoring tasks, a shared-visibility
+fix, a bootstrap) driven to `done` on a real app repo, but only by heavy
+operator hand-driving of the state machine: every one of the six needed manual
+`task advance` / `arbitrate` / `merge` calls, and two needed conflict surgery.
+Codex ran out of vendor credits at the start, so the whole run executed on
+claude (implementer) + agy (reviewer). The findings below are what that
+exposed.
+
+### F19 (data loss, HIGH) — `orchid task set` with a multi-line value truncates the task file
+`orchid task set T001 acceptance_criteria "line1<newline>line2"` fails with
+`awk: newline in string` and leaves `.orchid/tasks/T001.md` **0 bytes**. The
+whole record — status, attempts, candidate_sha, base_sha, worktree — is gone.
+`orchid task show` then prints nothing and exits **0**, so it reads as "task
+vanished" rather than "write rejected". Recovery is `git checkout <last plan
+apply> -- .orchid/tasks/<id>.md`, which restores a pre-run copy and silently
+resets the escalation counters (attempts 3 → 0). Suggested fix: validate the
+value before writing, reject newlines with a clear error, and write via a
+temp-file rename so a failed write can never truncate the record.
+
+### F20 (failover gap, HIGH) — the per-task `engine` field pins a dead engine forever
+Tasks record `engine:` at creation time and it is never re-resolved against the
+role chain. This run created T001–T005 while `role.implementer` was codex;
+rebinding the role to claude afterwards changed nothing, because each task
+still said `engine: codex`. With codex out of credits the drive simply declined
+to dispatch T004 — correctly, per the task record — while the pump kept waking
+an orchestrator that had no legal transition. Eight consecutive wakeups, the
+interval shrinking to ~31s, all no-ops. T006, created after the rebinding, ran
+fine on claude: same run, same engines, different creation time. Suggested fix:
+treat the task's `engine` as a *preference* and re-resolve through the role
+chain at dispatch when the pinned engine is unavailable, or have `doctor` /
+`status` flag tasks pinned to an engine the ledger shows as unavailable.
+
+### F21 (config trap, HIGH — silent) — a gitignored `.orchid/` wedges the run in `planning`
+`orchid plan apply` commits `.orchid/` to the integration branch. This repo
+gitignored `.orchid/` as "local orchestration state", so the plain `git add`
+refused the ignored path and plan apply exited 1 — printing only git's generic
+"paths are ignored" hint, with no mention of orchid. `run_status` stayed
+`planning`, and because the state machine walk is skipped outside `running`,
+every subsequent tick was a legitimate, silent no-op. Suggested fix: a `doctor`
+check for `git check-ignore .orchid` — it is a one-line test that would have
+saved a long debugging session, and the failure mode is otherwise invisible.
+
+### F22 (review-loop cost, medium) — re-review is demanded for a base-only change
+After resolving a rebase conflict by hand, `orchid merge` detected the base had
+moved (`199fec9 → bae4947`, the parent task's merge) and sent the task back for
+re-review with `rebase_rereview_required` — even though `candidate_sha` was
+byte-identical. The prior review envelopes were bound to the old base, so both
+had to be re-run: for `risk_tier: medium` that is two more agy dispatches per
+merge, ~90s each, on an unchanged tree. Legitimate as an invariant, expensive
+in a dependency chain where every task's merge moves the next one's base.
+Worth considering: carry review envelopes forward when the candidate tree hash
+is unchanged and only the base advanced cleanly.
+
+### F23 (pack budget, medium) — a regenerated artifact overflows the reviewer pack
+`orchid-launch T003 reviewer review` died with `input_overflow —
+non-truncatable inputs (74693 bytes) exceed pack budget (65536)`. The diff was
+not large in human terms; it was one committed generated artifact
+(`books.json`, the parse mirror the verify chain regenerates). Raising
+`pack_budget_bytes` to 262144 fixed it. Generated-but-tracked artifacts are
+common in app repos, and the reviewer does not need to read them. Worth
+considering: a `pack_exclude` glob, or excluding paths the verify command is
+known to regenerate.
+
+### Observations (no fix proposed)
+- **The orchestrator's own reporting was excellent.** It correctly refused to
+  transition when no transition was legal, identified the pid-0 ghost job as a
+  known false positive rather than escalating it, and named the pinned-engine
+  problem itself before I found it. The tick logs were the most useful
+  diagnostic surface in the run.
+- **agy as reviewer worked well** once inside the pack budget: five review
+  dispatches, all returning structured verdicts, and one genuine
+  `request-changes` that caught a real scope question (it flagged a generated
+  artifact and a provenance doc as out-of-scope — the task's acceptance
+  criteria were at fault, not the work).
+- **Claude implement dispatches remain edits-only** (`--permission-mode
+  acceptEdits`, no `Bash`), so every task ended with "verification not run" and
+  the operator had to run `verify-full.sh` and commit the regenerated artifact
+  by hand. This is the single biggest source of manual work in the run.
+
+## Run — wasiyyat-schedule-c (2026-08-09)
+
+First exposure to a large, messy production repo: PHP 7.4 / MySQL, ~2,100
+PHPUnit tests across three suites plus 65 Playwright specs, hand-vendored
+runtime libraries, and several gitignored multi-GB data directories. 9 tasks,
+driven by a Claude Code session executing PROTOCOL.md via `orchid drive`.
+
+Findings F24–F31 live in **`dogfood-2026-08-09-wasiyyat-schedule-c.md`**.
+Headlines:
+
+- **F24/F25 (high)** — task worktrees cannot obtain gitignored dependencies
+  (`vendor/`, data dirs, `node_modules/`), and the merge validator's worktree
+  lives under `$TMPDIR` rather than beside the repo, so a bootstrap that works
+  for task worktrees does not reach it. Suggests a `prepare=` step distinct
+  from `verify=`, plus an exported `ORCHID_REPO_ROOT`.
+- **F26 (high)** — a task that authors a schema migration cannot make its own
+  tests pass; nothing applies the migration to the test database, and it
+  presents as a task failure that consumes attempts.
+- **F27/F28 (high)** — three byte-identical failure signatures each consumed an
+  attempt, and `task retry` restores status but no attempt budget, so operator
+  guidance gets exactly one shot. There is also no supported "operator fixed
+  it, just re-verify" edge.
+- **F29 (high)** — **F23 recurs**, and worse than F23 recorded: through
+  `orchid drive` an `input_overflow` launch failure is entirely silent. 73
+  passes produced 73 `pid: 0` manifests, no logs, no journal entries, engine
+  still `ok`, and `jobs gc` cannot reap them. The escalation ladder never fires
+  because a job that never started is not `dead`/`stalled`/`timeout`. Note this
+  makes the "pid-0 ghost job is a known false positive" observation above
+  unsafe at scale.
+- **F30 (high)** — `depends_on: "T002,T003"` silently deadlocks: the scheduler
+  splits on whitespace, so the comma-joined value is one unmatchable token. The
+  rendered `waiting-deps (T002,T003)` is byte-identical to a correct
+  two-dependency wait, which hid it for hours.
+- **F31 (low/medium)** — stale-epoch handoff, a stale-checkout hint that does
+  not clear the flag (needs `git reset`, not the printed command), raw bash
+  errors on missing positionals, and a journal reference written before its log.
+
+The plan critique loop was the run's highest-value component: seven rounds to a
+clean approve, and it caught a real data-loss bug (an unscoped
+`DELETE ... WHERE filename = ?` in a file outside the one under review).
+
+### F24 (lifecycle gap, HIGH) — the pump outlives the run it was installed for
+`orchid service install` registers a launchd agent, and nothing ever takes it
+away. On the webBooks run the six tasks reached `done`, the work was reviewed,
+merged and released — and the agent was still loaded, still firing every
+`pump_interval_s`. Two consequences, both observed:
+
+- **It burns model calls on a finished run.** Earlier in the same run the pump
+  woke an orchestrator eight consecutive times against a state with no legal
+  transition, and the interval was seen shrinking to ~31s. After the merge
+  every wake is guaranteed to be a no-op, forever, because `run_status` never
+  leaves `running` on its own — nothing advances a run to a terminal state when
+  its last task is merged.
+- **It survives the thing it points at.** Cleaning up meant removing the
+  integration worktree. Had `orchid service uninstall` not been run *first*, the
+  agent would have been left pointing at a deleted directory, waking on a
+  schedule against nothing. That ordering is not written down anywhere and there
+  is no guard for it.
+
+Suggested: uninstall the service (or refuse to fire) when the run reaches a
+terminal state; have `orchid merge` on the last task advance the run rather than
+leaving it `running`; and make `git worktree remove` of the integration checkout
+warn while a service for it is loaded.
+
+### F25 (state leak, HIGH) — `.orchid/` follows the integration branch into the product's main
+Fixing F21 by un-ignoring `.orchid/` has a consequence that only shows up at the
+end. Durable state is committed on the integration branch; that branch merges
+into the feature branch; the feature branch merges into `main`. webBooks' `main`
+now tracks **14 orchestrator files** — `roadmap.md`, `journal.md`,
+`BLOCKERS.md`, `baseline.md`, `plugins.lock` and review envelopes — none of
+which belong in a shipped app repository. Nobody noticed during review because
+the MR was large and the paths look like tooling.
+
+So the two requirements are in direct tension: plan apply needs `.orchid/`
+committable, and the product repo needs it absent. Both cannot hold with a
+plain `git add` and a normal merge.
+
+Suggested: have orchid stage its own state with `git add -f` so the target repo
+can keep `.orchid/` ignored permanently — the state is still committed on the
+integration branch, but a merge into main carries nothing, because the path is
+ignored there. Failing that, `orchid merge` should exclude `.orchid/` from what
+it hands back, or the docs should tell the operator to strip it before the final
+merge.
+
+## Run — wasiyyat-schedule-c, General forms (2026-08-11)
+
+Second run in the same repo (`r-002`, 16 tasks). Findings F35–F49 in
+**`dogfood-2026-08-11-wasiyyat-general-forms.md`**.
+
+Different character to the 2026-08-09 run. Those findings were environmental —
+worktrees, pack budgets, migrations. These are about **the planning loop being
+unobservable**: the run never reached THE TICK, because half the critique
+attempts died without writing an envelope and nothing said so.
+
+- **F35 (critical)** — a job can complete its work, write every result to its log,
+  and then exit without an envelope. Attempt `a4` produced eight findings that
+  `reconcile` never saw; I recovered them with `grep` from the runtime log.
+  Attempt `a3` died differently: heartbeats arriving while CPU stayed flat at
+  ~1s across five minutes, and `jobs check` never marked it `stalled` because
+  the process was alive. Two of four attempts produced nothing reachable
+  through the verbs. Suggests salvaging parseable log output into a degraded
+  envelope. The report later retracts CPU delta as a default liveness signal
+  after observing a healthy API-bound job with almost-flat CPU for 40 minutes.
+- **F36 (high)** — nothing distinguishes a running job from one that died twelve
+  hours ago. `orchid status` showed a healthy `planning` run whose only job had
+  been dead half a day. This is the second run where the absence of the
+  process-table view (feature request in the previous report) cost hours.
+- **F37 (high)** — `orchid run new` silently inherits the previous run's branch
+  tip. r-002's base was 18 commits behind main, carried r-001's still-unmerged
+  PR, and lacked the new requirements and fixtures entirely. Every task would
+  have branched from that. Wants `--base`, or a refusal when the integration
+  branch is behind its remote.
+- **F40 (high)** — the critique loop gives no convergence signal (four rounds,
+  8/8/8/8 findings) and structurally rewards appending, because amending a task
+  means read-modify-write. Several late-round findings were contradictions
+  introduced by how earlier findings had been applied. Wants per-round deltas
+  (new/repeat/resolved) and a convergence guard.
+- **F38/F39 (medium)** — no `runtime/epoch` file after `run new` though the
+  refusal names the epoch; and no `task get <id> <key>`, so reading one field
+  means parsing `task show` prose, which is what encourages the appending in F40.
+- **F41 (medium)** — `jobs gc` still cannot reap manifests for jobs that never
+  launched or died envelope-less. Reproducible; same manual cleanup as last run.
+- **F42–F49 (high/critical through medium)** — the tick added second-run branch
+  collisions, unusable null-verdict reviews, a dead-job recovery dead end,
+  state-gated help, write-once arbitration guidance, overwritten verify logs,
+  environment failures charged as candidate work, and green gates that hide
+  how narrowly they ran. The detailed report retains the exact evidence.
+
+Worth recording positively: run rollover and archival were clean, config
+(including the verify bootstrap and pack budget) carried over correctly between
+runs, and the critique's findings were high quality **when they arrived** — it
+caught real internal contradictions, a stale fixture path, and across both runs
+a migration numbering collision that would otherwise have shipped. The problem
+is the delivery mechanism, not the critic.
+
+**Resolution as of the end of r-002 (2026-08-31):** T019, T024, T027, T029,
+T035 and T040 closed the environment-accounting, operator-prerequisite,
+launch/gc, epoch-handoff, process-table and missing-envelope parts of these
+reports. The exact closed/open split is maintained in
+[`plans/r-003-requirements.md`](./plans/r-003-requirements.md); the source
+reports above remain historical observations rather than being rewritten as if
+the fixed behavior was present during dogfood.

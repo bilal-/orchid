@@ -12,16 +12,16 @@ for what happens after any of them.
 curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
 ```
 
-**The shipped version is `1.0.0-beta.1`, a prerelease.** Nothing outside this
-repository has run orchid, and no external beta has happened; `1.0.0` would
-claim a hardened, in-use kernel, and that is what an external beta is meant to
-earn. Everything below installs and behaves the same way a `1.0.0` would —
-only the version string is different.
+**The prepared version is `1.0.0-beta.1`, a prerelease.** Orchid has run on
+its own repository and on the webBooks and wasiyyat application repositories,
+but all of that was author-operated dogfood. No genuine third-party beta or
+public release has happened; `1.0.0` is reserved for the stronger evidence in
+[the r-002 retrospective](./r-002-retrospective.md#the-requirements-for-10).
 
-**This goes live once the repo is public.** `raw.githubusercontent.com`
-cannot serve a file out of a private repository, so until then this
-command 404s — use the [git clone method](#git-clone-for-hacking-on-orchid-itself)
-below instead.
+**This is the prepared release-day URL, not evidence that a release was
+published.** r-002 did not push a tag or publish the repository, installer, or
+Homebrew tap. Until the operator performs those steps, use the
+[git clone method](#git-clone-for-hacking-on-orchid-itself) below instead.
 
 This downloads the installer from the version tag and runs it. A piped
 invocation always selects that same exact tag in the canonical checkout at

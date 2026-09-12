@@ -21,16 +21,18 @@ and bash 3.2+ (macOS's shipped `/bin/bash` is fine).
 curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
 ```
 
-(goes live once the repo is public; see [docs/install.md](./install.md#one-line-install-recommended)
-for the exact caveat and how flags like `--prefix`/`--uninstall` pass
-through). The pinned install is independent of your current directory, even
-if it is a dirty Orchid checkout. The URL is immutable: running this exact
-line later reselects `v1.0.0-beta.1`; it does not upgrade Orchid. To upgrade, select
-the install URL for a newer immutable released tag.
+(this is the prepared release-day URL; see
+[docs/install.md](./install.md#one-line-install-recommended) for the publication
+caveat and how flags like `--prefix`/`--uninstall` pass through). Once the tag
+is published, the pinned install is independent of your current directory,
+even if it is a dirty Orchid checkout. The URL is immutable: running this
+exact line later reselects `v1.0.0-beta.1`; it does not upgrade Orchid. To
+upgrade, select the install URL for a newer immutable released tag.
 
-The shipped version is a prerelease on purpose: no one outside this
-repository has run orchid yet, and no external beta has happened. `1.0.0` is
-what that beta earns.
+The prepared version is a prerelease on purpose. Orchid has author-operated
+dogfood on its own repository plus webBooks and wasiyyat, but no genuine
+third-party beta or public release has happened. `1.0.0` is what that stronger
+evidence earns.
 
 **Developing on orchid itself?** Clone it instead, so `install.sh` runs
 from — and `orchid` resolves to — your own checkout:
