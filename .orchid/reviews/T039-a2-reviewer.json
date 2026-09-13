@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T039-a2-6fa0",
+  "task": "T039",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "94202ef2afc5abcfdf3228afaacc91e5de99c45a",
+  "candidate_sha": "b9b90866f2e10894d1ebdb0aac49693057a141ad",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The changes cleanly pin review slot routing per attempt, provide legal recorded recovery verbs with clear boundary diagnostics, fix effective ledger status reporting, and include comprehensive test co"
+}

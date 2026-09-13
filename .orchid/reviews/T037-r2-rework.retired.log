@@ -1,0 +1,30 @@
+date: 2026-08-30T13:09:54Z
+sha: 63f759439d12c4e6122248550bbd8d242c0fbf5d
+head_after: 63f759439d12c4e6122248550bbd8d242c0fbf5d
+candidate: 63f759439d12c4e6122248550bbd8d242c0fbf5d
+cwd: /Users/bilal/workspace/personal/orchid-orchid-T037
+command: /bin/bash tests/test_start.sh && /bin/bash tests/test_merge.sh
+prestate: 1
+pre_base_sha: "066416c51332b6cf31c169c5d6354b3c1b72a01c"
+pre_exec_missing: ""
+pre_env_missing: ""
+pre_env_inventory: ""
+pre_pin_stale: ""
+pre_integration_head: "066416c51332b6cf31c169c5d6354b3c1b72a01c"
+---
+  GREEN-CASE: a legacy hook whose line 2 STARTS with the header is recognized and upgraded
+  RED-CASE: a user hook that MENTIONS the marker off line 2 is left byte-for-byte alone
+  RED-CASE: a relative core.hooksPath installs nothing and is reported, because one file cannot guard every worktree
+  GREEN-CASE: a repo-contained absolute core.hooksPath keeps normal behavior and guards every worktree of the repository
+  RED-CASE: an absolute core.hooksPath outside the git dir installs nothing, because the directory may be another repository
+  FAIL: with the absolute recovery (no match 'config core.hooksPath /absolute/path/to/hooks')
+  RED-CASE: orchid start warns and installs nothing under a relative core.hooksPath, and still sets the run up
+  RED-CASE: a run past planning reaches the current push guard via start --refresh-push-guard
+  GREEN-CASE: --refresh-push-guard is idempotent and mutates nothing but the hook
+  RED-CASE: start --refresh-push-guard exits non-zero under a relative core.hooksPath instead of half-installing
+  RED-CASE: --refresh-push-guard refuses rather than overwriting an operator-authored hook
+  RED-CASE: a byte-current but non-executable guard is repaired and reported, never called current
+  GREEN-CASE: an executable, byte-current guard is reported current and repaired never
+  RED-CASE: a Gerrit review upload whose tip carries run state is refused, and told it has no exemption
+  GREEN-CASE: a review upload carrying no run state is untouched by the leg
+exit: 1

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T031-a1-1999",
+  "task": "T031",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2e1f689aac023e59eb479a2f1eee1aaac7ffb964",
+  "candidate_sha": "a9510a4e0203c2938931fdda9a73e5a32d064037",
+  "summary": "- `head_after:` is now in every evidence header. I checked all readers (`orchid-task`'s gate, `lib/pack.sh`, INV-07's `grep '^sha: '`) — all are anchored greps or `tail -n1`, none positional.",
+  "commits": [
+    "a9510a4e0203c2938931fdda9a73e5a32d064037"
+  ]
+}

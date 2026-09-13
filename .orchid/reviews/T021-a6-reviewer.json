@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T021-a6-b432",
+  "task": "T021",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "6bbb0437b783fd052a12888a69359f56588a2683",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Legacy detection ignores real archived findings phrased “worth the ledger” rather than “ledger candidate/item,” allowing them to leave planning unconsidered."
+}

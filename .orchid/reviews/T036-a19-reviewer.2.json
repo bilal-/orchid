@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a19-a182",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "18075c11085c2e32f2f41a0ec6a62af89a1a2e6e",
+  "candidate_sha": "413f4677a495b545b7abc02b1e02101b9d252abd",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: After `git worktree move`, service install rehashes the new path and can stack a second schedule while the original keeps firing at the deleted path.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "After `git worktree move`, service install rehashes the new path and can stack a second schedule while the original keeps firing at the deleted path."
+    }
+  ],
+  "summary": "After `git worktree move`, service install rehashes the new path and can stack a second schedule while the original keeps firing at the deleted path."
+}

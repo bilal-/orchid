@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T031-a6-a8bc",
+  "task": "T031",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "fec39e48994580b21c42439a9bb2f5d8a5911043",
+  "candidate_sha": "5f9e27199d87c3d3b60ecfbcd60f413210c7b54e",
+  "summary": "Hold an untracked job's envelope, and return on verify's refusals",
+  "commits": [
+    "5f9e27199d87c3d3b60ecfbcd60f413210c7b54e"
+  ]
+}

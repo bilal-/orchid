@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T035-a1-dd92",
+  "task": "T035",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "dbd4fc0e2aa8a44cad5122b8d0dd16f4cc731fe8",
+  "summary": "T035: never emit an empty TSV cell in the jobs table",
+  "commits": [
+    "dbd4fc0e2aa8a44cad5122b8d0dd16f4cc731fe8"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T023-a10-c411",
+  "task": "T023",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "2658972632012c3332a34e17dce9fb295d7bf5ff",
+  "candidate_sha": "845c5803bfe3adfbbb1ee521c418ad8c24854e4c",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Preparation covers dispatch and merge worktrees, charges infrastructure failures, exports ORCHID_REPO_ROOT, closes stdin, and includes the required driver-walk regression test."
+}

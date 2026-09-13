@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T011-a5-fda7",
+  "task": "T011",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "6c2e91f3f25e6cfdfb0779d5fc6278b757683c86",
+  "verdict": "approve",
+  "scope_complete": true,
+  "summary": "The diff comprehensively implements and documents the decision to keep beta qualification ungated with in-band stderr disclosure, fully records the rejected alternatives and reopen conditions in the o"
+}

@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a1-78a8",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "1a0f99d615c921effa211583c9331322d3f40239",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The changes cleanly persist arbitration objections on the task, prevent deterministic approvals while an objection stands, carry the objection to all reviewer engine prompts, and add comprehensive tes"
+}

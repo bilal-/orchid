@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a5-4e5f",
+  "task": "T037",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "c480abe1e6861e2733fbcf3d24ae7a0bd4ebc224",
+  "summary": "Resolve the push guard's path as git does, and ship a refresh route",
+  "commits": [
+    "c480abe1e6861e2733fbcf3d24ae7a0bd4ebc224"
+  ]
+}

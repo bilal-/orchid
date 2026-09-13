@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T012-a10-ce6e",
+  "task": "T012",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "469bdcb99264332d8f857ddd5467adfd8290168a",
+  "candidate_sha": "d632bc05020905f7dfd3be8d088e172b2d006357",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "slot 2's widened candidate list is skipped in the branch that needs it most"
+    }
+  ]
+}

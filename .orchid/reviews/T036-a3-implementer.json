@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a3-5ddb",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "a5b62953b2b69930fe644a9cd37d076239e44aea",
+  "summary": "T036: Pin the boundary record's passes field in specs and its verb",
+  "commits": [
+    "a5b62953b2b69930fe644a9cd37d076239e44aea"
+  ]
+}

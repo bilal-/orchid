@@ -1,0 +1,31 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a10-4857",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "b6279c26d8f3240a50ecf086449a9b98f7244e1f",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "Wake-budget ranking is one pass more lenient than the pump's decline"
+    },
+    {
+      "severity": "low",
+      "title": "An `accepting` run still drives a full pass every interval — surfaced, not stopped"
+    },
+    {
+      "severity": "low",
+      "title": "Boundary counters survive resolution, so an identical recurrence is never re-paged"
+    },
+    {
+      "severity": "low",
+      "title": "`counters` is missing from libexec/orchid-run's boundary schema comment"
+    }
+  ],
+  "summary": "The binding record, both pump refusals, the wake budget and the teardown docs all land coherently with genuinely non-vacuous RED/GREEN coverage for both mandated cases, and the four residuals are one-"
+}

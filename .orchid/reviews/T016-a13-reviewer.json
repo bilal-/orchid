@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T016-a13-b1d9",
+  "task": "T016",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "ba41ea3fc308f58fc1a0967d7037d21ddae1f3be",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "In the unacknowledged self-hosted case, doctor and trust-show still run the stale-root Git query before denial even though no acknowledgement was found, violating the required unattended-trust boundar"
+}

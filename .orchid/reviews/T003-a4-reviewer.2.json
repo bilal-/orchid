@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a4-65eb",
+  "task": "T003",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "3514de5f47424571309f2a377d53ad1bc2de21ac",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "An unchanged pre-fix boundary record is mistaken for an already-notified one, so upgrading preserves the silent no-human-blocker failure."
+}

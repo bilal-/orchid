@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a6-4a0e",
+  "task": "T006",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "35c1b7f98886f5784d6260b4d5333e200a46d1be",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "merge's declined-refresh warning fires even when the merge changed no kernel file"
+    },
+    {
+      "severity": "low",
+      "title": "a staged (`git add`) kernel edit in the integration checkout refuses every verb"
+    }
+  ]
+}

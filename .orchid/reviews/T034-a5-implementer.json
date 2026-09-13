@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T034-a5-7f01",
+  "task": "T034",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "0c84da4289e6e43e76fe57a5957d85b96c99ee4f",
+  "summary": "Assert the empty producer's refusal names the producer",
+  "commits": [
+    "0c84da4289e6e43e76fe57a5957d85b96c99ee4f"
+  ]
+}

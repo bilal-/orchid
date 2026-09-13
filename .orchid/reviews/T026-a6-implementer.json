@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a6-9c74",
+  "task": "T026",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "cb49b208dd9bcc24dfcbb28082a540b966bdb0ef",
+  "summary": "Gate the candidate's lineage, and move the hand-off ack with it",
+  "commits": [
+    "cb49b208dd9bcc24dfcbb28082a540b966bdb0ef"
+  ]
+}

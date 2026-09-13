@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a6-959f",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "cca653d5dfd643f8e3bd8a1243105c83e14b8000",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The shipped flaky register has no live L020 signatures, so a recurring streaming or heartbeat timing artifact is classified as candidate and charged."
+}

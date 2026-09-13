@@ -1,0 +1,16 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T011-a1-6701",
+  "task": "T011",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "ca52f5d48149385874c4e44ffe1a0961d8c8a12d",
+  "summary": "- **The operator's chmod commit `c883c18`** set the exec bit on `scripts/beta-qualify.sh` and `tests/test_beta_qualification.sh`. Per `git show 5f0464c --raw`, both were already mode `100644` at the b",
+  "commits": [
+    "ca52f5d48149385874c4e44ffe1a0961d8c8a12d",
+    "c883c18f21e0fc9982c22eba61bde3cf2f7eff32",
+    "5f0464c21230c80d239571409c7b0794e689105a"
+  ]
+}

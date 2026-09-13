@@ -1,0 +1,34 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a14-014c",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "1929053efe4bf2189ce32f14fbaa512cd0ef27df",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "A renamed executable escapes the exec-bit hand-off arm — `drive_handoff_exec_bit` only walks `--diff-filter=A` and `M`, so a candidate that renames a mode-755 file and lands it 644 (filter `R`, and git's diff enables rename detection by default) is classified `candidate` and charges the attempt for a `chmod +x` the implementer may not run"
+    },
+    {
+      "severity": "low",
+      "title": "The de-flaked assertions' new wording is covered by no register entry, so criterion (3) is met only for pre-T019 branches — after this merges, a recurrence of L020 under the bounded-wait sentence charges an attempt; the reasoning in `tests/QUARANTINE.md` for not listing them is sound, but the residual is worth stating in the task report"
+    },
+    {
+      "severity": "low",
+      "title": "`drive_handoff_stale_pin` still runs on stopped-short rounds — the `cut` veto guards the three early returns, so a 124/137/143 verify falls through to the pin route and builds a release archive that can never contribute a waiver, on the one round that already timed out"
+    },
+    {
+      "severity": "low",
+      "title": "`_drive_waived`'s empty-`attributed` branch is unreachable — every call site is guarded by `[ -n \"$attr\" ]`, so the \"this round left no failing line for anything else to explain\" wording can never be printed"
+    },
+    {
+      "severity": "low",
+      "title": "`drive_implement_envelope` computes `base=\"$(basename \"$f\")\"` and then `_drive_implement_index \"$f\"` forks `basename` on the same path a second time, once per envelope per pass"
+    }
+  ]
+}

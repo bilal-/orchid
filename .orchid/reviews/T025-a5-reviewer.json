@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a5-f2d9",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "c94278f034f4d3658b80c31fb187fc7a19f8df17",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "rework_signature keeps verify.log's volatile `prestate:`/`pre_*` headers, so an identical failure reads as new"
+    },
+    {
+      "severity": "medium",
+      "title": "a stale capture is served as \"the previous attempt's failure\" on rework rounds that captured nothing"
+    },
+    {
+      "severity": "medium",
+      "title": "`task retry` and `task unblock` still delete the verify log without capturing it first"
+    },
+    {
+      "severity": "low",
+      "title": "rework.md takes all remaining truncatable budget, starving lessons.md and context.md on every rework attempt"
+    }
+  ]
+}

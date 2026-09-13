@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T031-a5-9300",
+  "task": "T031",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "fec39e48994580b21c42439a9bb2f5d8a5911043",
+  "candidate_sha": "04d82d91cf6004b81f8b040d172397d5ca0f1ad0",
+  "summary": "T031: Treat a pid-0 manifest as starting, not exited",
+  "commits": [
+    "04d82d91cf6004b81f8b040d172397d5ca0f1ad0"
+  ]
+}

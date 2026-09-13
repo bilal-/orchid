@@ -1,0 +1,23 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a17-1fd8",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "18075c11085c2e32f2f41a0ec6a62af89a1a2e6e",
+  "candidate_sha": "274421dad6bd828fe4a5c623432e49fd1a2526ee",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "A registered worktree owns any binding record, so a borrowed repo+label ends another checkout's schedule"
+    },
+    {
+      "severity": "low",
+      "title": "PROTOCOL.md still says the pump `exec`s runners/orchid-tick, which the EXIT-trap fix deliberately changed"
+    }
+  ],
+  "summary": "The new ownership gate returns \"owned\" for every genuine linked worktree regardless of the path its record names, so the forged-record case its own comments defer to it is acted on rather than refused"
+}

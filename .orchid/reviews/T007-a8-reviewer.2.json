@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T007-a8-ad07",
+  "task": "T007",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "71baa70d2d6668bdb27ec243f7bd2455440f33d4",
+  "candidate_sha": "c5981f0abb4250e953a0b46187689aac7ac2a473",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "driver reports a conflict as `gate_failed` from a stale merge log"
+    },
+    {
+      "severity": "low",
+      "title": "`findings_failing_output`'s \"fails open every way\" claim is false when the banner does not match"
+    }
+  ]
+}

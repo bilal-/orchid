@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T002-a6-02b3",
+  "task": "T002",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "74ab099b3c181d2a76ecbe3ce69efebd6a9bc921",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "_start_tasks_inherited keys on live HEAD, not the recorded cut — fails open when $integ was merged into the operator's branch and then advanced (merge-base becomes the merged-in integ commit, planned tasks read as inherited, witness silently off), and fails closed (original refusal, inapplicable recovery) when HEAD sits on a pre-cut branch or start is re-run from inside the integration worktree"
+    },
+    {
+      "severity": "low",
+      "title": "test_start.sh Part 10 records setup failure with fail() but keeps driving the missing $r27wt, so a setup break buries itself under cascade failures (Part 9 guards the same shape with if/else)"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T040-a2-c858",
+  "task": "T040",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "f471912fe46630352d5d45ea04cbeeefe4e1a11a",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "CPU-stall and timeout kills terminate the launcher wrapper before it records status, so reconciliation journals “Exit code: unrecorded” instead of the mandated exit code."
+}

@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a3-30fe",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "4aa64d344f4477e0eb03aa6fe5dab168a87ad521",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: orchid_install_push_guard uses an unanchored marker search, so a user hook merely mentioning “orchid pre-push guard” can be overwritten, violating the operator-hook preservation guarantee.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "orchid_install_push_guard uses an unanchored marker search, so a user hook merely mentioning “orchid pre-push guard” can be overwritten, violating the operator-hook preservation guarantee."
+    }
+  ],
+  "summary": "orchid_install_push_guard uses an unanchored marker search, so a user hook merely mentioning “orchid pre-push guard” can be overwritten, violating the operator-hook preservation guarantee."
+}

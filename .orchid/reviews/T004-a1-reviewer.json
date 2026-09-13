@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T004-a1-66a0",
+  "task": "T004",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "ed38c352909e6c0257e2048df9cda3f4640145c8",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "post-cleanup snapshot assertion at test_e2e_release_rehearsal.sh:932 keeps the unqualified \"source checkout is still unchanged\" label its sibling at :886 was rewritten to qualify"
+    },
+    {
+      "severity": "low",
+      "title": "tests/test_rehearsal_source_snapshot.sh ships RED/GREEN annotations and calls but is not added to helpers.sh's PROOF_ENROLLED_FILES, so nothing enforces that its proof cases keep running"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a7-60b9",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "89ef61548286d96c7750ceeb6ff4a86eb2a305e1",
+  "summary": "Rank a boundary whose wake budget is spent below a live one",
+  "commits": [
+    "89ef61548286d96c7750ceeb6ff4a86eb2a305e1"
+  ]
+}

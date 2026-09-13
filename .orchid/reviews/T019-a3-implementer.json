@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a3-859a",
+  "task": "T019",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "4406db200032b73521c5ce8e164857c0b96cf0aa",
+  "summary": "No exec-bit hand-off this time — attempt 2 added no new executable.",
+  "commits": [
+    "4406db200032b73521c5ce8e164857c0b96cf0aa"
+  ]
+}

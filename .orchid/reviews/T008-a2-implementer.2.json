@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T008-a2-207e",
+  "task": "T008",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "13ef644372cb91b1aca87928c883e014b4afa3cc",
+  "summary": "Stop INV-05's green-case label executing its own example",
+  "commits": [
+    "13ef644372cb91b1aca87928c883e014b4afa3cc"
+  ]
+}

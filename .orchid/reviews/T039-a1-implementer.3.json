@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T039-a1-efe8",
+  "task": "T039",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "5294e9016772cabe98992fed64cff1f399f73dcd",
+  "summary": "Pin the review plan on the orchestrator's dispatch path too",
+  "commits": [
+    "5294e9016772cabe98992fed64cff1f399f73dcd"
+  ]
+}

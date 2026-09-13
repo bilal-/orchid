@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a8-6464",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "65436236c42099e30ff78babb3b76ab3468ee305",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: `orchid_service_binding_write` accepts a directory at `.orchid/runtime/service.json`, causing `orchid_service_bound` to fail open and permit removing a checkout with a live schedule.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "`orchid_service_binding_write` accepts a directory at `.orchid/runtime/service.json`, causing `orchid_service_bound` to fail open and permit removing a checkout with a live schedule."
+    }
+  ],
+  "summary": "`orchid_service_binding_write` accepts a directory at `.orchid/runtime/service.json`, causing `orchid_service_bound` to fail open and permit removing a checkout with a live schedule."
+}

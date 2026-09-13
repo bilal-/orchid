@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e49-T023-a6-c756",
+  "task": "T023",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "3ee53380e86e6dfe39e6567590fd413cbaf14aa6",
+  "summary": "T023: cover merge's closed stdin and the prepare timeout fallback",
+  "commits": [
+    "3ee53380e86e6dfe39e6567590fd413cbaf14aa6"
+  ]
+}

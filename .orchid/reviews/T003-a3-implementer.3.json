@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a3-e634",
+  "task": "T003",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "c3d8e0454d9e9dffb89e5c106be8aac806606d2d",
+  "summary": "Re-point the soft-surface Part cross-references from O to Q",
+  "commits": [
+    "c3d8e0454d9e9dffb89e5c106be8aac806606d2d"
+  ]
+}

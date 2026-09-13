@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a4-4868",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "d7f213397951035166f553646f63be15511a56c7",
+  "candidate_sha": "4c5ccd44983d52f2e60f9150ead5fb56d4240c84",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "the finished-run waste surfaces only fire on `complete`, never on `accepting` — the state a fully-merged run actually reaches without an operator verb (`orchid_run_status_terminal`, lib/common.sh:1362), so `orchid doctor` prints `ok:` for exactly the schedule the finding is about"
+    },
+    {
+      "severity": "medium",
+      "title": "a spent wake budget on the one recorded boundary declines the orchestrator wake for the whole run, so a second, genuinely settleable boundary that appears later is never woken for and is also skipped by the notify loop (`drive_boundary_wakes_orchestrator` → `continue`), leaving it silently starved"
+    },
+    {
+      "severity": "low",
+      "title": "the pump's deleted-target refusal is unobservable under the schedulers orchid itself installs — the rendered plist sets `StandardErrorPath`/`StandardOutPath` to `/dev/null` and the cron line redirects both, and a nonzero exit from a `StartInterval` agent has no operator-visible failure accounting, contradicting the \"the scheduler's own failure accounting sees it\" claim in runners/orchid-pump:96 and PROTOCOL.md"
+    }
+  ]
+}

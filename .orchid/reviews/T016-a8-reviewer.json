@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T016-a8-c331",
+  "task": "T016",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "814fa45001b34833cb191f2148ab5b2788a92a30",
+  "candidate_sha": "0488cb1fb5eb49f125817dabed23d66ae41c570b",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "stale-root gate stops firing for kernel consumers outside bin/libexec/runners (four engine adapters and scripts/beta-qualify.sh arm it and never fire it), and INV-15 section 4's glob shares the blind spot"
+    },
+    {
+      "severity": "low",
+      "title": "runners/orchid-service fires the gate above the install arm's --interval-s validation, so a typo out of a stale root is answered with the checkout refusal — the opposite of the edge section 8 pins for orchid trust"
+    },
+    {
+      "severity": "low",
+      "title": "orchid-doctor now runs the pre-merge trust library's full history walk and mktemp scratch before the stale-root refusal whose text asserts nothing was run"
+    }
+  ]
+}

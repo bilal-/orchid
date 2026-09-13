@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T027-a1-70c5",
+  "task": "T027",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "d277685e0c5ed093c8910ce6b6d1484aab9dcfef",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "exit 17 is double-booked — kernel.md's exit-code registry still assigns it to \"brokered command refused\" and was not updated for the new `jobs prepare` refusal"
+    },
+    {
+      "severity": "low",
+      "title": "`drive_job_outstanding`'s header comment now states the opposite of the shipped behaviour (claims the sweep and ordinary gc skip pid-0, and points at a `--reap-prepared` pass this commit deleted)"
+    },
+    {
+      "severity": "low",
+      "title": "doctor's pack-budget note asserts `$ORCHID_ROOT/orchid.config is NEVER consulted`, which is false when orchid drives its own checkout (ORCHID_ROOT == repo) — the dogfood configuration, where it prints `from: repo` and then denies that file is a layer"
+    }
+  ]
+}

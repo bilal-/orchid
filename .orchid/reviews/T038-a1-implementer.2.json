@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T038-a1-6f01",
+  "task": "T038",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "1686c5dc9513f139b4b3b2ff77f58e0cb89bed44",
+  "candidate_sha": "12d5e8002269ce8046ad8915f5f193432882c4d0",
+  "summary": "```",
+  "commits": [
+    "12d5e8002269ce8046ad8915f5f193432882c4d0"
+  ]
+}

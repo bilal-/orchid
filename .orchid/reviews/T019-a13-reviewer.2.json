@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a13-4d60",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "587bdba059cc98897b63685cea46249a9914440f",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "the pin-check route executes a repository file with no time bound on the driver's critical path"
+    },
+    {
+      "severity": "low",
+      "title": "the exec-bit cascade claims every failing line naming the file, so a defect in that same file is waived with it"
+    }
+  ]
+}

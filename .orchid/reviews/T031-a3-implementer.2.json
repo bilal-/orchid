@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T031-a3-a855",
+  "task": "T031",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "5dbdbecd7c00a5905ac42cf4b9ceff7d23f436c9",
+  "summary": "T031: name the awaited envelope in the live-job guard",
+  "commits": [
+    "5dbdbecd7c00a5905ac42cf4b9ceff7d23f436c9"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a4-7289",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "7717a5f540b00344b7858d18265f7f896b8c5d6d",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "the existing-repository push-guard upgrade is unreachable for any run past `planning`, and kernel.md claims otherwise"
+    },
+    {
+      "severity": "low",
+      "title": "`orchid merge`'s containment warning has no opt-out, so a self-hosted repo prints it on every merge forever"
+    },
+    {
+      "severity": "low",
+      "title": "the hook upgrade truncates in place and its failure message claims the older hook survived"
+    }
+  ],
+  "summary": "`_start_require_planning` (libexec/orchid-start:830) refuses before the new `orchid_install_push_guard` call at line 894, so the run-state refusal leg reaches an already-initialized repository only at"
+}

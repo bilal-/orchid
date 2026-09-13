@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T021-a4-9181",
+  "task": "T021",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "120c22237ef1e0528d18cab729ed1c2154c6ea29",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Legacy journal entries containing multiple ledger findings are treated as one item, so covering one finding can silently mark the others covered and let them leave planning unconsidered."
+}

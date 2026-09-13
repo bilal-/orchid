@@ -1,0 +1,92 @@
+date: 2026-08-28T17:07:03Z
+sha: 71baa70d2d6668bdb27ec243f7bd2455440f33d4
+candidate: f51347fe9041b016a6a7e926e2ea39ab0697654e
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.6d5BYz
+command: /bin/bash tests/test_docs.sh && /bin/bash tests/test_task.sh
+---
+T001: pending -> implementing
+T001: implementing -> blocked
+T001: blocked -> rework
+T001: guidance delivered to the task body (see `orchid task show T001`) — the implementer's capsule copies it verbatim
+T003: pending -> implementing
+T003: implementing -> blocked
+T003: blocked -> rework
+T003: guidance delivered to the task body (see `orchid task show T003`) — the implementer's capsule copies it verbatim
+T003: attempt budget unchanged at 3 (0 spent, 3 round(s) left)
+T004: pending -> implementing
+T004: implementing -> blocked
+T004: blocked -> rework
+T004: guidance delivered to the task body (see `orchid task show T004`) — the implementer's capsule copies it verbatim
+T004: rework -> implementing
+T004: implementing -> testing
+T005: pending -> implementing
+T005: implementing -> testing
+T006: pending -> implementing
+T006: infra_failures 1/3
+T006: infra_failures 2/3
+T007: pending -> implementing
+T007: implementing -> testing
+T007: testing -> rework
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> rework
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T007: merging -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T007: merging -> rework
+T007: rework -> rework
+T007: guidance delivered to the task body (see `orchid task show T007`) — the implementer's capsule copies it verbatim
+T007: attempt budget unchanged at 3 (1 spent, 2 round(s) left)
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T007: merging -> done
+T009: pending -> implementing
+T009: implementing -> testing
+T009: testing -> reviewing
+T009: reviewing -> arbitrating
+T021: pending -> blocked
+T022: rework -> blocked
+T023: rework -> blocked
+T025: pending -> blocked
+T028: pending -> blocked
+T029: pending -> blocked
+T032: pending -> blocked
+T026: pending -> blocked
+T027: pending -> blocked
+T030: pending -> blocked
+T031: pending -> blocked
+T033: pending -> blocked
+T010: pending -> implementing
+T010: implementing -> testing
+T010: testing -> rework
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> rework
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> blocked
+T010: blocked -> rework
+T010: guidance delivered to the task body (see `orchid task show T010`) — the implementer's capsule copies it verbatim
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> blocked
+T010: blocked -> rework
+T010: guidance delivered to the task body (see `orchid task show T010`) — the implementer's capsule copies it verbatim
+T010: attempt budget unchanged at 3 (2 spent, 1 round(s) left)
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> rework
+T010: rework -> implementing
+T010: implementing -> testing
+exit: 0

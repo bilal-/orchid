@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a5-ae31",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "19ecd59916c9cbda2bec302db9e58c9d35fa0c79",
+  "candidate_sha": "08b5d2dd58cd2e18db3469a6e05fadd107b9d923",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The probe cannot recognize Hermes v0.19.0’s healthy launchd report (“Gateway is supervised by launchd”), and pages print the completed `attempts` counter—0 on the first round—instead of the current at"
+}

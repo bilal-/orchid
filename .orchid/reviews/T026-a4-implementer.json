@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a4-9cf5",
+  "task": "T026",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "1fc7cf088d76bbae3c72a4c8fc037bbda8986d82",
+  "summary": "Refuse a dirty worktree in reverify, and validate before mutating",
+  "commits": [
+    "1fc7cf088d76bbae3c72a4c8fc037bbda8986d82"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T028-a1-ab0a",
+  "task": "T028",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "f5d2ae3ba4e5cb9632cf6e23413267f30e02cfa3",
+  "summary": "Split depends_on on commas and reject unknown ids at write time",
+  "commits": [
+    "f5d2ae3ba4e5cb9632cf6e23413267f30e02cfa3"
+  ]
+}

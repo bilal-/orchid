@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T033-a7-c714",
+  "task": "T033",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d7f213397951035166f553646f63be15511a56c7",
+  "candidate_sha": "9d89097d625c25ef907fff7b65f53ea613946fd4",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "tests/test_docs.sh discovers files with line-oriented `grep -rl \"blocks nothing\"` before folding them, so it skips the wrapped occurrence in docs/architecture.md and leaves the cross-surface regressio"
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T021-a13-093d",
+  "task": "T021",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "63947e81da6f7d12c55cf456eccf3d3e5503cace",
+  "candidate_sha": "d942a1f6634020f50fb75414ec1ca4cb88b43778",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The required operator hand-off is incomplete because Formula/orchid.rb is unchanged from the base despite exportable source changes, leaving its archive checksum stale."
+}

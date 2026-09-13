@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T021-a12-6fc5",
+  "task": "T021",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "63947e81da6f7d12c55cf456eccf3d3e5503cace",
+  "candidate_sha": "a3a200e07c5dc5533f18da107604e6f5a518f58a",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "a ledger enumeration not starting at `(1)` is held whole and anchor-matchable"
+    }
+  ]
+}

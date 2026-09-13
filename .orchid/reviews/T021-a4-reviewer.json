@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T021-a4-315b",
+  "task": "T021",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "4d8f5f5488d82a8f931ab3e36b71d8e7dd2d4ae8",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`plancheck_deferral` accepts any journal line beginning `deferred <id>:`, so an orchestrator can forge a deferral using the admitted `note` kind and bypass the operator-only gate."
+}

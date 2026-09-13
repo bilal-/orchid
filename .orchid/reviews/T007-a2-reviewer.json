@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T007-a2-7c6d",
+  "task": "T007",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "abfabf2e6f2d444ee90601103139537c439d1bf1",
+  "verdict": "request-changes",
+  "scope_complete": false,
+  "findings": [],
+  "summary": "The recursion test pre-sets ORCHID_MERGE_GATE_ACTIVE but never proves that an outer merge passes it into the gate subprocess, so removing that required half would leave tests green while a re-entering"
+}

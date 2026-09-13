@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T039-a1-420b",
+  "task": "T039",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "94202ef2afc5abcfdf3228afaacc91e5de99c45a",
+  "candidate_sha": "68cef8f5eca34595696bffbaeeae077b090cc611",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The implementation properly pins review plans per attempt and candidate SHA, introduces valid recorded recovery exits via `--adopt-evidence` and `--repin`, updates boundary remedies, and corrects effe"
+}

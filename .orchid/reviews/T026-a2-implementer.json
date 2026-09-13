@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a2-4043",
+  "task": "T026",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "ee564030b7f279299c6095626621ded0f3da4f1a",
+  "summary": "`tests/test_task.sh`, `tests/test_drive.sh` and `scripts/ci-local.sh` were not run. The changes are two one-line predicate swaps, comment text, doc prose, and additive test fixtures; I checked the new",
+  "commits": [
+    "ee564030b7f279299c6095626621ded0f3da4f1a"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a5-9a38",
+  "task": "T003",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "9bf480ebe347702f6548510c13c767e755db5399",
+  "candidate_sha": "8a791fe0e472d85b0796699a2884120d3545225d",
+  "verdict": "approve",
+  "scope_complete": false,
+  "findings": [],
+  "summary": "Soft-surface admission, Codex’s boundary prompt, operator notification, exit semantics, and unrelated-task progress are all covered coherently by focused tests."
+}

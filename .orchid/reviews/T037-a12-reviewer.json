@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a12-80be",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "cb37800c9fb18239e60d52e3f24778d8d4e5c529",
+  "candidate_sha": "1f5d693a54ca6cf9211486b5329c2dcad2bb7d02",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "a11 is addressed: the hook now walks every newly reachable commit tree without a path filter, preserves cleanup-only passes and add-then-delete refusals, and correctly documents that self-hosting supp"
+}

@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a21-afc4",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "e344ccf0c9fc2417a54203789e0c65edb62fdaa5",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "the spec-named \"harness fault\" class was withdrawn — a cut-short run (124/137/143) is reported but always charges"
+    },
+    {
+      "severity": "low",
+      "title": "`_DRIVE_PROGRESS_LINE_RE`'s trailing-\" OK\" arm drops lines such as `check foo ... NOT OK` from the accounting denominator"
+    },
+    {
+      "severity": "low",
+      "title": "`orchid verify` now runs the config-named `handoff.pin_check` on every invocation, including passing runs, with no time bound"
+    }
+  ]
+}

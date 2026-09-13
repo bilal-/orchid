@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T010-a1-51bd",
+  "task": "T010",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "c74dbcaacfb60aa2f81a97639c845913cfdfa517",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "rework brief re-injects a stale `<id>-merge.log` from a superseded candidate"
+    },
+    {
+      "severity": "medium",
+      "title": "`handoff_before_verify=required` landed in `orchid.config` inside the candidate, bypassing `orchid config commit --reason`"
+    },
+    {
+      "severity": "low",
+      "title": "kernel.md's `schema: 1` frontmatter list and `tasks/*.md` single-writer table omit `handoff_ack` / `orchid task handoff`"
+    }
+  ]
+}

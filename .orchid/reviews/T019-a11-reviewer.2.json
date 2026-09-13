@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a11-bb08",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "874bb8928aac2ae51819e66bfb21b221281b7f60",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "charged-round reason falsely denies missing gitignored build state"
+    }
+  ]
+}

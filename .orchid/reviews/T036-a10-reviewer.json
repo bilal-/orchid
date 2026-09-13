@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a10-4665",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "b6279c26d8f3240a50ecf086449a9b98f7244e1f",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: Both Darwin teardown paths treat any nonzero `launchctl list` result as proof the job is absent, so a query failure can erase the plist and bindings while the agent remains loaded.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "Both Darwin teardown paths treat any nonzero `launchctl list` result as proof the job is absent, so a query failure can erase the plist and bindings while the agent remains loaded."
+    }
+  ],
+  "summary": "Both Darwin teardown paths treat any nonzero `launchctl list` result as proof the job is absent, so a query failure can erase the plist and bindings while the agent remains loaded."
+}

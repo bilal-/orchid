@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a26-13bc",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "76a53f74d8d09615477284e8c39338f9bf215044",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The pre-verification evidence does not bind `base_sha`, so candidate-controlled verification can rewrite it to `candidate_sha`, making `_drive_authority_intact` trust a candidate-authored `FLAKE` regi"
+}

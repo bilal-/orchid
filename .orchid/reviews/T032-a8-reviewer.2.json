@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a8-950c",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "459fcccdf48b5fbed824266cb62b3e6ca287fb51",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The change persists operator objections across rework, carries them into reviewer packs, blocks deterministic approval until explicit operator arbitration clears them, and adds the required regression"
+}

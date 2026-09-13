@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T002-a7-1a9e",
+  "task": "T002",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "5137859e092ea387c5e61be89881286282be6328",
+  "summary": "T002: Port the preserved inherited-tasks witness work onto the new base",
+  "commits": [
+    "5137859e092ea387c5e61be89881286282be6328"
+  ]
+}

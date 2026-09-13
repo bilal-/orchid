@@ -1,0 +1,19 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a8-ae7d",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "65436236c42099e30ff78babb3b76ab3468ee305",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "linux uninstall's failed-crontab-rewrite path has no test seam"
+    }
+  ],
+  "summary": "The binding, the pump's loud refusal, the removal guard, the wake budget and the required RED/GREEN pairs are all present, mutually consistent and documented; the only gap I found is that `_svc_schedu"
+}

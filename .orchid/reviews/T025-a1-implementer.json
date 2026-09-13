@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T025-a1-18ae",
+  "task": "T025",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "f7b5670992d57879af18cedbf76ba7bebe42d086",
+  "summary": "**Verification was not run.** This session's Bash tool is restricted to a read-only subset — `bash`, `/bin/bash`, and `shellcheck` are all denied, so `tests/test_pack.sh`, `tests/test_drive.sh` and `s",
+  "commits": [
+    "f7b5670992d57879af18cedbf76ba7bebe42d086"
+  ]
+}

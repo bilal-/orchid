@@ -1,0 +1,15 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T009-a2-79fa",
+  "task": "T009",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "a6c4c111c2a9f8d470cabdb1d787ce24722855e9",
+  "summary": "Two caveats on this pass: I could not run `verification_commands` (bash/shellcheck execution is blocked in this session), so the suite's actual pass/fail and ShellCheck cleanliness are unverified — I ",
+  "commits": [
+    "a6c4c111c2a9f8d470cabdb1d787ce24722855e9",
+    "0511735ec6dec474da0fe5c831cfe3078c36a44e"
+  ]
+}

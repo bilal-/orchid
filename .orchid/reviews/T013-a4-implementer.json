@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T013-a4-790e",
+  "task": "T013",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "140cef8c9b783a16937d135ebe81401d7f424ff5",
+  "candidate_sha": "137fdd12b1d629d56d108d00baa45062f7995f7c",
+  "summary": "- **`bin/orchid`'s fixed bootstrap `PATH`** is a literal, not built from `PATH`, so no `PATH` restriction can reach it. No binary lookup sits ahead of `_orchid_entry_restore_operator_path` today (I ch",
+  "commits": [
+    "137fdd12b1d629d56d108d00baa45062f7995f7c",
+    "1bb5f06da66c44a982b7aafe1160de544107fdf2",
+    "c9deb0cf612216e5d363d94b067f59085040ab1f",
+    "dd35326906dc08a7c635ee862ca007af9d4e424a",
+    "fbd535ba9d3db079363b5bf32ba49cfe1c714529"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a4-1a0b",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "35d6ebfabcf23a342b046f0898b660d9a4c2d038",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "page prints `attempt: <attempts>`, one less than the current round every other artifact uses (`attempts+1`)"
+    },
+    {
+      "severity": "low",
+      "title": "`orchid notify` now dies on a text argument beginning with `-`, which the orchestrator broker still admits as text"
+    }
+  ]
+}

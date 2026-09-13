@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a13-7d17",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "b8a632c9fa9ef2f258525e4f390fa39dbe7b012d",
+  "summary": "T036: Resolve a removal's schedule from its binding twins, not the path",
+  "commits": [
+    "b8a632c9fa9ef2f258525e4f390fa39dbe7b012d"
+  ]
+}

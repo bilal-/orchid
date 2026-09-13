@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a12-c7d2",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "dacdeb54db8284a28b1e82d65a6bdcf4d6e74766",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: Uninstall and teardown recompute the scheduler label from the checkout’s current path instead of using the recorded binding, so after `git worktree move` they can remove the worktree while the origina",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "Uninstall and teardown recompute the scheduler label from the checkout’s current path instead of using the recorded binding, so after `git worktree move` they can remove the worktree while the origina"
+    }
+  ],
+  "summary": "Uninstall and teardown recompute the scheduler label from the checkout’s current path instead of using the recorded binding, so after `git worktree move` they can remove the worktree while the origina"
+}

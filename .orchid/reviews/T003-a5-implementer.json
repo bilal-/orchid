@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a5-82ec",
+  "task": "T003",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "cbf2f39a9ef898616c13d1e5b23a2cd662e8cd95",
+  "summary": "Port preserved soft-surface and keep-driving fix onto the rebased branch",
+  "commits": [
+    "cbf2f39a9ef898616c13d1e5b23a2cd662e8cd95"
+  ]
+}

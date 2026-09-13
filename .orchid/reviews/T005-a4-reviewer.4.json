@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e43-T005-a4-e62d",
+  "task": "T005",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "9bf480ebe347702f6548510c13c767e755db5399",
+  "candidate_sha": "d143aac66a5c3d251c73940e3ebaf82bfd9eae8c",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "\"version needle has no shortcut\" claim overstated — the prompt's absolute binary path makes the checkout's version readable without executing"
+    }
+  ]
+}

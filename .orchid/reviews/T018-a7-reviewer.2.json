@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T018-a7-a8d0",
+  "task": "T018",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "5c81b9b73b128aed6cba41183f31ea5e99338ba4",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Exit 19 on an escalation relaunch is not durable—the next pass reaps its triggering manifest and clears the hand-off, stranding the active task—and the candidate still needs the operator’s stale Formu"
+}

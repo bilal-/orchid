@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e53-T009-a4-ae91",
+  "task": "T009",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "71134ec4e375fd22ddd0311e986eb2e4d02ab5c0",
+  "summary": "Render a blocker's declared answer set on the status page",
+  "commits": [
+    "71134ec4e375fd22ddd0311e986eb2e4d02ab5c0"
+  ]
+}

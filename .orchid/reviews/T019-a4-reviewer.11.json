@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-1352",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "4e8fbc35b21a02f9b4e1d0bc293c9bcb3ffc6080",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`drive_exec_bit_attribution` uses an unbounded substring match, so a candidate-caused permission failure on `bin/tool-helper` can be wrongly waived when `bin/tool` awaits chmod."
+}

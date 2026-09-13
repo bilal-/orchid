@@ -1,0 +1,19 @@
+date: 2026-08-31T03:03:48Z
+sha: 12d5e8002269ce8046ad8915f5f193432882c4d0
+head_after: 12d5e8002269ce8046ad8915f5f193432882c4d0
+candidate: 12d5e8002269ce8046ad8915f5f193432882c4d0
+cwd: /Users/bilal/workspace/personal/orchid-orchid-T038
+command: /bin/bash tests/test_docs.sh
+prestate: 1
+pre_base_sha: "1686c5dc9513f139b4b3b2ff77f58e0cb89bed44"
+pre_exec_missing: ""
+pre_env_missing: ""
+pre_env_inventory: ""
+pre_pin_stale: ""
+pre_integration_head: "1686c5dc9513f139b4b3b2ff77f58e0cb89bed44"
+---
+  RED-CASE: the documentation verb gate extracted 'frobnicate' from a code span and 'quuxify' from a fenced command line, neither of which has a libexec verb, so it still catches an undocumented or renamed verb
+  GREEN-CASE: the same extractor read three prose sentences naming orchid -- mid-sentence, opening a line, and one naming a real verb in passing -- and extracted nothing, so the gate reads marked commands rather than English
+  RED-CASE: the empty-findings sweep DISCOVERS and reports a wrapped, unqualified 'blocks nothing' claim that a line-oriented grep never lists
+  GREEN-CASE: the same sweep still discovers the wrapped sentence but accepts it once it names the approving review
+exit: 0

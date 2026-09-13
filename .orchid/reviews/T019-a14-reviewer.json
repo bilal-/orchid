@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a14-f7df",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "1929053efe4bf2189ce32f14fbaa512cd0ef27df",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The classifier ignores diagnostics outside its failure regex, so an attributed hand-off beside an unrecognized candidate failure can be waived instead of receiving the required strict-default charge."
+}

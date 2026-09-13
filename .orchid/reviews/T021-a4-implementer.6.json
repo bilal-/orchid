@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T021-a4-fb17",
+  "task": "T021",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "275634afbaf6945297f806d453ca141a230447d0",
+  "summary": "Reject gapped and repeated enumerations as undecomposable",
+  "commits": [
+    "275634afbaf6945297f806d453ca141a230447d0"
+  ]
+}

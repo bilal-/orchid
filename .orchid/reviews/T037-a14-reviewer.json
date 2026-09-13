@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a14-3550",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "cb37800c9fb18239e60d52e3f24778d8d4e5c529",
+  "candidate_sha": "f5b18b5b9ea9fcaa7f848386ea946c3305a28224",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The a13 objection was addressed: the batched walk retains portable rev-list output, tolerates its explicit missing header probes, and covers clean pushes on older Git."
+}

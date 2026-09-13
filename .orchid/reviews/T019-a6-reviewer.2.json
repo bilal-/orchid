@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a6-807c",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "cca653d5dfd643f8e3bd8a1243105c83e14b8000",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "environment cascade claims any failing line containing a token that names a direct child of the missing dependency tree, laundering a real defect"
+    },
+    {
+      "severity": "medium",
+      "title": "the \"candidate changed this file\" guard fails open when base_sha/candidate_sha cannot be resolved, re-opening the pin and quarantine routes"
+    },
+    {
+      "severity": "low",
+      "title": "the exec-bit fallback clause tells the operator to `chmod +x` an ambient mode-644 sourced library on every charged round"
+    }
+  ]
+}

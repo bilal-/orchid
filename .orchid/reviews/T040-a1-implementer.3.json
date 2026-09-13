@@ -1,0 +1,15 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T040-a1-7766",
+  "task": "T040",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "101bed8fcd19ebd3c13f4161bf8d903afbb8f6c7",
+  "summary": "Verify the already-delivered F35 salvage work; no code changes needed",
+  "commits": [
+    "101bed8fcd19ebd3c13f4161bf8d903afbb8f6c7",
+    "c0d43c971bda8b5fbaa8dcf0e2d01c7e2ce02534"
+  ]
+}

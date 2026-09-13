@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a1-f846",
+  "task": "T003",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "36d01dd51d6c2de5454c3ececad975ed44e85364",
+  "summary": "T003: Stop a soft surface admitting every verb; keep the pump driving",
+  "commits": [
+    "36d01dd51d6c2de5454c3ececad975ed44e85364"
+  ]
+}

@@ -1,0 +1,69 @@
+date: 2026-08-29T20:30:27Z
+sha: fec39e48994580b21c42439a9bb2f5d8a5911043
+candidate: 104cc03b0de4a78a6197e5ca83a9585465cf480e
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.ZXQu13
+command: /bin/bash tests/test_launch.sh && /bin/bash tests/test_manifest.sh && /bin/bash tests/inv/test_INV-16_capability_routing.sh
+command_status: 0
+---
+  RED-CASE: a mechanical step (needs shell) routed to an actor declaring structured_text, workspace_write and git was refused, naming shell as the missing atom
+  GREEN-CASE: the same mechanical step routed to the same actor plus a shell declaration was admitted silently, so the refusal above is a capability decision
+  RED-CASE: a compound step name built from two adjacent rows of the padded set (review critique) was refused as a caller error instead of validating as kernel-owned, being priced at nothing and admitting an actor
+  GREEN-CASE: each half of that compound still validated and was still routable to the same actor, so the refusal is about a step name that is not one token rather than about those two steps
+  RED-CASE: a manifest declaring the whitespace-bearing entry "deploy shell" was still refused the shell-requiring mechanical step, instead of satisfying it from a substring of an atom the kernel has never heard of
+  GREEN-CASE: the same declaration split into its own comma-separated token covered the step, so dropping the whitespace-bearing entry refuses a non-atom rather than the atom hidden inside it
+  RED-CASE: orchid jobs prepare exited 19 and minted nothing when a shell-requiring step was routed, through a role declaring no requirements, to an actor declaring no shell
+  GREEN-CASE: the identical prepare, with only the bound engine changed to one declaring shell, minted its job manifest — so the exit 19 above is a capability refusal and not a broken verb
+  RED-CASE: an actor declaring no capabilities at all, bound to a custom role whose descriptor requires nothing, was refused a review step at orchid jobs prepare (exit 19, naming structured_text) with no job minted
+  GREEN-CASE: the identical prepare, with only the bound engine changed to one declaring exactly structured_text, minted its job manifest — so the refusal above is about that one atom and not about a sparse manifest
+  RED-CASE: a reviewer slot pinned to an implementer-grade engine declaring no structured_text was refused with the capability answer (19, naming structured_text) that the driver turns into a journaled operator hand-off, instead of the exit 14 it reads as a wait
+  GREEN-CASE: the same prepare with an actor covering the step but not the role was still refused at 14 by the role gate, naming the ROLE capability — so asking the step table first is an ordering of reports rather than a way past the role gate
+  RED-CASE: orchid jobs prepare refused the compound operation "review critique" as an unknown operation and minted nothing, instead of validating it against the padded step set, pricing it at nothing and binding a capable engine to an operation no adapter serves
+  GREEN-CASE: the identical prepare with a single-token operation (critique, the other half of that compound) minted its job, so refusing the compound one is a decision about the step name rather than the verb having stopped working
+  RED-CASE: an actor declaring shell was fed to a repository whose operator had set handoff_before_verify=required, and the pause held — the declaration bought nothing
+  GREEN-CASE: with no config gate and an implementer declaring shell the pause stayed off, so the two required verdicts above are decisions rather than a gate that never opens
+  GREEN-CASE: a qualified third-party id (acme/foo) whose plugin is installed under the directory orchid plugins install would give it resolved through the registry and was admitted the mechanical step, instead of being held at an unclearable hand-off
+  RED-CASE: the qualified id of an INSTALLED third-party engine declaring no shell was refused the mechanical step, naming shell — so resolving qualified ids reads the manifest rather than waiving the gate
+  RED-CASE: a qualified id no directory answers to and no manifest claims (zzz/ghost) was refused and named, and stayed refused when an unrelated plugin was installed at its basename
+  RED-CASE: an implementer id no installed plugin answers to made the mechanical hand-off REQUIRED and named the id — the arm did not report "no objection" about a manifest it never read
+  GREEN-CASE: a task recording a third-party implementer by its qualified id (acme/foo) left the mechanical pause off once the id was resolved through the registry, so a third-party engine can finish a candidate
+  GREEN-CASE: the same third-party manifest bound by its directory name left the pause off too, so the gate answers about the plugin rather than about which of its two names a record carries
+  RED-CASE: the hand-off advice for a refused hook step named the point and the hook.before_merge key that binds a handler, instead of the role.hook key orchid has never read
+  GREEN-CASE: the role arm of the same advice still named role.implementer, so naming the hook point is a correction to the one step whose role positional is a placeholder rather than a loss of the advice
+  RED-CASE: a capability refusal on the escalation ladder's relaunch raised the named operator hand-off and journaled it, instead of being swallowed by the ladder and left to burn infra_failures to blocked
+  GREEN-CASE: the same escalation relaunch, with only the bound engine changed to one declaring shell and git, was admitted and minted its job — no refusal, no hand-off boundary, and the ladder still relaunches
+  RED-CASE: a refused reviewer slot named the key its engine actually resolved from — review.<tier>, or the fallback in words — instead of advising role.reviewer for an engine that key never selected
+  GREEN-CASE: a refusal with no explicit binding still advised role.<role>, so naming the reviewer slot key is a correction to the one caller bound another way rather than a loss of the advice
+  RED-CASE: the docs stopped advertising an automatic hand-off pause that roles/implementer.role makes unreachable, and the role requirement they now rest on is pinned beside them so neither half can move alone
+  RED-CASE: a research step routed to an actor declaring every atom but citations was refused as a capability shortfall naming citations, instead of being answered as a step the kernel has never heard of
+  GREEN-CASE: the same research step routed to the same actor plus a citations declaration was admitted silently, so the refusal above is a capability decision and research is genuinely priced rather than merely accepted
+  RED-CASE: a refused reviewer slot advised the recorded verb that moves a pinned row (orchid jobs review-plan <task> --repin) alongside the config key, instead of naming only a key that a pinned plan ignores
+  GREEN-CASE: the same advice for an implementer, an arbiter and a hook handler named no review-plan verb, so the repin step is a correction to the one caller whose row is pinned rather than a command pasted onto every refusal
+  GREEN-CASE: running the advised orchid jobs review-plan --repin against a pinned slot whose engine review refuses rebound it to the capable engine the operator had bound, journaled the new table, and left the step routable — while the config edit alone had left the pinned row untouched
+  RED-CASE: a role chain whose only entry declares no structured_text was refused a review step at orchid jobs prepare with the permanent answer (19, naming the atom) instead of the exit 14 the driver reads as a ledger wait, with no job minted
+  GREEN-CASE: the same chain with one capable entry appended stayed the exit-14 wait it always was, so the refusal above is about the whole chain being short rather than about resolution having failed
+  GREEN-CASE: a chain naming only an uninstalled qualified id stayed at exit 14, so the chain gate re-reports a missing atom and not every reason a chain comes up empty
+  GREEN-CASE: the identical prepare, with only the chain rebound to an actor declaring structured_text, resolved and minted its job — so the exit 19 above is a capability decision and not a verb that had stopped working
+  RED-CASE: the real driver, dispatching a pending task through an ordinary role chain whose only entry declares none of what implement needs, journaled the refusal and raised the named operator-handoff boundary instead of printing a ledger wait and coming back next pass
+  GREEN-CASE: the same driver pass, with only role.implementer rebound to an engine declaring workspace_write, shell and git, dispatched the task and journaled no refusal — so the hand-off above is about the chain and not about the walk
+  GREEN-CASE: an incapable primary skipped in favour of a capable but UNPROVEN fallback left the chain at exit 14 with the capsuite remedy named, so operation-aware selection does not promote an entry the failover rules have not cleared
+  RED-CASE: a role chain whose primary is role-eligible but cannot perform the step failed over to the capable capsuite-proven entry behind it and minted the job there, instead of settling on the primary and refusing the whole chain at 19
+  RED-CASE: converting a permanent chain shortfall from the exit-14 wait to the exit-19 refusal emitted the refusal ALONE, instead of printing the wait line the caller must not act on beside it
+  GREEN-CASE: the identical verb against a capable but rate-limited chain still printed the wait line from resolve_role_available and no refusal, so emitting only the refusal is a choice about which report is true rather than the wait line being suppressed
+  RED-CASE: the real scheduled pump, meeting an orchestrator chain in which every entry is short an atom the orchestrate step needs, recorded one journaled operator hand-off naming role.orchestrator instead of printing its come-back-later poll line once per staleness window forever
+  GREEN-CASE: a second pump pass over the same permanently-refused chain raised no second blocker, so the hand-off is recorded once per distinct fact rather than once per staleness window
+  GREEN-CASE: the headless tick, run directly behind a pump pass that had already recorded the same refused chain, exited 19 with the same sentence and filed no second blocker and no second journal line, so the two entry points share one record rather than each keeping their own
+  GREEN-CASE: the same pump against a chain whose only entry declares everything orchestrate needs and is merely rate-limited printed the ordinary poll line and raised no hand-off, so the refusal above is a capability decision rather than the pump reporting every unavailability as permanent
+  GREEN-CASE: the identical pump pass, with only the ledger mark cleared, woke the orchestrator adapter that declares shell and git — so the two refusals above are decisions about the chain rather than a pump that had stopped waking anything
+  RED-CASE: the surface prediction the driver and the pump both consult followed the same operation-aware walk the wake does and reported the capable fallback command_surface, instead of the label of the role-eligible primary that cannot perform the orchestrate step
+  GREEN-CASE: the same prediction against a single capable entry declaring the unrestricted surface reported that label, so skipping an incapable entry narrows nothing on its own
+  RED-CASE: the direct planning-critique launcher, refused a step the bound plan_critic chain cannot perform, journaled the named operator hand-off against the reserved plan id instead of printing to a stderr nobody was reading and exiting
+  GREEN-CASE: a second identical planning-critique launch against the same refused chain journaled no second line, so the hand-off is recorded once per distinct fact rather than once per attempt
+  GREEN-CASE: the same planning-critique launch, with only role.plan_critic rebound to an engine declaring structured_text, minted and spawned its job and journaled no refusal
+  RED-CASE: the headless tick, run directly against a permanently refused orchestrator chain in a repository no pump has ever polled, recorded one journaled operator hand-off instead of exiting 19 into a scheduler with the fact written down nowhere
+  GREEN-CASE: a second direct tick over the same refused chain raised no second blocker and no second journal line, so the tick records once per distinct fact rather than once per scheduler interval
+  GREEN-CASE: the same direct tick against a chain whose only entry declares everything orchestrate needs and is merely rate-limited exited 14 and recorded nothing, so the tick records a capability decision rather than every unavailability
+  GREEN-CASE: a second direct tick over an unanswered capability hand-off added no second blocker and no second journal line, so an incident still standing is recorded once across repeated passes
+  RED-CASE: a capability shortfall that returned after its hand-off had been answered raised a fresh blocker, a fresh journal line and a fresh qid, instead of being silenced forever by the resolved entry an append-only BLOCKERS.md still carries
+  GREEN-CASE: a further direct tick over the re-raised hand-off, unanswered, added nothing — so the re-arm is scoped to the answered incident rather than being the dedup removed
+  red-cases: 26 demonstrated in this file (green-cases: 34)
+exit: 0

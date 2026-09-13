@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a7-2a9d",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "c54ded01d0c01dbe81e1acff0d4b9f91af2fad90",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "await_log_growth's 30s bound equals the default heartbeat interval, so `[hb ` output satisfies all four streaming-liveness cases"
+    },
+    {
+      "severity": "low",
+      "title": "six duplicate Part letters in tests/test_drive.sh make prose cross-references (including QUARANTINE.md's \"Part W\") ambiguous"
+    },
+    {
+      "severity": "low",
+      "title": "tests/QUARANTINE.md ships zero live entries, so orchid's own run would still charge an attempt if the L020 family regressed"
+    }
+  ]
+}

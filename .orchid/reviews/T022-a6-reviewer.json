@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a6-0aec",
+  "task": "T022",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "0f29bc4a222bad8ffaa2e3b62d7d5f32ce191267",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "The objection's mandatory measurement is still unproduced — no zero-failure run of tests/test_drive.sh exists for this candidate"
+    },
+    {
+      "severity": "low",
+      "title": "drive_delivery_is_noop reads HEAD only, so a dispatch that edited files without committing is journalled as \"delivered nothing\" and its relaunch inherits the dirty worktree"
+    },
+    {
+      "severity": "low",
+      "title": "kernel.md's transition table now states an implementing→testing precondition that `orchid task advance` neither checks nor can check, since the driver overwrites candidate_sha before advancing"
+    }
+  ]
+}

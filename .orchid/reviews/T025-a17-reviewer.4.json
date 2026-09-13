@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a17-fbf0",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "a713d3431d238464ff53a861fb05b0f66a452280",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "All three required behaviours are implemented at the proven root cause with a genuine RED case, the refusal paths consistently degrade to pre-T025 behaviour rather than to a false claim, and I found n"
+}

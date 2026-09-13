@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T021-a4-3f35",
+  "task": "T021",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "4d8f5f5488d82a8f931ab3e36b71d8e7dd2d4ae8",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "deferral satisfaction is a raw `^deferred <id>: ` journal-text match, not scoped to `plan_deferral` entries, so the broker's kind refusal is not what actually gates it"
+    },
+    {
+      "severity": "low",
+      "title": "`orchid run advance running` before `plan apply` disables the refusal, letting carried items leave planning with no per-item record"
+    }
+  ]
+}

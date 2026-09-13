@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T027-a3-78c8",
+  "task": "T027",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "2914e73e92bf87419bd6c50cd03362a213c90a58",
+  "summary": "Use herestrings for the negative grep assertions this task added",
+  "commits": [
+    "2914e73e92bf87419bd6c50cd03362a213c90a58"
+  ]
+}

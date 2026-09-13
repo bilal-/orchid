@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T039-a2-9ab4",
+  "task": "T039",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "94202ef2afc5abcfdf3228afaacc91e5de99c45a",
+  "candidate_sha": "b9b90866f2e10894d1ebdb0aac49693057a141ad",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "`--adopt-evidence` labels a slot credited only by an anonymous (`.engine`-less) envelope `engine-independent`, recording independence the evidence cannot prove"
+    },
+    {
+      "severity": "low",
+      "title": "`ledger_show` hides an open rate-limit window when the same engine is also at the failure threshold — `failures <n>` replaces `until <iso>`, so the window the operator still has to wait out is invisible"
+    }
+  ]
+}

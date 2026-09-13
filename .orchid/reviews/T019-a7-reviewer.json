@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a7-bcb8",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "c54ded01d0c01dbe81e1acff0d4b9f91af2fad90",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "tests/QUARANTINE.md has no live L020 entry, so a recurrence is classified as candidate and consumes an attempt instead of charging infra."
+}

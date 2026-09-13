@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T017-a4-4882",
+  "task": "T017",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "4a10b7fb939c612877ae41bf782b265617ca5f73",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "INV-05's green_case label runs backticked prose as a command substitution, mangling the recorded label"
+    },
+    {
+      "severity": "low",
+      "title": "INV-13's RED/GREEN labels are inverted and its probe exercises `code_of`, not the gate's own scan"
+    }
+  ]
+}
