@@ -5,6 +5,14 @@ This file applies to the entire repository. Orchid is a Bash 3.2+, Git, and
 author has dogfooded it on Orchid and on external application repositories,
 but no genuine third-party beta or public release has happened.
 
+## Start here
+
+- **[`docs/plans/SESSION-STATE.md`](docs/plans/SESSION-STATE.md)** — where the
+  work actually stands: which run is accepted, which pull requests are open,
+  what is deliberately NOT built and why, and the traps in this repository that
+  have cost real time. Read it first and verify its claims against the tree; it
+  is a hand-off note, not an authority.
+
 ## Read before changing behavior
 
 - `PROTOCOL.md` is the operational state-machine procedure.
