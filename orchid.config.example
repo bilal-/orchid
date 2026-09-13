@@ -235,6 +235,14 @@ pack_budget_bytes=65536
 # answered identically (dogfood finding F27). 0 disables the stop, leaving the
 # ordinary attempt budget as the only backstop.
 # rework_nonconvergence_max=3
+# How many CONSECUTIVE plan-critique rounds may fail to reduce the finding
+# count before `orchid plan apply` refuses. The critique loop's twin of
+# rework_nonconvergence_max: a round that does not reduce the count is the
+# critic answering the same way again, and another one re-asks a question
+# already answered. `orchid plan rounds` shows the series and which rounds did
+# not move. 0 disables the stop. Raise it if a loop really should get more
+# rounds of the same question.
+# critique_nonconvergence_max=3
 # model=
 # effort=medium
 # rate_limit_backoff_s=3600
