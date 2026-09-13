@@ -276,3 +276,118 @@ recorded above. Before `orchid run accept`, the operator still must record:
 
 Until all required rows are complete, this file is evidence of an honest
 candidate hand-off, not evidence of run acceptance.
+
+## Operator acceptance — 2026-09-12
+
+Recorded on the operator's explicit instruction to accept the run. Both items
+the completion block above left outstanding are answered here, and each is
+answered with what is true rather than with what would be convenient.
+
+### The tree being accepted
+
+`orchid/integration` at `08fb01b77ba358159eeed6377f789eb89fba0555`.
+
+- It contains the 40-task result `d9b1cd15174c0e75b424ebf9b64a8f953aca91b0`
+  as an ancestor, so every task's merge is in this history.
+- Its PRODUCT content — everything outside `.orchid/` and `tests/` — is
+  **byte-identical** to `main` at `7dcb58bcf333627a1f50e428834d03b6b52b80fe`
+  (`git diff 7dcb58bc 08fb01b7 -- . ':(exclude).orchid' ':(exclude)tests'` is
+  empty). That is the exact tree hosted CI run
+  [33577759163](https://github.com/bilal-/orchid/actions/runs/33577759163)
+  proved green on ubuntu-latest and macos-latest. No line of shipped code in
+  this acceptance is unproved by that run.
+
+**Two test files differ, and they were added deliberately after the first
+acceptance gate ran RED.** That gate failed four assertions, all one cause: the
+merge CAS case timed its concurrent commit with `sleep 0.3` against a real
+merge, and on a loaded machine the commit lands before merge reads the
+integration head — so merge correctly reports a STALE BASE (exit 5) and the
+case fails while reporting a race it never ran. The same fixture had already
+failed twice on hosted macOS and been diagnosed and repaired on `main`; the
+integration branch simply predated the repair.
+
+Re-running until it passed would have treated a diagnosed defect as luck. So
+the two test-only fixes were cherry-picked here instead:
+
+- `03b7f18e` — the CAS case now waits for a marker the merge's own validation
+  command writes, which proves `integ_head` was already read, putting the
+  concurrent commit inside the CAS window by construction rather than by
+  timing.
+- `dd1dbec2` — the verb-lock case now counts journal entries against the calls
+  that actually SUCCEEDED, because a caller refused for lock contention never
+  ran and has no entry to lose.
+
+`git diff --name-only a6523dfe 08fb01b7` names only `tests/test_merge.sh` and
+`tests/test_verb_lock.sh`. **No product file changed.** The accepted tree is
+r-002's result plus two corrections to tests that were measuring the machine
+rather than the property they claim to test.
+
+### The exact-SHA row: closed by decision, not by a run
+
+The retrospective asked for "a canonical full-CI run against the exact final
+40-task integration SHA `d9b1cd15`". That run is deliberately NOT performed, and
+the reason is not expedience:
+
+**`d9b1cd15`'s product tree is known to FAIL hosted CI.** That is precisely why
+`aae7e9b9` (Ubuntu ShellCheck 0.9 compatibility) and `7dcb58bc` (deterministic
+service platform fixtures) exist — the first two hosted runs on the merge of
+that tree failed, and those two commits are what made it green. Running CI
+against `d9b1cd15` today would produce a red result on a tree that has already
+been superseded twice over. It would be ceremony, and recording a known-red run
+as an acceptance row would be worse than recording nothing.
+
+So the accepted tree is the one that CONTAINS `d9b1cd15` plus the two fixes its
+own hosted failures demanded, and the green evidence is bound to that tree by a
+byte-identical product diff rather than by assertion. **No claim is made that
+the 40-task tree as merged was ever green.** It was not.
+
+### The ambient integration-branch gate
+
+`/bin/bash scripts/ci-local.sh --bash /bin/bash`, run from this checkout while
+it is actually parked on `orchid/integration` at
+`08fb01b77ba358159eeed6377f789eb89fba0555`: **CI PASS**, 105 test files, 0
+failures, including `test_hermetic_suite.sh` (the PATH-restricted no-vendor-CLI
+run) and every `tests/inv/` invariant.
+
+This is the row L036 exists for and the one no other environment can stand in
+for: a path conditioned on branch identity is dead code in a task worktree and
+in merge's temp worktree, because neither can be parked on the integration
+branch. It is why the same commit once passed on every other branch name and
+failed eleven assertions here.
+
+The FIRST run of this gate, on `a6523dfe`, failed — four assertions, one cause,
+recorded above. It is named here rather than quietly replaced by the green one:
+an acceptance that reports only its last attempt is the shape r-001's
+acceptance had.
+
+### Acceptance reason
+
+r-002 delivered what a hardening run is for: 40 tasks merged, each through the
+kernel's own review, arbitration and merge gates, and the run falsified the
+claim it most needed tested — that a correct deterministic kernel is sufficient
+for unattended operation. The defects it found in state recovery, evidence
+binding, failure accounting, lifecycle and containment are repaired in this
+tree, with RED cases for the enforced ones and honest labels on the rest. The
+product content of the accepted tree is proved green by hosted CI on both
+platforms and by the local canonical gate from this integration checkout.
+
+The run is accepted as a **hardening run's result**, not as a release and not as
+a claim of readiness for an unfamiliar operator.
+
+### What acceptance does NOT claim
+
+Unchanged by this decision, and still open:
+
+- no genuine third-party beta run has occurred;
+- nothing has been published, tagged, uploaded, deployed or announced, and the
+  version remains `1.0.0-beta.1`;
+- runtime capability proof for implementer profiles is not done;
+- a live notification return-leg qualification on a fresh machine is not done;
+- the 1.0 prerequisites in the retrospective stand as written.
+
+### Work that is NOT part of this acceptance
+
+r-003 track work merged to `main` after r-002's tasks (PRs #12 and #13:
+recovery-route messages, INV-17, the rollover guard, per-attempt verify
+evidence, the engine half-open probe, worktree lifecycle, `task get`). It is
+outside this run and outside this acceptance record.
