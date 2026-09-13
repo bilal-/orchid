@@ -181,6 +181,32 @@ case "$sub" in
       exit "$crosscheck_rc"
     fi
 
+    # ---- THE CRITIQUE LOOP HAS STOPPED MOVING (dogfood F40) -------------
+    # `orchid plan rounds` reports the series; nothing makes anyone read it,
+    # and lesson L016 is precisely that a mechanism nothing forces you to use
+    # is not a fix. r-002's own critique ran 10, 7, 5, 8 findings before a
+    # fifth round approved, and the round that went UP was visible to nobody.
+    #
+    # SAME SHAPE AS THE REWORK LOOP'S STOP, deliberately rather than a second
+    # invention: `rework_nonconvergence_max` already refuses to spend another
+    # round re-asking an identically-answered question, and this is that rule
+    # one loop earlier. The predicate is shared with the report
+    # (findings_rounds_stalled) so the two can never disagree about what
+    # stalled means, and it is narrower than what the report PRINTS -- only
+    # consecutive non-reducing rounds at the END of the series, so a blip the
+    # loop has since recovered from does not stop a plan that is converging.
+    #
+    # AND IT PAIRS WITH ITS OWN REMEDY, which is the whole difference between
+    # a gate and a wall, exactly as the cross-check above pairs with `plan
+    # defer`: make the next round reduce the count, or raise the bound. Both
+    # doors are open in the state this fires in.
+    crit_max="$(config_get "$repo" critique_nonconvergence_max 3)"
+    case "$crit_max" in ''|*[!0-9]*) crit_max=3 ;; esac
+    if [ "$crit_max" -gt 0 ] && findings_rounds_stalled "$state" plan "$crit_max"; then
+      echo "orchid: plan apply refused — the plan critique has now run $crit_max consecutive round(s) without reducing its finding count (critique_nonconvergence_max=$crit_max), so another round would re-ask a question the last ones already answered the same way. See which rounds and which findings: orchid plan rounds. Then either make the next round reduce the count -- the report separates a repeat from a new objection, and a repeat is the critic saying the draft did not change where it mattered -- or raise critique_nonconvergence_max if this loop really should get more rounds of the same question." >&2
+      exit 3
+    fi
+
     # v1-m4 Task 1: the temp-worktree + CAS + sync-back mechanics below (once
     # this arm's own inline code) now live in lib/common.sh's
     # orchid_commit_durable, shared with `orchid run accept` and `orchid

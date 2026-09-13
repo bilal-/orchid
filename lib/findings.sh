@@ -638,3 +638,39 @@ findings_round_series() {
     prev="$ids"
   done
 }
+
+# findings_rounds_stalled <state> <base> <max> -- 0 when the LAST <max> rounds
+# in the series each failed to reduce the finding count.
+#
+# CONSECUTIVE, AND AT THE END, which is a different question from the one
+# `orchid plan rounds` answers in its report. The report names every round that
+# did not reduce, because an operator reading the history wants the whole
+# shape. A GATE must not fire on a blip the loop has since recovered from: a
+# series of 8, 9, 6, 3 contains a non-reducing round and is plainly converging
+# now. What justifies stopping is the loop failing to move in its most recent
+# rounds -- the same predicate, and the same reasoning, as
+# `rework_nonconvergence_max` applies to a byte-identical rework failure.
+#
+# Fewer than <max>+1 rounds is never stalled: there is not yet enough series to
+# say anything, and a gate that fires on round one would stop every plan before
+# its critique had a chance to answer.
+findings_rounds_stalled() {
+  local state="$1" base="$2" max="$3" series n prev tot streak=0
+  case "$max" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$max" -gt 0 ] || return 1
+  series="$(findings_round_series "$state" "$base")"
+  [ -n "$series" ] || return 1
+  prev=""
+  while IFS=$'\t' read -r n tot _ _ _; do
+    [ -n "$n" ] || continue
+    if [ -n "$prev" ]; then
+      if [ "$tot" -ge "$prev" ]; then
+        streak=$(( streak + 1 ))
+      else
+        streak=0
+      fi
+    fi
+    prev="$tot"
+  done <<< "$series"
+  [ "$streak" -ge "$max" ]
+}

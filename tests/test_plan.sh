@@ -1502,3 +1502,60 @@ grep -q "not converging" <<<"$f40ok_out" \
   && fail "F40: a strictly shrinking series must not be reported as non-converging: $f40ok_out"
 assert_match "converging" "$f40ok_out" "F40: ...it is reported as converging"
 green_case 'a strictly shrinking critique series is reported as converging and exits 0, so the regression verdict above is a decision about the series rather than a label on every report'
+
+# ============================================================================
+# F40, the half a report cannot do: STOP the loop.
+#
+# `orchid plan rounds` tells an operator the series is not converging. Nothing
+# makes anyone read it, and lesson L016 is exactly that — a mechanism nothing
+# forces you to use is not a fix. So `plan apply` refuses a plan whose critique
+# has stopped moving, on the same terms the rework loop already refuses a
+# byte-identical failure streak (`rework_nonconvergence_max`).
+#
+# THE PREDICATE IS NARROWER THAN THE REPORT'S, deliberately. The report names
+# every round that did not reduce, because someone reading the history wants
+# the whole shape. The gate fires only on CONSECUTIVE non-reducing rounds at
+# the END of the series: 8, 9, 6, 3 contains a bad round and is plainly
+# converging now, and stopping that plan would be the gate enforcing something
+# about when a blip happened rather than about whether the loop is stuck.
+#
+# And it pairs with its own remedy, which is what makes it a gate rather than a
+# wall: fix the plan so the next round reduces, or raise the configured max —
+# the same two doors `rework_nonconvergence_max` leaves open.
+# ============================================================================
+new_repo f40gate
+mkdir -p .orchid/reviews
+printf 'critique_nonconvergence_max=2\n' >> orchid.config
+"$ORCHID_BIN" requirements import "$WORK/f40-reqs.md" >/dev/null 2>&1 || true
+# Two consecutive rounds that did not reduce: 2, 2, 3.
+f40_round 1 "alpha" "beta"
+f40_round 2 "alpha" "beta"
+f40_round 3 "alpha" "beta" "gamma"
+f40g_rc=0
+f40g_out="$("$ORCHID_BIN" plan apply --reason "apply a stalled plan" 2>&1)" || f40g_rc=$?
+[ "$f40g_rc" -ne 0 ] \
+  || fail "F40: plan apply must refuse while the critique loop has stopped moving (out: $f40g_out)"
+assert_match "critique_nonconvergence_max" "$f40g_out" \
+  "F40: the refusal names the configured bound it fired on"
+assert_match "orchid plan rounds" "$f40g_out" \
+  "F40: ...and names the report that shows WHICH rounds, so the operator is not left to reconstruct the series"
+red_case 'plan apply refuses a plan whose last rounds stopped reducing findings, naming the bound and the report — the loop is stopped by a gate rather than by someone remembering to read one'
+
+# GREEN twin, both halves. A series that recovered must apply, and raising the
+# bound must let the stalled one through — a gate with no open door is a wall.
+new_repo f40pass
+mkdir -p .orchid/reviews
+printf 'critique_nonconvergence_max=2\n' >> orchid.config
+f40_round 1 "alpha" "beta" "gamma"
+f40_round 2 "alpha" "beta" "gamma" "delta"
+f40_round 3 "alpha" "beta"
+f40_round 4 "alpha"
+f40p_rc=0
+f40p_out="$("$ORCHID_BIN" plan apply --reason "a series that recovered" 2>&1)" || f40p_rc=$?
+grep -q "critique_nonconvergence_max" <<<"$f40p_out" \
+  && fail "F40: a series carrying an early non-reducing round but converging since must NOT be refused: $f40p_out"
+# The exit status is asserted rather than captured and dropped: a refusal for
+# some OTHER reason would leave the grep above satisfied and prove nothing.
+[ "$f40p_rc" -ne 3 ] \
+  || fail "F40: a converging series must not be refused with the stall exit code (out: $f40p_out)"
+green_case 'a critique series with a blip that has since converged applies normally — the gate asks whether the loop is stuck now, not whether it was ever untidy'
