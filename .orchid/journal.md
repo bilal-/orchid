@@ -19919,3 +19919,6 @@ judgment boundary [run-complete]: every task is done — the acceptance checks a
 
 ## 2026-08-31T03:08:37Z run blocker (drive e55)
 q-55-1be9: judgment boundary [run-complete] needs an operator: every task is done — the acceptance checks and 'orchid run accept --evidence' behind PROTOCOL.md's COMPLETION are judgment work no verb decides
+
+## 2026-09-13T04:36:50Z run acceptance (operator e55)
+run_status accepting -> complete: r-002 accepted as a hardening run's result: 40/40 tasks merged through the kernel's own gates, the ambient integration-branch suite green at 08fb01b7 (105 files, CI PASS), and product content byte-identical to the tree hosted CI proved green on both platforms. Not a release, not a third-party-beta claim; version stays 1.0.0-beta.1.
