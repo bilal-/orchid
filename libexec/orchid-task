@@ -41,8 +41,9 @@ task_usage() {
     unblock)     printf '%s\n' 'usage: orchid task unblock <id> --reason "..."' ;;
     retry)       printf '%s\n' 'usage: orchid task retry <id> --reason "..." [--attempts N]' ;;
     reverify)    printf '%s\n' 'usage: orchid task reverify <id> --reason "..."' ;;
+    rebase)      printf '%s\n' 'usage: orchid task rebase <id>' ;;
     infra-fail)  printf '%s\n' 'usage: orchid task infra-fail <id> --reason "..."' ;;
-    *)           printf '%s\n' 'usage: orchid task create|show|get|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|infra-fail'
+    *)           printf '%s\n' 'usage: orchid task create|show|get|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|rebase|infra-fail'
                  return 1 ;;
   esac
 }
@@ -2640,6 +2641,75 @@ case "$sub" in
     # and this is the verb whose entire promise is the round. Said here rather
     # than discovered by watching the next pass do nothing.
     warn_rework_nonconverged "$f" "$id" ;;
+  rebase)
+    # THE SIBLING NOBODY REBASES (r-002 Track G).
+    #
+    # When any task merges, the integration branch moves and every other
+    # in-flight task's `base_sha` goes stale. Nothing acts on it. The staleness
+    # is discovered at `orchid merge`, which rebases THERE -- and a rebase mints
+    # a new candidate sha, which by INV-07 invalidates the verify and review
+    # evidence the task had already earned. Every merge therefore costs each
+    # sibling a full round, or strands it.
+    #
+    # THE REBASE IS ONLY FREE WHERE THERE IS NOTHING YET TO LOSE. In `rework`
+    # and `implementing` nothing has been verified or reviewed for this round,
+    # so moving the branch forward invalidates no evidence. In `testing` and
+    # beyond it destroys exactly what INV-07 protects, so this refuses there
+    # rather than being clever about it.
+    #
+    # AN EXPLICIT VERB, NOT A NEW STEP IN THE DISPATCH LOOP. That loop is the
+    # most safety-critical path in the kernel, and a second process writing to a
+    # task worktree while it is being rebased is the r-002/T013 defect reached
+    # from a new direction. What was missing is a SUPPORTED ACTION -- the
+    # retrospective's own design rule -- and that is what this is.
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; export ORCHID_EPOCH
+    [ $# -ge 1 ] || orchid_die "$(task_usage rebase)"
+    rb_id="$1"; shift
+    [ "$rb_id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    rb_f="$(tf "$rb_id")"; [ -f "$rb_f" ] || orchid_die "no task $rb_id"
+    rb_from="$(fm_get "$rb_f" status)"
+    case "$rb_from" in
+      rework|implementing) ;;
+      *) orchid_die "refusing to rebase $rb_id from '$rb_from': a rebase mints a new candidate sha, and from '$rb_from' this task holds verify or review evidence bound to the candidate it has now -- INV-07 invalidates exactly that. It is free only in 'rework' and 'implementing', where nothing has been earned for this round yet." ;;
+    esac
+    rb_integ="$(config_get "$repo" integration_branch orchid/integration)"
+    rb_head="$(git -C "$repo" rev-parse --verify -q "refs/heads/$rb_integ" 2>/dev/null || true)"
+    [ -n "$rb_head" ] || orchid_die "integration branch '$rb_integ' does not exist"
+    rb_base="$(fm_get "$rb_f" base_sha)"
+    if [ "$rb_base" = "$rb_head" ]; then
+      echo "$rb_id: already based on $rb_integ at $rb_head -- nothing to rebase"
+      exit 0
+    fi
+    rb_wt="$(fm_get "$rb_f" worktree)"
+    { [ -n "$rb_wt" ] && [ -d "$rb_wt" ]; } \
+      || orchid_die "$rb_id records no usable worktree ('$rb_wt'), and this verb rebases the task's OWN checkout rather than minting one: a temp worktree would move the branch while the checkout an implementer is standing in keeps the old commits"
+    rb_branch="$(git -C "$rb_wt" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    [ "$rb_branch" = "task/$rb_id" ] \
+      || orchid_die "$rb_id's worktree $rb_wt is on '$rb_branch', not task/$rb_id -- refusing to rebase a checkout that is not this task's"
+    # A DIRTY CHECKOUT IS NOT REBASED. `git rebase` would refuse anyway, but it
+    # would refuse after this verb had already said it was going to act, and an
+    # uncommitted edit is the one thing in that tree that exists nowhere else.
+    rb_dirty="$(git -C "$rb_wt" status --porcelain 2>/dev/null)"
+    [ -z "$rb_dirty" ] \
+      || orchid_die "$rb_id's worktree $rb_wt has uncommitted changes; a rebase would refuse partway and those bytes exist nowhere else. Commit or stash them there, then re-run: orchid task rebase $rb_id"
+    journal --task "$rb_id" --kind intervention "rebase: task/$rb_id onto $rb_integ $rb_head (was based on ${rb_base:-unrecorded})"
+    if ! git -C "$rb_wt" rebase "$rb_head" >/dev/null 2>&1; then
+      git -C "$rb_wt" rebase --abort >/dev/null 2>&1 || true
+      journal --task "$rb_id" --kind intervention "rebase aborted: task/$rb_id conflicts with $rb_integ $rb_head; the checkout is back where it was"
+      orchid_die "$rb_id: the rebase onto $rb_integ conflicts and has been aborted -- $rb_wt is exactly as it was. Resolve it there (git -C $rb_wt rebase $rb_head, fix, git rebase --continue) then re-run this verb to record the new base; or leave it, and orchid merge will meet the same conflict and send the task back to rework."
+    fi
+    # RE-STAMPED ONLY BECAUSE A REBASE ACTUALLY HAPPENED. The dispatch arm never
+    # re-stamps `base_sha` on purpose: a base the candidate does not descend from
+    # is the one state `orchid merge` reads as "no rebase, no re-verify", which
+    # skips the re-verify INV-07 requires. After a clean rebase the branch DOES
+    # descend from this sha, so the stamp is true -- and it is what stops merge
+    # charging a round for work already done here.
+    fm_set "$rb_f" base_sha "$rb_head"
+    fm_set "$rb_f" updated "$(now)"
+    echo "$rb_id: rebased onto $rb_integ at $rb_head (was ${rb_base:-unrecorded})"
+    echo "$rb_id: base_sha re-stamped -- orchid merge will not rebase this candidate again, so no round is spent on it"
+    ;;
   reverify)
     # T026 (dogfood F28, and twice more on r-002's T013/T014): the supported
     # "the tree is green, just re-run verification" edge.
@@ -2826,5 +2896,5 @@ case "$sub" in
       echo "$id: infra_failures $n/$max"
       echo "$id: no status change below the cap ($max). If this task needs to move now: $(blocked_route "$id" retry)"
     fi ;;
-  *) orchid_die "usage: orchid task create|show|get|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|infra-fail" ;;
+  *) orchid_die "usage: orchid task create|show|get|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|rebase|infra-fail" ;;
 esac
