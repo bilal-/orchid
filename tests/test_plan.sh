@@ -1426,3 +1426,79 @@ assert_eq running "$(fm_get .orchid/roadmap.md run_status)" "...and takes the ru
 # plan considered, on the one spelling of it a fixture can reach.
 not_tested "a scratch directory that disappears or fills AFTER it was created, and a list generator that fails on a readable record" \
   "the allocation half is fixtured above (an unusable TMPDIR); the post-allocation half -- _plancheck_body's refusals when either item generator exits nonzero, when the items file cannot be written or counted, or when the tasks directory cannot be staged -- has no portable fixture, since a directory this test can create is one it can write into and a journal it can read is one awk can parse"
+
+# ============================================================================
+# F40 -- the critique loop had no convergence signal.
+#
+# r-002's own plan critique ran FOUR rounds producing 10, 7, 5 and 8 findings
+# before a fifth approved. Round four went UP. From the outside that series is
+# indistinguishable from converging, from oscillating, and from the critic
+# re-reporting the same defects in new words — r-001's loop ran 8→8→8→4→4→3→0
+# and was legible only because someone read every finding by hand.
+#
+# Counting findings per round cannot answer it, because the question is about
+# IDENTITY: is this round's finding the same objection as last round's, a new
+# one, or one that has gone away. So each finding gets a stable key, and each
+# round is reported as new / repeat / resolved against the round before it.
+#
+# `orchid plan rounds` is read-only — no lock, no epoch fence, no journal, no
+# commit — for the same reason `plan crosscheck` is: the loop consults it while
+# the draft is still cheap to change, and a report gated on run state is the
+# one thing you cannot read when the run state is what went wrong (INV-17).
+# ============================================================================
+new_repo f40
+
+# The exact series r-002 produced, with identities chosen so the shape is
+# unambiguous: round 2 drops one and repeats one, round 3 converges further,
+# round 4 REGRESSES by re-raising a finding round 3 had resolved.
+f40_round() {  # <n> <title>...
+  local n="$1"; shift
+  local arr="[]" t
+  for t in "$@"; do
+    arr="$(jq -c --arg t "$t" '. + [{severity:"medium", title:$t}]' <<<"$arr")"
+  done
+  jq -n --arg jid "j-f40-$n" --argjson f "$arr" \
+    '{contract:1, job_id:$jid, task:"plan", operation:"critique", role:"plan_critic",
+      status:"ok", verdict:"request-changes", scope_complete:true,
+      summary:"critique round", findings:$f}' \
+    > ".orchid/reviews/plan-a$n-plan_critic.json"
+}
+mkdir -p .orchid/reviews
+f40_round 1 "attempt budget is unscoped" "no exec-bit hand-off" "verify is filtered"
+f40_round 2 "attempt budget is unscoped" "verify is filtered"
+f40_round 3 "attempt budget is unscoped"
+f40_round 4 "attempt budget is unscoped" "verify is filtered"
+
+f40_rc=0
+f40_out="$("$ORCHID_BIN" plan rounds 2>&1)" || f40_rc=$?
+assert_eq 3 "$f40_rc" \
+  "F40: a non-converging series exits 3, the same 'this is not ready' code plan crosscheck uses — so an unattended caller can act on it without parsing prose"
+assert_match "^a1	3	3	0	0" "$f40_out" \
+  "F40: the first round is all new — three findings, three new, nothing to repeat or resolve against"
+assert_match "^a2	2	0	2	1" "$f40_out" \
+  "F40: round 2 repeats two and resolves one, which is what converging looks like"
+assert_match "^a3	1	0	1	1" "$f40_out" \
+  "F40: round 3 converges again"
+assert_match "^a4	2	0	2	0" "$f40_out" \
+  "F40: round 4 re-raises a finding round 3 had resolved — a REPEAT of an older round, not a new objection, and nothing resolved"
+red_case 'each critique round is reported as new/repeat/resolved against the rounds before it, so a series of 3,2,1,2 is legible as a regression instead of as four numbers'
+
+# The verdict the series carries, which is the half a count can never give.
+assert_match "not converging" "$f40_out" \
+  "F40: ...and the report says so, rather than leaving an operator to infer it from the column"
+
+# GREEN twin: a series that genuinely converges must NOT be called a
+# regression. Without this the check above would be satisfied by a report that
+# says 'not converging' about everything.
+new_repo f40ok
+mkdir -p .orchid/reviews
+f40_round 1 "attempt budget is unscoped" "no exec-bit hand-off" "verify is filtered"
+f40_round 2 "attempt budget is unscoped" "verify is filtered"
+f40_round 3 "attempt budget is unscoped"
+f40ok_rc=0
+f40ok_out="$("$ORCHID_BIN" plan rounds 2>&1)" || f40ok_rc=$?
+assert_eq 0 "$f40ok_rc" "F40: a converging series exits 0"
+grep -q "not converging" <<<"$f40ok_out" \
+  && fail "F40: a strictly shrinking series must not be reported as non-converging: $f40ok_out"
+assert_match "converging" "$f40ok_out" "F40: ...it is reported as converging"
+green_case 'a strictly shrinking critique series is reported as converging and exits 0, so the regression verdict above is a decision about the series rather than a label on every report'

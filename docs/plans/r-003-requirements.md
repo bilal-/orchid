@@ -148,6 +148,32 @@ being unobservable**. The run never reached the tick at all.
   Flagging *internal* contradiction within one task's criteria is a cheap and
   high-value finding class.
 
+  **The convergence signal landed 2026-09-13; the rest of F40 has not.**
+  `orchid plan rounds` reports each critique round as
+  `total / new / repeat / resolved` against the rounds before it, and verdicts
+  the series — exit 3 and a named round when one did not reduce the count, exit
+  0 when every round did. Read-only and answered ahead of the epoch fence, for
+  INV-17's reason: the loop consults it while the draft is still cheap to
+  change, and a report gated on run state is the one thing you cannot read when
+  the run state is what went wrong. Run against r-002's own filed critique it
+  names `a4` — the round that went 5 findings back up to 8.
+
+  **What it cannot see, stated in its own output rather than left to be
+  discovered.** Identity is the finding TITLE, case-folded and
+  whitespace-collapsed, so it detects a VERBATIM repeat. It does not detect the
+  same objection re-worded — one of the three things this finding says an
+  operator cannot distinguish — and a re-worded repeat reads as one resolved
+  plus one new. On r-002's real series every round scores zero repeats for
+  exactly that reason. `repeat` is therefore a floor on repetition and never a
+  ceiling, and the TOTALS column is the term that survives rewording. Fuzzy
+  matching was considered and rejected: an arbitrary similarity threshold would
+  make the number look stronger than the evidence behind it, which is the defect
+  class this run exists to close.
+
+  Still open: raising a BOUNDARY after N rounds without reduction (this reports,
+  it does not stop the loop), tracking identity across rewording, and flagging
+  internal contradiction within one task's criteria.
+
 - **Give the verbs a way to read and amend one field** (F39). `task show` prints
   the whole file, so reading one value means parsing prose — fragile, silently
   truncating at the first newline, and the direct cause of the append-instead-of-

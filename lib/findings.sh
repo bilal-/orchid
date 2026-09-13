@@ -531,3 +531,110 @@ findings_brief_present() {
   esac
   return 1
 }
+
+# ---------------------------------------------------------------------------
+# CRITIQUE CONVERGENCE (dogfood F40).
+#
+# r-002's plan critique ran four rounds producing 10, 7, 5 and 8 findings
+# before a fifth approved. Round four went UP. A count per round cannot
+# distinguish converging from oscillating from the critic re-reporting the same
+# objections in new words -- r-001's 8,8,8,4,4,3,0 was legible only because
+# somebody read every finding by hand -- because the question is not how many,
+# it is WHICH.
+#
+# So each finding gets a stable identity and each round is reported against the
+# one before it: how many are NEW, how many REPEAT an objection already raised,
+# how many the previous round raised and this one no longer does (RESOLVED).
+# ---------------------------------------------------------------------------
+
+# findings_identity <severity> <title> -- the key two findings share when they
+# are the same objection.
+#
+# TITLE ONLY, case-folded and whitespace-collapsed, with severity deliberately
+# EXCLUDED. A critic that re-raises the same objection at a different severity
+# has not raised a new one, and keying on severity would report that as
+# resolved-plus-new -- which is precisely the "re-reporting in new words" this
+# exists to see through. Punctuation is kept: two titles differing only in
+# punctuation are rare, and stripping it would collide findings that are not
+# the same.
+findings_identity() {
+  printf '%s' "$2" | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ' \
+    | sed 's/^ //; s/ $//'
+}
+
+# findings_round_ids <envelope> -- one identity per finding, deduplicated.
+findings_round_ids() {
+  local f="$1" sev title
+  [ -f "$f" ] || return 0
+  while IFS=$'\t' read -r sev title; do
+    [ -n "$title" ] || continue
+    findings_identity "$sev" "$title"
+    printf '\n'
+  done < <(jq -r '.findings[]? | [(.severity // ""), (.title // "")] | @tsv' "$f" 2>/dev/null) \
+    | LC_ALL=C sort -u
+}
+
+# _findings_round_numbers <state> <base> -- the round numbers present, numeric
+# ascending and deduplicated. `a10` sorts before `a2` lexically, so a series
+# read in glob order is a different series.
+_findings_round_numbers() {
+  local state="$1" base="$2" f n
+  for f in "$state/reviews/$base-a"*.json; do
+    [ -e "$f" ] || continue
+    n="${f##*/"$base"-a}"; n="${n%%-*}"
+    [ -n "$n" ] || continue
+    printf '%s\n' "$n"
+  done | grep -xE '[0-9]+' | LC_ALL=C sort -n -u
+}
+
+# findings_round_series <state> <base> -- one TSV row per critique round found
+# at <state>/reviews/<base>-a<N>-*.json, ascending:
+#
+#   a<N>  <total>  <new>  <repeat>  <resolved>
+#
+# NEW     -- this identity has appeared in NO earlier round.
+# REPEAT  -- it appeared in SOME earlier round, not necessarily the last one.
+#            Keyed against every earlier round on purpose: a finding dropped in
+#            round 3 and re-raised in round 4 is an objection coming BACK, and
+#            reporting it as new would hide exactly the oscillation this exists
+#            to show.
+# RESOLVED-- the PREVIOUS round raised it and this one does not. Keyed against
+#            the previous round alone, because "resolved" is a claim about what
+#            the last revision did, not about the whole history.
+#
+# Rounds are ordered numerically, never by glob: `a10` sorts before `a2`
+# lexically, and a series read in that order is a different series.
+findings_round_series() {
+  local state="$1" base="$2" f n seen="" prev="" ids total nw rp rs id
+  # A helper rather than an inline `$( ... )` loop: a `case` arm's `)` inside a
+  # command substitution is read by bash as closing the substitution, which is
+  # a parse error and not a subtle one. Keeping the walk in a function also
+  # makes the numeric sort the only ordering rule in one place.
+  for n in $(_findings_round_numbers "$state" "$base"); do
+    ids=""
+    for f in "$state/reviews/$base-a$n-"*.json; do
+      [ -e "$f" ] || continue
+      ids="$ids$(findings_round_ids "$f")
+"
+    done
+    ids="$(printf '%s' "$ids" | grep -v '^$' | LC_ALL=C sort -u || true)"
+    total=0; nw=0; rp=0; rs=0
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      total=$(( total + 1 ))
+      if printf '%s\n' "$seen" | grep -qxF -- "$id" 2>/dev/null; then
+        rp=$(( rp + 1 ))
+      else
+        nw=$(( nw + 1 ))
+      fi
+    done <<< "$ids"
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      printf '%s\n' "$ids" | grep -qxF -- "$id" 2>/dev/null || rs=$(( rs + 1 ))
+    done <<< "$prev"
+    printf 'a%s\t%s\t%s\t%s\t%s\n' "$n" "$total" "$nw" "$rp" "$rs"
+    seen="$seen$ids
+"
+    prev="$ids"
+  done
+}
