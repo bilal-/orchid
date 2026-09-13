@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a11-6b37",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "cb37800c9fb18239e60d52e3f24778d8d4e5c529",
+  "candidate_sha": "26b6deb41951be15c7bfd84550233cdda8b15e3e",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: a10 remains unresolved because the path-limited history walk skips newly reachable commits that inherit `.orchid`, allowing such a commit followed by deletion to pass.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "a10 remains unresolved because the path-limited history walk skips newly reachable commits that inherit `.orchid`, allowing such a commit followed by deletion to pass."
+    }
+  ],
+  "summary": "a10 remains unresolved because the path-limited history walk skips newly reachable commits that inherit `.orchid`, allowing such a commit followed by deletion to pass."
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T027-a7-f2b2",
+  "task": "T027",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "f875aee1781be8283044e0c1ed58dec290882fae",
+  "candidate_sha": "4493cb52cafabd746695ceaaab19c57c37000cac",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Planning launches critiques/hooks outside `drive_launch` and then reaps their pid-0 manifests without journaling or escalation, so launcher failures can still disappear exactly as F29 describes."
+}

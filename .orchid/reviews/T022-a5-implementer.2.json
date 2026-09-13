@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a5-ca81",
+  "task": "T022",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "2579163a7a2240e9cd84e6de6b59f156b16959b8",
+  "summary": "Hold a job whose envelope is still spooled, so its rung stays a refusal",
+  "commits": [
+    "2579163a7a2240e9cd84e6de6b59f156b16959b8"
+  ]
+}

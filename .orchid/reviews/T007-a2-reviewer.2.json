@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T007-a2-c31a",
+  "task": "T007",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "abfabf2e6f2d444ee90601103139537c439d1bf1",
+  "verdict": "approve",
+  "scope_complete": false,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "merge_gate resolvable via ORCHID_MERGE_GATE env, contradicting \"repo config only\""
+    },
+    {
+      "severity": "medium",
+      "title": "Formula re-pin abfabf2 lacks the Orchid-Handoff: operator trailer"
+    },
+    {
+      "severity": "low",
+      "title": "test_ci_release marker probe vacuous under flagless ci-local (unset marker before probing)"
+    }
+  ]
+}

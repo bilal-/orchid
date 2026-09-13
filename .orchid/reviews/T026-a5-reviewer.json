@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a5-10c1",
+  "task": "T026",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "0e2bef8f56cfe6ba90c7523ff0073d31cb5c83aa",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "libexec/orchid-task:1170-1200 adopts any clean worktree HEAD without proving it belongs to the task branch or descends from its base, so reverify can certify the wrong candidate."
+}

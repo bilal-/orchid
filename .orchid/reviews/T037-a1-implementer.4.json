@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a1-d8fc",
+  "task": "T037",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "c37ed98dc37572b36200a6c23dc4905adbc72d9d",
+  "summary": "T037: Exempt an archived run's task branches from the leak warning",
+  "commits": [
+    "c37ed98dc37572b36200a6c23dc4905adbc72d9d"
+  ]
+}

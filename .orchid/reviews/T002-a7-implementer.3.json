@@ -1,0 +1,15 @@
+{
+  "contract": 1,
+  "job_id": "j-e40-T002-a7-be27",
+  "task": "T002",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "9bf480ebe347702f6548510c13c767e755db5399",
+  "candidate_sha": "77e2a00b0bb4cb5d6d315647254ec10cdb0743e4",
+  "summary": "Record the rework brief as fixture stderr; candidate stands unchanged",
+  "commits": [
+    "77e2a00b0bb4cb5d6d315647254ec10cdb0743e4",
+    "5137859e092ea387c5e61be89881286282be6328"
+  ]
+}

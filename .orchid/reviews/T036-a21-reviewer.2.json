@@ -1,0 +1,23 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a21-e83b",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "18075c11085c2e32f2f41a0ec6a62af89a1a2e6e",
+  "candidate_sha": "5608a39e169f7b17ac86b979a49da598d08ee29f",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "boundary record schema comment omits `counters`"
+    },
+    {
+      "severity": "low",
+      "title": "`pump_target_healthy` is never set to 0, so its guard is inert"
+    }
+  ],
+  "summary": "The a19 stacking objection is addressed — install now refuses a moved checkout's re-install and fails closed on an unreadable binding, with non-vacuous RED/GREEN in K17/K18 that preserve same-path rei"
+}

@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T031-a4-52fa",
+  "task": "T031",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "8096647448aed8e6b7906cca32aff0d8e1954b04",
+  "candidate_sha": "b702e4b4dca6e1e9c4f3a1ff79466d73d7f8c946",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The patch correctly refuses verification on worktree drift (exit 20) both before and during execution with comprehensive evidence logging, and defers envelope reconciliation until the implementer job "
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a4-d24a",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d7f213397951035166f553646f63be15511a56c7",
+  "candidate_sha": "4c5ccd44983d52f2e60f9150ead5fb56d4240c84",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`orchid service uninstall --dry-run` skips launchctl/crontab removal but deletes both binding records, leaving a live schedule untracked while the worktree-removal guard permits teardown."
+}

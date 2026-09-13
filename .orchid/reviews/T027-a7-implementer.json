@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T027-a7-1725",
+  "task": "T027",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "f875aee1781be8283044e0c1ed58dec290882fae",
+  "candidate_sha": "e2d82eb2ee9af753bee7d536b92f6a6098cf9927",
+  "summary": "Mark the pid-gone half pre-existing and prove the RED claims",
+  "commits": [
+    "e2d82eb2ee9af753bee7d536b92f6a6098cf9927"
+  ]
+}

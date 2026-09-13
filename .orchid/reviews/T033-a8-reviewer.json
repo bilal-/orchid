@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T033-a8-c9b8",
+  "task": "T033",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d7f213397951035166f553646f63be15511a56c7",
+  "candidate_sha": "400da9d30ea50950ba8bf6be7c2b787a573bbf6f",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Reconcile synthesizes a gate-visible high-severity finding from prose-only objections, and boundary details surface the actionable summary."
+}

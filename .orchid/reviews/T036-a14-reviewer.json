@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a14-2c6d",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "1e59886f826a16d2346929f3e151ad924d6b7f60",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: `orchid service uninstall` trusts unvalidated `label` and `artifact` fields from repo-controlled `service.json`, allowing path traversal to forge a matching binding twin and delete an arbitrary operat",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "`orchid service uninstall` trusts unvalidated `label` and `artifact` fields from repo-controlled `service.json`, allowing path traversal to forge a matching binding twin and delete an arbitrary operat"
+    }
+  ],
+  "summary": "`orchid service uninstall` trusts unvalidated `label` and `artifact` fields from repo-controlled `service.json`, allowing path traversal to forge a matching binding twin and delete an arbitrary operat"
+}

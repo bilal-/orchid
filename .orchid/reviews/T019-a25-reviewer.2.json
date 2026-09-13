@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a25-cb50",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "82ecae5e0caf71d3e49dc78532323e18eb8d1247",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "`lib/drive.sh`'s header contract (\"pure library… spawns nothing\", \"source AFTER lib/manifest.sh … lib/hooks.sh\") is now false for `libexec/orchid-verify`, which sources it after only `common.sh`/`frontmatter.sh` and reaches a path that executes `handoff.pin_check`; it works only because the prestate entry point happens not to call the other libraries."
+    }
+  ]
+}

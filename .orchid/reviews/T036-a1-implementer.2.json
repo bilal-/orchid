@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T036-a1-1b03",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "993ea47720e702b3cc69ef1d6421d5ca40c7494a",
+  "summary": "Document the teardown ordering in the operations spec and quote a keyword arg",
+  "commits": [
+    "993ea47720e702b3cc69ef1d6421d5ca40c7494a"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a15-af17",
+  "task": "T025",
+  "operation": "review",
+  "status": "failed",
+  "engine": "orchid/agy",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "4e911711d25fcb9d829e3bcef7b3a870eba722eb",
+  "failure_kind": "capability"
+}

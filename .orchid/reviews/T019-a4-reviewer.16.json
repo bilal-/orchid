@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e40-T019-a4-e1f1",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "2ebe56a12e1ebdbc095da4bbf7f0f705ab8aec38",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "L020 deliverable absent — flaky streaming assertion neither fixed nor quarantined"
+    },
+    {
+      "severity": "medium",
+      "title": "Classifier charges the L020 flake signature and test-pins the inversion"
+    },
+    {
+      "severity": "medium",
+      "title": "No environment/harness class — L003 named case is charged, test-pinned as `candidate`"
+    }
+  ]
+}

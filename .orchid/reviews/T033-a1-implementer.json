@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T033-a1-ff69",
+  "task": "T033",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "c1ea5482e48c5080b4170baa2d0dfc70cf5d38d3",
+  "summary": "Make a non-approve verdict carry a finding the severity gate can see",
+  "commits": [
+    "c1ea5482e48c5080b4170baa2d0dfc70cf5d38d3"
+  ]
+}

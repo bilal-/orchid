@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a9-fba2",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "6c01fd25d3886329cfceb1975e0dec4a5fb091e6",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: `orchid_service_binding_write` succeeds when the machine-local `<label>.json` path is a directory, allowing a live schedule with no surviving binding for doctor or post-deletion uninstall.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "`orchid_service_binding_write` succeeds when the machine-local `<label>.json` path is a directory, allowing a live schedule with no surviving binding for doctor or post-deletion uninstall."
+    }
+  ],
+  "summary": "`orchid_service_binding_write` succeeds when the machine-local `<label>.json` path is a directory, allowing a live schedule with no surviving binding for doctor or post-deletion uninstall."
+}

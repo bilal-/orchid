@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a22-ff5e",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "7c06fabab4c1d22cadb8e8767fa96f0e248afbfd",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "quarantined L020 signatures live in tests/test_drive.sh fixtures, so a real failure of those assertions self-classifies as flaky"
+    },
+    {
+      "severity": "low",
+      "title": "tests/run.sh and ci-local.sh now discard all output from passing tests, a suite-wide ergonomics change beyond this task's scope"
+    }
+  ]
+}

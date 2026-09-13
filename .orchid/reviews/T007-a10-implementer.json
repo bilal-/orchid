@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T007-a10-9cb7",
+  "task": "T007",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "469bdcb99264332d8f857ddd5467adfd8290168a",
+  "candidate_sha": "4ef40c92f1dd6662e277ab2ebd2e45827797f9c9",
+  "summary": "Fail open when the merge log's command boundary cannot be located",
+  "commits": [
+    "4ef40c92f1dd6662e277ab2ebd2e45827797f9c9"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a13-7428",
+  "task": "T025",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "814fa45001b34833cb191f2148ab5b2788a92a30",
+  "candidate_sha": "3b6a4d30625368a0b85c2a1d1dbd13e6a32d1731",
+  "summary": "Resolve the failover's engine id through the plugin registry",
+  "commits": [
+    "3b6a4d30625368a0b85c2a1d1dbd13e6a32d1731"
+  ]
+}

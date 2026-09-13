@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T027-a3-da79",
+  "task": "T027",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "deb3fe210484bb026c00a4af570986782d0bdda1",
+  "summary": "Give the planning fixture a plan_critic-capable engine",
+  "commits": [
+    "deb3fe210484bb026c00a4af570986782d0bdda1"
+  ]
+}

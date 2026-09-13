@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T021-a11-5012",
+  "task": "T021",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "63947e81da6f7d12c55cf456eccf3d3e5503cace",
+  "candidate_sha": "2c166e7be4ec37dc41bba1c827a88c14774becae",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`plancheck_report` returns 0 when scratch-file creation fails, letting `plan apply` commit without performing the required cross-check."
+}

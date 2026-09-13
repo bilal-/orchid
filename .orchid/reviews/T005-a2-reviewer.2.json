@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a2-348d",
+  "task": "T005",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "1643d09cbc0c146480cdab560de4f9d4d0f08c50",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "HEAD formula re-pin 1643d09 lacks the Orchid-Handoff: operator trailer — the mandatory hand-off was either violated by the implementer or performed unrecorded"
+    },
+    {
+      "severity": "low",
+      "title": "tests/probes/README.md gained the exec bit in the chmod hand-off; only tests/test_probe_evidence.sh is a new executable"
+    }
+  ]
+}

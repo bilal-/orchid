@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a2-ffe0",
+  "task": "T024",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "62f40924ce0dbf5d0427e6d02f1f01fefafc6827",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The candidate resolves all three objections, passes operator verification, and this Codex review supplies the required engine-independent slot 1."
+}

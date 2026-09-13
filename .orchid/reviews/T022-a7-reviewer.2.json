@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a7-169a",
+  "task": "T022",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "7ed2572b7dbe87010bb724ff45a118e58530365f",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "The operator's blocking precondition — tests/test_drive.sh passing with zero failures on this candidate — remains unmeasured; the review session could not execute it"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a3-d513",
+  "task": "T003",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "13a748be4c132a660749824f9cb54338276f46cf",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "An unchanged boundary record created by the old soft-surface behavior suppresses the new notify path forever, preserving the silent no-human-blocker failure after upgrades."
+}

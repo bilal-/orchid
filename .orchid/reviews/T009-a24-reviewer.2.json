@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a24-ec94",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "fec39e48994580b21c42439a9bb2f5d8a5911043",
+  "candidate_sha": "bfa53eb3c1153e084daefa6fc58181dc51119afe",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The candidate adds Hermes’s CLI-backed advisory probe with honest positive/unknown/no-probe coverage and records, renders, and enforces choices while preserving free-text compatibility."
+}

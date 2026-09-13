@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a2-72bb",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "187dfeb2c4ac238938baf7f2f14c6106304c7d65",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "A finished run rests at `accepting`, where the pump never names the still-installed schedule"
+    },
+    {
+      "severity": "medium",
+      "title": "The complete-run uninstall hint is emitted before pump.log opens, so a scheduled pump discards it"
+    },
+    {
+      "severity": "low",
+      "title": "`service uninstall` on a deleted checkout requires the exact canonical path spelling"
+    }
+  ]
+}

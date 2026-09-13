@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a11-7053",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "33f651b5db0d8b8f9a4052a1c36ac597b7db09a5",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: The documented integration teardown still uses raw `git worktree remove`, so the guards on private temporary-worktree cleanup paths do not prevent deletion of a worktree with an installed service.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "The documented integration teardown still uses raw `git worktree remove`, so the guards on private temporary-worktree cleanup paths do not prevent deletion of a worktree with an installed service."
+    }
+  ],
+  "summary": "The documented integration teardown still uses raw `git worktree remove`, so the guards on private temporary-worktree cleanup paths do not prevent deletion of a worktree with an installed service."
+}

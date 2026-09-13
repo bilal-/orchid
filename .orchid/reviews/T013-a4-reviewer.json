@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T013-a4-4d2c",
+  "task": "T013",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "140cef8c9b783a16937d135ebe81401d7f424ff5",
+  "candidate_sha": "137fdd12b1d629d56d108d00baa45062f7995f7c",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "summary": "The diff re-pins Formula/orchid.rb by updating its sha256 digest, violating the mandatory requirement that the implementer must not re-pin the Homebrew formula."
+}

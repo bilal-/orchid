@@ -1,0 +1,27 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a4-245b",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "73c861da98ebd080a0300466c17c0c54ba81bbd7",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "An operator decision relayed through a woken orchestrator is recorded as the orchestrator's objection, so a later wakeup may clear it"
+    },
+    {
+      "severity": "low",
+      "title": "A standing objection is not surfaced by `orchid status`, only by `task show` and the boundary page"
+    },
+    {
+      "severity": "low",
+      "title": "Only docs/engines/claude.md documents the objection paragraph, though the Part AF sweep requires it of all four review adapters"
+    }
+  ],
+  "summary": "The durable objection, the operator-only routing, the closed `task advance` door and the reviewer-pack carry are all implemented with non-vacuous RED cases and a complete sweep of the other suites' ha"
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a27-d3c0",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "5a04b1eace9bf5a6718a4ab5840d4b519c128d6b",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The scoped repair binds flaky-register authority to the validated pre-run base and covers hostile base rewriting without misattributing the operator re-pin."
+}

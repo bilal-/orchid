@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a1-94ef",
+  "task": "T006",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "f23a468e6a488d19f1ac28de738d92b4e28a0b81",
+  "candidate_sha": "4bef2f22eb3cf675ae31140a07b178e04b210a42",
+  "summary": "The first `orchid merge` that changes kernel files will leave the integration checkout refusing until someone runs the refresh. That halts an unattended pump. It's the intended enforcement — L018's wh",
+  "commits": [
+    "4bef2f22eb3cf675ae31140a07b178e04b210a42"
+  ]
+}

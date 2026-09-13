@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a3-8161",
+  "task": "T006",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "407a68427585eb79fc25b7998e3f7827f04b8b77",
+  "summary": "4. **No chmod hand-off.** No new executable was added; `tests/test_stale_root.sh` already carries the mode bit the operator set in `8b78f76`.",
+  "commits": [
+    "407a68427585eb79fc25b7998e3f7827f04b8b77"
+  ]
+}

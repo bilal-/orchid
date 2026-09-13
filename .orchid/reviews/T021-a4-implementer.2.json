@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T021-a4-fcfb",
+  "task": "T021",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "bccbaf40928c985865ed568bfbf207f175a5c83c",
+  "summary": "One thing to watch on the run: the new gate is inert unless `.orchid/runs/` exists, so the only suites it can touch are the four that call `run new` — `test_plan.sh` (handled: every `roll_over` advanc",
+  "commits": [
+    "bccbaf40928c985865ed568bfbf207f175a5c83c"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T036-a1-1fa8",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "41dcf46da79ca8c6c11c5b4c105c979da92eb236",
+  "summary": "Bound the pump's wake budget and tie a schedule to its checkout",
+  "commits": [
+    "41dcf46da79ca8c6c11c5b4c105c979da92eb236"
+  ]
+}

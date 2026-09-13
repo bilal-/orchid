@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a4-c44f",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "73c861da98ebd080a0300466c17c0c54ba81bbd7",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: The blanket `arbitrating:*` guard makes valid custom edges such as `arbitrating:reviewing` unreachable because `task arbitrate` can derive only `merging`, `done`, or `rework`.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "The blanket `arbitrating:*` guard makes valid custom edges such as `arbitrating:reviewing` unreachable because `task arbitrate` can derive only `merging`, `done`, or `rework`."
+    }
+  ],
+  "summary": "The blanket `arbitrating:*` guard makes valid custom edges such as `arbitrating:reviewing` unreachable because `task arbitrate` can derive only `merging`, `done`, or `rework`."
+}

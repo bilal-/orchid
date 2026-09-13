@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T013-a4-7eac",
+  "task": "T013",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "140cef8c9b783a16937d135ebe81401d7f424ff5",
+  "candidate_sha": "137fdd12b1d629d56d108d00baa45062f7995f7c",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Formula/orchid.rb re-pinned despite the mandatory operator hand-off, with a checksum this session could not have computed"
+    },
+    {
+      "severity": "low",
+      "title": "ORCHID_HERMETIC_PROOF is a bare truthy marker, so a stray one in the environment silently no-ops the whole proof with exit 0"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a10-cb6f",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "deaa881b973fb3a2a339d94d90192141aec27538",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The flaky register covers only the old grown-while message, so the sibling L020 heartbeat-count failures still classify as candidate failures and consume attempts."
+}

@@ -1,0 +1,23 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a5-bf56",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "14c0bc3a8ea380e2976c9c6c2438d5b850ac67d7",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "`current` arm of the push-guard installer never checks the executable bit"
+    },
+    {
+      "severity": "low",
+      "title": "containment warning has no opt-out for a deliberately self-hosted repository"
+    }
+  ],
+  "summary": "The work is complete and well-argued, but `orchid_install_push_guard`'s already-current branch (`lib/common.sh:1855`) returns `current` on a byte-identical hook without ever testing or restoring `+x`,"
+}

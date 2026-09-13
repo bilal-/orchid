@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T038-a1-8d9b",
+  "task": "T038",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "1686c5dc9513f139b4b3b2ff77f58e0cb89bed44",
+  "candidate_sha": "12d5e8002269ce8046ad8915f5f193432882c4d0",
+  "verdict": "approve",
+  "scope_complete": true,
+  "summary": "The retrospective accurately and rigorously fulfills all prompt criteria by leading with the unescapable state pattern, grouping system findings, honestly documenting operator failures and misattribut"
+}

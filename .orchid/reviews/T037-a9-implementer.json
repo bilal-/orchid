@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a9-81c8",
+  "task": "T037",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "460ebc437babf9ab2cacfadcd462c1b4374d07d2",
+  "summary": "Detect run state in a push's whole history, and exempt only self-hosting",
+  "commits": [
+    "460ebc437babf9ab2cacfadcd462c1b4374d07d2"
+  ]
+}

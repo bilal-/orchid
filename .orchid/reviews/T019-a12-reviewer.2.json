@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a12-27c7",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "45dfc0487d2d755b9a94ddad74e9d3f903ff4889",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "a waived round's journal line drops outstanding-but-unblamed exec-bit state (`_drive_waived` never receives `$fallback`), so a *dropped* 755 bit — which `_drive_exec_unblamed_clause` deliberately keeps imperative because restoring it is owed regardless of what this round's failures noticed — goes unmentioned on exactly the rounds that get waived for another reason"
+    }
+  ]
+}

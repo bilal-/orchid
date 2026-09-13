@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a2-43a8",
+  "task": "T005",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "776dc208df04bbf4adc138fb395da5092c5dc4f8",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "the offline harness never asserts `claude` resolves to its stub, so a stub that fails to become executable silently falls through to the real CLI"
+    },
+    {
+      "severity": "low",
+      "title": "the new \"paste its output IN FULL, every line\" instruction ships the operator's whole effective config (user-level `notify.to`, `answer_allowlist`, `hook.*`) to the vendor CLI when only the first line carries the needle"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a20-5d52",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "95e0f05434fa49783ebd883a6027e4f489f61683",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The L020 quarantine still charges real pre-T019 suite failures because a failing engine test exposes earlier successful fixture output that strict line accounting treats as unattributed despite the ma"
+}

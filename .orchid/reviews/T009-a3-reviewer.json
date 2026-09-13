@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e43-T009-a3-1c0e",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "40ac15d2f9a2f22ff3d81026bf84d836a8585b2c",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "orchid-answer scrapes `choices:` from the whole .question file, so a set-less question whose one-line body is exactly `choices: <comma-joined-word>` fabricates a choice set and gates free text; the whitespace guard only partially covers this"
+    },
+    {
+      "severity": "low",
+      "title": "orchid notify's new `-*)` usage arm refuses message text that begins with a dash (previously accepted) and offers no `--` terminator"
+    }
+  ]
+}

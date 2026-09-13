@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T010-a5-1232",
+  "task": "T010",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "3003995a996e42fc2579c32be822bdda5f41ead0",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "a surviving merge.log can append the same rework brief twice across `merging→rework` then `task retry`"
+    },
+    {
+      "severity": "low",
+      "title": "`orchid task handoff --ack` has no task-status guard, so it can advance candidate_sha from `reviewing`/`arbitrating`"
+    }
+  ]
+}

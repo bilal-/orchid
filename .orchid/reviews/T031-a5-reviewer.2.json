@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T031-a5-6f8c",
+  "task": "T031",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "fec39e48994580b21c42439a9bb2f5d8a5911043",
+  "candidate_sha": "04d82d91cf6004b81f8b040d172397d5ca0f1ad0",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "verify exit 16 lost its `return 0` and now charges a rework attempt"
+    },
+    {
+      "severity": "medium",
+      "title": "INV-03's `/dev/null` job log makes reconcile defer on a recently booted host"
+    },
+    {
+      "severity": "low",
+      "title": "orphaned duplicate comment fragment in tests/test_task.sh's Task-4 header"
+    }
+  ]
+}

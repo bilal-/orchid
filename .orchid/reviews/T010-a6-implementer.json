@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T010-a6-f40a",
+  "task": "T010",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "eff2f8f07ed826709ec0c0ad11e8af500c3291f1",
+  "summary": "Compare the worktree state, gate the ack's status, dedupe briefs",
+  "commits": [
+    "eff2f8f07ed826709ec0c0ad11e8af500c3291f1"
+  ]
+}

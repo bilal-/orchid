@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a4-20af",
+  "task": "T006",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "3c6159e9a77d135c086690853d26c73a2a1e6f6c",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "refusal on a hand-edited kernel asserts a false cause and prescribes `git checkout HEAD -- <kernel paths>`, which silently discards the operator's uncommitted edit"
+    },
+    {
+      "severity": "low",
+      "title": "lib/common.sh and troubleshooting.md claim the refusal covers \"a second clone\", whose HEAD never moves on the merge's update-ref and so is never detected"
+    }
+  ]
+}

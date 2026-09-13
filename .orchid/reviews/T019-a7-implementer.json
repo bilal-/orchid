@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a7-c324",
+  "task": "T019",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "ee82656d4c0505b05235af801f96933d975009e5",
+  "summary": "Fail closed on unaskable authority and narrow the env cascade",
+  "commits": [
+    "ee82656d4c0505b05235af801f96933d975009e5"
+  ]
+}

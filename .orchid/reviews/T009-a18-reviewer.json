@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a18-91bc",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "34edca09e0913d68489b4f32a3d9c32d2dfe013a",
+  "candidate_sha": "6701a2a1dd3266c9b44ea97663beaf4746f37710",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "hermes probe's channel-name elision can expose a positive word, contradicting its stated \"can only remove evidence\" invariant"
+    }
+  ]
+}

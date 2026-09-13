@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a3-2526",
+  "task": "T003",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "9603143ade77a26226214647197d368b4c92f780",
+  "summary": "T003: Pin the keep-going pump case to the soft surface it proves",
+  "commits": [
+    "9603143ade77a26226214647197d368b4c92f780"
+  ]
+}

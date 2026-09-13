@@ -1,0 +1,27 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a10-047f",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "cb37800c9fb18239e60d52e3f24778d8d4e5c529",
+  "candidate_sha": "94ae5a7712e9d49b108d60712d9740a9393d8a17",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "kernel.md specifies a \"plus that remote's tracking refs\" push baseline the hook deliberately rejects and a RED case pins against"
+    },
+    {
+      "severity": "low",
+      "title": "`%(refname:short)` can yield `heads/<name>` when a tag shares a branch name, so `refs/heads/$b` misses and the branch is silently skipped"
+    },
+    {
+      "severity": "low",
+      "title": "the tip-leg refusal asserts \"the remote does not already hold those commits\" even when it holds them under another ref"
+    }
+  ],
+  "summary": "`docs/specs/kernel.md:2119` states the \"newly reachable\" baseline is the remote's copy of the ref *plus that remote's tracking refs*, \"so commits the remote already holds are never counted\" — which is"
+}

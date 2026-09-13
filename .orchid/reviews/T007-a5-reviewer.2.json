@@ -1,0 +1,34 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T007-a5-eb6f",
+  "task": "T007",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "71baa70d2d6668bdb27ec243f7bd2455440f33d4",
+  "candidate_sha": "528550b5624227ca4aff712b51cd93fc46f6c583",
+  "verdict": "request-changes",
+  "scope_complete": false,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "`wc -l` output compared trimmed-vs-untrimmed fails on BSD wc (test_merge.sh D and E)"
+    },
+    {
+      "severity": "medium",
+      "title": "nothing asserts `orchid merge` exports ORCHID_MERGE_GATE_ACTIVE into the gate's environment — the half of the guard that actually terminates the loop"
+    },
+    {
+      "severity": "medium",
+      "title": "a gate failure carrying no `file:line:` output yields no rework brief at all, leaving the implementer a log it cannot read"
+    },
+    {
+      "severity": "low",
+      "title": "kernel.md's \"read from repo config ONLY\" is false — `config_get` also honours `ORCHID_MERGE_GATE` and `~/.orchid/config`"
+    },
+    {
+      "severity": "low",
+      "title": "`runners/orchid-drive:2288` reports every merge-time rework as \"merge validation failed\", contradicting the new PROTOCOL requirement to say which one fired"
+    }
+  ]
+}

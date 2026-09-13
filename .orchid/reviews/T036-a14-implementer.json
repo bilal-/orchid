@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a14-e7c0",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "1e59886f826a16d2346929f3e151ad924d6b7f60",
+  "summary": "Refuse a removal from a copy, and retire an obsolete refusal",
+  "commits": [
+    "1e59886f826a16d2346929f3e151ad924d6b7f60"
+  ]
+}

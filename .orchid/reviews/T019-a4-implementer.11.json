@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-ed5d",
+  "task": "T019",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "b99cbde7025c3fbd7358d40d2bb6616e845a265f",
+  "summary": "Split the waived-round class filter out of awk so it cannot abort the pass",
+  "commits": [
+    "b99cbde7025c3fbd7358d40d2bb6616e845a265f"
+  ]
+}

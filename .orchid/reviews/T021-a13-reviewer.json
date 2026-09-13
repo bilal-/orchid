@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T021-a13-7e82",
+  "task": "T021",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "63947e81da6f7d12c55cf456eccf3d3e5503cace",
+  "candidate_sha": "d942a1f6634020f50fb75414ec1ca4cb88b43778",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "plancheck_item_ids groups both item generators, so a failing ledger generator is discarded behind a succeeding lesson generator — the same fail-open `_plancheck_body` was hardened against (it fails closed here, refusing a legitimate `plan defer` id with a misleading \"not a carried-forward item\" message, but the two readers should use the same per-generator status check)"
+    }
+  ]
+}

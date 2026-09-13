@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T016-a5-05c0",
+  "task": "T016",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2658972632012c3332a34e17dce9fb295d7bf5ff",
+  "candidate_sha": "30d29a829640ed127390e2dbfbb45fc8b309c080",
+  "summary": "Fire the trust gate before its write and prove enrolment by running it",
+  "commits": [
+    "30d29a829640ed127390e2dbfbb45fc8b309c080"
+  ]
+}

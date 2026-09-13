@@ -1,0 +1,10 @@
+{
+  "contract": 1,
+  "job_id": "j-e44-T019-a5-2d59",
+  "task": "T019",
+  "operation": "review",
+  "status": "failed",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "77d23d07b58f64d4aa1e8be6919c6019a37a5d6d"
+}

@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T016-a11-fdca",
+  "task": "T016",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "2e95515f179817cc3a17ea456b8c4a4e33e511f5",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "pump and tick answer their pre-gate early-exit arms out of a stale root, so the stale-root gate lost reach it had at source time, contrary to lib/common.sh's \"every arm still ends in the same two refusals\" claim and troubleshooting.md's \"diagnostics included, stops\" (runners/orchid-pump:103,118,127; runners/orchid-tick:61)"
+    },
+    {
+      "severity": "low",
+      "title": "docs/troubleshooting.md restates the excuse this task exists to retire — \"never the repository you asked about\" is false in exactly the self-hosted case the doctor/trust-show reordering was built for"
+    }
+  ]
+}

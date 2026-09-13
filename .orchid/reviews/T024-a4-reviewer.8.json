@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a4-2e77",
+  "task": "T024",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "b0035184c8c7125754e76384f0d9f811dcb96fac",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "libexec/orchid-run's boundary-kind comment still omits task-prerequisite while the error message below it was updated"
+    },
+    {
+      "severity": "low",
+      "title": "test_drive.sh's \"kinds no verb settles\" surface loop omits task-prerequisite, leaving drive.sh's operator-only claim unit-untested"
+    }
+  ]
+}

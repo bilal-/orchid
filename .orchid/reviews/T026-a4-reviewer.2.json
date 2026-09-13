@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a4-86c4",
+  "task": "T026",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "e11e25370f2fb7a507448eed3c4f5601929d93c1",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "PROTOCOL.md's own state diagram still reads `rework (≤3)` and omits both reverify edges, while kernel.md's mirror diagram was updated to `≤N` plus the two edges"
+    },
+    {
+      "severity": "low",
+      "title": "docs/specs/kernel.md:51 and :149 still enumerate orchid-task's verbs as `create/show/list/set/advance/unblock/retry`, without `reverify`"
+    },
+    {
+      "severity": "low",
+      "title": "`retry` journals and appends operator guidance to the task body before calling `schedule_attempt_budget`, which can `orchid_die` on a misconfigured budget — the validate-before-mutate ordering `unblock` and `reverify` were explicitly given in this same change"
+    }
+  ]
+}

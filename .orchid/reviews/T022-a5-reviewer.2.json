@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a5-6af9",
+  "task": "T022",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "bbe5ac89817bbce7f7cfdb04b5f8bf7e867e67c6",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "PROTOCOL.md's `implementing` tick arm keeps the superseded \"advance straight to testing\" steps ahead of the new ones"
+    },
+    {
+      "severity": "medium",
+      "title": "PROTOCOL.md:632 is a truncated orphan list item, and the operator hand-off step is stranded in the stale list"
+    },
+    {
+      "severity": "medium",
+      "title": "kernel.md's frontmatter list still omits `refused_envelopes`; a duplicate half-list is spliced into the `handoff_ack` paragraph"
+    },
+    {
+      "severity": "medium",
+      "title": "the operator's blocking objection is unmet as verified — no zero-failure run of tests/test_drive.sh exists for this candidate"
+    }
+  ]
+}

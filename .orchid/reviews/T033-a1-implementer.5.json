@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T033-a1-c670",
+  "task": "T033",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "ac971720dc7ed490cd8ab1ef69fa93ff027b9c9c",
+  "summary": "Pin unit coverage for the summary-excerpt and synthesis helpers",
+  "commits": [
+    "ac971720dc7ed490cd8ab1ef69fa93ff027b9c9c"
+  ]
+}

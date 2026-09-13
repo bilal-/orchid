@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a13-6728",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "587bdba059cc98897b63685cea46249a9914440f",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Unrecognized candidate diagnostics such as “panic” are ignored, so an attributable handoff beside one can wrongly waive the attempt instead of failing strict."
+}

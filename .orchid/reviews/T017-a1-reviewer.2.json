@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T017-a1-ce76",
+  "task": "T017",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "8141d32bd38e4be00360464c8bafd839d2b59e36",
+  "candidate_sha": "1eb75ec85d22e17119d22c22f5eb0a639d9197c6",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "tests/inv/ RED-case enforcement is keyed on `$0` matching `*/tests/inv/test_*.sh`, so it silently does not fire under relative invocation (`bash tests/run.sh`, or `/bin/bash tests/inv/test_INV-13_....sh` as several tasks' verification_commands do) — while kernel.md, contributing.md and helpers.sh all state it applies by path and cannot be opted out of, and test_red_case_rule.sh section 4 proves it only with an absolute fixture path, so its RED case cannot detect the gap"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a4-8e58",
+  "task": "T022",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "911a369f0b564c0236cbe02fb00851b57e67c8de",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`drive_implement_envelope` can reuse the refused `ok` sibling once a live relaunch moves HEAD—or after a newer non-`ok` envelope—advancing unfinished or failed work to testing."
+}

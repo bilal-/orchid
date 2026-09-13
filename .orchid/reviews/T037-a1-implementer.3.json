@@ -1,0 +1,15 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T037-a1-12cb",
+  "task": "T037",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "b959e79f200af5ce151945aeb3fc306eadba7341",
+  "summary": "No changes needed: T037 already delivered at b2f6b4a",
+  "commits": [
+    "b959e79f200af5ce151945aeb3fc306eadba7341",
+    "b2f6b4a549290fb207f41b40d5628def80a2d4ec"
+  ]
+}

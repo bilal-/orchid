@@ -1,0 +1,24 @@
+date: 2026-08-30T08:57:27Z
+sha: b6eddd40c17f1b9a0826bd7c0642459781aa9aff
+head_after: b6eddd40c17f1b9a0826bd7c0642459781aa9aff
+candidate: b6eddd40c17f1b9a0826bd7c0642459781aa9aff
+cwd: /Users/bilal/workspace/personal/orchid-orchid-T025
+command: /bin/bash tests/test_pack.sh && /bin/bash tests/test_drive.sh
+prestate: 1
+pre_base_sha: "feb06ac97ef4d35070d700d3598181d9dd6ccae2"
+pre_exec_missing: "lib/rework.sh\ntests/test_rework.sh"
+pre_env_missing: ""
+pre_env_inventory: ""
+pre_pin_stale: ""
+pre_integration_head: "feb06ac97ef4d35070d700d3598181d9dd6ccae2"
+---
+boundary cleared: operator-decision
+  RED-CASE: an implement envelope filed by a still-running job advances nothing and captures no candidate
+  GREEN-CASE: once the job has genuinely exited the same envelope advances the task, on its LAST commit
+  RED-CASE: a stall-killed job whose envelope is still spooled costs no infra_failure and spawns no second implementer
+  GREEN-CASE: the deferred envelope still reconciles and supplies the candidate the killed job really produced
+  RED-CASE: a pid-0 job that filed an envelope and went silent is neither believed nor relaunched over: one rung, one boundary, one engine
+  GREEN-CASE: the held envelope files itself as soon as the job's own exit is recorded — the refusal is about evidence, not about waiting
+  RED-CASE: both of drive_testing's verify-refusal arms return instead of falling into the rework accounting
+R010: WARNING — the last 3 round(s) failed with a byte-identical signature (rework_nonconvergence_max=3), so the next pass withholds the dispatch and stops this task again rather than spending a round re-asking an identically-answered question. Your reason is in the task body and will reach the next round, but something has to make verification answer differently first: fix it and run 'orchid task reverify R010 --reason "..."' (no attempt spent, and a changed failure restarts the count), or raise rework_nonconvergence_max if this loop really should get more rounds of the same question.
+exit: 0

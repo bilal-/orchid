@@ -1,0 +1,239 @@
+date: 2026-08-30T16:00:01Z
+sha: 18075c11085c2e32f2f41a0ec6a62af89a1a2e6e
+candidate: f5b18b5b9ea9fcaa7f848386ea946c3305a28224
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.VXP7bh
+command: /bin/bash tests/test_start.sh && /bin/bash tests/test_merge.sh
+command_status: 0
+gate: /bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+gate_status: ran
+gate_exit: 0
+---
+  GREEN-CASE: a legacy hook whose line 2 STARTS with the header is recognized and upgraded
+  RED-CASE: a user hook that MENTIONS the marker off line 2 is left byte-for-byte alone
+  RED-CASE: a relative core.hooksPath installs nothing and is reported, because one file cannot guard every worktree
+  GREEN-CASE: a repo-contained absolute core.hooksPath keeps normal behavior and guards every worktree of the repository
+  RED-CASE: an absolute core.hooksPath outside the git dir installs nothing, because the directory may be another repository
+  RED-CASE: orchid start warns and installs nothing under a relative core.hooksPath, and still sets the run up
+  RED-CASE: a run past planning reaches the current push guard via start --refresh-push-guard
+  GREEN-CASE: --refresh-push-guard is idempotent and mutates nothing but the hook
+  RED-CASE: start --refresh-push-guard exits non-zero under a relative core.hooksPath instead of half-installing
+  RED-CASE: --refresh-push-guard refuses rather than overwriting an operator-authored hook
+  RED-CASE: a byte-current but non-executable guard is repaired and reported, never called current
+  GREEN-CASE: an executable, byte-current guard is reported current and repaired never
+  RED-CASE: a Gerrit review upload whose tip carries run state is refused, and told it has no exemption
+  GREEN-CASE: a review upload carrying no run state is untouched by the leg
+  RED-CASE: a branch whose tip is clean but whose history adds .orchid/ is refused at push
+  GREEN-CASE: a branch with no .orchid/ anywhere in its history pushes exactly as it always did
+  RED-CASE: a Gerrit upload whose tip is clean but whose history adds .orchid/ is refused
+  GREEN-CASE: a review upload with no .orchid/ anywhere in its history is untouched by the leg
+  GREEN-CASE: once pushed deliberately, a history-carrying ref is exempt on every later push
+  RED-CASE: run state already on the remote under another ref does not exempt a push at a new one
+  GREEN-CASE: the ref an override was spent on stays exempt on its own later pushes
+  RED-CASE: a commit that inherits run state without touching it is still refused before a later deletion
+  RED-CASE: a cleanup-only push where the remote copy already carries run state is no longer refused
+  GREEN-CASE: a cleanup allowance is not a ref-wide exemption: re-added run state is refused again
+  RED-CASE: the all-commit history check is batched instead of forking ls-tree per commit
+  GREEN-CASE: the batched history check does not require git rev-list --no-commit-header
+T001: pending -> implementing
+T001: implementing -> testing
+T001: testing -> reviewing
+T001: reviewing -> arbitrating
+arbitrated T001: result=approve from=arbitrating to=merging
+T002: pending -> implementing
+T002: implementing -> testing
+T002: testing -> reviewing
+T002: reviewing -> arbitrating
+arbitrated T002: result=approve from=arbitrating to=merging
+T003: pending -> implementing
+T003: implementing -> testing
+T003: testing -> reviewing
+T003: reviewing -> arbitrating
+arbitrated T003: result=approve from=arbitrating to=merging
+T004: pending -> implementing
+T004: implementing -> testing
+T004: testing -> reviewing
+T004: reviewing -> arbitrating
+arbitrated T004: result=approve from=arbitrating to=merging
+T005: pending -> implementing
+T005: implementing -> testing
+T005: testing -> reviewing
+T005: reviewing -> arbitrating
+arbitrated T005: result=approve from=arbitrating to=merging
+T005: testing -> reviewing
+T005: reviewing -> arbitrating
+arbitrated T005: result=approve from=arbitrating to=merging
+T006: pending -> implementing
+T006: implementing -> testing
+T006: testing -> reviewing
+T006: reviewing -> arbitrating
+arbitrated T006: result=approve from=arbitrating to=merging
+T007: pending -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+arbitrated T007: result=approve from=arbitrating to=merging
+T008: pending -> implementing
+T008: implementing -> testing
+T008: testing -> reviewing
+T008: reviewing -> arbitrating
+arbitrated T008: result=approve from=arbitrating to=merging
+T008: testing -> reviewing
+T008: reviewing -> arbitrating
+arbitrated T008: result=approve from=arbitrating to=merging
+T040: pending -> implementing
+T040: implementing -> testing
+T040: prerequisite acknowledged for candidate 3482e15e8c9f566d4bb7a2a19495bff61cc57698
+T040: testing -> reviewing
+T040: reviewing -> arbitrating
+arbitrated T040: result=approve from=arbitrating to=merging
+T040: prerequisite acknowledged for candidate e70cda40206c70eb5f0ad01346ea9aa30b67549d
+T040: testing -> reviewing
+T040: reviewing -> arbitrating
+arbitrated T040: result=approve from=arbitrating to=merging
+T041: pending -> implementing
+T041: implementing -> testing
+T041: prerequisite acknowledged for candidate f00a8e74a9ffe677b0cb2883f6de8ab434d3abf7
+T041: testing -> reviewing
+T041: reviewing -> arbitrating
+arbitrated T041: result=approve from=arbitrating to=merging
+T041: prerequisite acknowledged for candidate f00a8e74a9ffe677b0cb2883f6de8ab434d3abf7
+T009: pending -> implementing
+T009: implementing -> testing
+T009: testing -> reviewing
+T009: reviewing -> arbitrating
+arbitrated T009: result=approve from=arbitrating to=merging
+T010: pending -> implementing
+T010: implementing -> testing
+T010: testing -> reviewing
+T010: reviewing -> arbitrating
+arbitrated T010: result=approve from=arbitrating to=merging
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> reviewing
+T010: reviewing -> arbitrating
+arbitrated T010: result=approve from=arbitrating to=merging
+T011: pending -> implementing
+T011: implementing -> testing
+T011: testing -> reviewing
+T011: reviewing -> arbitrating
+arbitrated T011: result=approve from=arbitrating to=merging
+T012: pending -> implementing
+T012: implementing -> testing
+T012: testing -> reviewing
+T012: reviewing -> arbitrating
+arbitrated T012: result=approve from=arbitrating to=merging
+T013: pending -> implementing
+T013: implementing -> testing
+T013: testing -> reviewing
+T013: reviewing -> arbitrating
+arbitrated T013: result=approve from=arbitrating to=merging
+T014: pending -> implementing
+T014: implementing -> testing
+T014: testing -> reviewing
+T014: reviewing -> arbitrating
+arbitrated T014: result=approve from=arbitrating to=merging
+T015: pending -> implementing
+T015: implementing -> testing
+T015: testing -> reviewing
+T015: reviewing -> arbitrating
+arbitrated T015: result=approve from=arbitrating to=merging
+T016: pending -> implementing
+T016: implementing -> testing
+T016: testing -> reviewing
+T016: reviewing -> arbitrating
+arbitrated T016: result=approve from=arbitrating to=merging
+T016: rework -> implementing
+T016: implementing -> testing
+T016: testing -> reviewing
+T016: reviewing -> arbitrating
+arbitrated T016: result=approve from=arbitrating to=merging
+T016: rework -> implementing
+T016: implementing -> testing
+T016: testing -> reviewing
+T016: reviewing -> arbitrating
+arbitrated T016: result=approve from=arbitrating to=merging
+T016: WARNING — attempts 3/3, so the next verify failure re-blocks it immediately; grant more with: orchid task retry T016 --reason "..." --attempts N
+T017: pending -> implementing
+T017: implementing -> testing
+T017: testing -> reviewing
+T017: reviewing -> arbitrating
+arbitrated T017: result=approve from=arbitrating to=merging
+T018: pending -> implementing
+T018: implementing -> testing
+T018: testing -> reviewing
+T018: reviewing -> arbitrating
+arbitrated T018: result=approve from=arbitrating to=merging
+T019: pending -> implementing
+T019: implementing -> testing
+T019: testing -> reviewing
+T019: reviewing -> arbitrating
+arbitrated T019: result=approve from=arbitrating to=merging
+T019: rework -> implementing
+T019: implementing -> testing
+T019: testing -> reviewing
+T019: reviewing -> arbitrating
+arbitrated T019: result=approve from=arbitrating to=merging
+T107: pending -> implementing
+T107: implementing -> testing
+T107: testing -> reviewing
+T107: reviewing -> arbitrating
+arbitrated T107: result=approve from=arbitrating to=merging
+T108: pending -> implementing
+T108: implementing -> testing
+T108: testing -> reviewing
+T108: reviewing -> arbitrating
+arbitrated T108: result=approve from=arbitrating to=merging
+T109: pending -> implementing
+T109: implementing -> testing
+T109: testing -> reviewing
+T109: reviewing -> arbitrating
+arbitrated T109: result=approve from=arbitrating to=merging
+T110: pending -> implementing
+T110: implementing -> testing
+T110: testing -> reviewing
+T110: reviewing -> arbitrating
+arbitrated T110: result=approve from=arbitrating to=merging
+  NOT-TESTED: merge-log-outlives-a-lock-refusal -- the driver-side half of the same rule (fingerprint across the call) needs a driver pass, not a verb call
+T111: pending -> implementing
+T111: implementing -> testing
+T111: testing -> reviewing
+T111: reviewing -> arbitrating
+arbitrated T111: result=approve from=arbitrating to=merging
+T042: pending -> implementing
+T042: implementing -> testing
+T042: testing -> reviewing
+T042: reviewing -> arbitrating
+arbitrated T042: result=approve from=arbitrating to=merging
+  GREEN-CASE: no branch outside the run carries .orchid/ -> merge warns about nothing
+T043: pending -> implementing
+T043: implementing -> testing
+T043: testing -> reviewing
+T043: reviewing -> arbitrating
+arbitrated T043: result=approve from=arbitrating to=merging
+  RED-CASE: a branch outside the run carrying .orchid/ is named by orchid merge
+T044: pending -> implementing
+T044: implementing -> testing
+T044: testing -> reviewing
+T044: reviewing -> arbitrating
+arbitrated T044: result=approve from=arbitrating to=merging
+  GREEN-CASE: an archived run task branch carrying .orchid/ is not reported as a leak
+T046: pending -> implementing
+T046: implementing -> testing
+T046: testing -> reviewing
+T046: reviewing -> arbitrating
+arbitrated T046: result=approve from=arbitrating to=merging
+  GREEN-CASE: a live task branch carrying .orchid/ is not reported as a leak
+  GREEN-CASE: the integration branch carrying its own run state is never a leak
+  RED-CASE: a branch whose tip is clean but whose history adds .orchid/ is reported as a leak
+  GREEN-CASE: the self-hosted checkout is exempt from the containment advisory
+  RED-CASE: only the checkout itself is self-hosted, never a directory within it
+  not-tested: 1 claim(s) in this file were recorded as not-tested, never as passes
+
+== merge_gate: /bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+== Bash syntax (163 shipped scripts; /bin/bash)
+== ShellCheck exception policy
+== Portability policy (POSIX find only)
+== Portability policy (mtime via lib/common.sh file_mtime)
+== ShellCheck (zero warnings)
+CI PASS (static checks only; --no-tests)
+exit: 0

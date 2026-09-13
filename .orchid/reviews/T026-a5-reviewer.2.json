@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a5-9ee8",
+  "task": "T026",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "0e2bef8f56cfe6ba90c7523ff0073d31cb5c83aa",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "`--attempts N` is a no-op mid-budget, which the flag name does not suggest"
+    },
+    {
+      "severity": "low",
+      "title": "`reverify` leaves a stale `handoff_ack`, so a re-stamped candidate halts the next pass at an operator-handoff boundary instead of verifying"
+    },
+    {
+      "severity": "low",
+      "title": "the same `.orchid/` entry refusal exits 3 through `reverify` and 1 through the raw `advance` route"
+    }
+  ]
+}

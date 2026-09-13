@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T027-a8-ffa6",
+  "task": "T027",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "f875aee1781be8283044e0c1ed58dec290882fae",
+  "candidate_sha": "3caba9d3584aed86bd3e88da42d7d25c71c4495e",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "A post-spawn launcher failure is charged twice — drive_launch's synchronous rung carries no receipt, so the ageing sweep charges the same manifest again as `unstamped`"
+    },
+    {
+      "severity": "low",
+      "title": "The `gc-unstamped` reap can strand a late envelope as `unknown-job`, losing a delivery an orphaned engine was still going to make"
+    }
+  ]
+}

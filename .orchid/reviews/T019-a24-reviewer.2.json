@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a24-f778",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "df2f1214799d6d9b5089cb59c738dd5b68786571",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "killed suite loses all in-flight test output under the new run.sh buffering"
+    },
+    {
+      "severity": "low",
+      "title": "`orchid verify` aborts before writing any log if the prestate capture returns non-zero, charging the attempt for a harness fault"
+    }
+  ]
+}

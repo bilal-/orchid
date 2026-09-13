@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T021-a7-054a",
+  "task": "T021",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "71baa70d2d6668bdb27ec243f7bd2455440f33d4",
+  "candidate_sha": "44f02a670b282d38534d0efcec82e6bc391a71ec",
+  "summary": "Restore the doc breaks the new troubleshooting section displaced",
+  "commits": [
+    "44f02a670b282d38534d0efcec82e6bc391a71ec"
+  ]
+}

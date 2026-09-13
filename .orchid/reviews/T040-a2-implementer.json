@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T040-a2-b128",
+  "task": "T040",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "3f00fbec2946cfc1fc6668806f343abbb302b0e0",
+  "summary": "Single-quote INV-05 green_case label so its backticks stay prose",
+  "commits": [
+    "3f00fbec2946cfc1fc6668806f343abbb302b0e0"
+  ]
+}

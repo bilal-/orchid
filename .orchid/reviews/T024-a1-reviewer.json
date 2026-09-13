@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a1-839a",
+  "task": "T024",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "3379b60d594fe8813e91eef24bf5096ed6958511",
+  "verdict": "approve",
+  "scope_complete": true,
+  "summary": "The changes cleanly implement the operator prerequisite convention and task-prerequisite boundary to prevent environment failures from being treated as candidate defects, while thoroughly documenting "
+}

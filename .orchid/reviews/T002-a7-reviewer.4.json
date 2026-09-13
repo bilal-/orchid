@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T002-a7-0008",
+  "task": "T002",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "9bf480ebe347702f6548510c13c767e755db5399",
+  "candidate_sha": "77e2a00b0bb4cb5d6d315647254ec10cdb0743e4",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "_start_tasks_inherited's fork point is merge-base against the operator's *current* HEAD, not the recorded cut point — if the operator's checkout later moves to a branch whose merge base with $integ lacks the inherited blobs, the original false refusal (wrong premise, inapplicable recovery) resurfaces; and in the narrow shape where HEAD contains a post-plan-apply integ commit as a non-tip ancestor (a merged mid-run snapshot, integ then advanced via a non-tasks commit such as a requirements/journal commit), the comparison reads \"inherited\" and silences the witness on a branch with a real plan. Both require additional failures (the roadmap witnesses lying) or unusual operator moves, so this is defense-in-depth erosion rather than a live hole, but recording the cut point at init would close it."
+    },
+    {
+      "severity": "low",
+      "title": "when the vacuity guard declines (e.g. the operator's own checkout sits on $integ, so base == tip), the refusal at libexec/orchid-start:551 still asserts \"task files reach the integration branch only through 'orchid plan apply'\" and offers `run resume`/`run new` — untrue and inapplicable in the genuinely-inherited shape, which is the same wrong-message defect T002 fixes elsewhere. The decline itself is the right call; the message could name the compared-against-itself case and the actual recovery (re-run from a checkout of the operator's own branch)."
+    }
+  ]
+}

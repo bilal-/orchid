@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T033-a5-0586",
+  "task": "T033",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "b2b63454531f2fcc77a4610cb2bf284b92dfde50",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "docs/architecture.md and docs/engines/claude.md still claim an empty findings[] blocks nothing \"anywhere else\" — contradicted by reconcile's synthesis, and outside the stale-claim gate's runners/libexec/bin scan"
+    },
+    {
+      "severity": "low",
+      "title": "INV-13's \".summary\" prohibition is now satisfied by indirection — lib/drive.sh reads the summary through lib/envelope.sh, which is deliberately outside POLICIES"
+    },
+    {
+      "severity": "low",
+      "title": "the compensating INV-13 scans key on the literal local names $excerpt/$ftitle and pass vacuously if either is renamed; they also miss a `[ \"$excerpt\" = ... ]` branch"
+    },
+    {
+      "severity": "low",
+      "title": "the synthesis-failed arm in libexec/orchid-jobs has no test and is documented only in its own source comment"
+    }
+  ]
+}

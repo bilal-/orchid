@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T024-a6-970b",
+  "task": "T024",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "22fb1925dcb200830f48f0b9d09c8cc81207c0c7",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "This candidate-bound independent review confirms SHA-bound acknowledgements, rebase regression coverage, journaled redeclaration clears, and the documented planning convention."
+}

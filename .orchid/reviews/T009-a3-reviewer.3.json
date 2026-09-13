@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e45-T009-a3-2a37",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "6c792a813c6dec244e7b58c7e55e5eaa0fd78785",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "`orchid notify` now refuses any text argument beginning with `-`, which the broker still admits as text"
+    },
+    {
+      "severity": "low",
+      "title": "the choice gate keys on non-empty `.choices` content, not the file existence its own docs make the declaration"
+    }
+  ]
+}

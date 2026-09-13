@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T016-a16-0e3e",
+  "task": "T016",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "41b469d67c3e7f7ffceb1a15404f00c38ed78444",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: ci_local_late_sections credits any code-text mention of ci_run_test or tests/run.sh, so an unreachable invocation can let a deliberately opt-in static gate pass without entering the merge floor.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "ci_local_late_sections credits any code-text mention of ci_run_test or tests/run.sh, so an unreachable invocation can let a deliberately opt-in static gate pass without entering the merge floor."
+    }
+  ],
+  "summary": "ci_local_late_sections credits any code-text mention of ci_run_test or tests/run.sh, so an unreachable invocation can let a deliberately opt-in static gate pass without entering the merge floor."
+}

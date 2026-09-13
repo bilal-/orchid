@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T040-a2-a1e9",
+  "task": "T040",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "f471912fe46630352d5d45ea04cbeeefe4e1a11a",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "hb_cpu_flat treats a negative CPU delta (pid reset) as stalled and would kill a working job"
+    },
+    {
+      "severity": "low",
+      "title": "salvage pass skips gc's suspect-field validation when tailing the manifest log path and building the reviews write path"
+    }
+  ]
+}

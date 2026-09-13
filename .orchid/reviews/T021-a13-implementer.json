@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T021-a13-6512",
+  "task": "T021",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "63947e81da6f7d12c55cf456eccf3d3e5503cace",
+  "candidate_sha": "d942a1f6634020f50fb75414ec1ca4cb88b43778",
+  "summary": "Refuse a crosscheck whose item generator failed",
+  "commits": [
+    "d942a1f6634020f50fb75414ec1ca4cb88b43778"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T010-a7-25dd",
+  "task": "T010",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "896775c65516bb64a21780c72b742ea5c7f56d90",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The candidate meets all three operator objections, keeps the gate disabled locally, binds evidence and acknowledgements to candidate_sha, and covers stop-and-resume behavior."
+}

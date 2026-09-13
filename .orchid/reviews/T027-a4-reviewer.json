@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T027-a4-d075",
+  "task": "T027",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "f875aee1781be8283044e0c1ed58dec290882fae",
+  "candidate_sha": "6d73d8bf45683648d4318dcf4523dca032f523b0",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The same failed launch is escalated twice when its orphan ages, plain `jobs gc --older-than-s 0` still retains young pid-0 manifests, and the new dead-PID case is not RED because the base implementati"
+}

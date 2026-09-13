@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a19-eb08",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "34edca09e0913d68489b4f32a3d9c32d2dfe013a",
+  "candidate_sha": "0023d64e384d15ca3c20c33766887ca5390baabd",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "plugins/notify/hermes/send:731 treats any “running” token as positive, so “Gateway: unable to determine whether it is running” falsely reports inbound health instead of “cannot determine.”"
+}

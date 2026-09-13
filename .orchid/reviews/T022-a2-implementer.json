@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a2-08ee",
+  "task": "T022",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "680fb232639a524efeec7f8300bfbae241caad66",
+  "summary": "One caveat worth stating plainly: because I couldn't run the suite, I can't claim Part M passes — only that both fixtures are now structurally whole and Part L is restored to a state that was measured",
+  "commits": [
+    "680fb232639a524efeec7f8300bfbae241caad66"
+  ]
+}

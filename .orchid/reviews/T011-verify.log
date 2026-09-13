@@ -1,0 +1,14 @@
+date: 2026-08-28T16:08:08Z
+sha: 6c2e91f3f25e6cfdfb0779d5fc6278b757683c86
+candidate: 6c2e91f3f25e6cfdfb0779d5fc6278b757683c86
+cwd: /Users/bilal/workspace/personal/orchid-orchid-T011
+command: /bin/bash tests/test_beta_qualification.sh && /bin/bash tests/test_docs.sh
+prestate: 1
+pre_base_sha: "e8dd137b6a0d637bd2261f9324988ebe7924e9d6"
+pre_exec_missing: ""
+pre_env_missing: ""
+pre_env_inventory: ""
+pre_pin_stale: ""
+pre_integration_head: "e8dd137b6a0d637bd2261f9324988ebe7924e9d6"
+---
+exit: 0

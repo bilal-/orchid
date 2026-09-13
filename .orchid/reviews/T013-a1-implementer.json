@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T013-a1-16e4",
+  "task": "T013",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "140cef8c9b783a16937d135ebe81401d7f424ff5",
+  "candidate_sha": "fbd535ba9d3db079363b5bf32ba49cfe1c714529",
+  "summary": "- **No chmod hand-off.** No executable was added. The two new files are `tests/*.sh`, invoked only as `bash <file>` by `tests/run.sh`, by CI, and by the command above; nothing execs them directly. (Th",
+  "commits": [
+    "fbd535ba9d3db079363b5bf32ba49cfe1c714529"
+  ]
+}

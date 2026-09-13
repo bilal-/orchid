@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T007-a3-c70f",
+  "task": "T007",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "f175694e5391190ef103d889ee7e942577dd6edd",
+  "summary": "Assert a red task suite skips the gate and journals validation_failed",
+  "commits": [
+    "f175694e5391190ef103d889ee7e942577dd6edd"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a8-5498",
+  "task": "T006",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "edd93f4ae1c5e43f9356e3eeb0dfe5014def396e",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The enforced refusal preserves dirty development and durable .orchid state, with focused coverage and correctly recorded operator hand-offs."
+}

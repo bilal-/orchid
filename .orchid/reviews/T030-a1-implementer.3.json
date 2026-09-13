@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T030-a1-85c3",
+  "task": "T030",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "9b3164e1b010eb67497e52a698a794596e1a5b1c",
+  "summary": "T030: Sweep the stale hand-off examples the pin move left behind",
+  "commits": [
+    "9b3164e1b010eb67497e52a698a794596e1a5b1c"
+  ]
+}

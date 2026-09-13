@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a13-cdd6",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "71baa70d2d6668bdb27ec243f7bd2455440f33d4",
+  "candidate_sha": "0530d1e783765581095eeea31d37c75b66ab0f23",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "`orchid notify` now refuses message text beginning with `-`, and the broker still admits it"
+    },
+    {
+      "severity": "low",
+      "title": "`defer` is declared in every answer set but is the one value whose settling verb is never named"
+    },
+    {
+      "severity": "low",
+      "title": "the attempts-exhausted path pages `blocked-task` choices, then raises a second choice-less `operator-decision` page for the same event"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a5-a61f",
+  "task": "T022",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "b452a63e014a573fea477da0110959fa65b53951",
+  "summary": "T022: give the gc hold-back fixture a hex job_id so the hold-back runs",
+  "commits": [
+    "b452a63e014a573fea477da0110959fa65b53951"
+  ]
+}

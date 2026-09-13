@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T021-a10-5756",
+  "task": "T021",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "63947e81da6f7d12c55cf456eccf3d3e5503cace",
+  "candidate_sha": "3983e76659c6ee25363bb674481329cceec97a6f",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The legacy fallback misses prior-run findings recorded as “worth the ledger” or “additions to the deferred ledger,” allowing them to remain unconsidered."
+}

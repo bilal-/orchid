@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-10f5",
+  "task": "T019",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "7bfcf3d3064c42a6f2db9beeeeddcb03f20d09c9",
+  "summary": "Run a mode-644 pin check under its own shebang so the built-in route fires",
+  "commits": [
+    "7bfcf3d3064c42a6f2db9beeeeddcb03f20d09c9"
+  ]
+}
