@@ -1,0 +1,22 @@
+date: 2026-08-29T14:59:12Z
+sha: 34edca09e0913d68489b4f32a3d9c32d2dfe013a
+candidate: d632bc05020905f7dfd3be8d088e172b2d006357
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.m55mY0
+command: /bin/bash tests/test_review.sh && /bin/bash tests/inv/test_INV-14_engine_neutrality.sh
+---
+  NOT-TESTED: the driver's journal line for an all-inline routing table -- predicates covered above; the journal call itself needs an end-to-end drive fixture (tests/test_drive.sh's SLOTS repo never reaches the dispatch arm)
+  RED-CASE: a complete unanimous medium-tier review set with no worktree-capable reviewer is refused deterministic approval
+  GREEN-CASE: the same set approves once one review comes from a worktree-capable engine
+  RED-CASE: a review filed by a worktree-capable engine that has since been uninstalled is credited no depth while the round it was dispatched under is unrecorded
+  GREEN-CASE: the pinned plan credits that review its depth, so a plugin uninstalled after filing cannot withdraw a deterministic approval
+  RED-CASE: a review plan freezing only the bare route name withdraws a completed review when its plugin is uninstalled
+  GREEN-CASE: the pinned qualified id keeps crediting that review after the engine is uninstalled
+  RED-CASE: a rebind of the engine name a slot was pinned to leaves the review that slot dispatched matching no slot at all
+  GREEN-CASE: adopting that evidence re-pins the slot onto the qualified id the filed envelope reported, which clears the wedge
+  RED-CASE: a review plan deleted between filing and judging is answered from live routing, so a deterministic approval rests on a depth claim nothing recorded
+  GREEN-CASE: depth is credited only from the pinned round, so a plan that is not there is a boundary rather than a recomputation
+  not-tested: 1 claim(s) in this file were recorded as not-tested, never as passes
+  RED-CASE: INV-14's comparison pattern matched a real engine-name branch, so the scan above is capable of finding one
+  GREEN-CASE: the same pattern left an assignment (v=<engine>,other, a config default table) alone, so the match above is detection rather than a pattern that hits every line naming an engine
+  red-cases: 1 demonstrated in this file (green-cases: 1)
+exit: 0

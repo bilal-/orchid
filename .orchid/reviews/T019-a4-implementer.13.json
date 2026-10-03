@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-e56c",
+  "task": "T019",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "c47dc1a8eed08cfdded6dab48927a191f2dff58c",
+  "summary": "Cut the classifier to two provable waivers",
+  "commits": [
+    "c47dc1a8eed08cfdded6dab48927a191f2dff58c"
+  ]
+}

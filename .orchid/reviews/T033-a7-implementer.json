@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T033-a7-0a14",
+  "task": "T033",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "bc33a462dc7c0820059ca34028d4f56bb0086de9",
+  "summary": "Qualify the empty-findings claim and give the reviewer a REASON line",
+  "commits": [
+    "bc33a462dc7c0820059ca34028d4f56bb0086de9"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T027-a4-5035",
+  "task": "T027",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "f875aee1781be8283044e0c1ed58dec290882fae",
+  "candidate_sha": "6d73d8bf45683648d4318dcf4523dca032f523b0",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Nothing now reaps a pid-0 manifest that has a log, a class `gc --reap-prepared` cleared every pass before"
+    },
+    {
+      "severity": "low",
+      "title": "One review slot's never-started orphan refuses the other slot's launch until it ages past stall_minutes"
+    },
+    {
+      "severity": "low",
+      "title": "docs/specs/roadmap.md still claims in the present tense that `jobs gc` skips every `pid: 0` manifest"
+    },
+    {
+      "severity": "low",
+      "title": "F41's \"died without an envelope\" case is a tripwire, not a RED case — that half already passed on the base"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T020-a1-7030",
+  "task": "T020",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "8141d32bd38e4be00360464c8bafd839d2b59e36",
+  "candidate_sha": "d4e467872708ee53ca9bd84b4caa65b5b7e5a9e1",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "summary": "The diff re-pins Formula/orchid.rb, violating the mandatory constraint that the implementer profile must not re-pin Formula/orchid.rb."
+}

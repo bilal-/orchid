@@ -1,0 +1,23 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a3-5cb8",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "075139d218848322244938509fedecb1fee81f49",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Arm 0 hides this round's own review conflict from the operator's page"
+    },
+    {
+      "severity": "low",
+      "title": "review_arbiter_class is fail-open on the write — any set ORCHID_ACTOR records an operator's objection as an orchestrator's"
+    }
+  ],
+  "summary": "Because the objection precondition returns ahead of all three review arms (lib/drive.sh:186-197), a task whose current round's reviewers returned request-changes now pages `operator-decision` quoting "
+}

@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e45-T009-a3-49e5",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "6c792a813c6dec244e7b58c7e55e5eaa0fd78785",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "judgment page prints the consumed-attempt counter as `attempt:`, off by one against the kernel's own numbering (`attempt: 0` on a first attempt)"
+    },
+    {
+      "severity": "low",
+      "title": "`orchid notify --choice` accepts a value starting with `-`, which `orchid answer` can never take as a positional — a declared but unanswerable choice (the broker path is safe via `is_id`; the direct CLI is not)"
+    },
+    {
+      "severity": "low",
+      "title": "notify's new flag loop refuses any text argument beginning with `-` and offers no `--` end-of-options escape, where `orchid notify \"-x is broken\"` previously minted a blocker"
+    },
+    {
+      "severity": "low",
+      "title": "`docs/specs/operations.md:249` still enumerates `orchid answer`'s gates as \"nonce, sender allowlist, and expiry\" and omits the new declared-choice-set refusal"
+    }
+  ]
+}

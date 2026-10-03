@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T004-a1-c2fb",
+  "task": "T004",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "ed38c352909e6c0257e2048df9cda3f4640145c8",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The new helper and focused-test comments incorrectly attribute the extracted-archive suite exposure to scripts/release.sh, contradicting the task’s explicit accuracy requirement."
+}

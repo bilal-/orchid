@@ -1,0 +1,27 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a1-caf6",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "1a0f99d615c921effa211583c9331322d3f40239",
+  "verdict": "request-changes",
+  "scope_complete": false,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "arm 0 masks the current round's own request-changes/blocking findings from the boundary record"
+    },
+    {
+      "severity": "medium",
+      "title": "the brokered LLM orchestrator can clear the operator's objection unattended, not only an operator"
+    },
+    {
+      "severity": "low",
+      "title": "the objection is folded to REVIEW_OBJECTION_MAX twice, so a maximal reason is truncated again at the read end"
+    }
+  ],
+  "summary": "The durable field, the deny-list, the clear-on-approve journaling and the four adapter prompts all check out and the RED cases are non-vacuous, but `drive_review_decision` returns arm 0 before composi"
+}

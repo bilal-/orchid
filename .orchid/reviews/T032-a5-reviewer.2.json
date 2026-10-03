@@ -1,0 +1,27 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a5-0960",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "69b71473f412043f5090a2c59268793be411e278",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "relay greps the raw objection against a re-folded page, so any objection over REVIEW_OBJECTION_MAX can never be relayed"
+    },
+    {
+      "severity": "medium",
+      "title": "review_operator_relay accepts any model-minted page that merely embeds the objection and remedy substrings"
+    },
+    {
+      "severity": "low",
+      "title": "PROTOCOL.md:310 still claims the objection is decided before any envelope is read, contradicting arm 0 and the shipped composition"
+    }
+  ],
+  "summary": "The persisted-objection gate and its RED cases are correct and complete, but the operator relay added in the final commit is unusable for long objections and its page binding does not constrain the fr"
+}

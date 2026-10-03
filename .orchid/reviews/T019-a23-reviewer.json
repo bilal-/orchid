@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a23-2e02",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "b666949da2506b6b5ed1fd552b2ea652c73d4aab",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`drive_testing` defers to `on_verify_fail` before classification, so an intermittent failure can be overwritten by a passing rerun without being charged or journaled."
+}

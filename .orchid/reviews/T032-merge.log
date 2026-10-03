@@ -1,0 +1,180 @@
+date: 2026-08-30T14:29:44Z
+sha: cb37800c9fb18239e60d52e3f24778d8d4e5c529
+candidate: 459fcccdf48b5fbed824266cb62b3e6ca287fb51
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.j8dAX1
+command: /bin/bash tests/test_drive.sh && /bin/bash tests/test_task.sh
+command_status: 0
+gate: /bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+gate_status: ran
+gate_exit: 0
+---
+boundary cleared: operator-decision
+  RED-CASE: an implement envelope filed by a still-running job advances nothing and captures no candidate
+  GREEN-CASE: once the job has genuinely exited the same envelope advances the task, on its LAST commit
+  RED-CASE: a stall-killed job whose envelope is still spooled costs no infra_failure and spawns no second implementer
+  GREEN-CASE: the deferred envelope still reconciles and supplies the candidate the killed job really produced
+  RED-CASE: a pid-0 job that filed an envelope and went silent is neither believed nor relaunched over: one rung, one boundary, one engine
+  GREEN-CASE: the held envelope files itself as soon as the job's own exit is recorded — the refusal is about evidence, not about waiting
+  RED-CASE: both of drive_testing's verify-refusal arms return instead of falling into the rework accounting
+R010: WARNING — the last 3 round(s) failed with a byte-identical signature (rework_nonconvergence_max=3), so the next pass withholds the dispatch and stops this task again rather than spending a round re-asking an identically-answered question. Your reason is in the task body and will reach the next round, but something has to make verification answer differently first: fix it and run 'orchid task reverify R010 --reason "..."' (no attempt spent, and a changed failure restarts the count), or raise rework_nonconvergence_max if this loop really should get more rounds of the same question.
+  GREEN-CASE: a unanimous, scope-complete, finding-free review set on a task carrying no objection: deterministic approval
+  RED-CASE: a task carrying an uncleared operator objection: never a deterministic approval
+  RED-CASE: a standing objection routed to a kind a woken orchestrator could settle: refused — the stop is operator-only on every surface
+  GREEN-CASE: the same task and the same reviews with the objection cleared: deterministic approval restored
+  RED-CASE: an operator objection from an earlier round, after a rework round moved both attempt and candidate: still refused
+  RED-CASE: an objection carrying a raw tab: folded at the read end, so the decision record keeps its field count
+  GREEN-CASE: every shipped adapter that builds a review prompt reads the standing objection and renders it into that prompt
+  RED-CASE: an uncleared objection raised by the run's own orchestrator: never a deterministic approval either
+  GREEN-CASE: the run orchestrator's own standing objection: refused an approval, routed to a stop that same surface can settle
+  RED-CASE: an unreadable, empty or unrecognised arbiter class: read as the operator's, never as the one a woken model may clear
+  RED-CASE: an objection carrying no arbiter class line at all: the operator-only stop, not the arbitrable one
+  GREEN-CASE: an arbiter class left behind an empty objection: inert, and the deterministic approval is restored
+  RED-CASE: a standing objection over a round whose own reviews reject: both facts in the record, not just the older one
+  RED-CASE: an orchestrator's standing objection over a rejecting round: the round's rejection is composed for it too
+  RED-CASE: a standing objection over an incomplete round: still the objection, and the shortfall is named in its record rather than implied
+  RED-CASE: an objection detail missing the objection line or the remedy clause: caught here, because the answered page would be uncreditable
+  GREEN-CASE: an operator's objection page: names the exact answer the relay credits, and only the operator's does
+  GREEN-CASE: the objection detail, the page composed from it, and the clause the operator acts on: one composer, asserted at both ends
+  RED-CASE: an authority record for another task, another instance, another objection, another candidate, other review evidence, none at all, or with a field nobody here knows: matched by none of it
+  GREEN-CASE: the round a page presents: the candidate, the round's accepted envelopes and its pinned plan, each moving the digest on its own, and the candidate moving its own plain line too
+  RED-CASE: a model-minted page quoting the objection and the remedy clause: no record, so no relay, however exactly its prose matches
+  GREEN-CASE: the authority record: relayed once, spent by the consume, and worthless to the replay behind it
+  RED-CASE: a page for another stop, another task, an orchestrator's objection or none at all: no authority record is minted for any of them
+  GREEN-CASE: the driver's single page site is the one producer of an objection authority, gated on the shared predicate
+  RED-CASE: notify --objection through the brokered command surface: refused, which is what makes the record evidence about the operator rather than about the model
+T001: pending -> implementing
+T001: implementing -> blocked
+T001: blocked -> rework
+T001: guidance delivered to the task body (see `orchid task show T001`) — the implementer's capsule copies it verbatim
+T003: pending -> implementing
+T003: implementing -> blocked
+T003: blocked -> rework
+T003: guidance delivered to the task body (see `orchid task show T003`) — the implementer's capsule copies it verbatim
+T003: attempt budget unchanged at 3 (0 spent, 3 round(s) left)
+T004: pending -> implementing
+T004: implementing -> blocked
+T004: blocked -> rework
+T004: guidance delivered to the task body (see `orchid task show T004`) — the implementer's capsule copies it verbatim
+T004: rework -> implementing
+T004: implementing -> testing
+T005: pending -> implementing
+T005: implementing -> testing
+T006: pending -> implementing
+T006: infra_failures 1/3
+T006: infra_failures 2/3
+T007: pending -> implementing
+T007: implementing -> testing
+T007: testing -> rework
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+arbitrated T007: result=request-changes from=arbitrating to=rework
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+arbitrated T007: result=approve from=arbitrating to=merging
+T007: merging -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+arbitrated T007: result=approve from=arbitrating to=merging
+T007: merging -> rework
+T007: rework -> rework
+T007: guidance delivered to the task body (see `orchid task show T007`) — the implementer's capsule copies it verbatim
+T007: attempt budget unchanged at 3 (1 spent, 2 round(s) left)
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+arbitrated T007: result=approve from=arbitrating to=merging
+T007: merging -> done
+T009: pending -> implementing
+T009: implementing -> testing
+T009: testing -> reviewing
+T009: reviewing -> arbitrating
+T021: pending -> blocked
+T022: rework -> blocked
+T023: rework -> blocked
+T025: pending -> blocked
+T028: pending -> blocked
+T029: pending -> blocked
+T032: pending -> blocked
+T026: pending -> blocked
+T027: pending -> blocked
+T030: pending -> blocked
+T031: pending -> blocked
+T033: pending -> blocked
+T010: pending -> implementing
+T010: implementing -> testing
+T010: testing -> rework
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> rework
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> blocked
+T010: blocked -> rework
+T010: guidance delivered to the task body (see `orchid task show T010`) — the implementer's capsule copies it verbatim
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> blocked
+T010: blocked -> rework
+T010: guidance delivered to the task body (see `orchid task show T010`) — the implementer's capsule copies it verbatim
+T010: attempt budget unchanged at 3 (2 spent, 1 round(s) left)
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> rework
+T010: rework -> implementing
+T010: implementing -> testing
+  RED-CASE: task set with a value containing a newline: refused, non-zero exit
+  GREEN-CASE: task set with a single-line value: accepted and stored verbatim
+  RED-CASE: task set with a malformed key: refused, non-zero exit, task byte-identical
+  GREEN-CASE: task set with a well-formed key: accepted and stored
+  GREEN-CASE: the single-line refusal names a body-writing verb that is legal from the task status it fired in
+  RED-CASE: task create with a newline in the title: refused, non-zero exit, no file written
+  GREEN-CASE: task create with & / backslash / placeholder-name titles: stored byte-for-byte, read back by both task show and doctor
+  RED-CASE: task show against a zero-byte task file: refused, non-zero exit
+  RED-CASE: task list with a damaged task file: a DAMAGED row, never a row of empty fields
+  GREEN-CASE: task list with intact task files: id/status/title rows, unchanged
+  GREEN-CASE: task show against an intact task file: printed in full, exit 0
+  GREEN-CASE: a task nobody has ever arbitrated request-changes on: no unresolved_objection field is written
+  RED-CASE: an operator request-changes: the objection is written onto the task, not left as a journal entry nobody rereads
+  RED-CASE: an objection across a full rework round (new attempt, new verify, new review): still standing
+  RED-CASE: task set on unresolved_objection: refused, and the objection still stands afterwards
+  GREEN-CASE: orchid task arbitrate --result approve: the standing objection is cleared, and the clear is journaled
+  RED-CASE: an objection with no recorded provenance: the arbiter's class is written on the task beside the text
+  GREEN-CASE: the run orchestrator's own objection: recorded, survived a rework round, and settled by the same surface
+  RED-CASE: a brokered arbitration over an operator's standing objection: refused at the verb, both results, nothing written
+  RED-CASE: task set on unresolved_objection_by: refused, so an operator-only stop cannot be relabelled as a model-settleable one
+  GREEN-CASE: an operator's own objection: settled by the operator, cleared, and both arbiters named in the journal
+  RED-CASE: a hand-walked arbitration outcome (task advance out of arbitrating): refused, nothing moved, nothing journaled
+  GREEN-CASE: the same arbitrating:rework edge through task arbitrate: taken, and the result recorded
+  RED-CASE: a hand-walked merging on a task carrying an uncleared objection: refused, and the objection still stands
+  GREEN-CASE: task advance blocked out of arbitrating: still legal, because stopping a task is not deciding it
+  RED-CASE: a hand-walked arbitrating:done on an outcome=report archetype: refused too, not just the feature archetype's two edges
+  GREEN-CASE: the report archetype: task arbitrate --result approve still reaches done, deriving it from the declared transitions
+  RED-CASE: an outcome edge out of arbitrating on a custom archetype: refused there too, so the rule is not a property of the shipped transitions
+  GREEN-CASE: a declared arbitrating:reviewing edge: still walkable by task advance, because it decides nothing about the candidate
+  GREEN-CASE: task arbitrate on the custom archetype: still reaches merging, so the narrowed refusal closed nothing it was closing before
+  RED-CASE: a brokered approve backed by no answer, an unanswered page, another answer, another task, or a page the model minted itself: refused every time
+  GREEN-CASE: a brokered approve backed by the operator answer to this objection page: relayed, the objection cleared, the authority spent and the relay named in the journal
+  RED-CASE: a stale operator answer against a superseded objection: refused, so an answer is bound to the objection it was given about
+  GREEN-CASE: the operator answering the page for the objection that IS standing: relayed, so the binding refuses a replay without stranding the round
+  RED-CASE: a byte-identical objection re-raised across a waived round: the earlier answer is refused, because the instance rotated where the text could not
+  GREEN-CASE: the operator answering the page for the re-raised objection: relayed, cleared, spent — and the instance counter never rewinds
+  GREEN-CASE: an objection longer than REVIEW_OBJECTION_MAX: stored within the cap, carried verbatim into the authority, and relayed
+  RED-CASE: a question id drawn onto an answered page: redrawn, the earlier page untouched, and its approve authorising nothing for the objection standing now
+  GREEN-CASE: the redrawn page: answered and relayed like any other, its authority spent, and both claims outliving the artifacts filed under them
+  GREEN-CASE: a free question id: claimed on the first draw, and the page it names relays unchanged
+  RED-CASE: a second accepted review landing after the operator answered: the same objection, the same instance, the same words, and an answer that authorises nothing
+  GREEN-CASE: the page raised for the round as it stands: a different evidence digest, answered, relayed, spent — while the record it superseded is left exactly where it was
+
+== merge_gate: /bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+== Bash syntax (163 shipped scripts; /bin/bash)
+== ShellCheck exception policy
+== Portability policy (POSIX find only)
+== Portability policy (mtime via lib/common.sh file_mtime)
+== ShellCheck (zero warnings)
+CI PASS (static checks only; --no-tests)
+exit: 0

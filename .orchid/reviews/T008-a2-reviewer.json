@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T008-a2-2f60",
+  "task": "T008",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "3cee1b0e513c8d3ab833a742239f31587eba2a6a",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "reconcile prints the \"declined by design\" refusal line for a rate_limited envelope claiming failure_kind capability, even though ledger_mark deliberately ignores the claim there — the run record announces a refusal the ledger never counted; gate the print on the fault statuses (or on the ledger actually taking the capability branch)"
+    }
+  ]
+}

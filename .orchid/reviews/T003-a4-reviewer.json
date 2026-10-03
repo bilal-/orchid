@@ -1,0 +1,38 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a4-623a",
+  "task": "T003",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "3514de5f47424571309f2a377d53ad1bc2de21ac",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Empty candidate — task/T003 tip equals orchid/integration, zero commits delivered"
+    },
+    {
+      "severity": "high",
+      "title": "T003 implementation stranded on orphaned commits 60901d7..7d13987 (pre-T040 base, no branch); port it, do not re-derive"
+    },
+    {
+      "severity": "medium",
+      "title": "plugins/engines/codex/run orchestrate branch still carries the pre-v1.1 \"Execute ONE tick\" prompt while role.orchestrator=claude,codex admits it, and no inability label exists"
+    },
+    {
+      "severity": "medium",
+      "title": "Mandated obsolete-prompt drift test absent — nothing fails when a soft adapter is woken for a judgment boundary with a tick-style prompt"
+    },
+    {
+      "severity": "medium",
+      "title": "Mandated RED pump case absent — no test that one boundaried task plus one dispatchable task keeps advancing the dispatchable one"
+    },
+    {
+      "severity": "medium",
+      "title": "runners/orchid-drive exit-code contract still reads \"16 the pass stopped at a judgment boundary\" — the halting reading the criteria require the contract to rule out"
+    }
+  ]
+}

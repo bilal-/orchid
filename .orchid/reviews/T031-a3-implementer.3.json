@@ -1,0 +1,21 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T031-a3-c20f",
+  "task": "T031",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "2b191c039a9367ea4405d9ef09b854badff92952",
+  "summary": "Confirm the replayed brief's two items already landed in 134cfdd and 5dbdbec",
+  "commits": [
+    "2b191c039a9367ea4405d9ef09b854badff92952",
+    "5dbdbecd7c00a5905ac42cf4b9ceff7d23f436c9",
+    "b61d4ede91581e182c50b942e7587ea423510088",
+    "134cfdd8e73c05d1e3dd113e2847d9d403177195",
+    "f54308af09406e4aba7833250b3d238c5ef6e52e",
+    "8765b6a5a50abea63cf7655a0db3d3b23b4e396b",
+    "bc71ba64e7b19e8ee57d6153c52e60431291a6d4",
+    "4694a300718116206f56eab43b8974e1e5f42410"
+  ]
+}

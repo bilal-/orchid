@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a5-66e6",
+  "task": "T026",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "f5a87419f0a74f43f94e0e94336ee2d03f321409",
+  "summary": "Gate the reverify edge in advance, not just in the verb",
+  "commits": [
+    "f5a87419f0a74f43f94e0e94336ee2d03f321409"
+  ]
+}

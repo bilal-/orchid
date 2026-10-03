@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T009-a2-601e",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "4249ba35b07b6b53f5e212e35bc3947eb5b7be4c",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "Page attempt number is `attempts`, one below the running attempt's number elsewhere"
+    },
+    {
+      "severity": "low",
+      "title": "A set-less question body line `choices: <word>` is misread as a declared set"
+    }
+  ]
+}

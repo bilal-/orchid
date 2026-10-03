@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T040-a4-d606",
+  "task": "T040",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "83c03ed1bfa86bb701c9723709a4176a02bd632f",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "CPU-delta stall arm is off by default; F35's stall needs operator opt-in"
+    },
+    {
+      "severity": "low",
+      "title": "'unchanged' journal text claims \"ahead of base\" where only inequality is proven"
+    },
+    {
+      "severity": "low",
+      "title": "degraded-envelope exclusions in hook count and engine record lack test pins"
+    }
+  ]
+}

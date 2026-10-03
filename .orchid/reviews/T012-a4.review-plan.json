@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "attempt": 4,
+  "candidate_sha": "cb7d5cda1c79460ede5ca86b0b34743bdde94a6a",
+  "pinned_at": "2026-08-28T16:01:20Z",
+  "slots": [
+    {
+      "slot": 1,
+      "engine": "agy",
+      "label": "engine-independent"
+    },
+    {
+      "slot": 2,
+      "engine": "claude",
+      "label": "session-independent"
+    }
+  ]
+}

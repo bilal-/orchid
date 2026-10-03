@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a16-7a71",
+  "task": "T025",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "5b517fd8a9408422adc31335d1946c0c05c6b38e",
+  "summary": "T025: Withhold the rework reroute when no engine is recorded",
+  "commits": [
+    "5b517fd8a9408422adc31335d1946c0c05c6b38e"
+  ]
+}

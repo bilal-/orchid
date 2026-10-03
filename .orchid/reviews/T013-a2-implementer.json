@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T013-a2-223c",
+  "task": "T013",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "140cef8c9b783a16937d135ebe81401d7f424ff5",
+  "candidate_sha": "dd35326906dc08a7c635ee862ca007af9d4e424a",
+  "summary": "The nested-run gating is the one behavioural change and I could not execute it. Its failure mode is visible rather than silent: if `ORCHID_SUITE_RUN` failed to reach the file, the condition falls thro",
+  "commits": [
+    "dd35326906dc08a7c635ee862ca007af9d4e424a"
+  ]
+}

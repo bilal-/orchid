@@ -1,0 +1,19 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a12-06a1",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "cb37800c9fb18239e60d52e3f24778d8d4e5c529",
+  "candidate_sha": "1f5d693a54ca6cf9211486b5329c2dcad2bb7d02",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "unbounded per-commit `git ls-tree` makes pre-push O(history) forks on any push with no baseline"
+    }
+  ],
+  "summary": "The a11 objection is addressed — the walk is now over every newly reachable commit, with the cleanup-only pass and add-then-delete refusal preserved by non-vacuous RED cases and troubleshooting.md cor"
+}

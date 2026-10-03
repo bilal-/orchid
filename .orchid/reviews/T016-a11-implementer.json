@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T016-a11-2135",
+  "task": "T016",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "814fa45001b34833cb191f2148ab5b2788a92a30",
+  "candidate_sha": "f79fb1fd36e1c497762204c7b97958bd6f45b96d",
+  "summary": "Probe by-name enrolment and pin the shared usage-arm exemption",
+  "commits": [
+    "f79fb1fd36e1c497762204c7b97958bd6f45b96d"
+  ]
+}

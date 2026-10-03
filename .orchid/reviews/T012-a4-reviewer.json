@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T012-a4-5440",
+  "task": "T012",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "cb7d5cda1c79460ede5ca86b0b34743bdde94a6a",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The change cleanly decouples engine independence from review depth, requires worktree capability for deterministic approval at medium/high tiers while preserving inline reviewers, and thoroughly docum"
+}

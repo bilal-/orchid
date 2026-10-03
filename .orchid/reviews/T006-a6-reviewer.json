@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a6-2dae",
+  "task": "T006",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "35c1b7f98886f5784d6260b4d5333e200a46d1be",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "lib/common.sh resets the index before checkout, so interruption or checkout failure can leave pre-merge working-tree code with a current index, causing the stale-root guard to fail open."
+}

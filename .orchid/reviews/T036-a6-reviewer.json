@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a6-04d3",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "19c8ed5621f30cfde1e735ec296847c6ea587921",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: An exhausted first equal-priority boundary remains the task-order winner, causing the pump to decline every wake while later orchestrator-resolvable boundaries are skipped and silently starved indefin",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "An exhausted first equal-priority boundary remains the task-order winner, causing the pump to decline every wake while later orchestrator-resolvable boundaries are skipped and silently starved indefin"
+    }
+  ],
+  "summary": "An exhausted first equal-priority boundary remains the task-order winner, causing the pump to decline every wake while later orchestrator-resolvable boundaries are skipped and silently starved indefin"
+}

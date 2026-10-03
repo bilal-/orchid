@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a1-08aa",
+  "task": "T022",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "f23a468e6a488d19f1ac28de738d92b4e28a0b81",
+  "candidate_sha": "b75cefe16dc421fbf11cbed075d3c34bebb409aa",
+  "summary": "The check catches the zero-commit shape the acceptance criteria specifies. It does **not** catch T005's other observed shape — a dispatch that commits something real while touching neither line it was",
+  "commits": [
+    "b75cefe16dc421fbf11cbed075d3c34bebb409aa"
+  ]
+}

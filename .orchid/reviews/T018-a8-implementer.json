@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T018-a8-da62",
+  "task": "T018",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "19ecd59916c9cbda2bec302db9e58c9d35fa0c79",
+  "candidate_sha": "8b650c7937a538262182fe811e12dfca450246e0",
+  "summary": "Name where every priced step is enforced, and gate the omission",
+  "commits": [
+    "8b650c7937a538262182fe811e12dfca450246e0"
+  ]
+}

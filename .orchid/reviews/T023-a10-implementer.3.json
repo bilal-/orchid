@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T023-a10-e137",
+  "task": "T023",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "71baa70d2d6668bdb27ec243f7bd2455440f33d4",
+  "candidate_sha": "845c5803bfe3adfbbb1ee521c418ad8c24854e4c",
+  "summary": "Fold the merge blocked arms into one that reads the evidence",
+  "commits": [
+    "845c5803bfe3adfbbb1ee521c418ad8c24854e4c"
+  ]
+}

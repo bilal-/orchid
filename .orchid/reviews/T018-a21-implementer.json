@@ -1,0 +1,10 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T018-a21-15fa",
+  "task": "T018",
+  "operation": "implement",
+  "status": "failed",
+  "engine": "orchid/claude",
+  "base_sha": "8096647448aed8e6b7906cca32aff0d8e1954b04",
+  "candidate_sha": "8cd53986901006aa7a63a5d6f698f5632795bbe8"
+}

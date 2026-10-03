@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a24-78df",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "fec39e48994580b21c42439a9bb2f5d8a5911043",
+  "candidate_sha": "bfa53eb3c1153e084daefa6fc58181dc51119afe",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "`orchid notify` silently swallows `--choice` placed after the text, dropping the declared set with no error"
+    },
+    {
+      "severity": "low",
+      "title": "the archetype-without-rework-edge block records `operator-decision` in bespoke words, so the next pass's `blocked-task` walk pages the same stop a second time"
+    }
+  ]
+}

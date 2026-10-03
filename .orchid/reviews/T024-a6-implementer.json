@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T024-a6-bea7",
+  "task": "T024",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "22fb1925dcb200830f48f0b9d09c8cc81207c0c7",
+  "summary": "Correct the prereq gate's caller list and pin its supersession routes",
+  "commits": [
+    "22fb1925dcb200830f48f0b9d09c8cc81207c0c7"
+  ]
+}

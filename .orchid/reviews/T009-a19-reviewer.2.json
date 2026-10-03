@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a19-4f0d",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "34edca09e0913d68489b4f32a3d9c32d2dfe013a",
+  "candidate_sha": "0023d64e384d15ca3c20c33766887ca5390baabd",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "docs/specs/operations.md says \"Three arms\" and omits the blocked-merge arm, contradicting the driver's and the test's \"Four arms\""
+    },
+    {
+      "severity": "low",
+      "title": "the wallclock arm's comment claims the page is \"not deferred, only de-duplicated\", but a blocked-task boundary can lose the single per-pass boundary slot to a lower task id indefinitely"
+    }
+  ]
+}

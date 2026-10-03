@@ -1,0 +1,120 @@
+date: 2026-08-30T06:19:09Z
+sha: d7f213397951035166f553646f63be15511a56c7
+candidate: 0c84da4289e6e43e76fe57a5957d85b96c99ee4f
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.EqoXd7
+command: /bin/bash tests/test_task.sh && /bin/bash tests/test_init_doctor.sh
+command_status: 0
+gate: /bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+gate_status: ran
+gate_exit: 0
+---
+T001: pending -> implementing
+T001: implementing -> blocked
+T001: blocked -> rework
+T001: guidance delivered to the task body (see `orchid task show T001`) — the implementer's capsule copies it verbatim
+T003: pending -> implementing
+T003: implementing -> blocked
+T003: blocked -> rework
+T003: guidance delivered to the task body (see `orchid task show T003`) — the implementer's capsule copies it verbatim
+T003: attempt budget unchanged at 3 (0 spent, 3 round(s) left)
+T004: pending -> implementing
+T004: implementing -> blocked
+T004: blocked -> rework
+T004: guidance delivered to the task body (see `orchid task show T004`) — the implementer's capsule copies it verbatim
+T004: rework -> implementing
+T004: implementing -> testing
+T005: pending -> implementing
+T005: implementing -> testing
+T006: pending -> implementing
+T006: infra_failures 1/3
+T006: infra_failures 2/3
+T007: pending -> implementing
+T007: implementing -> testing
+T007: testing -> rework
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> rework
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T007: merging -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T007: merging -> rework
+T007: rework -> rework
+T007: guidance delivered to the task body (see `orchid task show T007`) — the implementer's capsule copies it verbatim
+T007: attempt budget unchanged at 3 (1 spent, 2 round(s) left)
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T007: merging -> done
+T009: pending -> implementing
+T009: implementing -> testing
+T009: testing -> reviewing
+T009: reviewing -> arbitrating
+T021: pending -> blocked
+T022: rework -> blocked
+T023: rework -> blocked
+T025: pending -> blocked
+T028: pending -> blocked
+T029: pending -> blocked
+T032: pending -> blocked
+T026: pending -> blocked
+T027: pending -> blocked
+T030: pending -> blocked
+T031: pending -> blocked
+T033: pending -> blocked
+T010: pending -> implementing
+T010: implementing -> testing
+T010: testing -> rework
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> rework
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> blocked
+T010: blocked -> rework
+T010: guidance delivered to the task body (see `orchid task show T010`) — the implementer's capsule copies it verbatim
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> blocked
+T010: blocked -> rework
+T010: guidance delivered to the task body (see `orchid task show T010`) — the implementer's capsule copies it verbatim
+T010: attempt budget unchanged at 3 (2 spent, 1 round(s) left)
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> rework
+T010: rework -> implementing
+T010: implementing -> testing
+  RED-CASE: task set with a value containing a newline: refused, non-zero exit
+  GREEN-CASE: task set with a single-line value: accepted and stored verbatim
+  RED-CASE: task set with a malformed key: refused, non-zero exit, task byte-identical
+  GREEN-CASE: task set with a well-formed key: accepted and stored
+  GREEN-CASE: the single-line refusal names a body-writing verb that is legal from the task status it fired in
+  RED-CASE: task create with a newline in the title: refused, non-zero exit, no file written
+  GREEN-CASE: task create with & / backslash / placeholder-name titles: stored byte-for-byte, read back by both task show and doctor
+  RED-CASE: task show against a zero-byte task file: refused, non-zero exit
+  RED-CASE: task list with a damaged task file: a DAMAGED row, never a row of empty fields
+  GREEN-CASE: task list with intact task files: id/status/title rows, unchanged
+  GREEN-CASE: task show against an intact task file: printed in full, exit 0
+Deleted branch orchid/integration (was f741ffb).
+  GREEN-CASE: orchid doctor over an intact task file: ok, no task-file FAIL
+  RED-CASE: orchid doctor over a zero-byte task file: FAIL, non-zero exit
+  RED-CASE: orchid doctor over a frontmatter-less task file: FAIL, non-zero exit
+  RED-CASE: orchid doctor over frontmatter carrying a key-less remainder line: FAIL, non-zero exit
+
+== merge_gate: /bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+== Bash syntax (159 shipped scripts; /bin/bash)
+== ShellCheck exception policy
+== Portability policy (POSIX find only)
+== Portability policy (mtime via lib/common.sh file_mtime)
+== ShellCheck (zero warnings)
+CI PASS (static checks only; --no-tests)
+exit: 0

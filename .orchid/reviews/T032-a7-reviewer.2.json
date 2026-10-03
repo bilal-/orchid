@@ -1,0 +1,19 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a7-a0e3",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "25bae387d3cba69867ce08293235c753a2848533",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "tests/inv/test_INV-15_no_optional_gate.sh still walks arbitrating→merging with `task advance`, so its merge-gate fixture never reaches `merging` and the suite fails"
+    }
+  ],
+  "summary": "The objection gate, the arbiter-class routing, the authority-record relay, the qid claim and the reviewer-pack propagation are all sound and well covered by RED/GREEN cases, but the sweep that replace"
+}

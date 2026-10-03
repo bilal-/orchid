@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e49-T018-a6-9423",
+  "task": "T018",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "4187a1dab6dca179e790f0d26d949d4518e6a2bb",
+  "summary": "Silence the fixture reap notices that rework briefs scrape as findings",
+  "commits": [
+    "4187a1dab6dca179e790f0d26d949d4518e6a2bb"
+  ]
+}

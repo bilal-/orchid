@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T002-a7-f201",
+  "task": "T002",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "88904027426565fd898bc53fa9e9bad4bf5113cd",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Review pack diff.patch was empty for a 281-line candidate; reviewed from recovered repo diff"
+    },
+    {
+      "severity": "low",
+      "title": "Operator re-pin commit 8890402 lacks the promised Orchid-Handoff: operator trailer"
+    }
+  ]
+}

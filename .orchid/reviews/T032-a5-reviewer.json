@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a5-79d2",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "69b71473f412043f5090a2c59268793be411e278",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: `review_operator_relay` accepts an old answered page solely by task and objection text, so `--waive-attempt` can recreate the same objection and let stale approval clear a newly raised operator object",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "`review_operator_relay` accepts an old answered page solely by task and objection text, so `--waive-attempt` can recreate the same objection and let stale approval clear a newly raised operator object"
+    }
+  ],
+  "summary": "`review_operator_relay` accepts an old answered page solely by task and objection text, so `--waive-attempt` can recreate the same objection and let stale approval clear a newly raised operator object"
+}

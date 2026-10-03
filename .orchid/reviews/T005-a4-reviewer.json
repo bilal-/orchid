@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a4-06e5",
+  "task": "T005",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "9bf480ebe347702f6548510c13c767e755db5399",
+  "candidate_sha": "1817c00374a45bf5f63ffb1f48485ed393910fb7",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "hallucination case never asserts marker-config=true, unlike the echo-back case"
+    },
+    {
+      "severity": "low",
+      "title": "test_probe_evidence.sh is not enrolled in PROOF_ENROLLED_FILES though it gates the probe's evidence rule"
+    }
+  ]
+}

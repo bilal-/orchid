@@ -1,0 +1,8 @@
+date: 2026-08-29T05:14:26Z
+sha: 469bdcb99264332d8f857ddd5467adfd8290168a
+candidate: ed2550fb72924d37b3b0b1cf3363f9ed25d954ee
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.sDTvMJ
+command: /bin/bash tests/test_start.sh && /bin/bash tests/test_init_doctor.sh
+---
+Deleted branch orchid/integration (was f5c5cc6).
+exit: 0

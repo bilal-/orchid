@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-58df",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "85516079f9efb2b1a6284d3945cfd879620c7ef7",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Built-in verify_class.handoff signature forgives ordinary candidate defects"
+    },
+    {
+      "severity": "low",
+      "title": "Gap intervention is journaled on every dispatch, including `reuse` re-dispatches"
+    },
+    {
+      "severity": "low",
+      "title": "handoff/environment rounds re-dispatch the implementer up to infra_max instead of stopping at an operator boundary"
+    }
+  ]
+}

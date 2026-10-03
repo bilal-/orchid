@@ -1,0 +1,17 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a5-7372",
+  "task": "T024",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "2bb001a9d7355614e5c54b4793217c00c6ac08d8",
+  "summary": "Report the T024 rework brief already satisfied by HEAD",
+  "commits": [
+    "2bb001a9d7355614e5c54b4793217c00c6ac08d8",
+    "96e60bc611abfcbe12676e7556da60198cacfbd5",
+    "9821cf797640a8dc4e6ecc51127a5d29dfcba9f7",
+    "c7671828c096dad523549dea26eecf020b6fde91"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a9-190d",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "d4473ec6f6d1073bebb57f87c56170baa483875f",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "environment arm attributes a resolution failure on any token, so `ENOENT ... open '<path>'` is laundered by an absent node_modules"
+    },
+    {
+      "severity": "low",
+      "title": "`drive_quarantine_signatures` drops a final register entry that has no trailing newline"
+    },
+    {
+      "severity": "low",
+      "title": "stale Part N2 header in tests/test_drive.sh claims an unattributed failure beside an outstanding mode-644 file is not charged, contradicting the assertions below it"
+    }
+  ]
+}

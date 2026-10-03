@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T021-a4-6342",
+  "task": "T021",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "5153e66db93cea50cf2421320a07168657c7c6ec",
+  "summary": "Track ledger coverage per finding, not per journal entry",
+  "commits": [
+    "5153e66db93cea50cf2421320a07168657c7c6ec"
+  ]
+}

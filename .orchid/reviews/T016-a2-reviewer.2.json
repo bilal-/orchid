@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T016-a2-89af",
+  "task": "T016",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "63947e81da6f7d12c55cf456eccf3d3e5503cace",
+  "candidate_sha": "bfa0fbbcea24b84a1dfe1fbac53e331d22c2c301",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "INV-15 section 5's derived sweep excludes tests/, leaving 26 live instances of the shape in the invariant gates themselves, undeclared in section 6"
+    },
+    {
+      "severity": "medium",
+      "title": "narrowing the firing set to bin/libexec/runners silently drops the stale-root guard for scripts/beta-qualify.sh, and section 4's derivation does not scan scripts/ so it cannot see the loss"
+    },
+    {
+      "severity": "low",
+      "title": "section 2's enrolment check is itself textual — `^[[:space:]]*(source|\\.)` accepts an indented or conditional `source helpers.sh` that never executes"
+    },
+    {
+      "severity": "low",
+      "title": "the stale-root refusal is no longer the first thing a deferring entry point does — orchid-pump creates .orchid/runtime and the service log, and doctor/status emit their trust section, before the gate fires"
+    }
+  ]
+}

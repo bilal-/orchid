@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a9-553c",
+  "task": "T019",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "292f60b2e45e5495b002a717afeab82e387a6774",
+  "summary": "T019: Charge stopped-short runs and gate authorities on the live file",
+  "commits": [
+    "292f60b2e45e5495b002a717afeab82e387a6774"
+  ]
+}

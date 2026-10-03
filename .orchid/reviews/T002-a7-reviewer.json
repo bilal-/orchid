@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T002-a7-3839",
+  "task": "T002",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "88904027426565fd898bc53fa9e9bad4bf5113cd",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The empty diff provides neither the required focused regression test nor a durable stage-one stop with an unconfirmed reading-derived diagnosis."
+}

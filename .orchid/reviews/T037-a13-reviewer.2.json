@@ -1,0 +1,23 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a13-c309",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "cb37800c9fb18239e60d52e3f24778d8d4e5c529",
+  "candidate_sha": "c7e1fb445d4f594b2da4e3fc5defefcac8c0b00a",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "batched history walk needs git ≥ 2.33 and refuses every branch push on older git"
+    },
+    {
+      "severity": "low",
+      "title": "merge containment scan runs a full path-limited history walk per local branch"
+    }
+  ],
+  "summary": "The a12 objection was addressed — the walk is now one `rev-list` into one `cat-file --batch-check`, pinned by a fork-counting test with all semantic twins intact — but `--no-commit-header` is a Git 2."
+}

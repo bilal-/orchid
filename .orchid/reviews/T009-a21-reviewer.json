@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a21-df4e",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "2658972632012c3332a34e17dce9fb295d7bf5ff",
+  "candidate_sha": "280315dd7fbcfcf1a0349502f3e2ae7f0a15ffa7",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "runners/orchid-drive:2680 skips a matching recorded boundary before checking page expiry, so an unresolved stop is never paged again after its question becomes unanswerable."
+}

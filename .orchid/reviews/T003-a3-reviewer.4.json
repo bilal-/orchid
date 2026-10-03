@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a3-e392",
+  "task": "T003",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "585fa60a9bb3eb3e97645933a211ce5f9fda7f34",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The candidate correctly narrows soft-surface admission, updates the Codex judgment prompt, and covers blocker delivery plus continued dispatch."
+}

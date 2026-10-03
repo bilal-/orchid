@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T021-a4-c371",
+  "task": "T021",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "5736c982c44f623a68bb4162b1d78cedd917660d",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "lib/plancheck.sh only recognizes legacy prose containing “ledger candidate” or “ledger item,” so r-001 findings recorded as “ADDITIONS to the deferred ledger” or “worth the ledger” remain silently unc"
+}

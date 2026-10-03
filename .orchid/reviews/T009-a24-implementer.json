@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a24-3c1d",
+  "task": "T009",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "8096647448aed8e6b7906cca32aff0d8e1954b04",
+  "candidate_sha": "ac0863453237848c8d40877d59d04068f1c32747",
+  "summary": "T009: Give a gate-blocked page its answers, and derive its kind once",
+  "commits": [
+    "ac0863453237848c8d40877d59d04068f1c32747"
+  ]
+}

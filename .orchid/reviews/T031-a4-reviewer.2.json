@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T031-a4-f682",
+  "task": "T031",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "8096647448aed8e6b7906cca32aff0d8e1954b04",
+  "candidate_sha": "b702e4b4dca6e1e9c4f3a1ff79466d73d7f8c946",
+  "verdict": "request-changes",
+  "scope_complete": false,
+  "findings": [],
+  "summary": "`jobs reconcile` treats `pid: 0` as exited, but `orchid-launch` starts the engine before stamping its PID, so an envelope written in that window can still advance while the implementer is alive."
+}

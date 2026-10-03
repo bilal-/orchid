@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a3-b458",
+  "task": "T026",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "2f2a9311dc45bf5f153ad68a4c1e93d95e1575f3",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The persistent blocked-task boundary hides reverify, and reverify can certify dirty worktree changes that are absent from candidate_sha."
+}

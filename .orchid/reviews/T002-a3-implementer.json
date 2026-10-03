@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T002-a3-d111",
+  "task": "T002",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "97cb8276d681f2e0a44d202e9993aad021a63337",
+  "summary": "Single-quote the INV-05 green_case label so its prose is not run",
+  "commits": [
+    "97cb8276d681f2e0a44d202e9993aad021a63337"
+  ]
+}

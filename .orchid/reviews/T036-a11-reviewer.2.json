@@ -1,0 +1,27 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a11-d175",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "33f651b5db0d8b8f9a4052a1c36ac597b7db09a5",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "boundary record schema comment in libexec/orchid-run omits `counters`"
+    },
+    {
+      "severity": "low",
+      "title": "an `accepting` run still drives a full pump pass every interval, forever"
+    },
+    {
+      "severity": "low",
+      "title": "launchd not-found regex does not match the sentence its own comment quotes"
+    }
+  ],
+  "summary": "Both required RED cases ship and are non-vacuous (a deleted checkout refuses nonzero via a filesystem-only liveness test ahead of the trust gate; an all-`done` run is declined at 5c with zero wakeups "
+}

@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a22-98a9",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2658972632012c3332a34e17dce9fb295d7bf5ff",
+  "candidate_sha": "a9bd249b24afa1466b211984ef43a583d0c42de6",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "A positive channel row outranks a gateway row that says the gateway is down, yielding false REACHABLE"
+    }
+  ]
+}

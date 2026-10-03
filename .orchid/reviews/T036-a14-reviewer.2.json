@@ -1,0 +1,19 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a14-db42",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "1e59886f826a16d2346929f3e151ad924d6b7f60",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "boundary schema comment omits the new `counters` field"
+    }
+  ],
+  "summary": "The mechanism ties the schedule's lifetime to the run at every surface — refusal, guard, teardown-as-one-operation, wake budget — with RED/GREEN coverage that is driven end to end rather than asserted"
+}

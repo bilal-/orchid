@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a8-34aa",
+  "task": "T006",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "f25b56aa1fb385ce537c360586ae72601d0875fe",
+  "summary": "Judge the per-write refresh check against a commit, not the index",
+  "commits": [
+    "f25b56aa1fb385ce537c360586ae72601d0875fe"
+  ]
+}

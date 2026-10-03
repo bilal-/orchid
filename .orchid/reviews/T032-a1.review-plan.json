@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "attempt": 1,
+  "candidate_sha": "1a0f99d615c921effa211583c9331322d3f40239",
+  "pinned_at": "2026-08-30T08:11:06Z",
+  "slots": [
+    {
+      "slot": 1,
+      "engine": "agy",
+      "label": "engine-independent",
+      "depth": "inline",
+      "qid": "orchid/agy"
+    },
+    {
+      "slot": 2,
+      "engine": "claude",
+      "label": "session-independent",
+      "depth": "worktree",
+      "qid": "orchid/claude"
+    }
+  ]
+}

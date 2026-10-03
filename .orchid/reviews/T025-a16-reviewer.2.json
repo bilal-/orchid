@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a16-4535",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d7f213397951035166f553646f63be15511a56c7",
+  "candidate_sha": "b24f5f8d7277f174dd11264587fe392905dda7fc",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "A valid later implement envelope may omit `.engine`, but implementing→testing leaves the prior `implementer_engine_id` intact, so the second identical signature can exclude the wrong engine and re-dis"
+}

@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a5-2281",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "3c0f3c0186b351a0a147df4aaa10b46637d9e708",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: The canonical ShellCheck gate fails at tests/test_service.sh:1028 and :1111, and Darwin uninstall deletes its binding after ignoring a failed launchctl unload, potentially leaving an invisible live ag",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "The canonical ShellCheck gate fails at tests/test_service.sh:1028 and :1111, and Darwin uninstall deletes its binding after ignoring a failed launchctl unload, potentially leaving an invisible live ag"
+    }
+  ],
+  "summary": "The canonical ShellCheck gate fails at tests/test_service.sh:1028 and :1111, and Darwin uninstall deletes its binding after ignoring a failed launchctl unload, potentially leaving an invisible live ag"
+}

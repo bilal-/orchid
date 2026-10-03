@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a7-af37",
+  "task": "T026",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "53fd0856df918bff4a760ebc9d5ba5a242d91ba3",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "lib/handoff.sh header says reverify CARRIES the ack; the kernel withdraws it"
+    },
+    {
+      "severity": "medium",
+      "title": "hand-off commit 367ff8c lacks its Orchid-Handoff: operator trailer"
+    }
+  ]
+}

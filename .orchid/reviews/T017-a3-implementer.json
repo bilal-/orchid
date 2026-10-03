@@ -1,0 +1,17 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T017-a3-81af",
+  "task": "T017",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "2a256c7c58aa46e2882bbd371d16cdb281c27266",
+  "summary": "Two things worth watching on that run. `docs/contributing.md` is outside `test_docs.sh`'s linted surface (`test_docs.sh:55-70`), so the contributor-facing half of the rule is held only by the four gre",
+  "commits": [
+    "2a256c7c58aa46e2882bbd371d16cdb281c27266",
+    "0f8f30ba0eac58e2169ebb7c5f9298ea3bdc537b",
+    "8336361d1e5513c419c0d63a3eb978becf3aa4d4",
+    "ea18124724a326935e450402aed61694464ed552"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T034-a4-f1db",
+  "task": "T034",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "5569e8234bc963b3e35b6bd842fc83c104094c94",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Newline values fail before mutation, rewrites use atomic replacement, malformed tasks fail closed, doctor detects damage, and the required regressions pass."
+}

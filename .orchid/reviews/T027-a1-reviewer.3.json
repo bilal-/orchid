@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T027-a1-5f13",
+  "task": "T027",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "73bd75a97b22efae7c05edb6cb4f056796bde729",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "exit-17 refusal permanently wedges PLANNING — no `jobs gc` ever runs in that phase, so a stranded plan-critique manifest is never reaped"
+    },
+    {
+      "severity": "medium",
+      "title": "exit 17 collides with the kernel exit-code registry's \"brokered command refused\", and the registry was not updated"
+    },
+    {
+      "severity": "medium",
+      "title": "`drive_implementing`'s design note still argues the duplicate guard must never live in `jobs prepare`, while `prepare` now cites that note as its authority"
+    },
+    {
+      "severity": "low",
+      "title": "doctor prints \"the orchid installation's own `$ORCHID_ROOT/orchid.config` is NEVER consulted\", which is false whenever orchid drives itself"
+    }
+  ]
+}

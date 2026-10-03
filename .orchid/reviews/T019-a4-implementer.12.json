@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-b00f",
+  "task": "T019",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "4dabddbff1849d5ffb29c655023bd9ff1b4e7f9d",
+  "summary": "Restructure the ERE escape and brace WMARK to clear ShellCheck",
+  "commits": [
+    "4dabddbff1849d5ffb29c655023bd9ff1b4e7f9d"
+  ]
+}

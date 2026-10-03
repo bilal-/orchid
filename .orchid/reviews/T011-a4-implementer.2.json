@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e49-T011-a4-c28a",
+  "task": "T011",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "33adc18bf71353a970023dcdf3a05eb6e124420e",
+  "candidate_sha": "c0656f05c7dbe7e310f3e234b312ae8908337a52",
+  "summary": "Pin the no-trust-step decision in --help's printed output",
+  "commits": [
+    "c0656f05c7dbe7e310f3e234b312ae8908337a52"
+  ]
+}

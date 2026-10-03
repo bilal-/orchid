@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a3-0101",
+  "task": "T003",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "13a748be4c132a660749824f9cb54338276f46cf",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "Unknown command_surface label normalizes to soft, contradicting the diff's own \"reads as brokered\" docs"
+    }
+  ]
+}

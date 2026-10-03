@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a6-fdea",
+  "task": "T037",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "80006b8d6594b5d686592ece05d310b0f759ea26",
+  "summary": "T037: Refuse a relative hooksPath, and repair a hook's exec bit",
+  "commits": [
+    "80006b8d6594b5d686592ece05d310b0f759ea26"
+  ]
+}

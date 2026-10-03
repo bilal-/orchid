@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T026-a8-64a5",
+  "task": "T026",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "1b781c3af66f6a2d1b4a1ea626b32acba5a8ee7d",
+  "candidate_sha": "34692d639bbb81125828ee61586d91a450c1d5d0",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The changes cleanly implement configurable attempt budgets, reason delivery to task capsules, and the reverify transition edge with thorough lineage and worktree hygiene guards across all kernel and d"
+}

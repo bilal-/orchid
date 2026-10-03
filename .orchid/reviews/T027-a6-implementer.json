@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T027-a6-3ce9",
+  "task": "T027",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "f875aee1781be8283044e0c1ed58dec290882fae",
+  "candidate_sha": "f428f499fdfb20a50f013f1328c75587a4c13a1b",
+  "summary": "Charge a launch failure on its journal receipt, not on the mark",
+  "commits": [
+    "f428f499fdfb20a50f013f1328c75587a4c13a1b"
+  ]
+}

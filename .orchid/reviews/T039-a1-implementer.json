@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T039-a1-0643",
+  "task": "T039",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "54de4a601e1f4f68152400252f8b575cc5007541",
+  "summary": "Pin the review plan per attempt and give a wedged task a legal exit",
+  "commits": [
+    "54de4a601e1f4f68152400252f8b575cc5007541"
+  ]
+}

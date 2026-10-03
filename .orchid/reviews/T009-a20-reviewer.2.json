@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a20-1807",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "34edca09e0913d68489b4f32a3d9c32d2dfe013a",
+  "candidate_sha": "6b16f8b593d9edc21c9a48ec8bf09f5572b08a04",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The Hermes probe can falsely report inbound health on Windows when `Status: Ready` is followed by `No gateway process detected`, because it treats “ready” as reachable but does not recognize the expli"
+}

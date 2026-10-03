@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a5-3e54",
+  "task": "T024",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "6f181e2e2736e059939133904d2b5ed88503cbff",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The candidate satisfies (a), (b), and (c), and this Codex review provides the required engine-independent slot-1 review of the current Claude-authored candidate."
+}

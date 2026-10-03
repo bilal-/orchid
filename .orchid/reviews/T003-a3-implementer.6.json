@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a3-b1dc",
+  "task": "T003",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "7d13987411f96bca3d890d97ad8ffd065ce04c1c",
+  "summary": "T003: Tie Part Q's negative admits-checks to the settling-verb table",
+  "commits": [
+    "7d13987411f96bca3d890d97ad8ffd065ce04c1c"
+  ]
+}

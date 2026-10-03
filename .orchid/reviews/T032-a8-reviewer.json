@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a8-ef4d",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "459fcccdf48b5fbed824266cb62b3e6ca287fb51",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Both mechanisms F33 named are closed — the objection is durable task state that blocks deterministic approval on every door into `merging` and is carried into the next round's reviewer prompt — with R"
+}

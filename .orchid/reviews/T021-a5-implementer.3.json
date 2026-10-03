@@ -1,0 +1,25 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T021-a5-7d93",
+  "task": "T021",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "2bfe32dd50f41cc514d0ed7570e76a7d052579c8",
+  "summary": "Audit the ledger cross-check statically; no defect found",
+  "commits": [
+    "2bfe32dd50f41cc514d0ed7570e76a7d052579c8",
+    "faab919f04668fe58a06f22702b2919c614efcd6",
+    "c2ac82f63b26c9febd574a1cccb5c2f365368c5d",
+    "48017f0529b15d4efb264694030b7d2656065d04",
+    "cc5d20a84f6090bcfa0ab67686513458e55f73a5",
+    "d2384b3e68cd7e600c97db1cf56d385caf8bb861",
+    "a6c95f0ef5bc8d08c33613e32b7d7dcd6cbbb557",
+    "c1bfc835ad21c75f5767e0778edeb07cfcb58da5",
+    "ec67d5c5495cec77374451f3965cdb54fd59ddfe",
+    "999be1088c78d23fb1fda89fa2a36abfe60985d3",
+    "3eea9c2bdf9d25cb354feabd6452a033697e5f24",
+    "edad31e9102bc6e2b3656428bdeb0f1b8af19d92"
+  ]
+}

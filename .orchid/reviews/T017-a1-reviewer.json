@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T017-a1-4c67",
+  "task": "T017",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "8141d32bd38e4be00360464c8bafd839d2b59e36",
+  "candidate_sha": "1eb75ec85d22e17119d22c22f5eb0a639d9197c6",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The changes establish and mechanically enforce the RED-case proof discipline across all gate specifications and invariant tests while resolving all carried harness findings."
+}

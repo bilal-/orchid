@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T007-a2-9262",
+  "task": "T007",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "29a1a3ffb004ec721b3e6b7beb39f79846773bf5",
+  "summary": "T007: Gate merges on ci-local's static half, never a second full suite",
+  "commits": [
+    "29a1a3ffb004ec721b3e6b7beb39f79846773bf5"
+  ]
+}

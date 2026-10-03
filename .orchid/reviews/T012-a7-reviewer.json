@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T012-a7-915f",
+  "task": "T012",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "71baa70d2d6668bdb27ec243f7bd2455440f33d4",
+  "candidate_sha": "ba01cf32463a47d2aaf876d37bc70ac975bea0c1",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The pinned plan stores only a bare engine name, so uninstalling or rebinding a third-party reviewer makes its qualified envelope ID unmatchable and violates the promised durable depth credit."
+}

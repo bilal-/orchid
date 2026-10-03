@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a5-e97e",
+  "task": "T022",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "bbe5ac89817bbce7f7cfdb04b5f8bf7e867e67c6",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The exact-candidate operator log records tests/test_drive.sh and full CI exiting 0, T001 Part L is byte-for-byte unchanged, and no-op delivery now escalates without advancing or consuming attempts."
+}

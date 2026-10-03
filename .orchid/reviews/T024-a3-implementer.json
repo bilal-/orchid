@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a3-1e8c",
+  "task": "T024",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "52467b9013a485512707729aebe361979cffbdcc",
+  "summary": "- `tests/test_status.sh` sources `common.sh` + `frontmatter.sh` in a subshell to move status directly (`fm_set` needs `atomic_write`), matching the ledger-row pattern already in that file.",
+  "commits": [
+    "52467b9013a485512707729aebe361979cffbdcc"
+  ]
+}

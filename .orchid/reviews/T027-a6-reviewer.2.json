@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T027-a6-37c2",
+  "task": "T027",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "f875aee1781be8283044e0c1ed58dec290882fae",
+  "candidate_sha": "ee69f6b7ecc8ffbcb71bd1e087edda989db0f94c",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "drive_stranded_launch_job is attempt-blind, so glob order can key a charge to another attempt's orphan"
+    },
+    {
+      "severity": "low",
+      "title": "drive_launch charges a rung for any non-zero exit, including a launcher that died after the spawn line"
+    },
+    {
+      "severity": "low",
+      "title": "the F41 \"died without an envelope\" half is pinned but was never RED — gc --older-than-s 0 already reaped it"
+    }
+  ]
+}

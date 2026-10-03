@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T001-a1-00f8",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "f23a468e6a488d19f1ac28de738d92b4e28a0b81",
+  "candidate_sha": "b506c071041b4ddabf221a20facce14b7828db01",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "the deferral note asserts a relaunch and an \"earlier non-ok envelope\" on every ordinary first-attempt implement job, because the guard runs before `drive_implement_failed` rather than inside its branch"
+    },
+    {
+      "severity": "low",
+      "title": "`escalated_this_pass` is a second, unrequested ladder-wide change with no test of its own — no fixture in the diff ever reaches the sweep-plus-walk collision it exists for"
+    },
+    {
+      "severity": "low",
+      "title": "its key is `id:op:point` while its comment justifies the rule \"per slot\", so two dual-review slots (or two bindings at one hook point) dying in the same pass now spend one rung instead of two"
+    },
+    {
+      "severity": "low",
+      "title": "`assert_match \"awaiting the implementer envelope\"` also matches the pre-existing fallback note, so it does not pin the guard's own path; asserting the parenthetical would"
+    }
+  ]
+}

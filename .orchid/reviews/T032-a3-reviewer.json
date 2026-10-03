@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a3-fc36",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "075139d218848322244938509fedecb1fee81f49",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: `libexec/orchid-task` still permits bare `task advance` arbitration edges, so `arbitrating→rework` can reject without persisting an objection and `arbitrating→merging/done` can bypass one without the",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "`libexec/orchid-task` still permits bare `task advance` arbitration edges, so `arbitrating→rework` can reject without persisting an objection and `arbitrating→merging/done` can bypass one without the "
+    }
+  ],
+  "summary": "`libexec/orchid-task` still permits bare `task advance` arbitration edges, so `arbitrating→rework` can reject without persisting an objection and `arbitrating→merging/done` can bypass one without the "
+}

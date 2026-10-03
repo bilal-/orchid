@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a2-d6ad",
+  "task": "T037",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "a3281f58d7e7830ad8c99ec666129f8041501954",
+  "summary": "Build the archived-run leak fixture with real run state",
+  "commits": [
+    "a3281f58d7e7830ad8c99ec666129f8041501954"
+  ]
+}

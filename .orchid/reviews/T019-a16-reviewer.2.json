@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a16-1427",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "c2a7c26bf8c5dc62eb390d55d9e4409f163482d4",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Candidate-controlled output can forge an ORCHID-VERIFY-SEGMENT END 0 block, hide a genuine defect, and let an unrelated waiver avoid charging the attempt."
+}

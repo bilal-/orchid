@@ -1,0 +1,19 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a12-139e",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "dacdeb54db8284a28b1e82d65a6bdcf4d6e74766",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "pump step 2b breaks INV-15's finished-run green probe"
+    }
+  ],
+  "summary": "The new git-alive refusal sits above the `complete` arm while `tests/inv/test_INV-15_no_optional_gate.sh`'s `repo-complete` fixture is a non-git directory, so its green probe now gets exit 1 and the r"
+}

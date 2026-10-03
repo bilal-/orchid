@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a3-ccb3",
+  "task": "T026",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "2f2a9311dc45bf5f153ad68a4c1e93d95e1575f3",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "`drive_blocked`'s recurring `blocked-task` boundary still names only `unblock|retry`, omitting the new `reverify` that PROTOCOL.md's boundary table now lists"
+    },
+    {
+      "severity": "low",
+      "title": "`task reverify` journals and re-stamps `candidate_sha` before `task advance` can refuse the transition, so a cap/deps refusal leaves a mutated task that never moved"
+    }
+  ]
+}

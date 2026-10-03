@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a1-3881",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "814fa45001b34833cb191f2148ab5b2788a92a30",
+  "candidate_sha": "4a16790a3a5357bec02c23c85ee2e5ab8c2fc994",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "wake-budget availability probe omits the `orchestrate` capability step the pump gates on, charging wakeups that never happen"
+    },
+    {
+      "severity": "low",
+      "title": "the `passes` counter is charged by every `orchid drive` invocation, so an operator following the documented \"rerun drive\" remedy can spend the budget by hand"
+    }
+  ]
+}

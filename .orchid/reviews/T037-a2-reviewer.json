@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a2-8faa",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "a3281f58d7e7830ad8c99ec666129f8041501954",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The changes cleanly solve the run-state leak by adding force-staging with runtime exclusions, an advisory stderr warning in `orchid merge` accounting for archived tasks, and a pre-push guard blocking "
+}

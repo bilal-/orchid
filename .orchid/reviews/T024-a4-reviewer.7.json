@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a4-c922",
+  "task": "T024",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "b0035184c8c7125754e76384f0d9f811dcb96fac",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "[medium] HEAD changes release-archive bytes while Formula/orchid.rb still carries T028’s checksum and lacks the required T024 operator re-pin, so the pinned-release gate will fail."
+}

@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a4-30e8",
+  "task": "T024",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "47b79f0064040e114156834c026cddd62782f907",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "(a),(b),(c) are all met with real tests, but no engine-independent slot-1 review is verifiable for this candidate — approval withheld on the operator's standing precondition, not for any code defect"
+    },
+    {
+      "severity": "low",
+      "title": "libexec/orchid-run's boundary-schema comment still enumerates the kinds without task-prerequisite, though the die string directly below it was updated"
+    },
+    {
+      "severity": "low",
+      "title": "tests/test_docs.sh's worktree_prepare tripwire will red the whole suite for every unrelated task the moment T023 lands the key — deliberate, but it needs a paired follow-up on T023 rather than an in-flight surprise"
+    }
+  ]
+}

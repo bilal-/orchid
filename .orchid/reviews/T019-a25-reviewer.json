@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a25-1afb",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "82ecae5e0caf71d3e49dc78532323e18eb8d1247",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The old-branch flaky-register fallback trusts integration HEAD after candidate-controlled verification, allowing a candidate to commit a matching FLAKE entry there and turn a genuine defect into an un"
+}

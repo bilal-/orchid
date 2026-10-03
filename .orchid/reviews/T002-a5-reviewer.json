@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T002-a5-1095",
+  "task": "T002",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "74ab099b3c181d2a76ecbe3ce69efebd6a9bc921",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Inherited-tasks guard fails open one commit past an absorbed fork point (declines only when merge-base == tip)"
+    },
+    {
+      "severity": "low",
+      "title": "Witness verdict depends on the operator's currently checked-out branch, so a re-run from another branch falsely refuses with the old inapplicable recovery"
+    }
+  ]
+}

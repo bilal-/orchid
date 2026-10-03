@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a4-c67b",
+  "task": "T006",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "3c6159e9a77d135c086690853d26c73a2a1e6f6c",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "ORCHID_KERNEL_PATHS omits runtime-read PROTOCOL.md, so a protocol-only merge neither refuses nor refreshes and continues using pre-merge instructions."
+}

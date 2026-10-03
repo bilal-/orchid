@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a21-db7c",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "18075c11085c2e32f2f41a0ec6a62af89a1a2e6e",
+  "candidate_sha": "5608a39e169f7b17ac86b979a49da598d08ee29f",
+  "summary": "Fail an install closed when its carried binding does not resolve",
+  "commits": [
+    "5608a39e169f7b17ac86b979a49da598d08ee29f"
+  ]
+}

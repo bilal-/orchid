@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T009-a1-01b3",
+  "task": "T009",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "c573284b39a820f8648529dafd9ca90daca432a5",
+  "summary": "Give the hermes notify plugin an inbound probe and cover doctor's honesty rules",
+  "commits": [
+    "c573284b39a820f8648529dafd9ca90daca432a5"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a17-ddb0",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "34edca09e0913d68489b4f32a3d9c32d2dfe013a",
+  "candidate_sha": "cb56694ccd5d24944d5e7eeba3b95da51c848c7e",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "merge-blocked arm still pages beside its own boundary record (runners/orchid-drive:2475), minting 2–3 qids for one stop"
+    },
+    {
+      "severity": "medium",
+      "title": "the one-producer guard counts only `drive_notify` call sites, so a raw `\"$ORCHID_BIN\" notify` producer passes it vacuously"
+    },
+    {
+      "severity": "low",
+      "title": "tests/test_status.sh:234 keeps the piped `echo | grep -q … && fail` negative assertion the same change converted to a herestring at line 129"
+    }
+  ]
+}

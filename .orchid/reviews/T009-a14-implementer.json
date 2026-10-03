@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a14-21d9",
+  "task": "T009",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "71baa70d2d6668bdb27ec243f7bd2455440f33d4",
+  "candidate_sha": "1b89d25dcf74c96785f8876564341513e919e466",
+  "summary": "Refuse a live pid as health on a negated Hermes status row",
+  "commits": [
+    "1b89d25dcf74c96785f8876564341513e919e466"
+  ]
+}

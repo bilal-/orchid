@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T021-a3-6ff1",
+  "task": "T021",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "72eead34f16362b754e0418a3412ce02ca25f59f",
+  "summary": "One caveat worth stating plainly: the rework feedback itself was not present in this worktree (`.orchid/` here is a 13:41 snapshot predating the attempts, and the main repo's `.orchid/reviews/` is out",
+  "commits": [
+    "72eead34f16362b754e0418a3412ce02ca25f59f"
+  ]
+}

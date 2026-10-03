@@ -1,0 +1,23 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a18-3c7c",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "b6eddd40c17f1b9a0826bd7c0642459781aa9aff",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "lib/rework.sh uses `_orchid_stream_sha256` without sourcing lib/common.sh"
+    },
+    {
+      "severity": "low",
+      "title": "the non-convergence troubleshooting section recommends `task unblock` before explaining that neither operator verb restarts the loop"
+    }
+  ],
+  "summary": "All three acceptance criteria are implemented at the proven root cause with non-vacuous RED coverage, and the two issues found are advisory only — an undeclared cross-library dependency that every cur"
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a2-60b7",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "e3b37c8fca950d7f25b46281e23618f33561db52",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The durable objection survives rework, blocks deterministic approval behind an operator-only boundary, and reaches every reviewer prompt with regression coverage."
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T035-a1-00ad",
+  "task": "T035",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "c04ccce030240017b5b6b2f64c2bfa5a96f2dbb5",
+  "summary": "Add orchid jobs ls, the operator's process table for a run",
+  "commits": [
+    "c04ccce030240017b5b6b2f64c2bfa5a96f2dbb5"
+  ]
+}

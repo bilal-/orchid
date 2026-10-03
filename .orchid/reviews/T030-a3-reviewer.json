@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T030-a3-8bba",
+  "task": "T030",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "9fb0dd22f5d542b36915bae8861298eb202f81f4",
+  "candidate_sha": "987c7748a01458d928d559e06b83df2f906636b0",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The changes remove whole-tree formula re-pinning from candidate verification chains to eliminate rebase deadlocks, move the freshness gate to the release script, restore the executable mode bit on `sc"
+}

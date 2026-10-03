@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a11-7242",
+  "task": "T025",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "814fa45001b34833cb191f2148ab5b2788a92a30",
+  "candidate_sha": "41854df6c168a08717b06164cd9610185f953269",
+  "summary": "T025: One page for the non-convergence stop and a truthful refusal",
+  "commits": [
+    "41854df6c168a08717b06164cd9610185f953269"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a4-70bd",
+  "task": "T024",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "8ab5c13d93e058fd1c76d9ba11e28b2e1a84fd2f",
+  "summary": "tests/test_docs.sh: fold kernel.md before grepping wrapped tripwire prose",
+  "commits": [
+    "8ab5c13d93e058fd1c76d9ba11e28b2e1a84fd2f"
+  ]
+}

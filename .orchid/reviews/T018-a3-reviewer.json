@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T018-a3-8163",
+  "task": "T018",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "313718eb1440f2fd43fee6786d21c58ef9aae0e6",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "docs/specs/kernel.md's exit-code registry still ends at 17 while the same file and lib/drive.sh now define 18"
+    },
+    {
+      "severity": "low",
+      "title": "an unknown step name exits 18 with a message blaming the resolved actor, and the driver journals \"the actor's manifest does not declare what that work needs\" for what is a caller error"
+    }
+  ]
+}

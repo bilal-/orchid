@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T027-a5-6354",
+  "task": "T027",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "f875aee1781be8283044e0c1ed58dec290882fae",
+  "candidate_sha": "21b23743e77ffaf7df3403e6bad5f16626de4dad",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`launch_exit` is stamped before journaling or escalation, so a direct launch or driver crash in between makes later sweeps skip the never-started failure and preserves F29’s invisibility."
+}

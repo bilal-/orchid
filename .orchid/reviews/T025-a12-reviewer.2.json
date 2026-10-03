@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a12-75d7",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "814fa45001b34833cb191f2148ab5b2788a92a30",
+  "candidate_sha": "723e1798f4a247952597314a936a75dd4b6d3813",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "rework_nonconvergence_max default (3) equals rework_max default (3), so the stop saves no round at stock config"
+    }
+  ]
+}

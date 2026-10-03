@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T018-a4-99e7",
+  "task": "T018",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "2ce08bc9860a794624a7337e6941513fd8e59a52",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`implementer_engine_id` preserves qualified IDs such as `acme/foo`, but the capability gate resolves only install-directory names, falsely forcing every third-party candidate into a hand-off even when"
+}

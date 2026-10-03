@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T034-a1-f30d",
+  "task": "T034",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "814fa45001b34833cb191f2148ab5b2788a92a30",
+  "candidate_sha": "101d63f28572acaaaa440d0edb71f8cc35719d56",
+  "verdict": "approve",
+  "scope_complete": false,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "`task create` still renders the title through `sed`, so a title's `&` (all platforms) and `\\n` (GNU sed) are expanded rather than stored byte-for-byte — the same escape-processing hole `fm_set` was moved off `awk -v` to close, still open on the sibling writer, and `fm_check` cannot see the resulting split frontmatter line"
+    },
+    {
+      "severity": "low",
+      "title": "`fm_write_task`'s refusal says \"$f is left exactly as it was\" on the `task create` path, where `$f` never existed — the message describes a rewrite that was never attempted"
+    },
+    {
+      "severity": "low",
+      "title": "`tests/test_plan.sh:966` and `tests/test_status.sh:404` still comment that `fm_set` needs `lib/common.sh`'s `atomic_write`; after this change it needs neither, so both notes now assert something false about the library"
+    }
+  ]
+}

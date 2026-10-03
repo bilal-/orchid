@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e41-T009-a2-5949",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "40ac15d2f9a2f22ff3d81026bf84d836a8585b2c",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "Probe can report false REACHABLE for unmodeled negations (\"isn't/no longer/not currently running\")"
+    },
+    {
+      "severity": "low",
+      "title": "A set-less question whose body line starts \"choices: <word>\" is misread as a declared set by orchid-answer"
+    }
+  ]
+}

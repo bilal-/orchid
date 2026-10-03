@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a5-3ee2",
+  "task": "T006",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "5d685509f8c1bf7a018c35ca11e93e7fbcc82b3f",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "staged-only kernel edit classified as `behind`, prescribing a refresh that destroys it"
+    },
+    {
+      "severity": "medium",
+      "title": "merge's advance→refresh window makes concurrent verbs from the same root fail"
+    },
+    {
+      "severity": "medium",
+      "title": "`modified` arm refuses an ordinary dirty kernel edit in the self-hosted integration checkout"
+    },
+    {
+      "severity": "low",
+      "title": "docs/specs/kernel.md pathspec omits PROTOCOL.md, contradicting ORCHID_KERNEL_PATHS"
+    }
+  ]
+}

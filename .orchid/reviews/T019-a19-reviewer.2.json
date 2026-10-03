@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a19-9804",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "c71b283d761f143dbd4a0e8a17b6ae746f3e0a5e",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Environment attribution reads dependency contents after candidate-controlled verification, allowing the candidate to create a matching `$ORCHID_REPO/.../.bin` entry and manufacture an uncharged enviro"
+}

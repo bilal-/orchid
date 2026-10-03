@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a4-b9af",
+  "task": "T022",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "0580ee514610e279646a45b24eb293d6f943edff",
+  "summary": "3. **Verification was not run.** I did not execute `tests/test_drive.sh`, `tests/test_jobs.sh`, or `scripts/ci-local.sh` — the claims above are static analysis against existing precedent in the same f",
+  "commits": [
+    "0580ee514610e279646a45b24eb293d6f943edff"
+  ]
+}

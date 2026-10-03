@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T033-a7-52de",
+  "task": "T033",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "d7f213397951035166f553646f63be15511a56c7",
+  "candidate_sha": "9d89097d625c25ef907fff7b65f53ea613946fd4",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "the new \"blocks nothing\" doc sweep never opens a file where the claim wraps, so it misses docs/architecture.md"
+    }
+  ]
+}

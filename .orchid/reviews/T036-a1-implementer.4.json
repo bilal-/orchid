@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a1-b377",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "92a75c8e004a27321b33a1ad19c47dab900d7dff",
+  "summary": "Charge the wake budget for wakeups, not passes that woke nobody",
+  "commits": [
+    "92a75c8e004a27321b33a1ad19c47dab900d7dff"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T014-a1-d065",
+  "task": "T014",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "140cef8c9b783a16937d135ebe81401d7f424ff5",
+  "candidate_sha": "6c26fc119dd4de75041bf0ff2ef8ba3dc8c6b94e",
+  "summary": "One observation I did not act on, since it's pre-existing and unchanged by this fix: at `libexec/orchid-jobs:407`, an unreadable manifest mtime yields 0, making `age` enormous and the manifest immedia",
+  "commits": [
+    "6c26fc119dd4de75041bf0ff2ef8ba3dc8c6b94e"
+  ]
+}

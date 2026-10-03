@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-8545",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "239df135c8d1066eddbf55c78f912963f7802133",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "exec-bit hand-off recognition fires on this repo's intentional mode-644 `#!` files, waiving real defects on any task that adds a test"
+    },
+    {
+      "severity": "low",
+      "title": "orchid.config.example still claims handoff.pin_check is only run when executable, contradicting the shipped shebang-interpreter route"
+    },
+    {
+      "severity": "low",
+      "title": "the flaky arm is unconfigured for this repository, so the named L020 scheduling-dependent failure still charges"
+    }
+  ]
+}

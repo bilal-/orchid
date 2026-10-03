@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a7-0a8c",
+  "task": "T037",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "50ce79c665c0e7b3772883ce1ccd20794e713a6b",
+  "summary": "T037: Prove the hooks-path twins at start's door and doctor's silence",
+  "commits": [
+    "50ce79c665c0e7b3772883ce1ccd20794e713a6b"
+  ]
+}

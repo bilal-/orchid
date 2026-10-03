@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T007-a9-4514",
+  "task": "T007",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "469bdcb99264332d8f857ddd5467adfd8290168a",
+  "candidate_sha": "d2aa02256ffff2b991658c894f57502ad1f7244d",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "T007’s own merge runs pre-T007 code that never refreshes the excluded orchid.config, leaving the newly committed merge_gate inert so the next task can still merge ungated."
+}

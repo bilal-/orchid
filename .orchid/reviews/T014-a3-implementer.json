@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T014-a3-4cd0",
+  "task": "T014",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "140cef8c9b783a16937d135ebe81401d7f424ff5",
+  "candidate_sha": "1130b8032844e229600ac7144fb2a15c28af0849",
+  "summary": "T014: Widen the mtime portability gate to GNU long options without an equals sign, and make its regression test assert the refusal instead of the banner.",
+  "commits": [
+    "1130b8032844e229600ac7144fb2a15c28af0849"
+  ]
+}

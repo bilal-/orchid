@@ -1,0 +1,20 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T010-a4-4b28",
+  "task": "T010",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "1605a1c62aaf71b66e8b8c6b3c117d19e87702e0",
+  "summary": "The candidate is ready for the operator hand-off/verify step as it stands.",
+  "commits": [
+    "1605a1c62aaf71b66e8b8c6b3c117d19e87702e0",
+    "b5419f727e837937226e658d8266fcefcc26b957",
+    "cb2e23369c98fc0a9e4852eebb65265dc37bdedc",
+    "0bbea8d6216dd4ff5caa381d6b410476883a3571",
+    "c74dbcaacfb60aa2f81a97639c845913cfdfa517",
+    "bda0b25220aff64cd6123d549db5e4726b6f09f0",
+    "a9cd70d85a2d72a386cc385f4c3642d185e85e3e"
+  ]
+}

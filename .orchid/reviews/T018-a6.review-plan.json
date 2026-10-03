@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "attempt": 6,
+  "candidate_sha": "5c81b9b73b128aed6cba41183f31ea5e99338ba4",
+  "pinned_at": "2026-08-28T16:11:58Z",
+  "slots": [
+    {
+      "slot": 1,
+      "engine": "codex-review",
+      "label": "engine-independent"
+    },
+    {
+      "slot": 2,
+      "engine": "claude",
+      "label": "session-independent"
+    }
+  ]
+}

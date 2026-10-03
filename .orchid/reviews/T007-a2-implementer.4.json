@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T007-a2-963e",
+  "task": "T007",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "171b1e69937080fad0c76c9eb2292560b73c022a",
+  "summary": "Harden the --no-tests negative assertion against pipefail fail-open",
+  "commits": [
+    "171b1e69937080fad0c76c9eb2292560b73c022a"
+  ]
+}

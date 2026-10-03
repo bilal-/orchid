@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T033-a5-f26b",
+  "task": "T033",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "b2b63454531f2fcc77a4610cb2bf284b92dfde50",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The implementation completely addresses finding F32 by synthesizing high-severity findings from prose summaries on non-approving reviews during job reconciliation, surfacing folded summary excerpts an"
+}
