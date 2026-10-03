@@ -226,6 +226,7 @@ PROOF_ENROLLED_FILES=(
   tests/test_objection_evidence.sh
   tests/test_plugin_digest.sh
   tests/test_run_recovery.sh
+  tests/test_spawn_env.sh
   tests/test_hermetic_suite.sh
   tests/test_red_case_rule.sh
 )

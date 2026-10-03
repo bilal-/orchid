@@ -323,18 +323,22 @@ _conform_check_no_output_pollution() {
 # dryrun must never depend on a real credential, full stop.
 _conform_check_env_survives_hygiene() {
   local dir="$1" ep="$2" op reqfile outfile line name rc=0 scratch
-  local child_env; child_env=()
+  local child_env base_env; child_env=(); base_env=()
+  spawn_child_env_load "$dir" || {
+    _conform_reason="could not construct the adapter environment"
+    return 1
+  }
   op="$(_conform_primary_op "$dir")"
   scratch="$(_conform_scratch_cwd)"
   reqfile="$(mktemp)"; outfile="$(mktemp)"; rm -f "$outfile"
   _conform_reqdoc "conform-env_survives_hygiene" conform "$op" "$outfile" > "$reqfile"
 
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
+  for line in "${child_env[@]}"; do
     name="${line%%=*}"
     _launch_base_allowed "$name" || continue
-    child_env+=("$line")
-  done < <(spawn_child_env "$dir")
+    base_env+=("$line")
+  done
+  child_env=("${base_env[@]}")
 
   if [ "${#child_env[@]}" -gt 0 ]; then
     ( cd "$scratch" && env -i "${child_env[@]}" ORCHID_DRYRUN=1 "$dir/$ep" "$reqfile" </dev/null >/dev/null 2>&1 ) || rc=$?

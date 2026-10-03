@@ -263,6 +263,11 @@ name must match `[A-Za-z_][A-Za-z0-9_]*`; array expressions and shell syntax
 are rejected before the kernel reads the variable. Values are forwarded only
 for variables that are set, including variables explicitly set to an empty value.
 
+Launchers preserve each permitted value as one environment assignment,
+including embedded newlines. An environment-construction failure refuses the
+adapter or notification attempt before starting the child; partial output is
+never used as a successful environment.
+
 **`command_surface` (v1.1, kind=engine only) — an honest label, not a
 capability.** It answers exactly one question: when this adapter runs the
 ORCHESTRATOR role headlessly, can it enforce which commands the model may

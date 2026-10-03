@@ -213,11 +213,7 @@ jq -n --arg job_id "$job_id" --arg worktree "$repo" --arg output "$out_envelope"
 exe="$(resolve_engine_exe "$engine")" || orchid_die "cannot resolve engine '$engine'"
 plugin_dir="$(dirname "$exe")"
 
-child_env=()
-while IFS= read -r _line; do
-  [ -n "$_line" ] || continue
-  child_env+=("$_line")
-done < <(spawn_child_env "$plugin_dir")
+spawn_child_env_load "$plugin_dir" || orchid_die "cannot construct orchestrator environment for $engine"
 
 # Synchronous spawn: no `set -m`/background `&` (unlike orchid-launch) --
 # there is no manifest/pgid to record and nothing else to do while this

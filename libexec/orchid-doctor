@@ -522,11 +522,6 @@ else
     # configurable: doctor is an interactive command and a hung gateway must
     # never hang it -- a probe that cannot answer in 10s has answered
     # "undetermined" for this purpose.
-    notify_probe_env=()
-    while IFS= read -r nline; do
-      [ -n "$nline" ] || continue
-      notify_probe_env+=("$nline")
-    done < <(ORCHID_NOTIFY_CHANNEL="$notify_channel" ORCHID_NOTIFY_TO="$notify_to" spawn_child_env "$notify_dir")
     # Output goes to a FILE, not through `$(with_timeout ...)`: with_timeout
     # runs both the child and its watcher under `set -m`, and a command
     # substitution would capture the shell's own job-control chatter about
@@ -535,8 +530,10 @@ else
     # same helper, for the same reason.
     notify_probe_tmp="$(mktemp)"
     _notify_run_probe() {
-      if [ "${#notify_probe_env[@]}" -gt 0 ]; then
-        env -i "${notify_probe_env[@]}" "$notify_dir/$notify_ep" "$notify_probe" \
+      local child_env; child_env=()
+      ORCHID_NOTIFY_CHANNEL="$notify_channel" ORCHID_NOTIFY_TO="$notify_to" spawn_child_env_load "$notify_dir" || return 1
+      if [ "${#child_env[@]}" -gt 0 ]; then
+        env -i "${child_env[@]}" "$notify_dir/$notify_ep" "$notify_probe" \
           </dev/null > "$notify_probe_tmp" 2>&1
       else
         env -i "$notify_dir/$notify_ep" "$notify_probe" \

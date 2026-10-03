@@ -252,11 +252,7 @@ mkdir -p "$(dirname "$log")"
 # from the parent env is simply not forwarded (nothing to forward); the
 # plugin still runs and reports its own auth failure (see lib/manifest.sh's
 # manifest_validate warn for the "requested but not set" diagnostic).
-child_env=()
-while IFS= read -r _line; do
-  [ -n "$_line" ] || continue
-  child_env+=("$_line")
-done < <(spawn_child_env "$plugin_dir")
+spawn_child_env_load "$plugin_dir" || orchid_die "cannot construct adapter environment for $engine"
 
 # T040: RECORD THE ENGINE'S EXIT STATUS, because nothing else on this machine
 # ever will. This launcher returns the moment it has spawned; the engine is

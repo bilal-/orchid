@@ -2074,6 +2074,8 @@ The boundary has five distinct layers; none should be described as another:
    allowlist, stdin `/dev/null`, and a kernel-chosen private output path
    reduce ambient credentials, hidden prompts, and output confusion. They do
    not restrict syscalls or which commands a shell-capable child may run.
+   Environment construction is checked before spawning; a failure refuses the
+   attempt, and multiline permitted values remain intact.
 2. **Vendor sandboxing (vendor-enforced, adapter-specific):** for example,
    Codex review is read-only and its implement/orchestrate path uses
    `workspace-write` plus `approval_policy=never`. Claude's headless

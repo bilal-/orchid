@@ -1,28 +1,14 @@
 #!/usr/bin/env bash
-# spawn_child_env <plugin-dir> -- prints NAME=value lines: the fixed base
-# allowlist (PATH HOME USER LANG TERM TMPDIR, any LC_*, any ORCHID_*) plus
-# exactly the env var NAMES this plugin's plugin.conf `permissions=` opts
-# into (e.g. permissions=OPENAI_API_KEY) that are actually set in THIS
-# process's own environment. Everything else the caller's environment might
-# hold -- including a name that happens to look sensitive -- is never
-# printed, and thus never reaches a child spawned from these lines.
+# Shared environment allowlist for adapters and notify plugins. The base names
+# are PATH, HOME, USER, LANG, TERM, TMPDIR, LC_*, and ORCHID_*; other names must
+# be explicitly requested in plugin.conf permissions and set in the parent.
+# Source after lib/common.sh and lib/manifest.sh.
 #
-# Extracted VERBATIM (v1-m2 Task 7) from runners/orchid-launch's inline env-
-# hygiene block (v1-m1 Task 5) so runners/orchid-tick's synchronous adapter
-# spawn can share the identical walk instead of re-implementing it -- the
-# existing launch/e2e tests remain the regression net for this logic; only
-# its home moved. Callers must source lib/manifest.sh first (this function
-# calls manifest_permissions).
-#
-# Built from `compgen -e` (exported-variable NAMES only, no values) rather
-# than scraping `env`'s NAME=value output -- a value containing an embedded
-# newline could otherwise corrupt a naive line-based parse (bash 3.2 has no
-# NUL-delimited env enumeration built in). Trade-off carried over from the
-# original inline version, now with one more line-based hop added on top (the
-# caller reads this function's own stdout back line-by-line to rebuild its
-# `env -i` argv) -- accepted for v1: every name this function ever prints is
-# either the fixed base list or an operator-declared `permissions=` name, and
-# none of those are ever expected to hold embedded-newline values in practice.
+# spawn_child_env emits assignments for inspection (newline-delimited by
+# default, NUL-delimited with --null). Effectful callers use the checked
+# spawn_child_env_load array loader so a producer failure cannot spawn an
+# adapter with partial credentials, and multiline values stay intact.
+
 _launch_base_allowed() {  # name -> 0 if base-allowlisted
   case "$1" in
     PATH|HOME|USER|LANG|TERM|TMPDIR) return 0 ;;
@@ -30,12 +16,22 @@ _launch_base_allowed() {  # name -> 0 if base-allowlisted
     *) return 1 ;;
   esac
 }
-spawn_child_env() {  # plugin-dir -> "NAME=value" lines, one per line
-  local plugin_dir="$1" _name _perm
+_spawn_env_emit() {
+  if [ "$3" = --null ]; then
+    printf '%s=%s\0' "$1" "$2"
+  else
+    printf '%s=%s\n' "$1" "$2"
+  fi
+}
+spawn_child_env() {  # plugin-dir [--null] -> NAME=value assignments
+  local plugin_dir="$1" mode="${2:-}" _name _perm perms
   while IFS= read -r _name; do
     [ -n "$_name" ] || continue
-    _launch_base_allowed "$_name" && printf '%s=%s\n' "$_name" "${!_name}"
+    if _launch_base_allowed "$_name"; then
+      _spawn_env_emit "$_name" "${!_name}" "$mode" || return 1
+    fi
   done < <(compgen -e || true)
+  perms="$(manifest_permissions "$plugin_dir")" || return 1
   while IFS= read -r _perm; do
     [ -n "$_perm" ] || continue
     if ! _orchid_env_name_valid "$_perm"; then
@@ -44,6 +40,25 @@ spawn_child_env() {  # plugin-dir -> "NAME=value" lines, one per line
     fi
     _launch_base_allowed "$_perm" && continue   # already printed above
     [ -n "${!_perm+x}" ] || continue            # not set in parent: nothing to forward
-    printf '%s=%s\n' "$_perm" "${!_perm}"
-  done < <(manifest_permissions "$plugin_dir")
+    _spawn_env_emit "$_perm" "${!_perm}" "$mode" || return 1
+  done <<< "$perms"
+  return 0
+}
+
+# Populate the caller's child_env array. An empty NUL record marks successful
+# completion and cannot collide with a NAME=value assignment. This checks the
+# producer across process substitution without storing credentials in a file.
+# Every value, including embedded newlines, remains one array element.
+spawn_child_env_load() {
+  local _spawn_line complete=0
+  child_env=()
+  while IFS= read -r -d '' _spawn_line; do
+    if [ -z "$_spawn_line" ]; then complete=1; continue; fi
+    child_env+=("$_spawn_line")
+  done < <(spawn_child_env "$1" --null && printf '\0')
+  if [ "$complete" -ne 1 ]; then
+    child_env=()
+    return 1
+  fi
+  return 0
 }

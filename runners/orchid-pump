@@ -553,14 +553,10 @@ _pump_drain_outbox() {
       # for the duration of this spawn_child_env call (bash's temporary-
       # environment-on-a-command-prefix semantics), so they ride the existing
       # ORCHID_* wildcard in without a plugin.conf `permissions=` opt-in.
-      child_env=()
-      while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        child_env+=("$line")
-      done < <(ORCHID_NOTIFY_CHANNEL="$channel" ORCHID_NOTIFY_TO="$to" spawn_child_env "$dir")
-
       rc=0
-      if [ "${#child_env[@]}" -gt 0 ]; then
+      if ! ORCHID_NOTIFY_CHANNEL="$channel" ORCHID_NOTIFY_TO="$to" spawn_child_env_load "$dir"; then
+        rc=1
+      elif [ "${#child_env[@]}" -gt 0 ]; then
         env -i "${child_env[@]}" "$dir/$ep" "$qid" "$text" </dev/null >/dev/null 2>&1 || rc=$?
       else
         env -i "$dir/$ep" "$qid" "$text" </dev/null >/dev/null 2>&1 || rc=$?

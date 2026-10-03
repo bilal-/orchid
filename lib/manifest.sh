@@ -48,9 +48,9 @@ _manifest_lib_dir() { cd "$(dirname "${BASH_SOURCE[0]}")" && pwd; }
 
 manifest_get() {  # plugin-dir key [default]
   local dir="$1" key="$2" def="${3:-}" v
-  v="$(_cfg_file_get "$dir/plugin.conf" "$key")"
-  [ -n "$v" ] && { echo "$v"; return; }
-  echo "$def"
+  v="$(_cfg_file_get "$dir/plugin.conf" "$key")" || return 1
+  [ -n "$v" ] && { printf '%s\n' "$v"; return; }
+  printf '%s\n' "$def"
 }
 
 # _manifest_split_csv <string> -- splits a comma list and prints each token
@@ -82,7 +82,7 @@ _manifest_split_csv() {  # string -> trimmed non-empty tokens, one per line
   while IFS= read -r tok; do
     tok="${tok#"${tok%%[![:space:]]*}"}"   # trim leading whitespace
     tok="${tok%"${tok##*[![:space:]]}"}"   # trim trailing whitespace
-    [ -n "$tok" ] && echo "$tok"
+    [ -n "$tok" ] && printf '%s\n' "$tok"
   done < <(printf '%s\n' "$s" | tr ',' '\n')
   # `while read` returns the exit status of its FINAL (EOF-failing) read,
   # not "did this run cleanly" -- always 1 once the input is exhausted, even
@@ -136,7 +136,7 @@ manifest_capabilities() {  # plugin-dir -> capability atoms, one per line
 # directly rather than re-splitting `permissions=` itself, so it always sees
 # already-trimmed names.
 manifest_permissions() {  # plugin-dir -> permission env var names, one per line
-  local perms; perms="$(manifest_get "$1" permissions)"
+  local perms; perms="$(manifest_get "$1" permissions)" || return 1
   [ -n "$perms" ] || return 0
   _manifest_split_csv "$perms"
 }
