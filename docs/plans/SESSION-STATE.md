@@ -6,6 +6,65 @@ you are. It records state that the code and git history do not make obvious,
 and it goes stale — **verify every claim below against the tree before relying
 on it.** Anything here that contradicts the code is wrong and the code wins.
 
+## PR integration follow-through — 2026-10-03
+
+PR #15 is merged into `main` at `e4819e52`. The accepted r-002 roadmap and
+acceptance record are now on `main`; the older snapshot below saying otherwise
+is superseded.
+
+PR #17's branch CI was green, but its assembled PR tree failed on both
+platforms. GitHub's latest `main` run at `1ed27d54` also failed:
+[34777104362](https://github.com/bilal-/orchid/actions/runs/34777104362).
+The earlier green-main claim below was stale. The failures came from two
+producer-to-`grep -q` pipelines in `findings_round_series`, introduced by the
+convergence change. INV-15 reproduced the failure locally; this candidate
+feeds both matchers with here-strings instead.
+
+A second fixture also reproduced a foreign clone with the same task branch
+being rebased successfully. The candidate now reuses dispatch's
+`drive_worktree_plan` ownership check; the regression rejects that clone and
+accepts the same stale task once its record names the registered worktree.
+
+The `r003-sibling-rebase` candidate now contains the acceptance merge, the
+rebase job guard and its exercised refusal/acceptance cases, and the INV-15
+repair. Merge #17 only after canonical local CI and the current-head Linux
+and macOS PR checks pass. Once this candidate is on `main`, both pending PRs
+from the previous session are resolved.
+
+r-003 has not started. Decision 0 and automatic dispatch rebasing remain open.
+The dated local and remote snapshots below are historical observations;
+verify current branch and PR state before treating them as today's state.
+
+## Local resumption — 2026-10-03
+
+The `orchid` checkout is now on local branch
+`codex/r003-sibling-rebase-safety`, based on `main` at `1ed27d54` with the
+prepared task-rebase candidate `df9552e3` cherry-picked. The dated snapshot
+below still describes the previous session; remote PR and CI status has not
+been refreshed.
+
+A disposable fixture reproduced a live implementer being rebased: `jobs ls`
+reported `running`, while the task candidate changed and the verb returned
+success. The candidate now refuses every outstanding job for that task,
+including prepared launches without a PID. An unrelated task's live job
+still permits the rebase. The regression test failed on the original
+candidate and passed with the guard; the operator and kernel docs now
+include the explicit verb and its job precondition.
+
+Verified locally on macOS `/bin/bash` 3.2.57, all exit 0:
+
+- `/bin/bash tests/test_task_rebase.sh`
+- `/bin/bash tests/test_task.sh`
+- `/bin/bash tests/test_docs.sh`
+- `/bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests`
+
+The canonical full CI run was not run for this correction. These observations
+do not establish Linux or hosted CI results for the candidate.
+
+r-002 remains accepted on `orchid/integration`; its existing journal edit was
+preserved. r-003 has not started. Decision 0 in `r-003-requirements.md` remains
+pending the operator's choice. Automatic rebasing in dispatch remains open.
+
 ## 1. The run
 
 **r-002 is ACCEPTED.** `run_status: complete`, 40/40 tasks done, evidence at

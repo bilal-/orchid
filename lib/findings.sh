@@ -622,7 +622,7 @@ findings_round_series() {
     while IFS= read -r id; do
       [ -n "$id" ] || continue
       total=$(( total + 1 ))
-      if printf '%s\n' "$seen" | grep -qxF -- "$id" 2>/dev/null; then
+      if grep -qxF -- "$id" <<< "$seen"; then
         rp=$(( rp + 1 ))
       else
         nw=$(( nw + 1 ))
@@ -630,7 +630,7 @@ findings_round_series() {
     done <<< "$ids"
     while IFS= read -r id; do
       [ -n "$id" ] || continue
-      printf '%s\n' "$ids" | grep -qxF -- "$id" 2>/dev/null || rs=$(( rs + 1 ))
+      grep -qxF -- "$id" <<< "$ids" || rs=$(( rs + 1 ))
     done <<< "$prev"
     printf 'a%s\t%s\t%s\t%s\t%s\n' "$n" "$total" "$nw" "$rp" "$rs"
     seen="$seen$ids

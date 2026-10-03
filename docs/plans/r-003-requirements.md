@@ -1,7 +1,8 @@
 # Orchid r-003 — from governance kernel to full agent framework
 
-> Draft. r-002 is now 40/40 and waiting at its operator acceptance boundary.
-> r-003 starts only after that judgment; one run owns `.orchid/` at a time.
+> Draft. r-002 is accepted; its durable run state is on
+> `orchid/integration`. r-003 has not started. Decision 0 remains the
+> operator-owned prerequisite for starting the new run.
 
 ## Goal
 
@@ -475,6 +476,47 @@ user actually touches is the layer where it loses them.
   later; rebasing a task in `reviewing`/`arbitrating`/`merging` destroys exactly
   what INV-07 protects. Orchid does neither, so every merge either strands the
   siblings or costs them a round.
+
+  **The supported action landed 2026-09-13; the automatic step did not.**
+  `orchid task rebase <id>` rebases a task's own checkout onto the current
+  integration head and re-stamps `base_sha`, so `orchid merge` no longer rebases
+  that candidate and no round is spent on it. Legal only from `rework` and
+  `implementing` — the two statuses where nothing has been verified or reviewed
+  for this round, so there is no evidence for the new candidate sha to
+  invalidate. From `testing` onward it REFUSES, naming INV-07 and the evidence a
+  rebase there would destroy.
+
+  It refuses rather than improvises on every other edge too: no recorded
+  worktree, a checkout on the wrong branch, or any uncommitted change (git
+  would refuse partway, and an uncommitted edit is the one thing in that tree
+  that exists nowhere else). A conflicting rebase is ABORTED, journaled, and the
+  checkout left exactly as it was, with both ways forward named.
+
+  **Safety correction, 2026-10-03:** the prepared candidate allowed a rebase
+  while its implementer was still running. A disposable fixture reproduced a
+  changed candidate while `jobs ls` reported that job as `running`. The verb
+  now refuses every outstanding job for this task, including a prepared job
+  whose launcher has not stamped a PID yet. The existing process table owns
+  job interpretation; the verb lock prevents a new prepare during the rebase.
+  Finish and reconcile those jobs before retrying. An unrelated task's live
+  job does not prevent the rebase. `tests/test_task_rebase.sh` exercises both
+  refusal cases and the accepting twin; no automatic dispatch step was added.
+
+  **Ownership correction, 2026-10-03:** a second disposable fixture showed
+  that a foreign clone with the same task branch and integration objects could
+  be rebased, changing that repository while stamping this task's base.
+  The verb now reuses `drive_worktree_plan` to prove registration, Git common
+  directory, branch identity, and exclusive task ownership before rebasing.
+  The regression test rejects the foreign clone without changing either
+  repository, then accepts the same stale task after its worktree record is
+  corrected through the supported verb.
+
+  **Deliberately a verb and not a new step in the dispatch loop.** That loop is
+  the most safety-critical path in the kernel, and a second process writing to a
+  task worktree mid-rebase is the r-002/T013 defect reached from a new
+  direction. What was missing was a supported ACTION — the retrospective's own
+  rule — and a driver can call this one once someone has decided the automatic
+  policy is safe. Wiring it into dispatch remains open.
 - **Retired by T030 — skip conflicting pin commits and refuse to re-pin a dirty
   worktree.** Both were compensating controls for candidate-local pinning.
 - **Closed in r-002 — continue the task walk past a judgment boundary.** A pass

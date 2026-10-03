@@ -204,6 +204,13 @@ delivery is retried on the infrastructure ladder, a dirty or unreadable tree
 stops for an operator, and a verify run whose checkout differs from or moves
 off `candidate_sha` establishes nothing and spends no attempt.
 
+An operator can move an idle sibling onto a changed integration head with
+`orchid task rebase <id>`. This leaves its status unchanged and spends no
+attempt. The command admits only `rework` and `implementing`, requires a clean
+task checkout registered in this repository, and refuses outstanding jobs for that task, including prepared
+launches. It updates `base_sha` after a successful rebase. Dispatch does not
+call it automatically.
+
 ## 3. The blocker round trip
 
 <!-- Grounded in the LIVE-PROVEN flow: docs/dogfood-notes.md F18 (the

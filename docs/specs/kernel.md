@@ -49,7 +49,7 @@ libexec/                    # TIER 1 — deterministic verbs: state transitions
                             #   composes stays callable on its own
   orchid-run                #   start/resume/advance/accept/new — epochs, runs
   orchid-task               #   create/show/list/set/advance/arbitrate/
-                            #   unblock/retry/reverify/infra-fail
+                            #   unblock/retry/reverify/rebase/infra-fail
   orchid-requirements       #   import (operator-owned exception)
   orchid-plan               #   apply/refresh-context (atomic transactions)
   orchid-verify             #   deterministic verification + evidence
@@ -147,7 +147,7 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 
 | File | Sole writer (verb) |
 |---|---|
-| `tasks/*.md` | `orchid task create/set/advance/unblock/retry/reverify/handoff/prereq-ack/infra-fail` |
+| `tasks/*.md` | `orchid task create/set/advance/unblock/retry/reverify/rebase/handoff/prereq-ack/infra-fail` |
 | `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status) — `plan apply` runs the carry-forward cross-check first and refuses in EVERY `run_status` while an item is unconsidered, and `run advance` does the same on every edge out of `planning`, so neither a mid-run revision nor a reordering carries an item past it (PROTOCOL.md PLANNING) |
 | `requirements.md` | `orchid requirements import <file>` — the operator-owned EXCEPTION: authored by hand anywhere, imported by verb, immutable after plan |
 | `orchid.config` (as committed on the integration branch) | `orchid config commit --reason "..."` (v1-m4 — SHIPPED) — operator-owned like `requirements.md`: authored by hand anywhere, but landed onto the integration branch only through this verb, never a direct hand-commit into a (possibly stale) checkout |
@@ -304,6 +304,7 @@ across prose sections is normative HERE):**
 | blocked \| rework | `task retry --reason [--attempts N]` | guidance recorded into the task BODY; raises `attempt_budget` to `attempts + N` (N defaults to 1) when the task has no rounds left | frontmatter, journal | rework |
 | blocked \| rework | `task reverify --reason` | task worktree CLEAN (`.orchid/` excluded) and its HEAD this task's own — descended from the current `candidate_sha` (or `base_sha` when there is none) and contained in the `branch` the record names; candidate re-stamped from that HEAD, any standing `handoff_ack` withdrawn with it (the new commit is one no operator has acknowledged); stale verify evidence dropped; **no attempt consumed** | frontmatter, journal | testing |
 | blocked \| rework | `task advance --reason` (the same edge, taken raw) | the SAME preconditions, enforced on the edge itself — clean worktree, lineage, and `candidate_sha` already equal to its HEAD (this route re-stamps nothing; it refuses and names `task reverify`) | frontmatter, journal | testing |
+| rework \| implementing | `task rebase` | clean task checkout registered in this repository on its own branch; no outstanding job for this task, including prepared launches; rebase onto current integration head and re-stamp `base_sha`; **no attempt consumed** | Git branch, frontmatter, journal | unchanged |
 
 **Enforcement ownership of the preconditions above:** preconditions marked
 deps/worktree/SHAs (deps done, worktree created, base_sha/candidate_sha set)

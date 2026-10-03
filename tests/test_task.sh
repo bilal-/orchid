@@ -3061,3 +3061,93 @@ rc=0; f39_usage="$("$ORCHID_BIN" task get 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "F39: task get with no arguments must be refused"
 assert_match "usage: orchid task get" "$f39_usage" "F39: ...with its own usage, like every other subverb (INV-17)"
 green_case 'task get refuses a nonexistent id, the reserved id and a missing argument exactly as its read-only siblings do — reading one field adds a reader, not an exemption'
+
+# ============================================================================
+# Part AN -- the sibling nobody rebases (r-002 Track G).
+#
+# When a task merges, the integration branch moves and every OTHER in-flight
+# task's `base_sha` becomes stale. Nothing acts on that. The staleness is
+# discovered at `orchid merge`, which rebases there — and a rebase mints a new
+# candidate sha, which by INV-07 invalidates the verify and review evidence the
+# task had already earned. So every merge costs each sibling a full round, or
+# strands it.
+#
+# The rebase is only FREE while the task has no evidence to lose: in `rework`
+# and in `implementing`, nothing has been verified or reviewed yet. In
+# `reviewing`, `arbitrating` or `merging` a rebase destroys exactly what INV-07
+# protects, so this verb refuses there rather than being clever.
+#
+# It is an explicit verb, not a new automatic step in the dispatch loop. The
+# loop is the most safety-critical path in the kernel and a second engine
+# writing to a worktree mid-rebase is the r-002/T013 defect; what was missing
+# was a SUPPORTED action, which is what the retrospective's design rule asks
+# for. The driver can call it later; an operator can call it now.
+# ============================================================================
+# ORCHID_REPO must be a checkout PARKED ON the integration branch -- the same
+# fixture shape tests/test_plan.sh's new_repo uses. Pointed at the bare repo
+# (which is on its default branch) `run start` mints an epoch and every
+# subsequent verb refuses, silently, because a test file has no `set -e`.
+an_bare="$WORK/an-bare"; mkdir -p "$an_bare"
+( cd "$an_bare" && git init -q . && git commit -q --allow-empty -m root ) || fail "fixture: an repo"
+ORCHID_REPO="$an_bare" "$ORCHID_BIN" init >/dev/null 2>&1 || fail "fixture: an init"
+an_integ=orchid/integration
+an_repo="$WORK/an-wt"
+git -C "$an_bare" worktree add -q "$an_repo" "$an_integ" || fail "fixture: an integration worktree"
+AN_EPOCH="$(ORCHID_REPO="$an_repo" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+an_o() { ORCHID_REPO="$an_repo" ORCHID_EPOCH="$AN_EPOCH" "$ORCHID_BIN" "$@"; }
+an_o task create AN1 "a sibling left behind" >/dev/null || fail "fixture: AN1 create"
+
+# The task's branch and its own checkout, made at the integration head.
+an_base="$(git -C "$an_bare" rev-parse "$an_integ")"
+git -C "$an_bare" branch task/AN1 "$an_integ"
+an_wt="$WORK/an-AN1"
+git -C "$an_bare" worktree add -q "$an_wt" task/AN1 || fail "fixture: AN1 worktree"
+( cd "$an_wt" && echo work > an1.txt && git add an1.txt && git commit -q -m "AN1 work" ) \
+  || fail "fixture: AN1 commit"
+an_o task set AN1 worktree "$an_wt" >/dev/null
+an_o task set AN1 base_sha "$an_base" >/dev/null
+an_o task advance AN1 implementing >/dev/null || fail "fixture: AN1 -> implementing"
+
+# A sibling merges: the integration branch moves underneath AN1.
+# Committed in $an_repo itself, which is already the checkout parked on the
+# integration branch -- a second worktree for the same branch is refused, and
+# that refusal is what this fixture would otherwise be measuring.
+( cd "$an_repo" && echo sibling > sibling.txt && git add sibling.txt \
+    && git commit -q -m "a sibling landed" ) || fail "fixture: sibling commit"
+an_moved="$(git -C "$an_bare" rev-parse "$an_integ")"
+[ "$an_moved" != "$an_base" ] || fail "fixture: the integration branch must have moved"
+assert_eq "$an_base" "$(an_o task get AN1 base_sha)" \
+  "fixture: AN1 still records the OLD base — that is the staleness this verb exists for"
+
+an_rc=0; an_out="$(an_o task rebase AN1 2>&1)" || an_rc=$?
+assert_eq 0 "$an_rc" "a task in implementing with no live job rebases cleanly (out: $an_out)"
+assert_eq "$an_moved" "$(an_o task get AN1 base_sha)" \
+  "...and base_sha is re-stamped, so orchid merge no longer rebases it and no round is spent"
+an_head="$(git -C "$an_wt" rev-parse HEAD)"
+git -C "$an_bare" merge-base --is-ancestor "$an_moved" "$an_head" \
+  || fail "the task branch must now descend from the moved integration head"
+[ -f "$an_wt/sibling.txt" ] || fail "...and the sibling's work must be present in the task checkout"
+[ -f "$an_wt/an1.txt" ] || fail "...and the task's own work must survive the rebase"
+red_case 'a task in implementing whose base went stale is rebased onto the moved integration head, keeps its own commit, and re-stamps base_sha so the rebase is not paid for again at merge'
+
+# GREEN twin: the statuses where a rebase would destroy what INV-07 protects
+# must be REFUSED. Without this the verb would be a way to silently invalidate
+# evidence a task had already earned.
+an_o task create AN2 "evidence already earned" >/dev/null
+git -C "$an_bare" branch task/AN2 "$an_integ"
+an_o task set AN2 base_sha "$an_base" >/dev/null
+an_o task advance AN2 implementing >/dev/null
+an_o task set AN2 candidate_sha "$(git -C "$an_bare" rev-parse task/AN2)" >/dev/null
+an_o task advance AN2 testing --reason "ready" >/dev/null || fail "fixture: AN2 -> testing"
+an_o task advance AN2 reviewing >/dev/null 2>&1 || an_o task set AN2 status reviewing >/dev/null 2>&1
+an2_status="$(an_o task get AN2 status)"
+an_rc=0; an2_out="$(an_o task rebase AN2 2>&1)" || an_rc=$?
+[ "$an_rc" -ne 0 ] \
+  || fail "a task in '$an2_status' must not be rebased — that is exactly the evidence INV-07 protects (out: $an2_out)"
+# `assert_match` is `grep -Eq`: in ERE the alternation is a bare `|`, and
+# `\|` matches a literal pipe character — a pattern that can never match.
+assert_match "INV-07|evidence" "$an2_out" \
+  "...and the refusal says why, rather than reporting an illegal transition"
+assert_eq "$an_base" "$(an_o task get AN2 base_sha)" \
+  "...and nothing was re-stamped by the refused call"
+green_case 'the same verb refuses a task past testing, naming the evidence a rebase there would invalidate — it is free only where there is nothing yet to lose'
