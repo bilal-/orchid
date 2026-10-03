@@ -306,6 +306,16 @@ across prose sections is normative HERE):**
 | blocked \| rework | `task advance --reason` (the same edge, taken raw) | the SAME preconditions, enforced on the edge itself — clean worktree, lineage, and `candidate_sha` already equal to its HEAD (this route re-stamps nothing; it refuses and names `task reverify`) | frontmatter, journal | testing |
 | rework \| implementing | `task rebase` | clean task checkout registered in this repository on its own branch; no outstanding job for this task, including prepared launches; rebase onto current integration head and re-stamp `base_sha`; **no attempt consumed** | Git branch, frontmatter, journal | unchanged |
 
+`orchid merge` refuses while any job for the task remains outstanding,
+including prepared launches, before rebasing, deleting prior merge evidence,
+or publishing the candidate. After reconciliation and garbage collection, an
+idle task can retry. Ownership inspection uses `orchid jobs ls --tsv --strict`;
+unreadable, aliased, empty, or ambiguous manifests refuse the operation rather
+than establish an idle checkout. Automatic stale-base rebasing also requires any recorded
+task checkout to be registered in this repository, on the task branch, and
+unclaimed by another task; a matching branch name in a foreign clone is
+insufficient. Correct the worktree record before retrying a refused rebase.
+
 **Enforcement ownership of the preconditions above:** preconditions marked
 deps/worktree/SHAs (deps done, worktree created, base_sha/candidate_sha set)
 are ORCHESTRATOR-enforced in v0 — the orchestrator decides when they hold and

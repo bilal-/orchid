@@ -222,6 +222,7 @@ PROOF_ENROLLED_FILES=(
   tests/test_config_data.sh
   tests/test_durable_copy.sh
   tests/test_kernel_refresh_paths.sh
+  tests/test_merge_rebase_ownership.sh
   tests/test_objection_evidence.sh
   tests/test_plugin_digest.sh
   tests/test_run_recovery.sh

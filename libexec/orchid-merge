@@ -10,6 +10,7 @@ source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
 # re-derived here -- a second copy of `rework_max` is how a configurable cap
 # stops being configurable.
 source "$ORCHID_ROOT/lib/schedule.sh"
+source "$ORCHID_ROOT/lib/drive.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 
 # HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
@@ -95,6 +96,11 @@ merge_cleanup() {
   lock_release "$repo"
 }
 trap merge_cleanup EXIT
+
+# Engines write outside this lock, and even a prepared job still owns its
+# checkout. Refuse before rebase, publication, cleanup, or deleting evidence.
+merge_idle="$(orchid_task_jobs_idle "$repo" "$id")" \
+  || orchid_die "refusing to merge: $merge_idle"
 
 # FIRST ACT OF A COMMITTED RUN: any $id-merge.log a PREVIOUS attempt left
 # behind goes now. From here on this run either writes its own or dies
@@ -312,28 +318,18 @@ if [ "$integ_head" != "$base_sha" ]; then
   # this always mints a new commit SHA (new parent), which is exactly what
   # makes the old candidate's reviews detectably stale (INV-07).
   #
-  # Where the rebase runs depends on where task_branch is (or isn't)
-  # currently checked out:
-  #   1. Frontmatter records a `worktree`, and task_branch is ALREADY checked
-  #      out there (a live implementer checkout, verified directly via `git
-  #      -C <wt> rev-parse --abbrev-ref HEAD` — not merge's own bookkeeping):
-  #      rebase IN PLACE in that worktree. No temp worktree is created, so
-  #      there is no "branch already checked out" conflict to hit, and the
-  #      worktree is never at risk from merge_cleanup's `wt` teardown — this
-  #      path never assigns to `wt`, only to `rebase_wt`.
-  #   2. task_branch is not checked out anywhere: unchanged — mint a temp
-  #      worktree (`wt`) of that branch, rebase there, discard it after.
-  #   3. task_branch IS checked out somewhere, but that somewhere is not the
-  #      recorded frontmatter worktree (or none was recorded): the temp
-  #      `worktree add` below fails and the explicit-die-with-path branch
-  #      fires, naming the actual checkout path. Full detached-rebase fix
-  #      (rebasing without ever needing the branch checked out at all) is
-  #      tracked for B2 beyond this; this only makes today's failure clear.
+  # A recorded checkout must satisfy the shared registration, common-dir,
+  # branch, and exclusive task-claim contract. A same-named branch in another
+  # clone is not this task's worktree. With no record, use an owned temporary
+  # checkout; Git will refuse if the branch is already checked out elsewhere.
   fm_worktree="$(fm_get "$tf" worktree)"
   rebase_wt=""
-  if [ -n "$fm_worktree" ] && [ -e "$fm_worktree" ]; then
-    fm_wt_branch="$(git -C "$fm_worktree" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    [ "$fm_wt_branch" = "$task_branch" ] && rebase_wt="$fm_worktree"
+  if [ -n "$fm_worktree" ]; then
+    rebase_plan="$(drive_worktree_plan "$repo" "$id")"
+    IFS=$'\t' read -r rebase_action rebase_detail <<< "$rebase_plan"
+    [ "$rebase_action" = reuse ] \
+      || orchid_die "$id: refusing automatic rebase: $rebase_detail. Inspect git -C $repo worktree list and correct the record with orchid task set $id worktree <registered-task-checkout> before retrying"
+    rebase_wt="$rebase_detail"
   fi
 
   if [ -n "$rebase_wt" ]; then

@@ -552,6 +552,11 @@ never-started past the threshold, unstamped, or running but silent past the
 threshold print a `WARNING:` line that `orchid status` shows in every mode,
 with no flag.
 
+For checkout ownership checks, `orchid jobs ls --tsv --strict` refuses
+unreadable, aliased, empty, or ambiguous job manifests. Merge and task rebase
+use that mode and require no outstanding jobs, including prepared launches.
+The ordinary display remains available for inspecting damaged state.
+
 ## Before you point it at someone else's repo
 
 `scripts/beta-qualify.sh` qualifies one operator-supplied repository against

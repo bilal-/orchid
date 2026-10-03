@@ -86,6 +86,24 @@ atomic_write() {
 orchid_state()   { echo "$1/.orchid"; }
 orchid_runtime() { local r="$1/.orchid/runtime"; mkdir -p "$r"; echo "$r"; }
 
+# orchid_task_jobs_idle <repo> <task> -- use the existing process table as the
+# checkout ownership fence. Prepared jobs count too: they can still spawn.
+# The caller holds the verb/run lock so no new job can be prepared concurrently.
+# On refusal, stdout is a diagnostic; jobs' own stderr remains visible.
+orchid_task_jobs_idle() {
+  local repo="$1" task="$2" jobs owners
+  jobs="$(ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" jobs ls --tsv --strict)" || {
+    printf '%s\n' "$task: cannot inspect outstanding jobs; run orchid jobs ls before retrying"
+    return 1
+  }
+  owners="$(awk -F '\t' -v task="$task" '$2 == task { print $1 " (" $8 ")" }' <<< "$jobs")" || return 1
+  if [ -n "$owners" ]; then
+    printf '%s\n' "$task: checkout has outstanding jobs: $owners. Wait for them to finish, then run orchid jobs reconcile and orchid jobs gc before retrying"
+    return 1
+  fi
+  return 0
+}
+
 # orchid_list_dir <dir> -- every depth-1 entry NAME in <dir> (dotfiles
 # included, `.`/`..` never), one per line. Plain bash globbing, not find(1)
 # depth primaries: limiting find to one level needs primaries that are not

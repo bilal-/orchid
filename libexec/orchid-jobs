@@ -32,7 +32,7 @@ sub="${1:-}"; shift || true
 # the usage" from "there is no such subverb" without matching on the text.
 jobs_usage() {
   case "${1:-}" in
-    ls)          printf '%s\n' 'usage: orchid jobs ls [--all] [--tsv|--warnings] [--watch [--interval N]]' ;;
+    ls)          printf '%s\n' 'usage: orchid jobs ls [--all] [--tsv|--warnings] [--strict] [--watch [--interval N]]' ;;
     prepare)     printf '%s\n' 'usage: orchid jobs prepare <task> <role> <op> [--engine <name>] [--hook <point>]' ;;
     check)       printf '%s\n' 'usage: orchid jobs check' ;;
     reconcile)   printf '%s\n' 'usage: orchid jobs reconcile' ;;
@@ -644,24 +644,46 @@ fmt_dur() {
 # it. The key is the job's start time, falling back to the last thing that
 # touched it, so the table reads oldest-first: the order jobs actually ran in.
 jobs_rows() {
-  local show_all="${1:-0}" now stall_s f raw
+  local show_all="${1:-0}" strict="${2:-0}" now stall_s f raw
   local jid jtask jrole jop jatt jengine jpid jstarted jlog jby jstate
   local age_src age elapsed pct tf key
   local t_status t_started t_budget
   now="$(date +%s)"
   stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
   for f in "$jobs_dir"/*.json; do
-    [ -e "$f" ] || continue
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    if [ "$strict" -eq 1 ] && { [ ! -f "$f" ] || [ -L "$f" ]; }; then
+      printf 'orchid: cannot inspect job ownership in %s; manifest must be a regular file\n' "$f" >&2
+      return 1
+    fi
     # `blank` on every string cell, and `select` rather than a `//""` on
     # job_id: an empty leading cell is stripped as leading IFS whitespace
     # instead of shifting, which would make the TASK read as the JOB. A
-    # manifest with no job_id has nothing this table can identify, so it is
-    # dropped here and `[ -n "$raw" ]` below is what notices.
-    raw="$(jq -r "$JOBS_JQ_BLANK"'
+    # Ordinary display drops records it cannot identify. Safety callers use
+    # --strict: exactly one object with an unambiguous job/task identity is
+    # required, and every unreadable or aliased manifest refuses the read.
+    if ! raw="$(jq -rs --argjson strict "$strict" "$JOBS_JQ_BLANK"'
+             if $strict == 1 then
+               if length == 1 then .[0] else error("expected one job manifest") end
+             else .[] end
+             |
+             if ($strict == 1) and (
+               type != "object" or
+               (.job_id | type != "string") or (.task | type != "string") or
+               (.job_id | length == 0 or test("[\\t\\r\\n]")) or
+               (.task | length == 0 or test("[\\t\\r\\n]"))
+             ) then error("invalid job ownership identity") else . end
+             |
              select((.job_id//"") != "")
              | [.job_id,(.task|blank),(.role|blank),(.operation|blank),(.attempt//0),
                 (.engine|blank),(.pid//0),(.started_at//0),(.log|blank),(.launched_by|blank)]
-             | @tsv' "$f" 2>/dev/null)" || raw=""
+             | @tsv' "$f" 2>/dev/null)"; then
+      if [ "$strict" -eq 1 ]; then
+        printf 'orchid: cannot inspect job ownership in %s; preserve and repair the malformed manifest before retrying\n' "$f" >&2
+        return 1
+      fi
+      continue
+    fi
     [ -n "$raw" ] || continue
     IFS="$JOBS_TAB" read -r jid jtask jrole jop jatt jengine jpid jstarted jlog jby <<< "$raw"
     [ -n "${jid:-}" ] || continue
@@ -873,11 +895,11 @@ jobs_warnings() {
 # ONCE and shared by the table and the warnings, so a --watch loop costs one
 # manifest walk per refresh rather than two.
 jobs_ls_emit() {
-  local mode="$1" show_all="$2" rows
+  local mode="$1" show_all="$2" strict="${3:-0}" rows
   # Sorted on the leading key, which is then CUT AWAY: every consumer below
   # reads exactly the thirteen columns it renders, so no reader carries a
   # field it never uses and none can drift out of step with the header.
-  rows="$(jobs_rows "$show_all" | sort -t"$JOBS_TAB" -k1,1n | cut -f2-)"
+  rows="$(jobs_rows "$show_all" "$strict" | sort -t"$JOBS_TAB" -k1,1n | cut -f2-)" || return 1
   case "$mode" in
     tsv)
       [ -z "$rows" ] || jobs_display 0 <<< "$rows" ;;
@@ -1001,19 +1023,20 @@ case "$sub" in
   ls)
     # See the block comment above. Read-only: no verb lock, no epoch fence,
     # no kill, no write anywhere.
-    show_all=0; ls_mode=table; watch=0; interval=5
+    show_all=0; ls_mode=table; watch=0; interval=5; ls_strict=0
     while [ $# -gt 0 ]; do
       case "$1" in
         --all) show_all=1; shift ;;
         --tsv) ls_mode=tsv; shift ;;
         --warnings) ls_mode=warnings; shift ;;
+        --strict) ls_strict=1; shift ;;
         --watch) watch=1; shift ;;
         --interval)
           [ -n "${2:-}" ] || orchid_die "--interval requires a value"
           case "$2" in ''|*[!0-9]*) orchid_die "--interval takes whole seconds (got '$2')" ;; esac
           [ "$2" -gt 0 ] || orchid_die "--interval must be at least 1 second"
           interval="$2"; shift 2 ;;
-        *) orchid_die "usage: orchid jobs ls [--all] [--tsv|--warnings] [--watch [--interval N]]" ;;
+        *) orchid_die "$(jobs_usage ls)" ;;
       esac
     done
     if [ "$watch" -eq 1 ]; then
@@ -1025,11 +1048,11 @@ case "$sub" in
         if [ -t 1 ]; then printf '\033[H\033[2J'; fi
         printf '# orchid jobs — %s (every %ss; Ctrl-C to stop)\n' \
           "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$interval"
-        jobs_ls_emit "$ls_mode" "$show_all"
+        jobs_ls_emit "$ls_mode" "$show_all" "$ls_strict"
         sleep "$interval"
       done
     fi
-    jobs_ls_emit "$ls_mode" "$show_all"
+    jobs_ls_emit "$ls_mode" "$show_all" "$ls_strict"
     ;;
   prepare)
     # tier-1: mints identity + writes the manifest only; never spawns (INV-01).

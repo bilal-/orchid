@@ -2707,11 +2707,8 @@ case "$sub" in
     # Use the existing read-only process table, not another liveness parser;
     # require every outstanding job for this task to be reconciled first.
     # The verb lock prevents a new jobs prepare until this rebase completes.
-    rb_jobs="$(ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" jobs ls --tsv)" \
-      || orchid_die "$rb_id: cannot inspect outstanding jobs; run orchid jobs ls before retrying orchid task rebase $rb_id"
-    rb_owners="$(awk -F '\t' -v task="$rb_id" '$2 == task { print $1 " (" $8 ")" }' <<< "$rb_jobs")"
-    [ -z "$rb_owners" ] \
-      || orchid_die "$rb_id: refusing to rebase a checkout with outstanding jobs: $rb_owners. Wait for them to finish, then run orchid jobs reconcile and orchid jobs gc before retrying orchid task rebase $rb_id"
+    rb_idle="$(orchid_task_jobs_idle "$repo" "$rb_id")" \
+      || orchid_die "refusing to rebase: $rb_idle"
     journal --task "$rb_id" --kind intervention "rebase: task/$rb_id onto $rb_integ $rb_head (was based on ${rb_base:-unrecorded})"
     if ! git -C "$rb_wt" rebase "$rb_head" >/dev/null 2>&1; then
       git -C "$rb_wt" rebase --abort >/dev/null 2>&1 || true
