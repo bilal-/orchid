@@ -502,6 +502,15 @@ user actually touches is the layer where it loses them.
   job does not prevent the rebase. `tests/test_task_rebase.sh` exercises both
   refusal cases and the accepting twin; no automatic dispatch step was added.
 
+  **Ownership correction, 2026-10-03:** a second disposable fixture showed
+  that a foreign clone with the same task branch and integration objects could
+  be rebased, changing that repository while stamping this task's base.
+  The verb now reuses `drive_worktree_plan` to prove registration, Git common
+  directory, branch identity, and exclusive task ownership before rebasing.
+  The regression test rejects the foreign clone without changing either
+  repository, then accepts the same stale task after its worktree record is
+  corrected through the supported verb.
+
   **Deliberately a verb and not a new step in the dispatch loop.** That loop is
   the most safety-critical path in the kernel, and a second process writing to a
   task worktree mid-rebase is the r-002/T013 defect reached from a new

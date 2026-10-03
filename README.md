@@ -531,7 +531,7 @@ pass, no attempt spent; commit your fix on the task branch first, an
 uncommitted worktree is refused, as is a HEAD that is not this task's own —
 it must descend from the current candidate and sit on the branch the record
 names), `orchid task rebase <id>` (move an idle sibling onto the current integration
-head from `rework` or `implementing`; requires a clean task checkout and no
+head from `rework` or `implementing`; requires a clean task checkout registered in this repository and no
 outstanding jobs for that task, including prepared launches),
 `orchid answer <qid> <choice>`, `orchid config
 commit --reason "..."`, `orchid run release-lease`, `orchid jobs gc

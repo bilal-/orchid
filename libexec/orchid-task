@@ -2684,6 +2684,15 @@ case "$sub" in
     rb_wt="$(fm_get "$rb_f" worktree)"
     { [ -n "$rb_wt" ] && [ -d "$rb_wt" ]; } \
       || orchid_die "$rb_id records no usable worktree ('$rb_wt'), and this verb rebases the task's OWN checkout rather than minting one: a temp worktree would move the branch while the checkout an implementer is standing in keeps the old commits"
+    # Reuse dispatch's registration, common-directory, branch, and shared-path
+    # checks. A foreign clone can carry the same branch name and all the same
+    # integration objects; rebasing it would mutate another repository while
+    # stamping this task's state as if its own checkout had moved.
+    source "$ORCHID_ROOT/lib/drive.sh"
+    rb_plan="$(drive_worktree_plan "$repo" "$rb_id")"
+    IFS=$'\t' read -r rb_action rb_detail <<< "$rb_plan"
+    [ "$rb_action" = reuse ] \
+      || orchid_die "$rb_id: refusing to rebase: $rb_detail. Inspect git -C $repo worktree list, then correct the record with orchid task set $rb_id worktree <registered-task-checkout> before retrying orchid task rebase $rb_id"
     rb_branch="$(git -C "$rb_wt" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
     [ "$rb_branch" = "task/$rb_id" ] \
       || orchid_die "$rb_id's worktree $rb_wt is on '$rb_branch', not task/$rb_id -- refusing to rebase a checkout that is not this task's"

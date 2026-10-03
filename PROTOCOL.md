@@ -1089,7 +1089,7 @@ An idle sibling whose integration base moved can be rebased explicitly with
 `orchid task rebase <id>`, from `rework` or `implementing` only. Before calling
 it, finish the task's jobs and run `orchid jobs reconcile` and `orchid jobs gc`.
 The verb refuses outstanding jobs, including prepared launches; the verb lock
-prevents a new prepare while it changes the clean task checkout. A successful
+prevents a new prepare while it changes a clean task checkout registered in this repository. A successful
 rebase records the current integration head in `base_sha` without charging an
 attempt. This is an operator action, not an automatic step in the tick.
 

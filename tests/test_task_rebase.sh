@@ -48,16 +48,17 @@ rb_move_integration() {
 }
 
 rb_assert_refused() {
-  local label="$1" before_sha before_base before_attempts before_journal rc=0 out
-  before_sha="$(git -C "$rb_worktree" rev-parse HEAD)"
+  local label="$1" expected="${2:-$rb_job_id}" recovery="${3:-orchid jobs reconcile}"
+  local checkout="${4:-$rb_worktree}" before_sha before_base before_attempts before_journal rc=0 out
+  before_sha="$(git -C "$checkout" rev-parse HEAD)"
   before_base="$("$ORCHID_BIN" task get RB1 base_sha)"
   before_attempts="$("$ORCHID_BIN" task get RB1 attempts)"
   before_journal="$(cat "$rb_integration/.orchid/journal.md")"
   out="$("$ORCHID_BIN" task rebase RB1 2>&1)" || rc=$?
-  [ "$rc" -ne 0 ] || fail "$label: rebase must refuse an outstanding job"
-  assert_match "$rb_job_id" "$out" "$label: refusal names the owning job"
-  assert_match 'orchid jobs reconcile' "$out" "$label: refusal names recovery"
-  assert_eq "$before_sha" "$(git -C "$rb_worktree" rev-parse HEAD)" "$label: candidate unchanged"
+  [ "$rc" -ne 0 ] || fail "$label: rebase must refuse"
+  assert_match "$expected" "$out" "$label: refusal names the cause"
+  assert_match "$recovery" "$out" "$label: refusal names recovery"
+  assert_eq "$before_sha" "$(git -C "$checkout" rev-parse HEAD)" "$label: candidate unchanged"
   assert_eq "$before_base" "$("$ORCHID_BIN" task get RB1 base_sha)" "$label: base unchanged"
   assert_eq "$before_attempts" "$("$ORCHID_BIN" task get RB1 attempts)" "$label: attempts unchanged"
   assert_eq "$before_journal" "$(cat "$rb_integration/.orchid/journal.md")" "$label: refusal precedes intervention journal"
@@ -114,3 +115,40 @@ git -C "$rb_worktree" merge-base --is-ancestor "$rb_target" HEAD \
 assert_eq 'task work' "$(cat "$rb_worktree/task.txt")" "rebase preserves the sibling's own committed work"
 assert_eq "$rb_before_attempts" "$("$ORCHID_BIN" task get RB1 attempts)" "a successful rebase spends no attempt"
 green_case 'rebase accepts an idle sibling despite an unrelated live job, preserves its work, and records its true base without charging an attempt'
+
+# A branch name is not a repository identity. A clone shares all integration
+# objects and can have the same task branch, yet its checkout belongs to a
+# different Git common directory and is not registered in this repository.
+rb_move_integration
+rb_foreign="$WORK/foreign"
+git clone -q --no-hardlinks "$rb_repo" "$rb_foreign" \
+  || { fail 'fixture: clone'; exit 1; }
+git -C "$rb_foreign" checkout -q -b task/RB1 "$rb_base" \
+  || { fail 'fixture: same task branch in clone'; exit 1; }
+printf 'foreign work\n' > "$rb_foreign/foreign.txt"
+git -C "$rb_foreign" add foreign.txt
+git -C "$rb_foreign" commit -q -m foreign
+assert_eq task/RB1 "$(git -C "$rb_foreign" symbolic-ref --short HEAD)" \
+  'fixture: the foreign clone passes a branch-name-only check'
+"$ORCHID_BIN" task set RB1 worktree "$rb_foreign" >/dev/null \
+  || { fail 'fixture: record foreign checkout'; exit 1; }
+rb_own_before="$(git -C "$rb_worktree" rev-parse HEAD)"
+rb_foreign_before="$(git -C "$rb_foreign" rev-parse HEAD)"
+rb_assert_refused 'foreign checkout' 'registered worktree|different repository' \
+  'orchid task set RB1 worktree' "$rb_foreign"
+assert_eq "$rb_own_before" "$(git -C "$rb_worktree" rev-parse HEAD)" \
+  'foreign checkout refusal also preserves the real task branch'
+red_case 'rebase refuses a foreign clone with the same task branch name and integration objects, preserving both repositories and all task evidence'
+
+"$ORCHID_BIN" task set RB1 worktree "$rb_worktree" >/dev/null \
+  || { fail 'fixture: restore registered worktree'; exit 1; }
+rb_rc=0
+rb_out="$("$ORCHID_BIN" task rebase RB1 2>&1)" || rb_rc=$?
+assert_eq 0 "$rb_rc" "correcting the worktree record allows rebase (out: $rb_out)"
+assert_eq "$rb_target" "$("$ORCHID_BIN" task get RB1 base_sha)" 'the corrected task records its new integration base'
+git -C "$rb_worktree" merge-base --is-ancestor "$rb_target" HEAD \
+  || fail 'the corrected candidate must descend from its recorded integration base'
+assert_eq 'task work' "$(cat "$rb_worktree/task.txt")" 'the corrected rebase preserves its own committed work'
+assert_eq "$rb_foreign_before" "$(git -C "$rb_foreign" rev-parse HEAD)" \
+  'rebasing the corrected task never changes the foreign clone'
+green_case "the same stale sibling rebases successfully after its record names this repository's registered task worktree, leaving the foreign clone unchanged"

@@ -20,6 +20,11 @@ producer-to-`grep -q` pipelines in `findings_round_series`, introduced by the
 convergence change. INV-15 reproduced the failure locally; this candidate
 feeds both matchers with here-strings instead.
 
+A second fixture also reproduced a foreign clone with the same task branch
+being rebased successfully. The candidate now reuses dispatch's
+`drive_worktree_plan` ownership check; the regression rejects that clone and
+accepts the same stale task once its record names the registered worktree.
+
 The `r003-sibling-rebase` candidate now contains the acceptance merge, the
 rebase job guard and its exercised refusal/acceptance cases, and the INV-15
 repair. Merge #17 only after canonical local CI and the current-head Linux

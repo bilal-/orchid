@@ -355,7 +355,8 @@ shows the exact boundary in
    (`retry --attempts N` grants a task more rework rounds; `reverify` re-runs
    verification against the tree you already made green, spending no attempt;
    `rebase` moves an idle sibling onto the current integration head, only from
-   `rework` or `implementing`, with no outstanding jobs for that task). After the
+   `rework` or `implementing`, with a clean task checkout registered in this repository and no
+   outstanding jobs for that task). After the
    same acknowledgement, `orchid service install` schedules the pump via the
    host's own scheduler (a launchd agent on macOS, a marker-guarded crontab
    line elsewhere) so ticks continue without a terminal open —
