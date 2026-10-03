@@ -65,7 +65,10 @@ ORCHID_* env vars  >  <repo>/orchid.config  >  ~/.orchid/config  >  defaults
 Per-user preferences (role bindings, model tiers, notify channel) belong in
 `~/.orchid/config` — set once, apply to every repo; per-repo facts
 (integration branch, verify command, resources) in `orchid.config`; env for
-one-off overrides. All layers are key=value, parsed never sourced.
+one-off overrides. All layers are key=value, parsed never sourced. Lookup keys
+are literal strings; they are never evaluated as shell syntax or regular
+expressions. Environment overrides use valid environment variable names after
+mapping lowercase letters to uppercase and dots and hyphens to underscores.
 `orchid config list` (tier-1, read-only) prints the EFFECTIVE configuration
 with per-key provenance (which layer won) — no guessing why a setting
 applies. `docs/configuration.md` is the complete key reference (key,

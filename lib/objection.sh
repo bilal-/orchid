@@ -227,8 +227,9 @@ objection_candidate() {
 # operator settles the objection from their own shell. Every other digest in the
 # kernel (plugin_digest, and the trust records built on it) rests on the same two
 # tools, so a machine with neither has no trust boundary to relay across either.
-objection_evidence() {
-  local repo="${1:-}" task="${2:-}" state tf cand attempts attempt plan base f d
+objection_evidence() (
+  set -o pipefail
+  local repo="${1:-}" task="${2:-}" state tf cand attempts attempt plan base f d component
   [ -n "$repo" ] && [ -n "$task" ] || return 1
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$task.md"
@@ -247,7 +248,8 @@ objection_evidence() {
     printf 'candidate: %s\n' "$cand"
     printf 'attempt: %s\n' "$attempt"
     if [ -f "$plan" ]; then
-      printf 'plan: %s\n' "$(_orchid_stream_sha256 < "$plan")"
+      component="$(_orchid_stream_sha256 < "$plan")" || return 1
+      printf 'plan: %s\n' "$component"
     else
       printf 'plan: -\n'
     fi
@@ -256,14 +258,15 @@ objection_evidence() {
       # -- a round with no envelope filed yet contributes no line, and that is a
       # state the digest has to be able to name.
       [ -f "$f" ] || continue
-      printf 'envelope: %s %s\n' "${f##*/}" "$(_orchid_stream_sha256 < "$f")"
+      component="$(_orchid_stream_sha256 < "$f")" || return 1
+      printf 'envelope: %s %s\n' "${f##*/}" "$component"
     done | LC_ALL=C sort
   } | _orchid_stream_sha256)" || return 1
   # An empty or non-hex roll-up is a digest tool that produced nothing, never an
   # evidence set that happens to hash to it.
   case "$d" in ''|*[!0-9a-fA-F]*) return 1 ;; esac
   printf '%s\n' "$d"
-}
+)
 
 # objection_authority_file <repo> <qid> -- where the record for that page lives.
 # Composed rather than taken from lib/common.sh's `orchid_runtime`, which

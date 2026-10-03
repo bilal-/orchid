@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # plugin.conf schema (v1) — see docs/specs/plugins.md (Manifest section).
-# Parsed as key=value, NEVER sourced (reuses _cfg_file_get's escaping from
+# Parsed as key=value, NEVER sourced (reuses _cfg_file_get's literal lookup from
 # lib/common.sh, which callers must source before this file).
 
 # Keys understood at manifest_version=1; anything else is an unknown key
@@ -330,6 +330,11 @@ manifest_validate() {  # plugin-dir
   local perm
   while IFS= read -r perm; do
     [ -n "$perm" ] || continue
+    if ! _orchid_env_name_valid "$perm"; then
+      echo "FAIL: $dir: invalid permission '$perm' (expected an environment variable name)"
+      ok=0
+      continue
+    fi
     [ -n "${!perm:-}" ] || echo "warn: $dir: permission $perm requested, not set" >&2
   done < <(manifest_permissions "$dir")
 

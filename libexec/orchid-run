@@ -542,19 +542,6 @@ case "$sub" in
     # under .orchid/.
     verb_lock_acquire "$repo"
     trap 'verb_lock_release "$repo"' EXIT
-    # v1-m3 final review (TRIVIA): clear crash debris a PRIOR, differently-
-    # PID'd `run new` may have left behind -- the shadow-dir swap further
-    # below names its two temp dirs "$state.new.$$"/"$state.old.$$" (THIS
-    # process's own pid), so a rollover that crashed mid-swap under a
-    # different pid leaves its own same-shaped debris sitting beside
-    # .orchid/ forever (nothing else ever globs for it to clean it up).
-    # Safe here, under the verb lock already acquired above (so a
-    # genuinely concurrent in-flight `run new` can never have its OWN
-    # still-live shadow/old dirs swept out from under it) and before this
-    # invocation mints its own. `rm -rf` on a non-matching glob is a silent
-    # no-op (the -f flag alone guards it, no nullglob needed), so this is a
-    # no-op in the common case of no debris at all.
-    rm -rf "$state".old.* "$state".new.*
     # INV-02: every sibling mutating arm (advance, accept) fences the epoch
     # before touching state; this one must too, or a stale ORCHID_EPOCH
     # (from a zombie orchestrator, a pre-crash session, etc.) could execute
@@ -710,6 +697,13 @@ case "$sub" in
     fi
     integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")"
 
+    # A prior interrupted swap may hold the only copy of uncommitted state.
+    # Preserve it for recovery instead of treating it as disposable debris.
+    for old_backup in "$state".old.*; do
+      [ -e "$old_backup" ] || [ -L "$old_backup" ] || continue
+      orchid_die "durable sync backup exists at $old_backup; preserve and recover it before starting a new run"
+    done
+    rm -rf "$state".new.*
     wt=""
     run_new_cleanup() {
       if [ -n "$wt" ]; then
@@ -734,13 +728,7 @@ case "$sub" in
     # Full copy of current .orchid/ (minus runtime/) into the worktree --
     # same rebuild-from-scratch approach `orchid plan apply` uses, so every
     # mutation below lands only in the worktree's copy until CAS succeeds.
-    rm -rf "$wt/.orchid"; mkdir -p "$wt/.orchid"
-    for entry in "$state"/*; do
-      [ -e "$entry" ] || continue
-      name="$(basename "$entry")"
-      [ "$name" = runtime ] && continue
-      cp -R "$entry" "$wt/.orchid/$name"
-    done
+    _ocd_copy_path "$state" "$wt/.orchid" || orchid_die "cannot stage the previous run's durable state"
     wt_state="$wt/.orchid"
 
     # 1. Archive: tasks/, reviews/, journal.md, roadmap.md, BLOCKERS.md move
@@ -861,19 +849,10 @@ case "$sub" in
     # gitignored and never was part of it -- a fresh `orchid run
     # start|resume` mints a new epoch/lease afterward regardless, same as
     # any other crash recovery).
-    shadow="$state.new.$$"; old="$state.old.$$"
-    rm -rf "$shadow" "$old"
-    mkdir -p "$shadow"
-    for entry in "$wt_state"/*; do
-      [ -e "$entry" ] || continue
-      name="$(basename "$entry")"
-      [ "$name" = runtime ] && continue
-      cp -R "$entry" "$shadow/$name"
-    done
-    [ -d "$state/runtime" ] && cp -R "$state/runtime" "$shadow/runtime"
-    mv "$state" "$old"
-    mv "$shadow" "$state"
-    rm -rf "$old"
+    # Preserve a surviving .orchid.old.<pid> before the documented Git recovery:
+    # it can contain local state that the newly advanced commit does not carry.
+    _ocd_sync_dir_atomic "$state" "$wt_state" \
+      || orchid_die "cannot synchronize the new run's durable state after commit $new_sha"
 
     echo "run rolled over: $old_run_id -> $new_run_id (archived to runs/$old_run_id/)"
     ;;

@@ -38,6 +38,10 @@ spawn_child_env() {  # plugin-dir -> "NAME=value" lines, one per line
   done < <(compgen -e || true)
   while IFS= read -r _perm; do
     [ -n "$_perm" ] || continue
+    if ! _orchid_env_name_valid "$_perm"; then
+      echo "orchid: invalid permission '$_perm' (expected an environment variable name)" >&2
+      return 1
+    fi
     _launch_base_allowed "$_perm" && continue   # already printed above
     [ -n "${!_perm+x}" ] || continue            # not set in parent: nothing to forward
     printf '%s=%s\n' "$_perm" "${!_perm}"

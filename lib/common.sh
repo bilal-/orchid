@@ -976,6 +976,7 @@ orchid_refresh_kernel() {
 # how.
 _orchid_refresh_one_path() {
   local root="$1" p="$2" base="${3:-}"
+  _orchid_kernel_parent_owned "$root" "$p" || return 1
   if git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null; then
     # _orchid_restore_kernel_file asks _orchid_kernel_writable itself,
     # immediately before its rename, so nothing about this path is decided
@@ -990,6 +991,7 @@ _orchid_refresh_one_path() {
     # exactly what the line below re-establishes at the moment of the
     # removal rather than inheriting from a check made before the advance.
     _orchid_kernel_writable "$root" "$p" "$base" || return 1
+    _orchid_kernel_parent_owned "$root" "$p" || return 1
     rm -f "$root/$p" || return 1
     [ ! -e "$root/$p" ] || return 1
   fi
@@ -1149,6 +1151,22 @@ _orchid_kernel_writable() {
   _orchid_file_is_head_blob "$root" "$p"
 }
 
+# Resolve the parent with the shared physical-path helper before any write.
+# A matching blob through a directory symlink belongs to a different path.
+_orchid_kernel_parent_owned() {
+  local root="$1" p="$2" root_phys parent want dir
+  root_phys="$(orchid_physical_dir "$root")" || return 1
+  dir="$root/$p"; dir="${dir%/*}"
+  parent="$(_orchid_physical_path "$dir")" || return 1
+  want="$root_phys"
+  case "$p" in */*) want="${root_phys%/}/${p%/*}" ;; esac
+  if [ "$parent" != "$want" ]; then
+    echo "orchid: redirected kernel parent for '$p' ($parent, expected $want); refusing refresh" >&2
+    return 1
+  fi
+  return 0
+}
+
 # _orchid_restore_kernel_file <root> <path> [<base>] -- put HEAD's bytes for
 # <path> into <root>'s WORKING TREE, touching the index not at all. <path>
 # exists in HEAD; the caller has established that. What the caller may NOT
@@ -1192,6 +1210,7 @@ _orchid_restore_kernel_file() {
   read -r mode _ want _ <<< "$entry"
   case "$mode" in 100644|100755) ;; *) return 1 ;; esac
   [ -n "$want" ] || return 1
+  _orchid_kernel_parent_owned "$root" "$p" || return 1
   dir="$root/$p"; dir="${dir%/*}"
   mkdir -p "$dir" 2>/dev/null || return 1
   # Beside the destination, so installing it is a rename WITHIN one filesystem
@@ -1215,6 +1234,7 @@ _orchid_restore_kernel_file() {
   # clean. Declining leaves the operator's bytes on disk and the stale-root
   # refusal standing, which is the outcome they can act on.
   if [ "$rc" -eq 0 ] && ! _orchid_kernel_writable "$root" "$p" "$base"; then rc=1; fi
+  if [ "$rc" -eq 0 ] && ! _orchid_kernel_parent_owned "$root" "$p"; then rc=1; fi
   [ "$rc" -ne 0 ] || mv -f "$tmp" "$root/$p" 2>/dev/null || rc=1
   if [ "$rc" -ne 0 ]; then
     rm -f "$tmp" 2>/dev/null || true
@@ -2542,24 +2562,25 @@ _ocd_cleanup_wt() {
 # not exist at all leaves <dst> absent (a deletion, carried through).
 _ocd_copy_path() {
   local src="$1" dst="$2" entry name
-  rm -rf "$dst"
+  rm -rf "$dst" || return 1
   if [ -d "$src" ]; then
-    mkdir -p "$dst"
+    mkdir -p "$dst" || return 1
     for entry in "$src"/*; do
       [ -e "$entry" ] || continue
       name="$(basename "$entry")"
       [ "$name" = runtime ] && continue
-      cp -R "$entry" "$dst/$name"
+      cp -R "$entry" "$dst/$name" || return 1
     done
   elif [ -f "$src" ]; then
-    mkdir -p "$(dirname "$dst")"
-    cp "$src" "$dst"
+    mkdir -p "$(dirname "$dst")" || return 1
+    cp "$src" "$dst" || return 1
   fi
+  return 0
 }
 
 # _ocd_sync_dir_atomic <dst-dir> <src-dir> -- syncs a DIRECTORY <dst-dir>
 # (e.g. "$repo/.orchid") to match <src-dir> (the just-committed worktree's
-# copy) via the same crash-safe shadow-dir-swap `orchid run new` already
+# copy) via the same staged directory swap `orchid run new` already
 # uses for its own whole-tree resync: build the complete replacement in a
 # sibling shadow dir first (nothing observable changes yet), carry <dst-
 # dir>'s own LIVE runtime/ across untouched (the worktree copy never had
@@ -2567,21 +2588,38 @@ _ocd_copy_path() {
 # filesystem rename, so the only observable window is BETWEEN the two
 # renames, when <dst-dir> briefly does not exist at all (never split-brain:
 # see orchid-run's own comment on this exact window).
+# Checked publication errors roll back the first rename. A failed rollback
+# retains the old directory for recovery. SIGKILL between the renames still
+# requires recovery; Git's ref advance and this swap are separate operations.
 _ocd_sync_dir_atomic() {
-  local dst="$1" src="$2" shadow old entry name
+  local dst="$1" src="$2" shadow old
   shadow="$dst.new.$$"; old="$dst.old.$$"
-  rm -rf "$shadow" "$old"
-  mkdir -p "$shadow"
-  for entry in "$src"/*; do
-    [ -e "$entry" ] || continue
-    name="$(basename "$entry")"
-    [ "$name" = runtime ] && continue
-    cp -R "$entry" "$shadow/$name"
-  done
-  [ -d "$dst/runtime" ] && cp -R "$dst/runtime" "$shadow/runtime"
-  mv "$dst" "$old"
-  mv "$shadow" "$dst"
-  rm -rf "$old"
+  [ -d "$src" ] && [ -d "$dst" ] || return 1
+  if [ -e "$old" ] || [ -L "$old" ]; then
+    echo "orchid: durable sync backup already exists at $old; recover it before retrying" >&2
+    return 1
+  fi
+  if ! _ocd_copy_path "$src" "$shadow"; then
+    rm -rf "$shadow"
+    return 1
+  fi
+  if [ -d "$dst/runtime" ] && ! cp -R "$dst/runtime" "$shadow/runtime"; then
+    rm -rf "$shadow"
+    return 1
+  fi
+  if ! mv "$dst" "$old"; then
+    rm -rf "$shadow"
+    return 1
+  fi
+  if ! mv "$shadow" "$dst"; then
+    if ! mv "$old" "$dst"; then
+      echo "orchid: durable sync rollback failed; previous directory is preserved at $old" >&2
+    fi
+    rm -rf "$shadow"
+    return 1
+  fi
+  rm -rf "$old" || return 1
+  return 0
 }
 
 # orchid_commit_durable <repo> <message> <path...> -- the plan-apply temp-
@@ -2623,7 +2661,7 @@ _ocd_sync_dir_atomic() {
 #
 # On CAS success, each given <path> is synced back from the worktree's
 # just-committed copy over <repo>'s own copy -- a FILE via atomic_write, a
-# DIRECTORY via the crash-safe shadow-dir-swap above -- so every caller's
+# DIRECTORY via the staged directory swap above -- so every caller's
 # postcondition is simply "<repo> now matches what's committed." Sets
 # ORCHID_COMMIT_DURABLE_SHA to the new commit sha on success.
 #
@@ -2670,7 +2708,7 @@ orchid_commit_durable() {
 
   local p
   for p in "$@"; do
-    _ocd_copy_path "$repo/$p" "$wt/$p"
+    _ocd_copy_path "$repo/$p" "$wt/$p" || orchid_die "cannot stage durable path '$p'"
   done
 
   if [ -n "${ORCHID_COMMIT_DURABLE_HOOK:-}" ]; then
@@ -2744,11 +2782,11 @@ orchid_commit_durable() {
 
   for p in "$@"; do
     if [ -f "$wt/$p" ]; then
-      cat "$wt/$p" | atomic_write "$repo/$p"
+      atomic_write "$repo/$p" < "$wt/$p" || orchid_die "cannot synchronize durable path '$p' after commit $new_sha"
     elif [ -d "$wt/$p" ]; then
-      _ocd_sync_dir_atomic "$repo/$p" "$wt/$p"
+      _ocd_sync_dir_atomic "$repo/$p" "$wt/$p" || orchid_die "cannot synchronize durable path '$p' after commit $new_sha"
     else
-      rm -rf "${repo:?}/$p"
+      rm -rf "${repo:?}/$p" || orchid_die "cannot remove durable path '$p' after commit $new_sha"
     fi
   done
 
@@ -3949,27 +3987,45 @@ worktree_prepare() {
 # exact shape were it ever reached with the raw hyphen still in place. `-`
 # now maps to `_` alongside `.`, so `role.code-reviewer` -> `ORCHID_ROLE_CODE_REVIEWER`.
 _cfg_env_name() { echo "ORCHID_$(echo "$1" | tr 'a-z.-' 'A-Z__')"; }
+
+# Indirect expansion also accepts array expressions in Bash. Only environment
+# identifiers are safe operands; configuration and manifests are data.
+_orchid_env_name_valid() {
+  case "$1" in
+    ''|[0-9]*|*[!a-zA-Z0-9_]*) return 1 ;;
+  esac
+  return 0
+}
+
+_cfg_env_get() {
+  local env
+  env="$(_cfg_env_name "$1")"
+  _orchid_env_name_valid "$env" || return 0
+  printf '%s\n' "${!env:-}"
+}
 # Last matching `key=value` line in the file wins (append-to-override, as in
 # a typical shell/config file); this was a `head -n1` (first-wins) bug that
 # silently made appended config overrides no-ops. Found while writing Task 8's
 # doctor test, which appends a second `role.implementer=` line expecting it
 # to take effect.
 _cfg_file_get() {
-  local k_esc
-  k_esc=$(printf '%s' "$2" | sed 's/[][\.*^$/]/\\&/g')
-  [ -f "$1" ] && grep -E "^$k_esc=" "$1" | tail -n1 | cut -d= -f2- || true
+  [ -f "$1" ] || return 0
+  ORCHID_CONFIG_KEY="$2" awk '
+    BEGIN { key=ENVIRON["ORCHID_CONFIG_KEY"] }
+    { eq=index($0,"="); if (eq && substr($0,1,eq-1)==key) value=substr($0,eq+1) }
+    END { if (value!="") print value }
+  ' "$1"
 }
 config_get() {
-  local repo="$1" key="$2" def="${3:-}" v env
-  env="$(_cfg_env_name "$key")"
-  eval "v=\${$env:-}"; [ -n "$v" ] && { echo "$v"; return; }
-  v="$(_cfg_file_get "$repo/orchid.config" "$key")"; [ -n "$v" ] && { echo "$v"; return; }
-  v="$(_cfg_file_get "$HOME/.orchid/config" "$key")"; [ -n "$v" ] && { echo "$v"; return; }
-  echo "$def"
+  local repo="$1" key="$2" def="${3:-}" v
+  v="$(_cfg_env_get "$key")"; [ -n "$v" ] && { printf '%s\n' "$v"; return; }
+  v="$(_cfg_file_get "$repo/orchid.config" "$key")"; [ -n "$v" ] && { printf '%s\n' "$v"; return; }
+  v="$(_cfg_file_get "$HOME/.orchid/config" "$key")"; [ -n "$v" ] && { printf '%s\n' "$v"; return; }
+  printf '%s\n' "$def"
 }
 config_provenance() {
-  local repo="$1" key="$2" env v
-  env="$(_cfg_env_name "$key")"; eval "v=\${$env:-}"
+  local repo="$1" key="$2" v
+  v="$(_cfg_env_get "$key")"
   [ -n "$v" ] && { echo env; return; }
   [ -n "$(_cfg_file_get "$repo/orchid.config" "$key")" ] && { echo repo; return; }
   [ -n "$(_cfg_file_get "$HOME/.orchid/config" "$key")" ] && { echo user; return; }

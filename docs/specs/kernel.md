@@ -678,6 +678,11 @@ buying a fresh implementation pass to reach the same tree.
   `ORCHID_KERNEL_PATHS` would mean something else entirely and must not be
   confused with this: that a pending config edit makes the checkout stale and
   refuses every verb.
+  Kernel refresh checks that each file’s physical parent is its expected directory
+  inside the checkout before staging and again before publication. A directory
+  symlink cannot redirect a replacement or deletion into another path, even when
+  the redirected file has the expected base-commit bytes.
+
   **The refresh writes the working tree first and the index last**, one path
   at a time, and that order is a safety property rather than an internal
   detail. The guard reads the INDEX, so the index is what makes this checkout
@@ -1856,6 +1861,13 @@ test, an unstated convention, a build quirk, an engine-specific weakness
 - **Across runs:** `orchid run new` archives the previous run's tasks,
   reviews, and journal under `runs/<run_id>/` and carries forward ONLY
   `context.md` + ACTIVE lessons — the defined inheritance boundary.
+
+  Directory synchronization checks each copy and rename. A failed publication
+  restores the previous directory when rollback succeeds; if rollback also
+  fails, its `.orchid.old.<pid>` backup is retained. Rollover refuses while any
+  such backup remains, after checking the epoch, so a retry cannot delete the
+  only recoverable copy of local state. The two directory renames still have a
+  brief gap; this is not an atomic transaction across Git and the filesystem.
 - **Distinct from `context.md`:** context is what the repo IS (regenerable
   from the code); lessons are what the code CANNOT tell you (learned the
   hard way).

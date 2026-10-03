@@ -258,6 +258,11 @@ inbound_probe=             # kind=notify only: argv token for the read-only
                            # inbound probe mode (v1-m4, optional)
 ```
 
+`permissions` is a comma-separated list of environment variable names. Each
+name must match `[A-Za-z_][A-Za-z0-9_]*`; array expressions and shell syntax
+are rejected before the kernel reads the variable. Values are forwarded only
+for variables that are set, including variables explicitly set to an empty value.
+
 **`command_surface` (v1.1, kind=engine only) — an honest label, not a
 capability.** It answers exactly one question: when this adapter runs the
 ORCHESTRATOR role headlessly, can it enforce which commands the model may

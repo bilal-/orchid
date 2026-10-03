@@ -17,14 +17,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lessons.sh"
 # file already sources for atomic_write/config_get), so there is no cycle.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rework.sh"
 
-# _pack_fm_field <task-file> <key> -- a single frontmatter value, same
-# one-key extraction the review/critique branch below inlines twice already
-# (base_sha, candidate_sha); factored out here so the hook branch (needing
-# base_sha, candidate_sha, AND attempts) doesn't triple that duplication a
-# third time.
-_pack_fm_field() {
-  awk -v k="$2" '/^---$/{n++;next} n==1 && index($0,k": ")==1{print substr($0,length(k)+3)}' "$1"
-}
+# Direct library callers use the same frontmatter reader as the tier-1 verbs.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/frontmatter.sh"
 
 # _pack_rework_brief <state> <task> [section] -- the rework brief, on stdout,
 # or nothing at all when this task has no captured failure to feed back (its
@@ -109,11 +103,11 @@ _pack_rework_brief() {
   # function is the one that writes the sentences, so it is the one that has
   # to be unable to write them about the wrong candidate. Callers get the
   # empty output that says "no previous failure applies to this candidate".
-  rework_evidence_current "$state" "$task" "$(_pack_fm_field "$tf" candidate_sha)" || return 0
+  rework_evidence_current "$state" "$task" "$(fm_get "$tf" candidate_sha)" || return 0
   prev="$(rework_latest_log "$state" "$task" 1 2>/dev/null || true)"
-  rounds="$(_pack_fm_field "$tf" rework_rounds)"
-  sig="$(_pack_fm_field "$tf" rework_signature)"
-  reps="$(_pack_fm_field "$tf" rework_signature_repeats)"
+  rounds="$(fm_get "$tf" rework_rounds)"
+  sig="$(fm_get "$tf" rework_signature)"
+  reps="$(fm_get "$tf" rework_signature_repeats)"
   case "$reps" in ''|*[!0-9]*) reps=1 ;; esac
 
   if [ "$section" = all ] || [ "$section" = head ]; then
@@ -299,7 +293,7 @@ _pack_build_hook() {
       ;;
     before_merge)
       local b c
-      b="$(_pack_fm_field "$tf" base_sha)"; c="$(_pack_fm_field "$tf" candidate_sha)"
+      b="$(fm_get "$tf" base_sha)"; c="$(fm_get "$tf" candidate_sha)"
       git -C "$repo" diff "$b".."$c" > "$dest/diff.patch"
       used=$(( used + $(wc -c < "$dest/diff.patch") ))
       items="$items,{\"name\":\"diff.patch\",\"bytes\":$(wc -c < "$dest/diff.patch"),\"truncated\":false}"
@@ -331,7 +325,7 @@ _pack_build_hook() {
       # filed at other points (e.g. before_merge) -- neither belongs in the
       # review evidence arbitration is about to weigh.
       local attempt revtmp room rbytes rtrunc=false any=0 rf rf_op
-      attempt=$(( $(_pack_fm_field "$tf" attempts) + 1 ))
+      attempt=$(( $(fm_get "$tf" attempts) + 1 ))
       revtmp="$(mktemp)"
       local -a rev_files=()
       for rf in "$state/reviews/$task-a$attempt-"*.json; do
@@ -429,8 +423,8 @@ pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = in
 
   if [ "$op" = review ] || [ "$op" = critique ]; then
     local b c diff_tmp diff_bytes inline_max
-    b="$(awk -v k=base_sha '/^---$/{n++;next} n==1 && index($0,k": ")==1{print substr($0,length(k)+3)}' "$tf")"
-    c="$(awk -v k=candidate_sha '/^---$/{n++;next} n==1 && index($0,k": ")==1{print substr($0,length(k)+3)}' "$tf")"
+    b="$(fm_get "$tf" base_sha)"
+    c="$(fm_get "$tf" candidate_sha)"
 
     # v1-m4 Task 3 (promotes the r-001 live-run prototype): a worktree-
     # capable reviewer can navigate the checkout directly, so a diff.patch
@@ -539,7 +533,7 @@ pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = in
     local rework_head rework_body rework_diff
     local rwcand rwlatest rwclaim rwstate=absent
     local rwroom rwhbytes rwbbytes rwdbytes rwbodyroom rwfloor rwtrunc=false
-    rwcand="$(_pack_fm_field "$tf" candidate_sha)"
+    rwcand="$(fm_get "$tf" candidate_sha)"
     rwlatest="$(rework_latest_log "$state" "$task" 0 2>/dev/null || true)"
     # Four states, and the three non-`current` ones are deliberately told
     # apart. "No round was ever captured" is not an omission at all (a first
