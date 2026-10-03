@@ -6,6 +6,30 @@ you are. It records state that the code and git history do not make obvious,
 and it goes stale — **verify every claim below against the tree before relying
 on it.** Anything here that contradicts the code is wrong and the code wins.
 
+## PR integration follow-through — 2026-10-03
+
+PR #15 is merged into `main` at `e4819e52`. The accepted r-002 roadmap and
+acceptance record are now on `main`; the older snapshot below saying otherwise
+is superseded.
+
+PR #17's branch CI was green, but its assembled PR tree failed on both
+platforms. GitHub's latest `main` run at `1ed27d54` also failed:
+[34777104362](https://github.com/bilal-/orchid/actions/runs/34777104362).
+The earlier green-main claim below was stale. The failures came from two
+producer-to-`grep -q` pipelines in `findings_round_series`, introduced by the
+convergence change. INV-15 reproduced the failure locally; this candidate
+feeds both matchers with here-strings instead.
+
+The `r003-sibling-rebase` candidate now contains the acceptance merge, the
+rebase job guard and its exercised refusal/acceptance cases, and the INV-15
+repair. Merge #17 only after canonical local CI and the current-head Linux
+and macOS PR checks pass. Once this candidate is on `main`, both pending PRs
+from the previous session are resolved.
+
+r-003 has not started. Decision 0 and automatic dispatch rebasing remain open.
+The dated local and remote snapshots below are historical observations;
+verify current branch and PR state before treating them as today's state.
+
 ## Local resumption — 2026-10-03
 
 The `orchid` checkout is now on local branch
