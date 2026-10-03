@@ -351,10 +351,11 @@ shows the exact boundary in
    runners/orchid-tick`.
 4. Walk away. Check `orchid status` anytime (or `orchid status --html` for a
    self-contained static page — v1-m4 — SHIPPED); answer questions via
-   `orchid answer`; intervene via `orchid task unblock/retry/reverify/set`
+   `orchid answer`; intervene via `orchid task unblock/retry/reverify/rebase/set`
    (`retry --attempts N` grants a task more rework rounds; `reverify` re-runs
-   verification against a tree you have already made green, spending no
-   attempt). After the
+   verification against the tree you already made green, spending no attempt;
+   `rebase` moves an idle sibling onto the current integration head, only from
+   `rework` or `implementing`, with no outstanding jobs for that task). After the
    same acknowledgement, `orchid service install` schedules the pump via the
    host's own scheduler (a launchd agent on macOS, a marker-guarded crontab
    line elsewhere) so ticks continue without a terminal open —

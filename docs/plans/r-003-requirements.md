@@ -1,7 +1,8 @@
 # Orchid r-003 — from governance kernel to full agent framework
 
-> Draft. r-002 is now 40/40 and waiting at its operator acceptance boundary.
-> r-003 starts only after that judgment; one run owns `.orchid/` at a time.
+> Draft. r-002 is accepted; its durable run state is on
+> `orchid/integration`. r-003 has not started. Decision 0 remains the
+> operator-owned prerequisite for starting the new run.
 
 ## Goal
 
@@ -490,6 +491,16 @@ user actually touches is the layer where it loses them.
   would refuse partway, and an uncommitted edit is the one thing in that tree
   that exists nowhere else). A conflicting rebase is ABORTED, journaled, and the
   checkout left exactly as it was, with both ways forward named.
+
+  **Safety correction, 2026-10-03:** the prepared candidate allowed a rebase
+  while its implementer was still running. A disposable fixture reproduced a
+  changed candidate while `jobs ls` reported that job as `running`. The verb
+  now refuses every outstanding job for this task, including a prepared job
+  whose launcher has not stamped a PID yet. The existing process table owns
+  job interpretation; the verb lock prevents a new prepare during the rebase.
+  Finish and reconcile those jobs before retrying. An unrelated task's live
+  job does not prevent the rebase. `tests/test_task_rebase.sh` exercises both
+  refusal cases and the accepting twin; no automatic dispatch step was added.
 
   **Deliberately a verb and not a new step in the dispatch loop.** That loop is
   the most safety-critical path in the kernel, and a second process writing to a

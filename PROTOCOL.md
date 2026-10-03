@@ -1085,6 +1085,14 @@ second case your file does not yet carry what the branch just landed, and
 reconcile the two drops the merge's change. `docs/troubleshooting.md`,
 "`orchid.config` after a merge", has the comparison to run.
 
+An idle sibling whose integration base moved can be rebased explicitly with
+`orchid task rebase <id>`, from `rework` or `implementing` only. Before calling
+it, finish the task's jobs and run `orchid jobs reconcile` and `orchid jobs gc`.
+The verb refuses outstanding jobs, including prepared launches; the verb lock
+prevents a new prepare while it changes the clean task checkout. A successful
+rebase records the current integration head in `base_sha` without charging an
+attempt. This is an operator action, not an automatic step in the tick.
+
 ## THE TICK
 
 **1. Refresh the lease.**
