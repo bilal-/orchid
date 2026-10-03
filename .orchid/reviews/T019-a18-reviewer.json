@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a18-7fe5",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "740644aa6be64651f31eceff5e73999c0645d5a3",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The stale-pin waiver checks freshness only after candidate-controlled verification, allowing a test that dirties release content to manufacture a handoff waiver instead of charging the candidate."
+}

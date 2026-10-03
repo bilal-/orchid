@@ -1,0 +1,19 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a11-9708",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "cb37800c9fb18239e60d52e3f24778d8d4e5c529",
+  "candidate_sha": "26b6deb41951be15c7bfd84550233cdda8b15e3e",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "troubleshooting.md claims the merge warning still prints in a self-hosted checkout, which the shipped exemption contradicts"
+    }
+  ],
+  "summary": "The a10 objection is addressed — `history_carries_run_state` now decides on each newly reachable commit's TREE rather than on touching the path (templates/pre-push.sh), so a deletion-only suffix at a "
+}

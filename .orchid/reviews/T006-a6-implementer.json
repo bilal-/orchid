@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a6-5711",
+  "task": "T006",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "767a3217635642b15597f3709452090ecad1d211",
+  "summary": "Pair the kernel-refresh marker with pid_start and close the window",
+  "commits": [
+    "767a3217635642b15597f3709452090ecad1d211"
+  ]
+}

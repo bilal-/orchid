@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a17-7618",
+  "task": "T009",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "34edca09e0913d68489b4f32a3d9c32d2dfe013a",
+  "candidate_sha": "cb56694ccd5d24944d5e7eeba3b95da51c848c7e",
+  "summary": "Refuse a past outage as a Hermes gateway's current state",
+  "commits": [
+    "cb56694ccd5d24944d5e7eeba3b95da51c848c7e"
+  ]
+}

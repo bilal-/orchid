@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a7-c942",
+  "task": "T022",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "ba7f06401067ff3534fd7bd159eb31f34e50d298",
+  "summary": "Distinguish an uncommitted delivery from a no-op and stop for a human",
+  "commits": [
+    "ba7f06401067ff3534fd7bd159eb31f34e50d298"
+  ]
+}

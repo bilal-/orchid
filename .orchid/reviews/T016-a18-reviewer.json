@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T016-a18-cd74",
+  "task": "T016",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "519bbbbed73e84147520dd31422e321b9a6a47d5",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: INV-15 still equates a textual `orchid_root_stale_gate` occurrence with reachability, so an off-path loader can hide the call in an uninvoked function or below an exit and pass while the gate never fi",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "INV-15 still equates a textual `orchid_root_stale_gate` occurrence with reachability, so an off-path loader can hide the call in an uninvoked function or below an exit and pass while the gate never fi"
+    }
+  ],
+  "summary": "INV-15 still equates a textual `orchid_root_stale_gate` occurrence with reachability, so an off-path loader can hide the call in an uninvoked function or below an exit and pass while the gate never fi"
+}

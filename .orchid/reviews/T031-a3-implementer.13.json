@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T031-a3-5623",
+  "task": "T031",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "bc60166f0343f9503fb0b128a5728c98ad0c0716",
+  "summary": "Refuse a drifted verify tree and defer a live job's envelope",
+  "commits": [
+    "bc60166f0343f9503fb0b128a5728c98ad0c0716"
+  ]
+}

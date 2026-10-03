@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T025-a4-e378",
+  "task": "T025",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "e3bf60c2434fe8b9d91b1cc9f45111f04213d057",
+  "summary": "Split lib/pack.sh's local declaration to fix SC2318",
+  "commits": [
+    "e3bf60c2434fe8b9d91b1cc9f45111f04213d057"
+  ]
+}

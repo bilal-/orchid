@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T007-a9-6758",
+  "task": "T007",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "469bdcb99264332d8f857ddd5467adfd8290168a",
+  "candidate_sha": "d2aa02256ffff2b991658c894f57502ad1f7244d",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "A gate that cannot execute is charged as a candidate failure"
+    },
+    {
+      "severity": "low",
+      "title": "The gate's brief carries temp-worktree absolute paths, and no test exercises the real ShellCheck shape"
+    },
+    {
+      "severity": "low",
+      "title": "The exit-15 hook refusal precedes the stale merge-log invalidation it is claimed to cover"
+    }
+  ]
+}

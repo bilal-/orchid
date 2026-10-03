@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e45-T018-a6-63ce",
+  "task": "T018",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "9f3d6a4ac32af217602b5d418e2e39d7833e2ee4",
+  "summary": "Refuse an unknown step at capability_step_uncovered, not just the gate",
+  "commits": [
+    "9f3d6a4ac32af217602b5d418e2e39d7833e2ee4"
+  ]
+}

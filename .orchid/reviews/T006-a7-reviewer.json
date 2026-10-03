@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a7-e022",
+  "task": "T006",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "069304f89cd7b85ac601dfcbc79e0a3a0c092c14",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "Documented `git reset` unstage remedy can silently hide a genuinely stale kernel"
+    },
+    {
+      "severity": "low",
+      "title": "Refresh drift loop cannot handle C-quoted paths from `git diff --name-only`"
+    }
+  ]
+}

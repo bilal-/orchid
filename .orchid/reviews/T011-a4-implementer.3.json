@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e49-T011-a4-6728",
+  "task": "T011",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "33adc18bf71353a970023dcdf3a05eb6e124420e",
+  "candidate_sha": "f1ff1f4888daaa2d1f34f32a717292b2195bef05",
+  "summary": "Hold the in-place stderr notice to the evidence rule",
+  "commits": [
+    "f1ff1f4888daaa2d1f34f32a717292b2195bef05"
+  ]
+}

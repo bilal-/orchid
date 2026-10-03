@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a5-af33",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "d7f213397951035166f553646f63be15511a56c7",
+  "candidate_sha": "efbaad02ea716a7c15329294e8a149ffaf22843e",
+  "summary": "T036: Report an accepting run, count per boundary, keep dry runs inert",
+  "commits": [
+    "efbaad02ea716a7c15329294e8a149ffaf22843e"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "contract": 1,
+  "job_id": "j-e49-T012-a3-0212",
+  "task": "T012",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "a7616357d70b0b7c95a3ac057b6bd28397eec358",
+  "candidate_sha": "51a49c6dd0ea785ab43d89d4eda496d49d2173ad",
+  "summary": "Audit the T012 review-depth diff; no change needed this round",
+  "commits": [
+    "51a49c6dd0ea785ab43d89d4eda496d49d2173ad",
+    "3f1fcbe121d598694e0c99c75d0c2b4c057f10fe",
+    "4f099918410044afc48b157cf9ca86142db9f57c",
+    "2da16dc23dbf5e0b66b501cd7953a58731b2ac7e",
+    "4898f38da4d31e8e61e34b65acaa4bbcd3a0aff3",
+    "5fe5e0689bc8ec61dc36248692c7145b90ce9997",
+    "2509a717bfad8dae61591344d7e77e006eea517c",
+    "a04615e906481bcb53ba99ecbc85c81d634af795",
+    "1b781c3af66f6a2d1b4a1ea626b32acba5a8ee7d",
+    "d143aac66a5c3d251c73940e3ebaf82bfd9eae8c",
+    "f9617920cca7e995c076699934fe4524f2353baa",
+    "326b9a2f3e8ef365bf67b8a70a973fab1401c10e",
+    "33adc18bf71353a970023dcdf3a05eb6e124420e",
+    "1cc04f392f50de2f68090f11b989a2ad39b189d6",
+    "9a0d04b1af66b92595ede2d7ccdba167dc2cee0c",
+    "b537898b89291717ca26b91696c442cc440b4af6",
+    "a884171e667140e1ca7b38b53a1040eaf6aa0e11",
+    "575510f3ff0091b448d41cc5439819ff355fc31a"
+  ]
+}

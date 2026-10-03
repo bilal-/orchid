@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T034-a5-acdb",
+  "task": "T034",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "0c84da4289e6e43e76fe57a5957d85b96c99ee4f",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The candidate rejects newlines before mutation, atomically renames validated rewrites, fails closed on damaged task files, and has an exact-SHA verifier result of exit 0."
+}

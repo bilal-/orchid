@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a4-5da1",
+  "task": "T006",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "ebb9d3dda6f7730d09de4d6fffc3d9d4368ec494",
+  "summary": "Confirm trust-before-touch ordering; no candidate changes needed",
+  "commits": [
+    "ebb9d3dda6f7730d09de4d6fffc3d9d4368ec494",
+    "89ca781f45bcb5713882bbda01fbd78546c3b1ac",
+    "ec054bacbd5623cede223bf775fa3369788109c0",
+    "3d64a92802f229aa2218031e936486911582bfef",
+    "dff5d9fff008b8c05ba34a2a011ae084c93254dd",
+    "b88431d3b1dbad312efca87a4cb29d79bac790eb",
+    "f9d9b719ad1e74a8767ae9ba630be7e58a139c15",
+    "fae783de6faaccb1535d161224e220700b0856a7",
+    "9c919690ba7da7b2614af3ef96d5ed7ba5fe25c6"
+  ]
+}

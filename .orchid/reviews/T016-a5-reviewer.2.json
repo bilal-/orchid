@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T016-a5-6578",
+  "task": "T016",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2658972632012c3332a34e17dce9fb295d7bf5ff",
+  "candidate_sha": "30d29a829640ed127390e2dbfbb45fc8b309c080",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "`orchid trust show` is newly exempted from the stale-root gate, contradicting lib/common.sh's own no-exemption rule and test_stale_root.sh's updated claim"
+    },
+    {
+      "severity": "low",
+      "title": "`orchid doctor` now prints its unattended-trust diagnosis from stale code before the gate fires"
+    }
+  ]
+}

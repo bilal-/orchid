@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a4-08e2",
+  "task": "T024",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "1a6aac9115cb0fc5ba5405b90cb7a8b5d1e1296d",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": []
+}

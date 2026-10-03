@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T010-a4-1e17",
+  "task": "T010",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "cee8b01d394e56385f8a08b3549dfa00b63d7f04",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "`orchid task handoff --ack` advances candidate_sha with no ancestry or branch check"
+    },
+    {
+      "severity": "medium",
+      "title": "rework briefs accumulate unmarked in the task body, re-handing superseded candidates' locations"
+    },
+    {
+      "severity": "low",
+      "title": "PROTOCOL.md and kernel.md assert a verify-side sha refusal that has not landed (T031 unmerged)"
+    }
+  ]
+}

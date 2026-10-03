@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a7-b1bc",
+  "task": "T026",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "53fd0856df918bff4a760ebc9d5ba5a242d91ba3",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`testing_entry_blocker` treats a failed or SIGPIPE-short-circuited `git log | grep -q` as clean, allowing `reverify` to admit a foreign or `.orchid/`-touching candidate and violate INV-04."
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T016-a1-d643",
+  "task": "T016",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "63947e81da6f7d12c55cf456eccf3d3e5503cace",
+  "candidate_sha": "bbe5165150afb680db73f3e98b4a9cab14a0b82a",
+  "summary": "Split the stale-root guard so no gate is optional or blind (INV-15)",
+  "commits": [
+    "bbe5165150afb680db73f3e98b4a9cab14a0b82a"
+  ]
+}

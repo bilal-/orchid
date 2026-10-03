@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T032-a7-cd2d",
+  "task": "T032",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "25bae387d3cba69867ce08293235c753a2848533",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: The relay binds an operator’s approval only to task/objection sequence/text, not the candidate or review snapshot, so a stale answer can clear the objection after evidence changes and merge a round th",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "The relay binds an operator’s approval only to task/objection sequence/text, not the candidate or review snapshot, so a stale answer can clear the objection after evidence changes and merge a round th"
+    }
+  ],
+  "summary": "The relay binds an operator’s approval only to task/objection sequence/text, not the candidate or review snapshot, so a stale answer can clear the objection after evidence changes and merge a round th"
+}

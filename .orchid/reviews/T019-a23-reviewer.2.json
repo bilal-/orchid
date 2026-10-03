@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a23-1318",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "b666949da2506b6b5ed1fd552b2ea652c73d4aab",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "`_DRIVE_QUALIFICATION_LINE_RE` is tested before the failure regex, so a candidate-controlled line beginning `RED-CASE:`/`GREEN-CASE:` leaves the failure denominator entirely — a narrow in-band bypass of this classifier's own \"never trust a marker the child can forge\" rule"
+    },
+    {
+      "severity": "low",
+      "title": "`handoff.pin_check` now runs on every `orchid verify`, not only failed ones, with no timeout and no per-run opt-out; the shipped default builds a full release archive, so every pass pays it"
+    },
+    {
+      "severity": "low",
+      "title": "the acceptance criteria's \"harness fault\" category ends up with no waiving arm — a timeout/SIGTERM-reaped verification charges an attempt, which is defensible under the spec's own uncertainty rule but means a `.orchid/`-owned verify timeout the implementer cannot fix still costs the budget"
+    }
+  ]
+}

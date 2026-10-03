@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T010-a4-ba08",
+  "task": "T010",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "cee8b01d394e56385f8a08b3549dfa00b63d7f04",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The resume check never compares the worktree HEAD, so a post-ack commit is treated as satisfied and verified despite belonging to a different committed tree."
+}

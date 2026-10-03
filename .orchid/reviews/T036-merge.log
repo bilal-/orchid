@@ -1,0 +1,104 @@
+date: 2026-08-30T18:21:07Z
+sha: 51f5fa3c59cfe2b18d756ab99318b0730a5629b7
+candidate: 5608a39e169f7b17ac86b979a49da598d08ee29f
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.XLCeeb
+command: /bin/bash tests/test_service.sh && /bin/bash tests/test_run.sh
+command_status: 0
+gate: /bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+gate_status: ran
+gate_exit: 0
+---
+  RED-CASE: a --dry-run uninstall leaves the schedule it did not unload nameable
+  GREEN-CASE: a real uninstall removes the plist and the binding it printed under --dry-run
+  GREEN-CASE: a pump whose integration worktree is present still exits 0 with its ordinary diagnostic
+  RED-CASE: a pump whose integration worktree has been deleted refuses loudly instead of polling forever
+  RED-CASE: a pump whose repository is gone while the directory remains also refuses loudly
+  GREEN-CASE: an ordinary not-an-orchid-repo directory keeps its exit-0 no-op, git or no git
+  RED-CASE: a completed run's dead checkout still refuses: liveness is asked before the no-op that would swallow it
+  RED-CASE: a completed run with a schedule still installed against it names the command that ends the waste
+  RED-CASE: doctor reports a live schedule whose run has already reached a terminal state
+  GREEN-CASE: a schedule bound to a run that is still under way is reported as ordinary state
+  RED-CASE: service status names a finished run as the reason its schedule has nothing left to do
+  GREEN-CASE: service status leaves a live run's schedule unqualified
+  GREEN-CASE: a completed run with no schedule bound to it keeps its one-line no-op
+  RED-CASE: a run parked on an operator's acceptance is named by the pump instead of polled in silence
+  RED-CASE: doctor reports a schedule bound to a run that is waiting for its operator
+  GREEN-CASE: a schedule bound to a run that is still under way is not reported as parked
+  GREEN-CASE: a bound checkout with its repository intact is reported as ordinary state
+  RED-CASE: a bound checkout whose repository is gone is reported, with the refusal its schedule recorded
+  GREEN-CASE: uninstalling a leftover schedule clears its recorded refusal with it
+  RED-CASE: a checkout carrying a live pump-service binding is refused for removal
+  GREEN-CASE: a checkout with no pump-service binding passes the removal guard silently
+  GREEN-CASE: a checkout whose schedule has been uninstalled passes the removal guard
+  RED-CASE: an install whose binding cannot be recorded installs nothing at all
+  GREEN-CASE: uninstall clears a binding record whose scheduler artifact never landed
+  RED-CASE: an uninstall whose launchctl unload failed leaves the schedule nameable and the checkout guarded
+  GREEN-CASE: a failed unload with no job behind it is the never-loaded case, and still clears the binding
+  RED-CASE: an uninstall whose plist is gone while launchd still holds the job keeps the binding that names it
+  GREEN-CASE: the missing-plist refusal clears on a re-run once launchd has let the job go
+  RED-CASE: an install that cannot leave a record the removal guard can see installs no schedule
+  GREEN-CASE: a schedule installed over a usable record path is one the removal guard can still refuse
+  RED-CASE: an install that cannot leave a record surviving its checkout installs no schedule
+  GREEN-CASE: a schedule installed over a usable machine-local path is one that can still be named after its checkout
+  RED-CASE: an uninstall whose launchd query could not answer keeps the schedule nameable and the checkout guarded
+  GREEN-CASE: a launchd query that answers 'no such job' still clears, so the refusal above is the failure and not the question
+  RED-CASE: an uninstall whose plist is gone keeps the binding when launchd could not be asked about the job
+  GREEN-CASE: the unanswered-query refusal clears on a re-run once launchd answers
+  GREEN-CASE: launchd's not-found sentence clears the binding even when its exit status is an ordinary 1
+  RED-CASE: a teardown whose uninstall could not prove the scheduler stopped removes neither the schedule nor the worktree
+  GREEN-CASE: the same teardown removes the worktree once the uninstall proved the schedule was gone
+  RED-CASE: a teardown whose worktree removal failed names the schedule it did end and the removal still owed
+  RED-CASE: teardown refuses a non-worktree checkout before uninstalling anything, naming the uninstall instead
+  RED-CASE: a teardown whose binding twins disagree about the schedule they name removes nothing and asks the scheduler nothing
+  RED-CASE: a moved checkout's teardown resolves the schedule install recorded and preserves every refusal that schedule's liveness earns
+  GREEN-CASE: a teardown of a MOVED worktree ends the schedule install recorded, clears both binding records, and removes the checkout at its new path
+  RED-CASE: a removal run inside a COPY of the bound checkout refuses before any scheduler call, and preserves the original schedule and both records
+  GREEN-CASE: the same teardown ends the schedule and removes the checkout when it is run in the worktree git has registered
+  GREEN-CASE: a copy left holding a record for a checkout that no longer exists can still clear it, so the ownership refusal never wedges the removal guard
+  RED-CASE: a separately registered worktree given the bound checkout's binding record refuses before any scheduler call, and preserves the victim's schedule, both records and its tree
+  GREEN-CASE: the same teardown ends the schedule and removes the checkout when it is run in the worktree the binding names
+  GREEN-CASE: the ownership rule refuses a live victim without wedging a worktree left holding a record for a checkout that no longer exists
+  RED-CASE: a wake that refused leaves its reason where doctor reads it
+  GREEN-CASE: a wake that found the target healthy and succeeded retires the refusal, so doctor never prints one beside a healthy service
+  RED-CASE: a --dry-run install leaves a recorded refusal standing, because it left the schedule that refused running
+  GREEN-CASE: a real install retires the refusal recorded against the schedule it replaces
+  RED-CASE: a wake that hands off to a failing tick retains the recorded refusal, because the wake did not succeed
+  GREEN-CASE: a wake that hands off to a tick that succeeds retires the refusal, and the two arms differ only in the tick's exit status
+  RED-CASE: a repo-local record naming a label orchid could not have derived is refused before any path built from it is opened, unloaded or deleted
+  GREEN-CASE: the same uninstall ends the schedule when the record names the label install derived
+  RED-CASE: a record naming an artifact orchid could not have written is refused before that path is unloaded or removed
+  GREEN-CASE: the same uninstall ends the schedule when the record names the artifact install wrote
+  RED-CASE: a record borrowing another checkout's real label is refused before that other schedule is unloaded or deleted
+  GREEN-CASE: the same uninstall ends this checkout's own schedule when the record names the label install derived for it
+  RED-CASE: a record naming another checkout's cron record is refused before that neighbour's file is removed
+  GREEN-CASE: the same uninstall removes this checkout's own cron record when the artifact is the one install wrote for it
+  RED-CASE: an install run in a MOVED checkout refuses before any write or scheduler call, leaving the schedule it already carries singular and its records intact
+  GREEN-CASE: the documented uninstall-then-install recovery ends the moved checkout's original schedule and leaves it with exactly one, under the label its current path derives
+  GREEN-CASE: a re-install at the SAME path remains idempotent: the stacking guard is keyed to a binding naming a different schedule, not to a binding existing
+  GREEN-CASE: a COPY of a bound checkout still installs its own schedule: the stacking refusal is scoped to a binding this checkout could actually end, since the uninstall it names refuses in a copy
+  RED-CASE: an install refuses, writing nothing and calling no scheduler, while the two halves of the binding this checkout carries disagree about the schedule it already has
+  RED-CASE: an install refuses, writing nothing and calling no scheduler, when the binding record this checkout carries names a label orchid could not have derived for the checkout that record itself names
+  GREEN-CASE: repairing the record the refusal named makes the binding resolve again, and the documented recovery then leaves the moved checkout with exactly one schedule
+run rolled over: r-001 -> r-002 (archived to runs/r-001/)
+imported: requirements.md -> requirements.md
+crosscheck: r-001 left 1 carried-forward item(s); each must be covered by a task in this plan or explicitly deferred
+  deferred  [lesson] L001 — an active lesson that must carry forward (deferred: rollover fixture: out of scope for the second run)
+crosscheck: all 1 carried-forward item(s) considered
+applied: orchid/integration -> 476579b2b054910eeb084a5dca3ecbb8cfb04899
+lease released
+  RED-CASE: an engine outage records the boundary but spends none of its wake budget
+  GREEN-CASE: an orchestrator-settleable boundary is woken for, once per pass, while its wake budget lasts
+  RED-CASE: a boundary that three orchestrator wakeups did not move stops waking a fourth
+  RED-CASE: a hand-run orchid drive spends none of the pump's wake budget
+  RED-CASE: an exhausted boundary must not starve a live one behind it in task-id order
+  RED-CASE: a run whose tasks are all done stops waking an orchestrator
+  RED-CASE: the wake budget's availability probe prices the orchestrate step, exactly as the pump's own probe does
+
+== merge_gate: /bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+== Bash syntax (163 shipped scripts; /bin/bash)
+== ShellCheck exception policy
+== Portability policy (POSIX find only)
+== Portability policy (mtime via lib/common.sh file_mtime)
+== ShellCheck (zero warnings)
+CI PASS (static checks only; --no-tests)
+exit: 0

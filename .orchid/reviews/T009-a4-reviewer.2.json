@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a4-472c",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "35d6ebfabcf23a342b046f0898b660d9a4c2d038",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The choice gate fails open if notify stops before writing its sidecar, leading-dash choices are unanswerable, attempt numbers are off by one, and arbitrary Hermes CLI failures are misreported as prove"
+}

@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e41-T009-a2-df70",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "40ac15d2f9a2f22ff3d81026bf84d836a8585b2c",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Page's attempt line is off by one — prints stored `attempts` (completed count), showing \"attempt: 0\" on a first attempt"
+    },
+    {
+      "severity": "low",
+      "title": "`orchid notify` new arg loop refuses message text that begins with `-` (old code accepted it as text)"
+    },
+    {
+      "severity": "low",
+      "title": "`orchid answer` choices-scrape can misread a no-set question whose body's first line is `choices: <comma-words>` (whitespace guard doesn't cover it) as a declared set, gating free text"
+    }
+  ]
+}

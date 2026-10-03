@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e44-T019-a5-a960",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "77d23d07b58f64d4aa1e8be6919c6019a37a5d6d",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "L020 flake family: five of six mid-run liveness assertions left unfixed and unquarantined (claude 363/413, codex 395/445, agy 298)"
+    },
+    {
+      "severity": "medium",
+      "title": "Classifier implements only the operator-hand-off class; harness/environment faults and known-flaky tests are explicitly charged, so an L020 recurrence still burns attempts"
+    },
+    {
+      "severity": "medium",
+      "title": "The named L003 case (worktree missing gitignored build state) is documented as charged, and dispatch neither reproduces nor detects it — only prose guidance was added"
+    }
+  ]
+}

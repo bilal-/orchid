@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a11-c19c",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "874bb8928aac2ae51819e66bfb21b221281b7f60",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`_drive_path_named_lines` suffix-matches paths, so an outstanding `bin/tool` hand-off can wrongly waive a candidate failure on a distinct `fixtures/bin/tool`, violating fail-strict attribution."
+}

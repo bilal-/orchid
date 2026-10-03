@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T031-a7-49b2",
+  "task": "T031",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "814fa45001b34833cb191f2148ab5b2788a92a30",
+  "candidate_sha": "8567cd5a4e3606a6c26c4c7a5d99e3b9dd66827d",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "exit-20 worktree-conflict boundary names no clearing verb, unlike its sibling refusal arms"
+    },
+    {
+      "severity": "low",
+      "title": "dangling duplicated comment fragment spliced into tests/test_task.sh's T007 header block"
+    }
+  ]
+}

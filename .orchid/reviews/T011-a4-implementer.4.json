@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e54-T011-a4-43a9",
+  "task": "T011",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "33adc18bf71353a970023dcdf3a05eb6e124420e",
+  "candidate_sha": "db450e1bce7b7550c6ae88cfaad2a7e4d5f6097d",
+  "summary": "T011: Pin the notice's warning half to stderr as well",
+  "commits": [
+    "db450e1bce7b7550c6ae88cfaad2a7e4d5f6097d"
+  ]
+}

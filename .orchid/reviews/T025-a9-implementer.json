@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a9-66e4",
+  "task": "T025",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "8096647448aed8e6b7906cca32aff0d8e1954b04",
+  "candidate_sha": "f35635d9cf4c18ce482b178b9d3765758ddd3e81",
+  "summary": "Approve this design so I can implement it test-first?",
+  "commits": [
+    "f35635d9cf4c18ce482b178b9d3765758ddd3e81",
+    "8db496132dc30b784d8daeca802d6302cad95307",
+    "84dc4442896b43794460d224384637612dffcb22",
+    "9c2af07829b523194116206fa954864256e74fc9",
+    "a82ce7d0cf842889fbc80fa73ffdddd6f931cb79",
+    "6fe92c181a9fb92ab2445daa6f19ea69ddf9ba92",
+    "7dfd85e427fa3ed51e2c212345d4a7c54d9c479e",
+    "3674675c70f960cf4162bc5be543fd18eca24cc4",
+    "b9b154ec7c2ed55bbb5e137e18a7e822a6600355"
+  ]
+}

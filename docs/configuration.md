@@ -82,6 +82,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `handoff.pin_check` | `none` | repo | v1.1 |
 | `flaky.quarantine` | `tests/QUARANTINE.md` | repo | v1.1 |
 | `rework_nonconvergence_max` | `3` | repo | v1.1 |
+| `critique_nonconvergence_max` | `3` | repo | v1.1 |
 | `model` | *(empty — engine's own default)* | repo or user | v0 |
 | `effort` | `medium` | repo or user | v0 |
 | `rate_limit_backoff_s` | `3600` | repo | v1-m2 |

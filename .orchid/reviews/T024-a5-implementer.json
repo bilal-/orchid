@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a5-e368",
+  "task": "T024",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "4d2999a347cb61d11e48551158edfe382d90e617",
+  "summary": "Re-implement operator_prerequisite on T010's merged base",
+  "commits": [
+    "4d2999a347cb61d11e48551158edfe382d90e617"
+  ]
+}

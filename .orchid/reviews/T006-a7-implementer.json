@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a7-ec28",
+  "task": "T006",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "57c42071c83379e4c7b4e7c9627babb673cad4ab",
+  "summary": "Write the kernel file before its index entry, never after",
+  "commits": [
+    "57c42071c83379e4c7b4e7c9627babb673cad4ab"
+  ]
+}

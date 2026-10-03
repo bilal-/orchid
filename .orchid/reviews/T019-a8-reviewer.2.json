@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a8-5cd9",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "0c85b3952ba6f725ab4daee1f97bf38929a2cefd",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "The \"authority the candidate touched\" guard compares commits but reads the authority from the worktree, so an uncommitted edit to the pin check or the flaky register reopens the amnesty"
+    },
+    {
+      "severity": "low",
+      "title": "`tests/test_drive.sh:5786` interpolates `$SHIPPED_SIGS` into its own failure message, so a genuine failure of the register-parsing guard is itself classified `flaky` and charges no attempt"
+    },
+    {
+      "severity": "low",
+      "title": "`lib/drive.sh`'s env-cascade comment cites `ENOENT ... open '.../node_modules/x'` as a naming match, but `_DRIVE_PATH_TAIL` excludes `/`, so a line that only contains the directory as a path prefix is never claimed"
+    }
+  ]
+}

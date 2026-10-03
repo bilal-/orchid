@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T023-a10-e62b",
+  "task": "T023",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "71baa70d2d6668bdb27ec243f7bd2455440f33d4",
+  "candidate_sha": "377a315eef5c985df0e24664fecbfc34bbfbf87e",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Duplicate `blocked)` case arm makes the new merge-side blocked-task boundary unreachable"
+    },
+    {
+      "severity": "low",
+      "title": "base_sha fallback to `$integ_head` when merge-base cannot answer records the branch as current, contradicting its own stated \"merely stale is the safe direction\" rationale"
+    },
+    {
+      "severity": "low",
+      "title": "PROTOCOL.md's boundary-kind table still defines `worktree-conflict` only as an unprovable worktree binding, omitting the new prepare-failure use"
+    },
+    {
+      "severity": "low",
+      "title": "docs/configuration.md lists both new keys as introduced in `v1.0`; every other key from this run is `v1.1`"
+    }
+  ]
+}

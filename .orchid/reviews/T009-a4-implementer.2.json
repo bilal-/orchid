@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a4-035b",
+  "task": "T009",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "35d6ebfabcf23a342b046f0898b660d9a4c2d038",
+  "summary": "Refuse an answer whose declared choice set cannot be read",
+  "commits": [
+    "35d6ebfabcf23a342b046f0898b660d9a4c2d038"
+  ]
+}

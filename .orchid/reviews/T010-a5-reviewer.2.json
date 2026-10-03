@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T010-a5-7b3a",
+  "task": "T010",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "3003995a996e42fc2579c32be822bdda5f41ead0",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The hand-off can be acknowledged and read as satisfied with uncommitted mechanical changes because both paths compare only HEAD, allowing verification of a dirty tree while evidence remains bound to a"
+}

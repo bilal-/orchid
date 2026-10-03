@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a8-8557",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "c0df278829ca621a748caf8a0bfcad884fc7a930",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: The checks inspect only branch-tip trees, so the documented removal commit bypasses both guards while run-state commits remain reachable from the product branch.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "The checks inspect only branch-tip trees, so the documented removal commit bypasses both guards while run-state commits remain reachable from the product branch."
+    }
+  ],
+  "summary": "The checks inspect only branch-tip trees, so the documented removal commit bypasses both guards while run-state commits remain reachable from the product branch."
+}

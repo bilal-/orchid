@@ -1,0 +1,15 @@
+date: 2026-08-29T05:09:03Z
+sha: ed2550fb72924d37b3b0b1cf3363f9ed25d954ee
+candidate: ed2550fb72924d37b3b0b1cf3363f9ed25d954ee
+cwd: /Users/bilal/workspace/personal/orchid-orchid-T029
+command: /bin/bash tests/test_start.sh && /bin/bash tests/test_init_doctor.sh
+prestate: 1
+pre_base_sha: "71baa70d2d6668bdb27ec243f7bd2455440f33d4"
+pre_exec_missing: ""
+pre_env_missing: ""
+pre_env_inventory: ""
+pre_pin_stale: ""
+pre_integration_head: "71baa70d2d6668bdb27ec243f7bd2455440f33d4"
+---
+Deleted branch orchid/integration (was 4e4af24).
+exit: 0

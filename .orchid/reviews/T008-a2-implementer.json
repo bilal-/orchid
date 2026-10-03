@@ -1,0 +1,16 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T008-a2-017f",
+  "task": "T008",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "185bf095c7571115513ccc857d2b70da1ba2ca90",
+  "summary": "Two notes, not filed as findings: I could not run `verification_commands` — Bash is sandboxed in this session, so every claim above is from static reading of the diff and the surrounding call sites. A",
+  "commits": [
+    "185bf095c7571115513ccc857d2b70da1ba2ca90",
+    "23df1599b00a4ad57821f580a9cc5eee966778ba",
+    "758d443003bd6fc6a0c0869b4af541838d10e238"
+  ]
+}

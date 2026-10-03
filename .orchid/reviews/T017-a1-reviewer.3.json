@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T017-a1-dc1d",
+  "task": "T017",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "f23a468e6a488d19f1ac28de738d92b4e28a0b81",
+  "candidate_sha": "d1a40261cbb2cd7a0850459ffe6655f6e139bd86",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The changes establish and mechanically enforce the RED-case proof discipline across documentation and test helpers while fully addressing all carried findings for the hermetic test suite."
+}

@@ -1,0 +1,16 @@
+{
+  "contract": 1,
+  "job_id": "j-e43-T011-a2-67b3",
+  "task": "T011",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "33adc18bf71353a970023dcdf3a05eb6e124420e",
+  "candidate_sha": "fbe3b5435709efb5bf4c0130870a9ea61e7a0706",
+  "summary": "Triage rework brief as fixture stderr; candidate stands complete",
+  "commits": [
+    "fbe3b5435709efb5bf4c0130870a9ea61e7a0706",
+    "2f6cebe9f5f7a34d1f5f91313000321a378973d9",
+    "67814157a2293aa3d0cc72d11ad6ea2b3ac39d95"
+  ]
+}

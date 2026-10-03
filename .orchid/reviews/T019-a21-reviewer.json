@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a21-a70f",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "e344ccf0c9fc2417a54203789e0c65edb62fdaa5",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Non-candidate exits at infra caps, recurrence, or missing rework edges omit the required journal record explicitly stating that the attempt was not charged."
+}

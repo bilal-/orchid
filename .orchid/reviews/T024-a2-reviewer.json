@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a2-6941",
+  "task": "T024",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "62f40924ce0dbf5d0427e6d02f1f01fefafc6827",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "orchid merge's revalidation runs the same suite against the same external store with no prerequisite gate — a failure there still spends an attempt and reads as a candidate defect"
+    },
+    {
+      "severity": "low",
+      "title": "kernel.md's recorded rejection describes `worktree_prepare` in the present tense as decisive, but no such config key or code exists in this tree"
+    }
+  ]
+}

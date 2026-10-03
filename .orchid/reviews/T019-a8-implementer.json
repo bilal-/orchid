@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a8-49a0",
+  "task": "T019",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "2fc4e6938a229a0bdb16024fdc9acf6a981439fa",
+  "summary": "Ignore heartbeat-only log growth and register the L020 flake",
+  "commits": [
+    "2fc4e6938a229a0bdb16024fdc9acf6a981439fa"
+  ]
+}

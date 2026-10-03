@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a20-45f2",
+  "task": "T009",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "34edca09e0913d68489b4f32a3d9c32d2dfe013a",
+  "candidate_sha": "6b16f8b593d9edc21c9a48ec8bf09f5572b08a04",
+  "summary": "T009: Read a denied competitor as a denial, not as the displacement",
+  "commits": [
+    "6b16f8b593d9edc21c9a48ec8bf09f5572b08a04"
+  ]
+}

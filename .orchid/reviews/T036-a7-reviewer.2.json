@@ -1,0 +1,23 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a7-e806",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "cd6eb09a8d7982b5ee5d810c14186e36597cd491",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "boundary record schema comment in libexec/orchid-run omits `counters`"
+    },
+    {
+      "severity": "low",
+      "title": "orchid_checkout_git_alive discards a `.git` file with no trailing newline"
+    }
+  ],
+  "summary": "The pump now refuses a gone or dead target loudly, `service install` records a two-sided binding that every kernel removal site and `orchid doctor` read, the wake budget bounds and pages a boundary no"
+}

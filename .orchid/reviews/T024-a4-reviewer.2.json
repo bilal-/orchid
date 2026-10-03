@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a4-13b2",
+  "task": "T024",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "ae37317f6d9977a8f78e21b47ab07d5094fadf69",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "libexec/orchid-run:104 comment still lists the kernel-owned boundary kinds without `task-prerequisite`, while the die message at :141 was updated"
+    }
+  ]
+}

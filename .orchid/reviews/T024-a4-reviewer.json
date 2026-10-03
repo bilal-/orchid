@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T024-a4-d07a",
+  "task": "T024",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "ae37317f6d9977a8f78e21b47ab07d5094fadf69",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The candidate binds acknowledgements to candidate SHA with a real rebase RED case, journals redeclaration clears, documents planning and the rejected alternative, gates both verify and merge, and rece"
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T027-a1-9eb5",
+  "task": "T027",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "d277685e0c5ed093c8910ce6b6d1484aab9dcfef",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "A failed launch is escalated twice—once on its nonzero exit and again when the same retained pid-0 manifest ages—so `infra_max=2` blocks after only one actual failure."
+}

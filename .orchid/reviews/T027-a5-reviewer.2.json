@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T027-a5-a8f8",
+  "task": "T027",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "f875aee1781be8283044e0c1ed58dec290882fae",
+  "candidate_sha": "21b23743e77ffaf7df3403e6bad5f16626de4dad",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "An optional hook whose launcher fails is exempted from escalation but never recorded in `optional_hooks_died`, so `drive_hook_gate` defers the guarded step every pass forever with no boundary"
+    },
+    {
+      "severity": "low",
+      "title": "`jobs gc --reap-prepared` parses `--prepared-older-than-s` but ignores it, silently applying `--older-than-s`/3600 instead — the same \"typed a bound, got another\" shape F41 reports"
+    },
+    {
+      "severity": "low",
+      "title": "The F41 \"died without an envelope\" half is pinned by a test that is already green on the base commit (a tripwire), so the required RED case for that shape is not delivered"
+    }
+  ]
+}

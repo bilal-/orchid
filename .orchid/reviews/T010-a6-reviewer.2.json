@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T010-a6-91f2",
+  "task": "T010",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "41a8befd9073f30cfaecbe1acc463132bcf0eca9",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "[medium] lib/handoff.sh:102 treats a failed `git status` as clean, allowing acknowledgement or resume against an uninspectable and potentially dirty candidate tree."
+}

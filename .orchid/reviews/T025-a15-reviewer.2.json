@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a15-d0fc",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "4e911711d25fcb9d829e3bcef7b3a870eba722eb",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "rework failover's empty-`implementer_engine_id` fallback resolves the role without the capability step, so it can name an engine that never ran"
+    }
+  ]
+}

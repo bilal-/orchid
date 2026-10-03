@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T037-a5-ff48",
+  "task": "T037",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "066416c51332b6cf31c169c5d6354b3c1b72a01c",
+  "candidate_sha": "14c0bc3a8ea380e2976c9c6c2438d5b850ac67d7",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: Git resolves relative `core.hooksPath` per worktree ([docs](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath)), so task/feature worktrees can push `.orchid/` unguarded.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "Git resolves relative `core.hooksPath` per worktree ([docs](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath)), so task/feature worktrees can push `.orchid/` unguarded."
+    }
+  ],
+  "summary": "Git resolves relative `core.hooksPath` per worktree ([docs](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath)), so task/feature worktrees can push `.orchid/` unguarded."
+}

@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T010-a1-f7c7",
+  "task": "T010",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "c74dbcaacfb60aa2f81a97639c845913cfdfa517",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "The implementation cleanly satisfies all requirements for operator hand-off gating, durable candidate-sha-bound acknowledgements, exact location rework brief forwarding, protocol specification, and te"
+}

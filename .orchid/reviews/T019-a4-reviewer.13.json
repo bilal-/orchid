@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-9a3b",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "15906bea403fb57bf5270b758844e56a88aca421",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "PROTOCOL.md's testing-FAIL arm keeps the superseded pre-classification advance and duplicates its closing paragraph; the new block is spliced in as a mid-sentence fragment"
+    },
+    {
+      "severity": "low",
+      "title": "`verify_class.environment=none` cannot disable the built-in build-state-gap waiver — the gap arm runs before the config loop, contradicting lib/drive.sh's own \"`none` … built-in recognition included\" comment and orchid.config.example"
+    },
+    {
+      "severity": "low",
+      "title": "`_DRIVE_DEP_TREE_NAMES` includes generic names (`.cache`, `deps`, `target`), and a gap match is exempt from whole-round accounting, so an unrelated ignored cache dir plus any \"command not found\" line waives every failure in the round"
+    }
+  ]
+}

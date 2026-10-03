@@ -1,0 +1,23 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a5-44b6",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "3c0f3c0186b351a0a147df4aaa10b46637d9e708",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "A recorded pump refusal is never cleared when the target comes back"
+    },
+    {
+      "severity": "low",
+      "title": "install.sh --uninstall is a teardown path with no service-ordering note"
+    }
+  ],
+  "summary": "Both halves of the finding are addressed with matched RED/GREEN coverage and one shared predicate per question across pump, doctor and service status; the two issues below are advisory-surface stalene"
+}

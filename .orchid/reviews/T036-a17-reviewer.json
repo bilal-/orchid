@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a17-1e04",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "18075c11085c2e32f2f41a0ec6a62af89a1a2e6e",
+  "candidate_sha": "274421dad6bd828fe4a5c623432e49fd1a2526ee",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "synthesized from summary: A forged victim binding copied into any independently registered linked worktree passes `orchid_service_binding_owned`, allowing uninstall or teardown there to remove the victim’s live schedule.",
+      "source": "orchid:synthesized-from-summary",
+      "synthesized": true,
+      "detail": "A forged victim binding copied into any independently registered linked worktree passes `orchid_service_binding_owned`, allowing uninstall or teardown there to remove the victim’s live schedule."
+    }
+  ],
+  "summary": "A forged victim binding copied into any independently registered linked worktree passes `orchid_service_binding_owned`, allowing uninstall or teardown there to remove the victim’s live schedule."
+}

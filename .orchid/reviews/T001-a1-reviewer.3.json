@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T001-a1-6bae",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "f23a468e6a488d19f1ac28de738d92b4e28a0b81",
+  "candidate_sha": "b506c071041b4ddabf221a20facce14b7828db01",
+  "verdict": "approve",
+  "scope_complete": true,
+  "summary": "The diff correctly adds the drive_job_outstanding guard to drive_implementing, documents the design decision in libexec/orchid-jobs, and includes a test verifying that outstanding implement jobs do no"
+}

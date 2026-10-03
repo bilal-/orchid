@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T017-a4-8351",
+  "task": "T017",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "c1d7550b970b9f4db952a7d9ce5cc62d77067ae7",
+  "candidate_sha": "f1eaeafc1532a32f5394b14435592e201f0954e7",
+  "summary": "**One thing to watch, deliberately not changed** (the brief said change no other file): `tests/inv/test_INV-05_no_name_branching.sh:36` has the same shape — `` `config_get role.implementer codex` `` i",
+  "commits": [
+    "f1eaeafc1532a32f5394b14435592e201f0954e7"
+  ]
+}

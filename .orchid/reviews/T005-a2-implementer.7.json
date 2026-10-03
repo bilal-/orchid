@@ -1,0 +1,21 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a2-986e",
+  "task": "T005",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "1643d09cbc0c146480cdab560de4f9d4d0f08c50",
+  "summary": "T005: Confirm the candidate stands; the rework brief was a replayed no-op",
+  "commits": [
+    "1643d09cbc0c146480cdab560de4f9d4d0f08c50",
+    "0717631d96c4b91355affd690dc73a3d412a8881",
+    "9ac357d1b5cca82ed5abab7469b07214521d9ce2",
+    "78c795ff2389b6171c994db69b2883352e584cea",
+    "e745b8c0dc0711e55aa650e406f2b51e6d9e2031",
+    "1974a3f93f1b24569aecb05ebe92db7659fb0c74",
+    "e089919fc06e15786ff1416449881741e8fc257d",
+    "e3fd227ba79729f64a492cc048bcfa62d0fb0280"
+  ]
+}

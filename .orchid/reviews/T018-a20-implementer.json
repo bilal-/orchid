@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T018-a20-3f03",
+  "task": "T018",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2658972632012c3332a34e17dce9fb295d7bf5ff",
+  "candidate_sha": "8cd53986901006aa7a63a5d6f698f5632795bbe8",
+  "summary": "Scope the capability blocker dedup to the unresolved incident",
+  "commits": [
+    "8cd53986901006aa7a63a5d6f698f5632795bbe8"
+  ]
+}

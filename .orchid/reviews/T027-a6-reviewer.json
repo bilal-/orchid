@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T027-a6-e893",
+  "task": "T027",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "f875aee1781be8283044e0c1ed58dec290882fae",
+  "candidate_sha": "ee69f6b7ecc8ffbcb71bd1e087edda989db0f94c",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The required pid-gone RED case already passes on the parent because its GC arm reaps that ordinary dead PID, so F41’s reproducible second failure shape remains unmodeled."
+}

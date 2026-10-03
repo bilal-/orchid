@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T023-a1-81b8",
+  "task": "T023",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "830151d6de69524b952a91272fcfcba625229075",
+  "candidate_sha": "3c1294e6e741e2e64338aaecfc3be1819fef20e8",
+  "summary": "Two things a reviewer should look at first, since I couldn't run them: the `143`-as-timeout branch (`lib/common.sh:614`) exists because `with_timeout` returns the killed command's own SIGTERM status w",
+  "commits": [
+    "3c1294e6e741e2e64338aaecfc3be1819fef20e8"
+  ]
+}

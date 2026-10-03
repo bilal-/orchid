@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "attempt": 5,
+  "candidate_sha": "0c84da4289e6e43e76fe57a5957d85b96c99ee4f",
+  "pinned_at": "2026-08-30T05:56:29Z",
+  "slots": [
+    {
+      "slot": 1,
+      "engine": "codex-review",
+      "label": "engine-independent",
+      "depth": "worktree",
+      "qid": "orchid/codex-review"
+    },
+    {
+      "slot": 2,
+      "engine": "claude",
+      "label": "session-independent",
+      "depth": "worktree",
+      "qid": "orchid/claude"
+    }
+  ]
+}

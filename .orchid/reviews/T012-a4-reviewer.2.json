@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T012-a4-9106",
+  "task": "T012",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "cb7d5cda1c79460ede5ca86b0b34743bdde94a6a",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "depth attribution re-derives a qid→name mapping that `_review_engine_name_for_qid` already solves, and loses its fallback"
+    },
+    {
+      "severity": "medium",
+      "title": "slot 2's widened depth pass prefers the implementer's own engine over an available engine-independent reviewer, contradicting kernel.md's unchanged \"high queues for engine independence\""
+    },
+    {
+      "severity": "low",
+      "title": "PROTOCOL.md attributes depth to a `worktree` slot, while the gate attributes it to the envelope's `.engine`"
+    },
+    {
+      "severity": "low",
+      "title": "the rewritten Part T repin assertion drops the only coverage of the same-engine `session-independent` labeling branch"
+    }
+  ]
+}

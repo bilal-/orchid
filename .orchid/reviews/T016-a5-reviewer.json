@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T016-a5-04e4",
+  "task": "T016",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "2658972632012c3332a34e17dce9fb295d7bf5ff",
+  "candidate_sha": "30d29a829640ed127390e2dbfbb45fc8b309c080",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`orchid trust show` leaves the stale-root gate armed but unfired while INV-15 only checks for any call in the file and probes only `unattended`, so a real path bypass remains; the Formula/orchid.rb pi"
+}

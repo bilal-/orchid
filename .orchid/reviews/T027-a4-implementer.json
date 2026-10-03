@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e52-T027-a4-acde",
+  "task": "T027",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "cbe8bf7ff08505ddae14bc2cd4b961bf623576f6",
+  "summary": "Port the preserved never-started reap and exit-18 refusal",
+  "commits": [
+    "cbe8bf7ff08505ddae14bc2cd4b961bf623576f6"
+  ]
+}

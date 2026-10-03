@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a8-0e87",
+  "task": "T006",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "edd93f4ae1c5e43f9356e3eeb0dfe5014def396e",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "source-time guard spawns `git` in the self-hosted root, ahead of the unattended-trust gate (`orchid_root_stale`'s content check runs `git -C $ORCHID_ROOT diff --cached` whenever the root is parked on the integration branch — exactly when `$ORCHID_ROOT` *is* the managed repo, so the comment's \"orchid's own installation, never a repository a run was merely pointed at\" does not hold in the only case it fires; `tests/test_unattended_trust.sh:104`'s \"no git before an acknowledgement\" fence passes only because `$REPO_ROOT` happens not to be on that branch, and fails if the suite is run from the integration checkout)"
+    }
+  ]
+}

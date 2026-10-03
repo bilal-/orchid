@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a5-f19f",
+  "task": "T006",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "5d685509f8c1bf7a018c35ca11e93e7fbcc82b3f",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`orchid_root_stale` misclassifies staged-only kernel edits as safely `behind` and recommends `git checkout HEAD -- ...`, which destroys legitimate staged work; the focused dirty-tree test misses this "
+}

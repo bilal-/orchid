@@ -4,17 +4,67 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 # lessons.sh before plancheck.sh: the cross-check's "this run started here"
 # boundary IS `lessons consolidate`'s, and there must be exactly one of them.
 source "$ORCHID_ROOT/lib/lessons.sh"; source "$ORCHID_ROOT/lib/plancheck.sh"
+# findings.sh: the critique-round series `plan rounds` reports (F40).
+source "$ORCHID_ROOT/lib/findings.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 # HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
 # out what to do when the run state is ALREADY wrong, so it must not be
 # answered by INV-02. First position only, and both spellings -- see the fuller
 # note on libexec/orchid-task's gate, which is the authority for this rule.
 case "${1:-}" in
-  --help|-h) printf '%s\n' "usage: orchid plan apply --reason \"...\" | orchid plan crosscheck | orchid plan defer <item-id> --reason \"...\""; exit 0 ;;
+  --help|-h) printf '%s\n' "usage: orchid plan apply --reason \"...\" | orchid plan crosscheck | orchid plan rounds | orchid plan defer <item-id> --reason \"...\""; exit 0 ;;
 esac
 case "${2:-}" in
-  --help|-h) printf '%s\n' "usage: orchid plan apply --reason \"...\" | orchid plan crosscheck | orchid plan defer <item-id> --reason \"...\""; exit 0 ;;
+  --help|-h) printf '%s\n' "usage: orchid plan apply --reason \"...\" | orchid plan crosscheck | orchid plan rounds | orchid plan defer <item-id> --reason \"...\""; exit 0 ;;
 esac
+# `rounds` IS ANSWERED HERE, ahead of the epoch fence below, because it is a
+# read-only report and the argument is INV-17's: the critique loop consults it
+# while the draft is still cheap to change, and a report gated on run state is
+# the one thing you cannot read when the run state is what went wrong. It
+# writes nothing, locks nothing and journals nothing, so there is no INV-02
+# interest in it at all. Its fenced siblings above are unchanged.
+if [ "${1:-}" = rounds ]; then
+    # F40: the critique loop's convergence signal. Read-only, exactly as
+    # `crosscheck` is and for the same reason -- the loop consults it while the
+    # draft is still cheap to change, and a report gated on run state is the one
+    # thing you cannot read when the run state is what went wrong (INV-17).
+    #
+    # WHAT THIS CAN AND CANNOT SEE, stated in the output rather than left for a
+    # reader to discover. Identity is the finding's TITLE, case-folded and
+    # whitespace-collapsed. That detects a verbatim repeat. It does NOT detect
+    # the same objection re-worded -- which is one of the three things F40 says
+    # an operator cannot distinguish -- and a re-worded repeat is reported here
+    # as one resolved plus one new. On r-002's own critique series every round
+    # scores zero repeats for exactly that reason. The TOTALS column is what
+    # survives rewording, and it is what exposed the regression: 10, 7, 5, 8.
+    rounds_series="$(findings_round_series "$state" plan)"
+    if [ -z "$rounds_series" ]; then
+      echo "no critique rounds filed for this plan (reviews/plan-a<N>-*.json)"
+      exit 0
+    fi
+    printf 'round\ttotal\tnew\trepeat\tresolved\n'
+    printf '%s\n' "$rounds_series"
+    # THE VERDICT IS ABOUT THE TOTALS, because that is the term that survives a
+    # critic rewording its findings. A round that did not reduce the count is
+    # named individually; the series is converging only if every round reduced.
+    rounds_prev=""; rounds_bad=""
+    while IFS=$'\t' read -r rr rtot _ _ _; do
+      [ -n "$rr" ] || continue
+      if [ -n "$rounds_prev" ] && [ "$rtot" -ge "$rounds_prev" ]; then
+        rounds_bad="$rounds_bad $rr"
+      fi
+      rounds_prev="$rtot"
+    done <<< "$rounds_series"
+    if [ -n "$rounds_bad" ]; then
+      echo "not converging: round(s)$rounds_bad did not reduce the finding count — a loop that re-asks an identically-answered question spends rounds without moving, and the count is the term a re-worded finding cannot hide behind"
+      echo "identity is the finding title; a re-worded repeat reads above as one resolved plus one new, so 'repeat' is a floor on repetition and never a ceiling"
+      exit 3
+    fi
+    echo "converging: every round reduced the finding count"
+    echo "identity is the finding title; a re-worded repeat reads above as one resolved plus one new, so 'repeat' is a floor on repetition and never a ceiling"
+    exit 0
+
+fi
 epoch_require "$repo"
 export ORCHID_EPOCH
 
@@ -129,6 +179,32 @@ case "$sub" in
         echo "orchid: plan apply refused — cover the item(s) above with a task in this plan, or record the decision (orchid plan defer <id> --reason \"...\"), then re-run (orchid plan crosscheck re-reports without committing)" >&2
       fi
       exit "$crosscheck_rc"
+    fi
+
+    # ---- THE CRITIQUE LOOP HAS STOPPED MOVING (dogfood F40) -------------
+    # `orchid plan rounds` reports the series; nothing makes anyone read it,
+    # and lesson L016 is precisely that a mechanism nothing forces you to use
+    # is not a fix. r-002's own critique ran 10, 7, 5, 8 findings before a
+    # fifth round approved, and the round that went UP was visible to nobody.
+    #
+    # SAME SHAPE AS THE REWORK LOOP'S STOP, deliberately rather than a second
+    # invention: `rework_nonconvergence_max` already refuses to spend another
+    # round re-asking an identically-answered question, and this is that rule
+    # one loop earlier. The predicate is shared with the report
+    # (findings_rounds_stalled) so the two can never disagree about what
+    # stalled means, and it is narrower than what the report PRINTS -- only
+    # consecutive non-reducing rounds at the END of the series, so a blip the
+    # loop has since recovered from does not stop a plan that is converging.
+    #
+    # AND IT PAIRS WITH ITS OWN REMEDY, which is the whole difference between
+    # a gate and a wall, exactly as the cross-check above pairs with `plan
+    # defer`: make the next round reduce the count, or raise the bound. Both
+    # doors are open in the state this fires in.
+    crit_max="$(config_get "$repo" critique_nonconvergence_max 3)"
+    case "$crit_max" in ''|*[!0-9]*) crit_max=3 ;; esac
+    if [ "$crit_max" -gt 0 ] && findings_rounds_stalled "$state" plan "$crit_max"; then
+      echo "orchid: plan apply refused — the plan critique has now run $crit_max consecutive round(s) without reducing its finding count (critique_nonconvergence_max=$crit_max), so another round would re-ask a question the last ones already answered the same way. See which rounds and which findings: orchid plan rounds. Then either make the next round reduce the count -- the report separates a repeat from a new objection, and a repeat is the critic saying the draft did not change where it mattered -- or raise critique_nonconvergence_max if this loop really should get more rounds of the same question." >&2
+      exit 3
     fi
 
     # v1-m4 Task 1: the temp-worktree + CAS + sync-back mechanics below (once
@@ -284,5 +360,5 @@ case "$sub" in
       "deferred $id: $reason"
     echo "$id: deferred (this plan does not cover it)"
     ;;
-  *) orchid_die "usage: orchid plan apply --reason \"...\" | orchid plan crosscheck | orchid plan defer <item-id> --reason \"...\"" ;;
+  *) orchid_die "usage: orchid plan apply --reason \"...\" | orchid plan crosscheck | orchid plan rounds | orchid plan defer <item-id> --reason \"...\"" ;;
 esac

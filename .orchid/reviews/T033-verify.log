@@ -1,0 +1,51 @@
+date: 2026-08-30T07:12:18Z
+sha: 400da9d30ea50950ba8bf6be7c2b787a573bbf6f
+head_after: 400da9d30ea50950ba8bf6be7c2b787a573bbf6f
+candidate: 400da9d30ea50950ba8bf6be7c2b787a573bbf6f
+cwd: /Users/bilal/workspace/personal/orchid-orchid-T033
+command: /bin/bash tests/test_review_routing.sh && /bin/bash tests/test_jobs.sh
+prestate: 1
+pre_base_sha: "d7f213397951035166f553646f63be15511a56c7"
+pre_exec_missing: ""
+pre_env_missing: ""
+pre_env_inventory: ""
+pre_pin_stale: ""
+pre_integration_head: "d7f213397951035166f553646f63be15511a56c7"
+---
+  RED-CASE: a request-changes envelope with an empty findings[] and a prose-only objection: the decision record names findings=0 and carries the prose, instead of reporting a bare verdict and a gate that weighed nothing
+  GREEN-CASE: an approving review with an empty findings[] approves, with its summary left where the reviewer put it
+  RED-CASE: a deterministic approval backed by ZERO structured findings: the record says the severity gate weighed an empty array, instead of reporting 'no finding at or above high' as though it had weighed something
+  GREEN-CASE: an approving review with one below-threshold finding approves, and its record reports one finding weighed rather than an empty gate
+  RED-CASE: an approving review whose filed finding blocks: the decision record names the worst blocking finding, instead of reporting a bare threshold the arbiter has to jq the envelope to understand
+  RED-CASE: an approving review that reports scope_complete=false: the decision record carries the summary saying WHAT was left uncovered, instead of a bare field name the arbiter has to jq the envelope to understand
+  GREEN-CASE: a review that both rejects and reports incomplete scope emits both entries and quotes its summary once
+PGID_GUARD: caller survived jobs check
+orchid: TLIVE job j-e1-TLIVE-a1-cccc0001: spawned but never recorded a pid, and its log has not been written to in 60s — nothing can be signalled for it; the manifest is retired and /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.L8yU7az5rt/.orchid/runtime/logs/j-prep-live.log is kept
+TBUDGET: pending -> implementing
+TOKBUDGET: pending -> implementing
+TIDLE: pending -> implementing
+TIDLE: implementing -> blocked
+TIDLE: blocked -> rework
+TIDLE: guidance delivered to the task body (see `orchid task show TIDLE`) — the implementer's capsule copies it verbatim
+TIDLE: attempt budget unchanged at 3 (0 spent, 3 round(s) left)
+TIDLE: rework -> implementing
+TRUNAWAY: pending -> implementing
+orchid: TLS job j-e1-TLS-a7-7777aaaa: spawned but never recorded a pid, and its log has not been written to in 60s — nothing can be signalled for it; the manifest is retired and /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.L8yU7az5rt/.orchid/runtime/logs/j-ls-unstamped.log is kept
+  RED-CASE: a job that logged results and exited with no envelope: the work is recovered as a degraded envelope, not discarded
+  GREEN-CASE: the same job re-reconciled: reported and salvaged exactly once
+  RED-CASE: a live, heartbeating job with no CPU progress is marked stalled
+  GREEN-CASE: a live job burning real CPU over the same window is left running
+  RED-CASE: the CPU-delta arm is opt-in: with no floor configured, the flat-CPU job is left running
+  RED-CASE: a CPU counter that went backwards (pid reuse) is unknown: the job is left running, not killed
+  RED-CASE: reconcile defers a still-running job's envelope instead of filing it as a completion report
+  GREEN-CASE: the same envelope reconciles normally on the pass after its job exits — deferral delays, never discards
+  RED-CASE: reconcile defers an envelope whose manifest is still inside the launcher's post-spawn/pre-stamp window
+  RED-CASE: log staleness is not an exit: a pid-0 job that has gone silent has its envelope held, never filed
+  GREEN-CASE: a positive exit record ends the hold — the refusal is about evidence, not about waiting forever
+  GREEN-CASE: pid 0 with no log still reconciles on the first pass — the startup hold covers the launcher window only
+  RED-CASE: record-exit refuses a live-looking job, an id that is not one, a job that is not outstanding, and a code that is not an exit status — writing nothing in every case
+  GREEN-CASE: record-exit ends the hold through the same record the launcher writes — the envelope files on the next reconcile, with nothing hand-edited
+  RED-CASE: record-exit is admitted only for the unresolved class — an already-resolved job is refused, not overwritten with a finding it does not need
+  RED-CASE: a request-changes envelope with findings: [] reaches the severity gate: reconcile lifts its summary into a high-severity finding instead of filing an empty array the gate weighs as nothing
+  GREEN-CASE: an approving review with findings: [] is filed byte-for-byte as written, and still blocks nothing
+exit: 0

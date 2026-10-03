@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a18-32a5",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "feb06ac97ef4d35070d700d3598181d9dd6ccae2",
+  "candidate_sha": "b6eddd40c17f1b9a0826bd7c0642459781aa9aff",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The candidate preserves failed evidence, carries it into rework, reroutes repeated identical failures, deliberately charges attempts, and stops non-converging loops with end-to-end coverage."
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T036-a1-5da1",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "b964bcacff4e15485ddaff960175fc5fa08f38c7",
+  "summary": "T036: Source the kernel in test_run.sh so the budget arm is not vacuous",
+  "commits": [
+    "b964bcacff4e15485ddaff960175fc5fa08f38c7"
+  ]
+}

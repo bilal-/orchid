@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T033-a1-a5ea",
+  "task": "T033",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "65a45370109effe64ce82afa033b437c166f38c2",
+  "summary": "Audit the landed F32 diff end-to-end; no code changes required",
+  "commits": [
+    "65a45370109effe64ce82afa033b437c166f38c2",
+    "d402ed5efeb16d5bbdcb91fb321c8824911fb57a",
+    "423ab51fde1f197dfdddd38fda0f6cdd5d78a472",
+    "c1ea5482e48c5080b4170baa2d0dfc70cf5d38d3",
+    "7a62d008698daeb75d301fbf95b97186d0a445bf"
+  ]
+}

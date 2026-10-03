@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T002-a3-3f43",
+  "task": "T002",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "74ab099b3c181d2a76ecbe3ce69efebd6a9bc921",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "merge-base is a moving proxy for the branch's cut point — an operator merge of a torn plan-apply state into their mainline, followed by task-free integ advance, would read plan-applied tasks as \"inherited\"; contrived, and the committed-roadmap witness covers realistic in-flight runs"
+    },
+    {
+      "severity": "low",
+      "title": "the line-551 refusal still asserts \"task files reach the integration branch only through 'orchid plan apply'\" — untrue, with an inapplicable recovery, in the shapes `_start_tasks_inherited` deliberately declines to judge on genuinely inherited tasks (the residual of the exact wrong-premise refusal T002 fixed)"
+    }
+  ]
+}

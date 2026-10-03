@@ -1,0 +1,19 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T016-a19-d739",
+  "task": "T016",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "a926d3e4f66661571021f6ba1f08771d16454526",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "pump/tick pay a full root-verification walk on routes that previously did none"
+    }
+  ],
+  "summary": "The invariant, the stale-root fix and every carried arbitration item are delivered and pinned at both edges; the only thing I would tell the author is that hoisting `unattended_trust_inspect` above th"
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-e4c5",
+  "task": "T019",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "130b4ed028fa2ac922aaad9e292ffa2a8dbb8543",
+  "summary": "Prove the two hand-offs against the world instead of the failure text",
+  "commits": [
+    "130b4ed028fa2ac922aaad9e292ffa2a8dbb8543"
+  ]
+}

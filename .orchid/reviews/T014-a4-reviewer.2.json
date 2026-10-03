@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T014-a4-5f07",
+  "task": "T014",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "140cef8c9b783a16937d135ebe81401d7f424ff5",
+  "candidate_sha": "72ed28eaa6d485745d91016ae2af732eb47d2922",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "RED regression case models an exit status real GNU stat never returns, and calls the actual failure mode \"safe\""
+    },
+    {
+      "severity": "low",
+      "title": "gate is keyed to the mtime formats only, leaving the same exit-status-selection shape ungated in lib/trust.sh:442,462 and tests/test_e2e_release_rehearsal.sh:620"
+    },
+    {
+      "severity": "low",
+      "title": "the accept case never asserts ci-local exits 0, so it cannot distinguish \"exempted\" from \"gate never examined lib/common.sh\""
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T014-a4-285e",
+  "task": "T014",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "140cef8c9b783a16937d135ebe81401d7f424ff5",
+  "candidate_sha": "72ed28eaa6d485745d91016ae2af732eb47d2922",
+  "verdict": "approve",
+  "scope_complete": true,
+  "summary": "The diff correctly replaces all raw stat mtime idioms with file_mtime, enforces the pattern via CI portability checks, and adds comprehensive tests ensuring non-numeric stat results cannot reach arith"
+}

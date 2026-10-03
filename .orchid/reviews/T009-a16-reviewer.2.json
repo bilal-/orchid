@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T009-a16-c6c3",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "34edca09e0913d68489b4f32a3d9c32d2dfe013a",
+  "candidate_sha": "5a824ff45a4e242748557a55cdb19cb5641afaaf",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The Hermes parser treats a stopped or unloaded service as conclusive before considering the same CLI output’s live detached/manual gateway process, so doctor can falsely report a working return leg as"
+}

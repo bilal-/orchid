@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T014-a2-44d3",
+  "task": "T014",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "140cef8c9b783a16937d135ebe81401d7f424ff5",
+  "candidate_sha": "2190b803f0b28cf0afa56a30c111e7430adba374",
+  "summary": "No new executable was added, so there is no mode to set.",
+  "commits": [
+    "2190b803f0b28cf0afa56a30c111e7430adba374"
+  ]
+}

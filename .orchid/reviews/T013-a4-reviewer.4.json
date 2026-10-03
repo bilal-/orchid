@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T013-a4-e332",
+  "task": "T013",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "830151d6de69524b952a91272fcfcba625229075",
+  "candidate_sha": "4bb8d0383d9c43207fd2bf09355a058b895514bf",
+  "verdict": "approve",
+  "scope_complete": true,
+  "summary": "The diff cleanly addresses the suite's non-hermetic root cause by stubbing and skipping vendor CLI checks with honest not-tested reporting and adding a robust, guarded hermetic test suite without weak"
+}

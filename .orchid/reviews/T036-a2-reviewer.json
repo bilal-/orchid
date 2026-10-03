@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a2-c0c5",
+  "task": "T036",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "187dfeb2c4ac238938baf7f2f14c6106304c7d65",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Both `--dry-run` uninstall paths delete artifacts and binding records without touching the live scheduler, then declare the checkout safe, leaving an untracked service running."
+}

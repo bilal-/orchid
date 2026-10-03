@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T021-a2-be62",
+  "task": "T021",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "f23a468e6a488d19f1ac28de738d92b4e28a0b81",
+  "candidate_sha": "c5247d353b9fc812b5fd396a2d44a11d3e6a02b2",
+  "summary": "Coverage matching associates an item with a task if **any one** anchor from the whole flattened journal entry hits. r-001's arbitration entries are enormous and name a dozen source paths each, so in p",
+  "commits": [
+    "c5247d353b9fc812b5fd396a2d44a11d3e6a02b2"
+  ]
+}

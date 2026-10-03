@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a6-ce44",
+  "task": "T026",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "54e641faf93001bca81b5151fb7916347fabbf69",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The reverify clean-tree filter drops staged renames from `.orchid/` to candidate paths, allowing verification of uncommitted files while `candidate_sha` names the old commit."
+}

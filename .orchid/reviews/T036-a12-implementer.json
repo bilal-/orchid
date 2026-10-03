@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a12-d3b4",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e3db45be8095e3c9e8f73fdef9db279d937c8efd",
+  "candidate_sha": "dacdeb54db8284a28b1e82d65a6bdcf4d6e74766",
+  "summary": "T036: Make the worktree removal the uninstall's success branch",
+  "commits": [
+    "dacdeb54db8284a28b1e82d65a6bdcf4d6e74766"
+  ]
+}

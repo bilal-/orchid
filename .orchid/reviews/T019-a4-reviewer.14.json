@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-a688",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "15906bea403fb57bf5270b758844e56a88aca421",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The built-in pin classifier treats every nonzero freshness-check exit as a stale-pin handoff, so candidate-caused metadata or formula corruption can be waived even when re-pinning cannot fix it."
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a5-2b45",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "c94278f034f4d3658b80c31fb187fc7a19f8df17",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`rework_signature` retains mutable T019 `pre_*` headers, so unrelated integration movement makes identical failures look fresh and suppresses required failover and non-convergence handling."
+}

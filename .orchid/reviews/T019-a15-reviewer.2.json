@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a15-012b",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "23491bd3e89c7a325171a8d6dc014f065a1e4818",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Classifier cannot waive any round in orchid's own repo — `not_tested` output is neither progress nor failure, so every full-suite body has unattributable lines"
+    },
+    {
+      "severity": "low",
+      "title": "Exec-bit hand-off misses renamed executables (`--diff-filter` covers A and M, not R)"
+    }
+  ]
+}

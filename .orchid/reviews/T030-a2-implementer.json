@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e49-T030-a2-b6bb",
+  "task": "T030",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "b8361cb503893cdc15def88564edeac33922cf85",
+  "summary": "Finish the hand-off example sweep and prove the tripwire non-vacuous",
+  "commits": [
+    "b8361cb503893cdc15def88564edeac33922cf85"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T023-a4-dd57",
+  "task": "T023",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "a178de72c5f2907c2612dffce3a3c8862926bc69",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Stdin isolation is implemented and tested, but prepare failures never call `orchid task infra-fail`, and `ORCHID_REPO_ROOT` is not exported to either verification command as required."
+}

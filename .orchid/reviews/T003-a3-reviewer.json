@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a3-7bd8",
+  "task": "T003",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "e0646d5f87410b2b6004045ecd4ae07aabbdfd06",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "Final operator re-pin commit e0646d5 lacks the 'Orchid-Handoff: operator' trailer its two sibling re-pins carry"
+    }
+  ]
+}

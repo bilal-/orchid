@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T036-a18-7df0",
+  "task": "T036",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "18075c11085c2e32f2f41a0ec6a62af89a1a2e6e",
+  "candidate_sha": "83dfd5b89de511ebd35cd873e0177ff5359d9b5e",
+  "summary": "Refuse a sibling worktree that holds another checkout's binding",
+  "commits": [
+    "83dfd5b89de511ebd35cd873e0177ff5359d9b5e"
+  ]
+}

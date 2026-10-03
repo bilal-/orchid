@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a22-3023",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "7c06fabab4c1d22cadb8e8767fa96f0e248afbfd",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The named L003 webBooks case is still charged because the Yarn allowlist permits `$ jest` but not the actual `$ tsx scripts/parseBooks.ts` line or `error Command failed with exit code 127.` epilogue e"
+}

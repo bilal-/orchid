@@ -1,0 +1,23 @@
+date: 2026-08-31T03:07:10Z
+sha: d9b1cd15174c0e75b424ebf9b64a8f953aca91b0
+candidate: 12d5e8002269ce8046ad8915f5f193432882c4d0
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.j2D7Gg
+command: /bin/bash tests/test_docs.sh
+command_status: 0
+gate: /bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+gate_status: ran
+gate_exit: 0
+---
+  RED-CASE: the documentation verb gate extracted 'frobnicate' from a code span and 'quuxify' from a fenced command line, neither of which has a libexec verb, so it still catches an undocumented or renamed verb
+  GREEN-CASE: the same extractor read three prose sentences naming orchid -- mid-sentence, opening a line, and one naming a real verb in passing -- and extracted nothing, so the gate reads marked commands rather than English
+  RED-CASE: the empty-findings sweep DISCOVERS and reports a wrapped, unqualified 'blocks nothing' claim that a line-oriented grep never lists
+  GREEN-CASE: the same sweep still discovers the wrapped sentence but accepts it once it names the approving review
+
+== merge_gate: /bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+== Bash syntax (163 shipped scripts; /bin/bash)
+== ShellCheck exception policy
+== Portability policy (POSIX find only)
+== Portability policy (mtime via lib/common.sh file_mtime)
+== ShellCheck (zero warnings)
+CI PASS (static checks only; --no-tests)
+exit: 0

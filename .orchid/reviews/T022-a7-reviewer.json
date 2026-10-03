@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a7-2eec",
+  "task": "T022",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "7ed2572b7dbe87010bb724ff45a118e58530365f",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Exact-candidate verification exits 0, T001 Part L is byte-for-byte unchanged, and no-op delivery escalates without advancing or consuming attempts."
+}

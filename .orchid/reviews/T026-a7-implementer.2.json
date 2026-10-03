@@ -1,0 +1,24 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T026-a7-12c0",
+  "task": "T026",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "fe0327a06d300f4e073ce54a559fecbc1d8a1ffa",
+  "summary": "Confirm the rework brief was already satisfied by 37bebcb",
+  "commits": [
+    "fe0327a06d300f4e073ce54a559fecbc1d8a1ffa",
+    "37bebcb97203febbae5f0572d636a36ea31ce91f",
+    "4f0176e9a5b7be69ffdc747e7b8771b12ae3d10c",
+    "60b141e4837796dded40dd7e18469f315cbc84e0",
+    "412182dfe11afa143ef9853f7684c3e109e4e8e2",
+    "8ab927f99a7f531a358cde5443ade7a675fdd0eb",
+    "37fa0539c70452812a9e3cf85d282e61965965d2",
+    "d0ac4a32d16973910f2de574311150590b4d61bf",
+    "48f73f4582143d33c5eb271f2939029b41e2f811",
+    "41ce3b73ac49d04c4009d20346c39f5e3d60e559",
+    "46b362649c54c142278e48bfd395ebfe520d8b66"
+  ]
+}

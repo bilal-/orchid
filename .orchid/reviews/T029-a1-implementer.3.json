@@ -1,0 +1,15 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T029-a1-8899",
+  "task": "T029",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "bcc8c2730e13177d0e113a67e6a2d85d97fe3a02",
+  "summary": "No changes: T029 already delivered by 1428d81 and audited complete",
+  "commits": [
+    "bcc8c2730e13177d0e113a67e6a2d85d97fe3a02",
+    "1428d816911639877897543d0a4cd98dd5c58a9c"
+  ]
+}

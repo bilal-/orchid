@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a8-2974",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "0c85b3952ba6f725ab4daee1f97bf38929a2cefd",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "lib/drive.sh waives any quiet exit 124/137/143—including a candidate hang or explicit exit—as a harness fault, violating the requirement to charge candidate or uncertain failures."
+}

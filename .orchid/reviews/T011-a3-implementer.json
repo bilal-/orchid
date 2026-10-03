@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e44-T011-a3-94bc",
+  "task": "T011",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "33adc18bf71353a970023dcdf3a05eb6e124420e",
+  "candidate_sha": "bb8507ab393c80f41b893dc7da2c5011807d15c4",
+  "summary": "Assert the in-place disclosure lands on stderr, not stdout",
+  "commits": [
+    "bb8507ab393c80f41b893dc7da2c5011807d15c4"
+  ]
+}

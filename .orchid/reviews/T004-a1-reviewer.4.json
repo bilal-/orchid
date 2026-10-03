@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T004-a1-84b8",
+  "task": "T004",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "8e2af0a1a7c7222c75b2f7a4a3d5be68effc4920",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "New comments in tests/helpers.sh and tests/test_rehearsal_source_snapshot.sh incorrectly attribute the archive-suite exposure to scripts/release.sh, contrary to the explicit accuracy requirement."
+}

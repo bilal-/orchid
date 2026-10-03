@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T017-a1-2b4d",
+  "task": "T017",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "f23a468e6a488d19f1ac28de738d92b4e28a0b81",
+  "candidate_sha": "d1a40261cbb2cd7a0850459ffe6655f6e139bd86",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "`_red_case_required`'s `*/tests/inv/test_*.sh` match on `$0` silently fails open under relative invocation, and its own RED case uses an absolute path so it cannot detect this"
+    },
+    {
+      "severity": "low",
+      "title": "for the two enrolled non-`tests/inv/` gates the rule is enforced textually only — a `red_case` call in a comment or an unreached branch satisfies `red_case_violations`, with no runtime counterpart"
+    },
+    {
+      "severity": "low",
+      "title": "`tests/inv/test_INV-12_pack_overflow.sh`'s `# GREEN:` annotation delegates its twin to `tests/test_pack.sh`, so the annotation is satisfied while no GREEN case runs inside the enforced file"
+    }
+  ]
+}

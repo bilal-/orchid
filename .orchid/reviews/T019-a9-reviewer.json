@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a9-de8a",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "d4473ec6f6d1073bebb57f87c56170baa483875f",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Pre-T019 worktrees lack the newly added quarantine file, so the historical L020 signature is still classified as candidate and consumes an attempt."
+}

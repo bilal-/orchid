@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T002-a3-d725",
+  "task": "T002",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "a5106006363550ca358fdd449fcc9b24eb7bac76",
+  "summary": "Add commit-identity guard to the inherited-tasks witness",
+  "commits": [
+    "a5106006363550ca358fdd449fcc9b24eb7bac76"
+  ]
+}

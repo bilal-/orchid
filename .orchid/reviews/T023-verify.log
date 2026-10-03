@@ -1,0 +1,180 @@
+date: 2026-08-29T18:22:08Z
+sha: 845c5803bfe3adfbbb1ee521c418ad8c24854e4c
+candidate: 845c5803bfe3adfbbb1ee521c418ad8c24854e4c
+cwd: /Users/bilal/workspace/personal/orchid-orchid-T023
+command: /bin/bash tests/test_start.sh && /bin/bash tests/test_merge.sh
+prestate: 1
+pre_base_sha: "2658972632012c3332a34e17dce9fb295d7bf5ff"
+pre_exec_missing: ""
+pre_env_missing: ""
+pre_env_inventory: ""
+pre_pin_stale: ""
+pre_integration_head: "2658972632012c3332a34e17dce9fb295d7bf5ff"
+---
+T001: pending -> implementing
+T001: implementing -> testing
+T001: testing -> reviewing
+T001: reviewing -> arbitrating
+T001: arbitrating -> merging
+T002: pending -> implementing
+T002: implementing -> testing
+T002: testing -> reviewing
+T002: reviewing -> arbitrating
+T002: arbitrating -> merging
+T003: pending -> implementing
+T003: implementing -> testing
+T003: testing -> reviewing
+T003: reviewing -> arbitrating
+T003: arbitrating -> merging
+T004: pending -> implementing
+T004: implementing -> testing
+T004: testing -> reviewing
+T004: reviewing -> arbitrating
+T004: arbitrating -> merging
+T005: pending -> implementing
+T005: implementing -> testing
+T005: testing -> reviewing
+T005: reviewing -> arbitrating
+T005: arbitrating -> merging
+T005: testing -> reviewing
+T005: reviewing -> arbitrating
+T005: arbitrating -> merging
+T006: pending -> implementing
+T006: implementing -> testing
+T006: testing -> reviewing
+T006: reviewing -> arbitrating
+T006: arbitrating -> merging
+T007: pending -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T008: pending -> implementing
+T008: implementing -> testing
+T008: testing -> reviewing
+T008: reviewing -> arbitrating
+T008: arbitrating -> merging
+T008: testing -> reviewing
+T008: reviewing -> arbitrating
+T008: arbitrating -> merging
+T040: pending -> implementing
+T040: implementing -> testing
+T040: prerequisite acknowledged for candidate 39e78305d238bb02a341c555aabbc49823c15b88
+T040: testing -> reviewing
+T040: reviewing -> arbitrating
+T040: arbitrating -> merging
+T040: prerequisite acknowledged for candidate 40c811a2ea0bb0aa12e67fe89d90222bfdc586a5
+T040: testing -> reviewing
+T040: reviewing -> arbitrating
+T040: arbitrating -> merging
+T041: pending -> implementing
+T041: implementing -> testing
+T041: prerequisite acknowledged for candidate 04b16f6d60b2db4dc1b98a15fb7ef3aab0e85e90
+T041: testing -> reviewing
+T041: reviewing -> arbitrating
+T041: arbitrating -> merging
+T041: prerequisite acknowledged for candidate 04b16f6d60b2db4dc1b98a15fb7ef3aab0e85e90
+T009: pending -> implementing
+T009: implementing -> testing
+T009: testing -> reviewing
+T009: reviewing -> arbitrating
+T009: arbitrating -> merging
+T010: pending -> implementing
+T010: implementing -> testing
+T010: testing -> reviewing
+T010: reviewing -> arbitrating
+T010: arbitrating -> merging
+T010: rework -> implementing
+T010: implementing -> testing
+T010: testing -> reviewing
+T010: reviewing -> arbitrating
+T010: arbitrating -> merging
+T011: pending -> implementing
+T011: implementing -> testing
+T011: testing -> reviewing
+T011: reviewing -> arbitrating
+T011: arbitrating -> merging
+T012: pending -> implementing
+T012: implementing -> testing
+T012: testing -> reviewing
+T012: reviewing -> arbitrating
+T012: arbitrating -> merging
+T013: pending -> implementing
+T013: implementing -> testing
+T013: testing -> reviewing
+T013: reviewing -> arbitrating
+T013: arbitrating -> merging
+T014: pending -> implementing
+T014: implementing -> testing
+T014: testing -> reviewing
+T014: reviewing -> arbitrating
+T014: arbitrating -> merging
+T015: pending -> implementing
+T015: implementing -> testing
+T015: testing -> reviewing
+T015: reviewing -> arbitrating
+T015: arbitrating -> merging
+T016: pending -> implementing
+T016: implementing -> testing
+T016: testing -> reviewing
+T016: reviewing -> arbitrating
+T016: arbitrating -> merging
+T016: rework -> implementing
+T016: implementing -> testing
+T016: testing -> reviewing
+T016: reviewing -> arbitrating
+T016: arbitrating -> merging
+T016: rework -> implementing
+T016: implementing -> testing
+T016: testing -> reviewing
+T016: reviewing -> arbitrating
+T016: arbitrating -> merging
+T016: WARNING — attempts 3/3, so the next verify failure re-blocks it immediately; grant more with: orchid task retry T016 --reason "..." --attempts N
+T017: pending -> implementing
+T017: implementing -> testing
+T017: testing -> reviewing
+T017: reviewing -> arbitrating
+T017: arbitrating -> merging
+T018: pending -> implementing
+T018: implementing -> testing
+T018: testing -> reviewing
+T018: reviewing -> arbitrating
+T018: arbitrating -> merging
+T019: pending -> implementing
+T019: implementing -> testing
+T019: testing -> reviewing
+T019: reviewing -> arbitrating
+T019: arbitrating -> merging
+T019: rework -> implementing
+T019: implementing -> testing
+T019: testing -> reviewing
+T019: reviewing -> arbitrating
+T019: arbitrating -> merging
+T107: pending -> implementing
+T107: implementing -> testing
+T107: testing -> reviewing
+T107: reviewing -> arbitrating
+T107: arbitrating -> merging
+T108: pending -> implementing
+T108: implementing -> testing
+T108: testing -> reviewing
+T108: reviewing -> arbitrating
+T108: arbitrating -> merging
+T109: pending -> implementing
+T109: implementing -> testing
+T109: testing -> reviewing
+T109: reviewing -> arbitrating
+T109: arbitrating -> merging
+T110: pending -> implementing
+T110: implementing -> testing
+T110: testing -> reviewing
+T110: reviewing -> arbitrating
+T110: arbitrating -> merging
+  NOT-TESTED: merge-log-outlives-a-lock-refusal -- the driver-side half of the same rule (fingerprint across the call) needs a driver pass, not a verb call
+T111: pending -> implementing
+T111: implementing -> testing
+T111: testing -> reviewing
+T111: reviewing -> arbitrating
+T111: arbitrating -> merging
+  not-tested: 1 claim(s) in this file were recorded as not-tested, never as passes
+exit: 0

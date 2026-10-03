@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e43-T009-a3-b01d",
+  "task": "T009",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "40ac15d2f9a2f22ff3d81026bf84d836a8585b2c",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "answer-side choices scrape can adopt a single-word body line as a phantom set"
+    },
+    {
+      "severity": "low",
+      "title": "mint-side --choice accepts a leading-dash value, swallowing a following flag on the direct CLI"
+    }
+  ]
+}

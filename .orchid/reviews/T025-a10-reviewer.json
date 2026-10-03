@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a10-6e65",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "814fa45001b34833cb191f2148ab5b2788a92a30",
+  "candidate_sha": "93f041c2840c2bd9fb9b179989617372ef32b40c",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The non-convergence path directly invokes notify and then registers a boundary, violating the existing zero-direct-notify invariant and creating duplicate blocker questions."
+}

@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a19-6f4a",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "c71b283d761f143dbd4a0e8a17b6ae746f3e0a5e",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "classifier deliberately does not cover the de-flaked liveness assertions, so a 30s-bound exhaustion still charges an attempt"
+    },
+    {
+      "severity": "low",
+      "title": "`tests/run.sh` and `scripts/ci-local.sh` now discard all output from passing test files, a repo-wide observability loss beyond T019's scope"
+    },
+    {
+      "severity": "low",
+      "title": "a waiver satisfied by the exec-bit/env/flaky pool never computes the pin state, so a simultaneously-outstanding stale pin goes unnamed in that round's reason — the very \"clears one, walks into the other\" case the function's own comment says it avoids"
+    }
+  ]
+}

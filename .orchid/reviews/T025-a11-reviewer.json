@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T025-a11-6c1d",
+  "task": "T025",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "814fa45001b34833cb191f2148ab5b2788a92a30",
+  "candidate_sha": "41854df6c168a08717b06164cd9610185f953269",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "rework reroute excludes `implementer_engine_id` even when the rework dispatch targets a non-implementer role (e.g. an archetype whose `rework:` edge lands in `reviewing`)"
+    },
+    {
+      "severity": "low",
+      "title": "the gate-attributed non-convergence reason is 117 chars for a 4-char task id and single-digit streak, so a longer id or a two-digit count clips the captured-log path at `_DRIVE_QUOTE_MAX`, contradicting the comment's claim that it is composed to fit whole"
+    },
+    {
+      "severity": "low",
+      "title": "an empty/torn newest captured round leaves `rwstate=absent`, so pack.json records no `rework.md` entry at all — conflating \"no round was ever captured\" with \"evidence exists and was withheld\", the distinction the surrounding code says it preserves"
+    },
+    {
+      "severity": "low",
+      "title": "after the post-green streak reset the same signature returning is journalled as \"identical to the previous round\" while the brief calls it \"the first time this particular failure has been seen\" — the two records of one round disagree"
+    }
+  ]
+}

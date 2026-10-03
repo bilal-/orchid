@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T019-a18-bb8b",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "b170bcff7762165867f9352806e59ab5d943082a",
+  "candidate_sha": "740644aa6be64651f31eceff5e73999c0645d5a3",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "`drive_waivable_outstanding` reads `$paths` unset when the verify log has no prestate snapshot, aborting the classifier under `set -u` and killing the flaky/pin routes (Part Y5 fails)"
+    },
+    {
+      "severity": "medium",
+      "title": "the stale-pin route is still proved from post-run worktree state, so a verification command can manufacture the waiver the prestate binding closed for the exec-bit and build-state routes"
+    },
+    {
+      "severity": "low",
+      "title": "`tests/run.sh` and `scripts/ci-local.sh` now discard a passing test's stdout/stderr entirely, hiding real diagnostics (e.g. the unbound-variable abort above) and removing live suite progress"
+    }
+  ]
+}

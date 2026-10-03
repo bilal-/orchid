@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T007-a4-3e6a",
+  "task": "T007",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "e8dd137b6a0d637bd2261f9324988ebe7924e9d6",
+  "candidate_sha": "c20ee294721c772e04d01a5a0cf5093f7cdc8097",
+  "verdict": "request-changes",
+  "scope_complete": false,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "recursion guard's merge-side half is asserted nowhere — only the check and ci-local's export are"
+    },
+    {
+      "severity": "low",
+      "title": "kernel.md/configuration.md say `merge_gate` is \"read from repo config ONLY\", but `config_get` honours `ORCHID_MERGE_GATE` ahead of repo config"
+    },
+    {
+      "severity": "low",
+      "title": "`runners/orchid-drive` reports every post-merge rework as \"merge validation failed\", so the `gate_failed` distinction PROTOCOL.md now mandates is never briefed by the shipped orchestrator"
+    },
+    {
+      "severity": "low",
+      "title": "ci-local exports the marker process-wide for every invocation, so under hosted CI the whole suite runs gate-disabled and only test_merge.sh opts back in"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e49-T024-a5-471d",
+  "task": "T024",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "416fcc9a9c24a9dd6ca5ab3fc12c175ba36a9ce6",
+  "candidate_sha": "4e373410190557238769bf56f762771e78948742",
+  "summary": "Port T024's operator_prerequisite work onto the current integration base",
+  "commits": [
+    "4e373410190557238769bf56f762771e78948742"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T015-a7-8c36",
+  "task": "T015",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "51f5fa3c59cfe2b18d756ab99318b0730a5629b7",
+  "candidate_sha": "4e0565c7b6ec48061ca83b27e0e41e9aadcc1e60",
+  "summary": "Verification was not run per the implementer handoff. The operator still owns `/bin/bash tests/test_docs.sh && /bin/bash scripts/ci-local.sh --bash /bin/bash` and integration/release Formula pinning.",
+  "commits": [
+    "4e0565c7b6ec48061ca83b27e0e41e9aadcc1e60",
+    "c5b83b200cd1fb5476be6ee6c5a8f9bd35e112b9",
+    "a55ff8964ffc32854ce8173b192b445bd9c87f36",
+    "b6747a9cbcbdb3611899b826f0afca3e47f90c73",
+    "110335c17c4e8ab8021dd1591d8995455c49361e",
+    "43432aef115cf7866e87da927039a9942719ec4d",
+    "a921c8a299a45c971510f920baa12c431afaa3fd",
+    "cb78ab6dde368b0e0b4715b667915cc91c8db91e",
+    "d0690c85349a4c5f129bdcc006832b7ff908ddbd"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T008-a2-cd8d",
+  "task": "T008",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "3cee1b0e513c8d3ab833a742239f31587eba2a6a",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Capability refusals are propagated, recorded as refused without changing engine health, and focused tests verify both ledger fields while genuine faults still increment failures."
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T034-a1-7956",
+  "task": "T034",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "7538fd1fedfd1401b0d5bc2362e07eaba4794be3",
+  "summary": "Store a frontmatter value byte-for-byte and prove the driver's fold",
+  "commits": [
+    "7538fd1fedfd1401b0d5bc2362e07eaba4794be3"
+  ]
+}

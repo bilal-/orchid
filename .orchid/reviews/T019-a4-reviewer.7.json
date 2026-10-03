@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T019-a4-624f",
+  "task": "T019",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "69f3f183b9e1e9ce9f32a6d706edd5b6b9565e57",
+  "candidate_sha": "644b2fb6e03a4a1c99e53b75d38474bdcf41fdec",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The classifiers can forgive candidate defects because any existing path on a stale-checksum line counts as a hand-off, while any unresolved dependency beside a missing dependency tree counts as enviro"
+}

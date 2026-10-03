@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T010-a4-2911",
+  "task": "T010",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "6cef02391b1f1cddde6a9d74819fc3a7681654c8",
+  "candidate_sha": "d24640e23241d389a7d6ec700b1519bf7adbce56",
+  "summary": "The work is uncommitted — I made no git writes.",
+  "commits": [
+    "d24640e23241d389a7d6ec700b1519bf7adbce56"
+  ]
+}

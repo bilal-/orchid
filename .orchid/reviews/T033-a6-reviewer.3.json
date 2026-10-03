@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T033-a6-11f1",
+  "task": "T033",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "0f5b667cbe291577d02eb5c8056a6fa76e3b8b1a",
+  "candidate_sha": "a89a6bd58dbe962b8475a8c040321852e9b60473",
+  "verdict": "approve",
+  "scope_complete": false,
+  "summary": "Reconcile properly synthesizes a high-severity finding from a non-approving review's free-text summary when findings are empty, surfaces the folded summary and blocking finding titles in conflict boun"
+}

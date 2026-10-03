@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e44-T009-a3-ad35",
+  "task": "T009",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "2a6a6c8eba296eaf4fd1af4618c5e503d2657950",
+  "candidate_sha": "6c792a813c6dec244e7b58c7e55e5eaa0fd78785",
+  "summary": "Gate declared choice sets on a record prose cannot forge",
+  "commits": [
+    "6c792a813c6dec244e7b58c7e55e5eaa0fd78785"
+  ]
+}

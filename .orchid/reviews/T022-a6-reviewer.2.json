@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T022-a6-d045",
+  "task": "T022",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "0f29bc4a222bad8ffaa2e3b62d7d5f32ce191267",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Exact-candidate operator verification exits 0, T001 Part L is byte-for-byte unchanged, and an unchanged-HEAD ok delivery is durably refused without advancing or consuming an attempt."
+}

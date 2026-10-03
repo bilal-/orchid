@@ -1,0 +1,22 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T018-a1-07c2",
+  "task": "T018",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "df47066e67f5467fc32664337804016aa1acc4e3",
+  "candidate_sha": "e718e7191832ecf5a30c1364a7ed0d43fe31a835",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "escalation-ladder relaunch swallows the new exit 18, so a refused step is charged as an infra failure instead of the named operator hand-off (runners/orchid-drive:1088 `drive_launch ... || true` — the one of four call sites with no 18 arm; the task then burns infra_failures to `blocked` with no journal line and no operator-handoff boundary)"
+    },
+    {
+      "severity": "low",
+      "title": "`drive_capability_refusal`'s once-per-record journal dedup compares against the run's persisted boundary, which `set_boundary` may never record (priority hold, or a second refused task winning the pass), so the same refusal line is appended every pass in exactly the case the comment says it guards"
+    }
+  ]
+}

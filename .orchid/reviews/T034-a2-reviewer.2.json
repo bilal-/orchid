@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e55-T034-a2-c183",
+  "task": "T034",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "814fa45001b34833cb191f2148ab5b2788a92a30",
+  "candidate_sha": "421d04e154162cb2dd80dac3534e947a72bf9722",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "only the driver folds hook guidance; PROTOCOL.md's on_verify_fail step still hands multi-line `.artifact.guidance` straight to `task set`, which now refuses"
+    },
+    {
+      "severity": "low",
+      "title": "the refusal's remedy tells the caller to hand-edit `.orchid/tasks/<id>.md`, which PROTOCOL.md forbids the orchestrator and the README says is never needed"
+    },
+    {
+      "severity": "low",
+      "title": "`task list` still renders a damaged task file as a row of empty fields, the exact signal fm_check's own header names as how both dogfood operators were misled"
+    }
+  ]
+}
