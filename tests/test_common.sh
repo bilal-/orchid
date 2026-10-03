@@ -5,6 +5,59 @@ export HOME="$WORK/home"; mkdir -p "$HOME/.orchid"
 
 echo hi | atomic_write "$WORK/f"; assert_eq hi "$(cat "$WORK/f")" "atomic write"
 
+# Conditional callers suppress errexit inside the writer. Each failed staging
+# step must preserve the old destination and remove its unpublished temporary.
+atomic_dir="$WORK/atomic-failures"; mkdir -p "$atomic_dir"
+atomic_file="$atomic_dir/state"
+printf 'original\n' > "$atomic_file"
+atomic_rc=0
+atomic_error="$(
+  (
+    cat() { printf 'partial\n'; printf 'cat: simulated input error\n' >&2; return 7; }
+    atomic_write "$atomic_file" <<< 'replacement'
+  ) 2>&1
+)" || atomic_rc=$?
+[ "$atomic_rc" -ne 0 ] || fail "atomic write must reject a failed input copy"
+assert_match 'simulated input error' "$atomic_error" "failed copy stderr is retained"
+assert_eq original "$(cat "$atomic_file")" "failed copy preserves destination"
+assert_eq state "$(list_dir_files "$atomic_dir")" "failed copy leaves no staged file"
+red_case 'atomic write rejects a partial input copy under a conditional caller, preserving the old destination'
+
+printf 'original\n' > "$atomic_file"
+atomic_rc=0
+atomic_error="$(
+  (
+    mv() { printf 'mv: simulated rename error\n' >&2; return 9; }
+    atomic_write "$atomic_file" <<< 'replacement'
+  ) 2>&1
+)" || atomic_rc=$?
+[ "$atomic_rc" -ne 0 ] || fail "atomic write must reject a failed rename"
+assert_match 'simulated rename error' "$atomic_error" "failed rename stderr is retained"
+assert_eq original "$(cat "$atomic_file")" "failed rename preserves destination"
+assert_eq state "$(list_dir_files "$atomic_dir")" "failed rename removes staged file"
+red_case 'atomic write refuses a failed final rename and cleans its unpublished stage instead of leaving it beside durable state'
+rm -f "$atomic_dir"/state.tmp.*
+
+atomic_rc=0
+atomic_error="$(
+  (
+    mktemp() { printf 'mktemp: simulated staging error\n' >&2; return 8; }
+    mv() { printf 'called\n' > "$atomic_dir/rename-called"; return 9; }
+    atomic_write "$atomic_file" <<< 'replacement'
+  ) 2>&1
+)" || atomic_rc=$?
+[ "$atomic_rc" -ne 0 ] || fail "atomic write must reject a failed stage allocation"
+assert_match 'simulated staging error' "$atomic_error" "failed staging stderr is retained"
+assert_eq original "$(cat "$atomic_file")" "failed staging preserves destination"
+[ ! -e "$atomic_dir/rename-called" ] || fail "failed staging must stop before rename"
+red_case 'atomic write stops on failed temporary allocation before attempting a rename with an invalid source path'
+rm -f "$atomic_dir/rename-called"
+
+atomic_write "$atomic_file" <<< 'replacement' || fail "atomic write replaces an existing destination"
+assert_eq replacement "$(cat "$atomic_file")" "successful replacement publishes complete input"
+assert_eq state "$(list_dir_files "$atomic_dir")" "successful replacement leaves no staged file"
+green_case 'atomic write accepts complete input and a successful rename, replacing the destination without a staging leak'
+
 # v1-m3 Task 12: the running kernel's version constant, checked directly
 # against lib/common.sh (tests/test_dispatcher.sh covers the same fact
 # through the CLI's `orchid version` verb; this is the library-level source

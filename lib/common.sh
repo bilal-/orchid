@@ -66,7 +66,23 @@ fi
 # ShellCheck rationale: this public constant is consumed by scripts that source this library.
 # shellcheck disable=SC2034
 ORCHID_VERSION="1.0.0-beta.1"
-atomic_write() { local d="$1" t; t="$(mktemp "${d}.tmp.XXXXXX")"; cat >"$t"; mv "$t" "$d"; }
+# A conditional caller suppresses errexit throughout this function, so every
+# staging step must check its own status. Never publish a partial copy or leave
+# a failed rename's temporary file beside the destination. This checks the
+# input copy itself; a producer feeding stdin still owns its own exit status.
+atomic_write() {
+  local d="$1" t
+  t="$(mktemp "${d}.tmp.XXXXXX")" || return 1
+  if ! cat > "$t"; then
+    rm -f "$t"
+    return 1
+  fi
+  if ! mv "$t" "$d"; then
+    rm -f "$t"
+    return 1
+  fi
+  return 0
+}
 orchid_state()   { echo "$1/.orchid"; }
 orchid_runtime() { local r="$1/.orchid/runtime"; mkdir -p "$r"; echo "$r"; }
 
@@ -4248,34 +4264,41 @@ _trust_canon_path() {  # dir -> canonical absolute path (no trailing slash,
   orchid_physical_dir "$1"
 }
 
-_orchid_file_sha256() {  # file -> a line binding this file's path to its
+_orchid_file_sha256() (  # file -> a line binding this file's path to its
   # content hash (exact format doesn't matter -- only that it's deterministic
   # and changes with either the path or the content -- since it is never
   # compared across machines/tools, only fed into plugin_digest below).
+  set -o pipefail
+  local digest
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1"
   else
-    printf '%s %s\n' "$(openssl dgst -sha256 "$1" | awk '{print $NF}')" "$1"
+    digest="$(openssl dgst -sha256 "$1" | awk '{print $NF}')" || return 1
+    printf '%s %s\n' "$digest" "$1"
   fi
-}
-_orchid_symlink_sha256() {  # symlink -> a line binding this symlink's path to
+)
+_orchid_symlink_sha256() (  # symlink -> a line binding this symlink's path to
   # its TARGET STRING (not the target's content -- retargeting a symlink is
   # itself a change worth catching, whether or not the new target's bytes
   # happen to match the old one's), fed into plugin_digest below.
+  set -o pipefail
+  local target digest
+  target="$(readlink "$1")" || return 1
   if command -v shasum >/dev/null 2>&1; then
-    printf '%s -> %s\n' "$1" "$(readlink "$1")" | shasum -a 256
+    printf '%s -> %s\n' "$1" "$target" | shasum -a 256
   else
-    printf '%s %s\n' \
-      "$(printf '%s -> %s\n' "$1" "$(readlink "$1")" | openssl dgst -sha256 | awk '{print $NF}')" "$1"
+    digest="$(printf '%s -> %s\n' "$1" "$target" | openssl dgst -sha256 | awk '{print $NF}')" || return 1
+    printf '%s %s\n' "$digest" "$1"
   fi
-}
-_orchid_stream_sha256() {  # stdin -> hex digest of the whole stream
+)
+_orchid_stream_sha256() (  # stdin -> hex digest of the whole stream
+  set -o pipefail
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 | awk '{print $1}'
   else
     openssl dgst -sha256 | awk '{print $NF}'
   fi
-}
+)
 
 # plugin_digest <dir> -- SHA-256 over a stable sorted listing of the plugin
 # dir's file AND symlink entries: `find <dir> \( -type f -o -type l \) |
@@ -4290,13 +4313,14 @@ _orchid_stream_sha256() {  # stdin -> hex digest of the whole stream
 # trust a symlinked entrypoint in the first place). With that covered, any
 # file OR symlink added, removed, renamed, changed, or repointed inside the
 # dir changes this digest.
-plugin_digest() {
+plugin_digest() (
+  set -o pipefail
   local dir; dir="$(_trust_canon_path "$1")" || return 1
   [ -d "$dir" ] || return 1
   find "$dir" \( -type f -o -type l \) | LC_ALL=C sort | while IFS= read -r f; do
-    if [ -L "$f" ]; then _orchid_symlink_sha256 "$f"; else _orchid_file_sha256 "$f"; fi
+    if [ -L "$f" ]; then _orchid_symlink_sha256 "$f" || return 1; else _orchid_file_sha256 "$f" || return 1; fi
   done | _orchid_stream_sha256
-}
+)
 
 # plugin_digest_content <dir> -- like plugin_digest above, but (a) EXCLUDES
 # this dir's own lifecycle metadata files (`.provenance`, and
@@ -4336,14 +4360,16 @@ plugin_digest() {
 # path plugin_digest, UNCHANGED from v1-m1/m2 -- that is the recorded m2
 # design (a trust pin / capsuite result is tied to the exact path it was
 # taken against) and out of scope for this fix.
-plugin_digest_content() {
+plugin_digest_content() (
+  set -o pipefail
   local dir; dir="$(_trust_canon_path "$1")" || return 1
   [ -d "$dir" ] || return 1
-  ( cd "$dir" && find . \( -type f -o -type l \) \
+  cd "$dir" || return 1
+  find . \( -type f -o -type l \) \
       ! -name '.provenance' ! -name '.installed-digest' | LC_ALL=C sort | while IFS= read -r f; do
-    if [ -L "$f" ]; then _orchid_symlink_sha256 "$f"; else _orchid_file_sha256 "$f"; fi
-  done ) | _orchid_stream_sha256
-}
+    if [ -L "$f" ]; then _orchid_symlink_sha256 "$f" || return 1; else _orchid_file_sha256 "$f" || return 1; fi
+  done | _orchid_stream_sha256
+)
 
 _orchid_trust_dir()  { echo "$HOME/.orchid"; }
 _orchid_trust_file() { echo "$(_orchid_trust_dir)/trust"; }
@@ -4356,7 +4382,7 @@ trust_lookup() {  # abs-dir -> the recorded digest for that exact path, or
   # whole.
   local dir="$1" f; f="$(_orchid_trust_file)"
   [ -f "$f" ] || return 0
-  awk -v d="$dir" '{p=$0; sub(/^[^ ]+ /, "", p); if (p==d) v=$1} END{if (v!="") print v}' "$f"
+  ORCHID_TRUST_PATH="$dir" awk 'BEGIN{d=ENVIRON["ORCHID_TRUST_PATH"]} {p=$0; sub(/^[^ ]+ /, "", p); if (p==d) v=$1} END{if (v!="") print v}' "$f"
 }
 
 trust_status_for() {  # abs-dir -> trusted|untrusted|mismatch
@@ -4370,14 +4396,14 @@ trust_status_for() {  # abs-dir -> trusted|untrusted|mismatch
 trust_store_set() {  # abs-dir digest -- atomic upsert (one record per path)
   local dir="$1" digest="$2" f; f="$(_orchid_trust_file)"
   mkdir -p "$(_orchid_trust_dir)"
-  { [ -f "$f" ] && awk -v d="$dir" '{p=$0; sub(/^[^ ]+ /, "", p)} p!=d' "$f"; printf '%s %s\n' "$digest" "$dir"; } | atomic_write "$f"
+  { [ -f "$f" ] && ORCHID_TRUST_PATH="$dir" awk 'BEGIN{d=ENVIRON["ORCHID_TRUST_PATH"]} {p=$0; sub(/^[^ ]+ /, "", p)} p!=d' "$f"; printf '%s %s\n' "$digest" "$dir"; } | atomic_write "$f"
 }
 
 trust_store_remove() {  # abs-dir -- atomic delete of any record for that path
   local dir="$1" f; f="$(_orchid_trust_file)"
   [ -f "$f" ] || return 0
   mkdir -p "$(_orchid_trust_dir)"
-  awk -v d="$dir" '{p=$0; sub(/^[^ ]+ /, "", p)} p!=d' "$f" | atomic_write "$f"
+  ORCHID_TRUST_PATH="$dir" awk 'BEGIN{d=ENVIRON["ORCHID_TRUST_PATH"]} {p=$0; sub(/^[^ ]+ /, "", p)} p!=d' "$f" | atomic_write "$f"
 }
 
 # ---------------------------------------------------------------------------
