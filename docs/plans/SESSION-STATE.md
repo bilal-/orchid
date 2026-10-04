@@ -461,3 +461,40 @@ qualification, native package checks, and successful hosted CI remain pending.
 `0c3ccbc` must not be
 published. This is a dated preparation snapshot; the release page owns any
 subsequent publication evidence.
+
+## Checked environment release follow-through — 2026-10-04
+
+The next local integration candidate, `c78baa0`, passed exact native Homebrew
+installation and all four isolated frontend callbacks, including fresh-profile
+setup. Its canonical source run completed exit 1, with 106 of 108 suite blocks
+passing and 18 assertions in two suites: 17 related
+rework failures in `test_drive.sh` and one opted-in permission check in
+`test_launch.sh`. The latter retained an explicit environment-loader refusal.
+The first drive refusal was overwritten by subsequent passes, so it is not
+claimed as directly observed. This candidate was not pushed or published.
+
+Independent unchanged-loader stress reproduced intermittent failure on a valid
+exported environment; direct producer output to an owned file passed. A private
+candidate captures exported names synchronously before streaming values and
+accepted 2,000 repeated loads. This controlled difference implicates the nested
+name-enumeration pipe; the precise Bash descriptor or signal mechanism remains
+unproved. The repair preserves NUL-delimited values, permission validation and
+clearing the array after any incomplete load. An empty name set with the normal
+`compgen` exit status of 1 remains valid; other failures and partial failed name
+output refuse before value emission.
+
+Disposable old and new drive prefixes both passed unchanged. Refusing only the
+second attempt's environment load in an owned copied kernel reproduced all 17
+original assertion labels, including the prepared pid-zero/no-log manifest and
+subsequent orphan wait. Its unmodified accepting twin passed. This establishes
+the cascade mechanism without recovering the original first refusal. Evidence
+is machine-local under `/tmp/orchid-review.RpZ5fo/r010-diagnosis/` and
+`spawn-env-diagnosis.wrz4yh7u/`, not a hosted qualification claim.
+
+Fresh aggregate source, archive, native package and hosted checks remain pending
+for the repair. Before publishing a tag, the assembled production archive must
+also pass the existing full release gate on Linux. A temporary, unshipped CI
+branch can check out the exact frozen source and create its tag only inside the
+runner; it must never be merged or treated as release source. The public tag,
+release assets, tap push and anonymous installation remain unproved at this
+snapshot. Consult the release page for subsequent publication evidence.

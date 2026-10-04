@@ -24,13 +24,25 @@ _spawn_env_emit() {
   fi
 }
 spawn_child_env() {  # plugin-dir [--null] -> NAME=value assignments
-  local plugin_dir="$1" mode="${2:-}" _name _perm perms
+  local plugin_dir="$1" mode="${2:-}" _name _perm perms names names_rc=0
+  # Finish name enumeration before writing values into the loader's pipe.
+  # On Bash 3.2 the nested enumeration process substitution can make a valid
+  # emission fail. Only names are captured here; values keep the NUL stream.
+  names="$(compgen -e)" || names_rc=$?
+  if [ "$names_rc" -ne 0 ]; then
+    # compgen returns 1 for an empty match set. Partial output with a failure
+    # is not a complete environment and must never receive the completion mark.
+    if [ "$names_rc" -ne 1 ] || [ -n "$names" ]; then
+      printf 'orchid: cannot enumerate exported environment names (exit %s)\n' "$names_rc" >&2
+      return 1
+    fi
+  fi
   while IFS= read -r _name; do
     [ -n "$_name" ] || continue
     if _launch_base_allowed "$_name"; then
       _spawn_env_emit "$_name" "${!_name}" "$mode" || return 1
     fi
-  done < <(compgen -e || true)
+  done <<< "$names"
   perms="$(manifest_permissions "$plugin_dir")" || return 1
   while IFS= read -r _perm; do
     [ -n "$_perm" ] || continue
