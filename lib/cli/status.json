@@ -17,6 +17,9 @@
         "orchid status --jobs --explain",
         "orchid status --html"
       ],
+      "notes": [
+        "--html writes a self-contained HTML page under the owned .orchid/runtime directory."
+      ],
       "kind": "text",
       "next": [
         "orchid task show <id>",

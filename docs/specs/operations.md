@@ -16,8 +16,12 @@ The pinned curl installer and Homebrew instructions are in
 paths and wires portable skills for detected Claude Code, Codex, Hermes and
 OpenCode hosts. Homebrew installs dependencies and the release payload;
 `bash "$(brew --prefix orchid)/libexec/install.sh"` performs per-user setup.
-`orchid setup --frontend all` explicitly registers native ambient context;
-installation alone grants no host approvals or unattended trust. Uninstall
+`orchid setup` reports registration state; choose a host's setup command in
+[frontends.md](../frontends.md) to register native ambient context.
+`orchid setup --frontend all` configures all four profiles, including absent
+ones, and requires Hermes's Python runtime with PyYAML. The base kernel requires
+Bash 3.2, Git and jq; native integrations use optional host runtimes.
+Installation alone grants no host approvals or unattended trust. Uninstall
 removes only artifacts whose ownership can be verified. Configuration and trust
 records remain per-user. See [frontends.md](../frontends.md).
 
@@ -451,6 +455,13 @@ shows the exact boundary in
    may open a path inside the target ahead of the unattended trust gate), so a
    scheduled wake reports it to the scheduler's `/dev/null`. See PROTOCOL.md's
    COMPLETION.
+
+`orchid journal add --task <label>` tags an entry with a flat, single-line
+label, such as a task ID, `plan`, or `run`. The label does not need to name an
+existing task. Paths, empty labels, and `.` or `..` are refused before an
+append or `journal show` read. The journal index must remain at its owned
+runtime path; a symlinked parent or final index file is refused before the
+journal changes. Use `journal add -- "<text>"` for text beginning with an option.
 
 ## Remote interaction
 

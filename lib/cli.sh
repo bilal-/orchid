@@ -4,20 +4,21 @@
 orchid_cli_prepare() {
   local verb="$1" format="$2"; shift 2
   ORCHID_CLI_ERROR=""
+  ORCHID_CLI_PARSED='{}'
+  ORCHID_CLI_ARGS=()
+  ORCHID_CLI_WIRE_ARGS=()
   local metadata="$ORCHID_ROOT/lib/cli/$verb.json" argv parsed
   [ -f "$metadata" ] || { ORCHID_CLI_ERROR="Unknown command $verb; run orchid --help for available commands"; printf "orchid: command metadata missing for '%s'\n" "$verb" >&2; return 2; }
   argv="$(jq -cn --args '$ARGS.positional' -- "$@")" || return 2
   parsed="$(jq -c --arg verb "$verb" --arg format "$format" \
     --argjson raw "$([ "$format" = raw ] && printf true || printf false)" \
     --argjson argv "$argv" -f "$ORCHID_ROOT/lib/cli-parse.jq" "$metadata")" || return 2
+  ORCHID_CLI_PARSED="$parsed"
   if [ "$(jq -r 'has("error")' <<< "$parsed")" = true ]; then
     ORCHID_CLI_ERROR="$(jq -r '.error' <<< "$parsed")"
     printf 'orchid: %s\n' "$ORCHID_CLI_ERROR" >&2
     return 2
   fi
-  ORCHID_CLI_PARSED="$parsed"
-  ORCHID_CLI_ARGS=()
-  ORCHID_CLI_WIRE_ARGS=()
   while IFS= read -r -d '' item; do
     ORCHID_CLI_ARGS[${#ORCHID_CLI_ARGS[@]}]="$item"
   done < <(jq -jr '.argv[] | . + "\u0000"' <<< "$parsed")

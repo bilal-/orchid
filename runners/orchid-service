@@ -1605,9 +1605,7 @@ plat="$(_svc_platform)"
 # an existing schedule -- a revoked acknowledgement is a reason to END a
 # schedule, so gating the verb that ends it would be exactly backwards.
 if [ "$sub" = install ]; then
-  [ -d "$repo/.orchid" ] \
-    || orchid_die "cannot install service for uninitialized repo (no .orchid/ found): $repo -- run 'orchid init' first"
-  unattended_trust_require "$repo" "service installation" || exit 1
+  unattended_service_install_require "$repo" || exit 1
 fi
 
 # The stale-root gate, at the first line its own contract allows (T016). This

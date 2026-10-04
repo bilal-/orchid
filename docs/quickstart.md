@@ -1,9 +1,11 @@
 # Quickstart — existing repo
 
 For an LLM-led workflow, ask Claude Code, Codex, Hermes or OpenCode to use the
-installed Orchid skills. `orchid` shows compact live context; `orchid setup
---frontend all` explicitly registers native ambient context. See
-[frontends](frontends.md) and [the agent interface](agent-interface.md). Scripted
+installed Orchid skills. `orchid` shows compact live context; `orchid setup`
+reports registration state without editing profiles. Choose your host's native
+setup command in [frontends](frontends.md). All-host setup configures all four
+profiles and requires Hermes's Python with PyYAML. See also
+[the agent interface](agent-interface.md). Scripted
 recipes that parse historical text/TSV output should set `ORCHID_OUTPUT=raw`.
 
 Clone → install → doctor → init → your first completed task, in one sitting.
@@ -50,13 +52,12 @@ cd "$HOME/src/orchid"
 ./install.sh
 ```
 
-Either way, `install.sh` does exactly and only: wires the interactive orchestrator
-skills (`skills/{orchid,orchid-plan,orchid-resume}`) into whichever agent
-front-ends are **actually present** on this machine — Claude Code
-(`~/.claude/skills/`) is today's tested default, and it also wires Hermes
-(`~/.hermes/skills/orchestration/`) when that's present, skipping cleanly
-(one-line note, no directory creation) for whichever front-end isn't
-installed — symlinks `bin/orchid` into `~/.local/bin` (add it to `PATH` if
+Either way, `install.sh` wires the three portable skills
+(`skills/{orchid,orchid-plan,orchid-resume}`) into shared `~/.agents/skills`, used
+by Codex and generic shell agents. Existing Claude Code, Hermes and OpenCode
+profiles also receive links in their native skills paths. Native session
+callbacks require the separate, selected-host setup above. The installer symlinks
+`bin/orchid` into `~/.local/bin` (add it to `PATH` if
 the installer warns it isn't there), creates `~/.orchid/plugins` and a
 commented `~/.orchid/config` (the `~/.orchid/trust` store file appears on
 first `orchid plugins trust`), then finishes by running `orchid doctor` if

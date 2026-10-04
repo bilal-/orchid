@@ -32,8 +32,7 @@ export ORCHID_ROOT
 __orchid_entry_defer_restore=1
 
 source "$ORCHID_ROOT/lib/common.sh"
-orchid_cli_validate status "$@"
-set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/trust.sh"
 # resolver/review/capability are here for lib/handoff.sh's capability arm
@@ -86,7 +85,18 @@ fi
 # fixed list (nix, asdf, ~/.local/bin) got "(no engine events yet)" printed
 # over a perfectly good ledger. The gate decision and its provenance are
 # already loaded into shell variables, so nothing on this PATH can revise them.
+# Admission needs jq and must also work when only one of these PATHs has it.
+# The fixed-PATH trust observation above remains read-only and precedes every
+# report/job effect; reports still run on the restored operator PATH.
+if command -v jq >/dev/null 2>&1; then
+  orchid_cli_validate status "$@"
+else
+  # A function-scoped PATH assignment supplies operator-only jq without
+  # moving the guard ahead of help/admission or changing its fixed Git PATH.
+  PATH="${__orchid_entry_operator_path-}" orchid_cli_validate status "$@"
+fi
 _orchid_entry_restore_operator_path
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
 
 # _status_task_why <repo> <status> <id> -- the ONE home for the "why isn't
 # this task moving" predicate string (v1-m2 Task 5's schedule.sh already
@@ -458,11 +468,7 @@ $blockers_html</ul>
 <h2>Journal (last 10)</h2>
 $journal_html"
 
-  page_rel="$(config_get "$repo" status_page runtime/status.html)"
-  case "$page_rel" in
-    /*) page_path="$page_rel" ;;
-    *)  page_path="$state/$page_rel" ;;
-  esac
+  page_path="$(orchid_status_page_path "$repo")" || exit 1
   mkdir -p "$(dirname "$page_path")"
 
   tpl="$(cat "$ORCHID_ROOT/templates/status.html")"

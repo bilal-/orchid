@@ -40,5 +40,10 @@
       "kind": "text",
       "next": []
     }
+  ],
+  "notes": [
+    "Orchid never guesses a verification command: supply --verify <command> or an already-configured verify=; a repository with neither is refused.",
+    "Supply user-approved requirements; Orchid never invents requirements or silently resumes an active run.",
+    "Read the setup workflow with orchid skill orchid --full; discover canonical procedures with orchid protocol catalog."
   ]
 }

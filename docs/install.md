@@ -1,9 +1,11 @@
 # Install
 
 For an LLM-led workflow, ask Claude Code, Codex, Hermes or OpenCode to use the
-installed Orchid skills. `orchid` shows compact live context; `orchid setup
---frontend all` explicitly registers native ambient context. See
-[frontends](frontends.md) and [the agent interface](agent-interface.md). Scripted
+installed Orchid skills. `orchid` shows compact live context; `orchid setup`
+reports registration state without editing profiles. Choose your host's native
+setup command in [frontends](frontends.md). All-host setup configures all four
+profiles and requires Hermes's Python with PyYAML. See also
+[the agent interface](agent-interface.md). Scripted
 recipes that parse historical text/TSV output should set `ORCHID_OUTPUT=raw`.
 
 Three ways to get orchid onto a machine — the one-liner below (recommended

@@ -1,1 +1,38 @@
-{"description":"Discover or explicitly register read-only session context in agent hosts.","default":[],"commands":[{"path":[],"kind":"json","usage":"usage: orchid setup [--frontend claude|codex|hermes|opencode|all] [--uninstall]","min_args":0,"max_args":0,"options":{"--frontend":1,"--uninstall":0},"output_fields":["operation","mode","root","frontends","next"],"examples":["orchid setup","orchid setup --frontend all","orchid setup --frontend codex --uninstall"]}]}
+{
+  "description": "Discover or register read-only context in selected agent-host profiles.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "kind": "json",
+      "usage": "usage: orchid setup [--frontend claude|codex|hermes|opencode|all] [--uninstall]",
+      "min_args": 0,
+      "max_args": 0,
+      "options": {
+        "--frontend": 1,
+        "--uninstall": 0
+      },
+      "output_fields": [
+        "operation",
+        "mode",
+        "root",
+        "frontends",
+        "next",
+        "notes"
+      ],
+      "examples": [
+        "orchid setup",
+        "orchid setup --frontend claude",
+        "orchid setup --frontend codex",
+        "orchid setup --frontend hermes",
+        "orchid setup --frontend opencode",
+        "orchid setup --frontend codex --uninstall"
+      ],
+      "notes": [
+        "Without --frontend, reports registration state without changing profiles.",
+        "Select the host you use. all configures all four profiles and creates missing profile directories.",
+        "Hermes and all require Hermes's Python runtime with PyYAML. Set ORCHID_FRONTEND_PYTHON if its interpreter is elsewhere. Every selected configuration is validated before writes."
+      ]
+    }
+  ]
+}

@@ -2031,6 +2031,66 @@ assert_match '^stub-engine	failing	failures 3$' "$report_status" \
   "status --explain reads the populated ledger on the operator's own PATH"
 
 # ---------------------------------------------------------------------------
+# The same jq-less entrypoint must still admit arguments before report/job
+# effects. A direct caller exercises the child admission rather than the
+# public dispatcher's earlier validation.
+report_names_before="$(snapshot_source_tree "$report_repo/.orchid")"
+report_ledger_before="$(cksum "$report_repo/.orchid/runtime/engines.json")"
+report_bad_rc=0
+report_bad="$(
+  HOME="$home" ORCHID_REPO="$report_repo" \
+    "$report_root/libexec/orchid-status" --explain --jobs --unknown 2>&1
+)" || report_bad_rc=$?
+assert_eq 2 "$report_bad_rc" "jq-less fixed-PATH direct status rejects invalid arguments"
+assert_match 'unknown flag --unknown' "$report_bad" \
+  "the direct status refusal identifies the offending flag"
+assert_match 'run orchid status[[:space:]]+--help' "$report_bad" \
+  "the direct status refusal supplies focused recovery"
+assert_eq "$report_names_before" "$(snapshot_source_tree "$report_repo/.orchid")" \
+  "invalid direct status cannot create job/report state"
+assert_eq "$report_ledger_before" "$(cksum "$report_repo/.orchid/runtime/engines.json")" \
+  "invalid direct status cannot alter existing ledger evidence"
+red_case "missing fixed-PATH jq plus invalid direct status arguments refuse before job/report effects"
+green_case "operator-PATH jq admits status while fixed-PATH trust warning and populated ledger evidence survive"
+
+# Combine operator-only jq with an actually stale integration install root.
+# Argument/help admission must still precede that state guard, while a valid
+# report must reach it. This is the same kernel and operator PATH above.
+printf 'integration_branch=orchid/integration\n' > "$report_root/orchid.config"
+git -C "$report_root" init -q
+git -C "$report_root" symbolic-ref HEAD refs/heads/orchid/integration
+git -C "$report_root" add -A
+git -C "$report_root" commit -q -m 'Jq-less stale status admission fixture'
+printf '\n# staged status boundary witness\n' >> "$report_root/libexec/orchid-version"
+git -C "$report_root" add libexec/orchid-version
+report_stale_bad_rc=0
+report_stale_bad="$(HOME="$home" ORCHID_REPO="$report_repo" \
+  ORCHID_ALLOW_STALE_ROOT='' "$report_root/libexec/orchid-status" --unknown 2>&1)" \
+  || report_stale_bad_rc=$?
+assert_eq 2 "$report_stale_bad_rc" "operator-only jq invalid status remains above the stale-root guard"
+assert_match 'unknown flag --unknown' "$report_stale_bad" \
+  "compound-context status still diagnoses the offending argument"
+report_stale_help_rc=0
+report_stale_help="$(HOME="$home" ORCHID_REPO="$report_repo" \
+  ORCHID_ALLOW_STALE_ROOT='' "$report_root/libexec/orchid-status" --help 2>&1)" \
+  || report_stale_help_rc=$?
+assert_eq 0 "$report_stale_help_rc" "operator-only jq status help remains above the stale-root guard"
+assert_match 'usage: orchid status' "$report_stale_help" \
+  "compound-context status help remains focused"
+report_stale_rc=0
+report_stale="$(HOME="$home" ORCHID_REPO="$report_repo" \
+  ORCHID_ALLOW_STALE_ROOT='' "$report_root/libexec/orchid-status" --explain 2>&1)" \
+  || report_stale_rc=$?
+assert_eq 1 "$report_stale_rc" "valid operator-only jq status still refuses the genuinely stale kernel"
+assert_match 'libexec/orchid-version' "$report_stale" \
+  "valid report refusal names the staged kernel evidence"
+assert_eq "$report_names_before" "$(snapshot_source_tree "$report_repo/.orchid")" \
+  "compound status admission and guarded report leave target state untouched"
+assert_eq "$report_ledger_before" "$(cksum "$report_repo/.orchid/runtime/engines.json")" \
+  "compound status admission and guarded report preserve ledger bytes"
+red_case "valid operator-only jq status refuses an actually staged integration kernel before report effects"
+green_case "same stale jq-less kernel admits direct help and rejects invalid arguments with focused recovery"
+
 # Machine-wide deduplication (jdupes -L, rdfind, hardlink(1), some backup
 # tools) replaces byte-identical files with hard links to one copy. Git's
 # stock .git/description -- Orchid's identity witness -- is byte-identical in

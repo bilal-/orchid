@@ -1631,6 +1631,12 @@ make_probe_root() {
   printf 'PROTOCOL probe\n' > "$dir/PROTOCOL.md"
   cp "$REPO_ROOT/bin/orchid" "$dir/bin/orchid"
   cp "$REPO_ROOT/lib/common.sh" "$dir/lib/common.sh"
+  # Shared admission must reach the stale-root gate, not fail while loading
+  # transport. Installer twins below also need the shipped frontend helper.
+  cp "$REPO_ROOT/lib/cli.sh" "$REPO_ROOT/lib/cli-parse.jq" "$REPO_ROOT/lib/frontend.sh" "$dir/lib/"
+  mkdir -p "$dir/lib/cli" "$dir/release"
+  cp "$REPO_ROOT/lib/cli/version.json" "$dir/lib/cli/version.json"
+  cp "$REPO_ROOT/release/metadata.conf" "$dir/release/metadata.conf"
   cat > "$dir/libexec/orchid-version" <<'VERB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1780,30 +1786,29 @@ green_case 'the identical staged kernel edit on a development branch neither ref
 # self-hosted `orchid doctor` in section 9.
 # ===========================================================================
 
-# EMPTY, and it did not start that way. `libexec/orchid-trust` was declared
-# here with a reason -- that its entire body is the authorization decision, so
-# there is no "after the decision, before the work" moment for the gate to
-# occupy -- and the reason was wrong: the moment is between the operator's
-# command and the durable write to the machine-local trust store, which is
-# where that file now fires it. Section 8 executes exactly that ordering.
+# Two exact exemptions are argument-admitting handoff shims. They do no
+# project work themselves and exec their own installed runner; section 8
+# enters both shims DIRECTLY out the same genuinely stale installation root
+# and proves runner refusal before target effects, paired with focused help
+# accepted without those effects. A new shim must join both this declaration
+# and that exercised proof rather than inheriting a directory-wide exemption.
 #
-# It stayed empty through the widening below, and that is a claim rather than a
-# convenience: scripts/beta-qualify.sh and the four bundled engine adapters
-# were in the shadow the moment the universe grew to include them, and each now
-# calls `orchid_root_stale_gate` itself rather than being written down here.
-# The exemption that would have been easiest to declare -- "an adapter is
-# launcher-only by INV-06, and its launcher already fired" -- is exactly the
-# read-only-so-harmless reasoning `orchid trust show` carried and lost.
+# libexec/orchid-trust used to be exempt because its body was called an
+# authorization decision. That claim was wrong: there is a moment between
+# the decision and its durable trust-store write, and section 8 proves its
+# guard sits there. Neither read-only reports nor ordinary libraries receive
+# an implicit exemption on that older reasoning.
 #
-# The declaration stays, because a declared exemption is how the next one gets
-# stated instead of getting away. It is spelled as the exact string the
-# derivation below must produce -- repo-relative names in glob order, separated
-# by single spaces -- rather than as an array, so that "no exemption at all" is
-# a value this check can hold rather than an empty expansion `set -u` aborts
-# on. The comparison is EXACT in both directions: a file joining this set
-# fails, and a member that stops needing the exemption fails too, so an
-# exemption cannot outlive its reason.
-GATE_EXEMPT=""
+# The comparison is exact in BOTH directions: an arriving member fails, and
+# a departing member fails too, so a declared exemption cannot outlive its
+# measured reason. The other two exact members are function-definition
+# libraries, not executable operations. Section 8 proves sourcing them is
+# effect-free, then executes their public callback on both new and cached
+# requests: genuine staleness refuses before cache/epoch effects, while
+# refreshing the identical root admits an actual ownership transition and
+# receipt. Their exemption is conditional on those measured caller fences;
+# no other file under lib/ inherits it.
+GATE_EXEMPT="lib/agent-interface.sh lib/requests.sh libexec/orchid-drive libexec/orchid-service"
 
 # entry_code <file> -- <file> with its comment lines removed.
 #
@@ -2342,7 +2347,7 @@ entry_unfired="${entry_unfired# }"
 assert_eq "$GATE_EXEMPT" "$entry_unfired" \
   "INV-15: the set of shipped files that arm the stale-root gate and never fire it must be exactly the declared one — a new member means code that runs pre-merge kernel with nothing left to say so, and a departed member means this exemption is stale"
 
-green_case "all $entry_scanned shipped files that load lib/common.sh reach a site that really does fire the gate they arm, at the path each ships at, with no exemption left standing — and they were picked out of an inventory of $entry_inventory_seen shipped files spanning $entry_family_count top-level families ($entry_family_names), DISCOVERED by walking this tree with the $entry_inventory_mode discovery rather than by naming the directories that exist today, with the top-level, scripts/ and plugins/ families each additionally proved non-empty"
+green_case "the $entry_scanned discovered loaders match the exact firing/delegation partition, with only the explicitly measured exemptions ($GATE_EXEMPT), drawn from $entry_inventory_seen shipped files across $entry_family_count top-level families ($entry_family_names) by $entry_inventory_mode discovery rather than directory globs"
 
 # THE WALK'S OWN BOTH EDGES (lesson L034: pin the case that must be caught and
 # the case that must not fire). Everything above rests on two properties of the
@@ -2424,12 +2429,12 @@ for entry_fire_probe in libexec/orchid-inv15-probe runners/orchid-inv15-probe; d
 done
 red_case "a stub under libexec/ and a stub under runners/ were each refused the moment they loaded lib/common.sh out of a genuinely stale root, so the source-time fire this section partitions on is real and observed rather than assumed, in both of the executable roots the shipped loaders live in"
 
-for entry_shadow in inv15-probe plugins/engines/inv15-probe/run scripts/inv15-probe.sh; do
+for entry_shadow in inv15-probe lib/inv15-probe.sh plugins/engines/inv15-probe/run scripts/inv15-probe.sh; do
   assert_eq armed "$(entry_source_time_answer "$entry_shadow")" \
     "INV-15: a stub at $entry_shadow, loading the identical library out of the identical stale root, must NOT be refused — if it were, there would be no shadow here, and the explicit orchid_root_stale_gate calls this section requires of the top level, of scripts/ and of plugins/ would be guarding nothing"
   entry_probe_record "$entry_shadow"
 done
-green_case "the identical stub, loading the identical lib/common.sh out of the identical stale root, was left to run at the TOP LEVEL — install.sh's own family, the one whose member wires the operator orchid — and under scripts/ and under plugins/, while being refused under libexec/ and under runners/, so the source-time fire really is conditional on the directory and a derivation that walked only the executable roots really would share the implementation blind spot it exists to find"
+green_case "the identical stub, loading the identical lib/common.sh out of the identical stale root, was left to run at the TOP LEVEL — install.sh's own family, the one whose member wires the operator orchid — and under lib/, under scripts/ and under plugins/, while being refused under libexec/ and under runners/, so the source-time fire really is conditional on the directory and a derivation that walked only the executable roots really would share the implementation blind spot it exists to find"
 
 # AND EVERY FAMILY THE WALK FOUND A LOADER IN WAS ASKED. Without this the
 # probes above are answers about the directories whoever wrote them was
@@ -2819,6 +2824,10 @@ assert_match 'gate-armed-never-fired-off-path:' \
   "INV-15: a file that loads lib/common.sh from outside the three executable roots, and fires nothing, must be reported — the source-time fire does not reach it, so the guard it armed is left armed"
 red_case "INV-15's derivation reported a synthetic harness under scripts/ that loads lib/common.sh and fires nothing: the shape scripts/beta-qualify.sh and every bundled engine adapter had, in the shadow the narrow universe could not see into"
 
+assert_match 'gate-armed-never-fired-off-path:' \
+  "$(entry_gate_violations "$ENTRY_FIXTURES/offpath-unfired.sh" lib/inv15-unfired.sh)" \
+  "INV-15: a new library loader is still reported when it leaves the stale-root gate armed"
+red_case "an undeclared lib/ loader with no firing site is reported; the same library path with an explicit firing call is accepted below"
 assert_match 'gate-fires-only-through-the-path-restore-off-path:' \
   "$(entry_gate_violations "$ENTRY_FIXTURES/orchid-restores" plugins/engines/inv15-restores/run)" \
   "INV-15: a deferring file outside the executable roots whose only firing site is _orchid_entry_restore_operator_path must be reported — that helper asks _orchid_kernel_entry_point before it fires anything, so off that path it restores the PATH and fires nothing"
@@ -2836,6 +2845,7 @@ done <<'ENTRYOK'
 orchid-restores:libexec/orchid-inv15-restores
 orchid-ordinary:libexec/orchid-inv15-ordinary
 offpath-fired.sh:scripts/inv15-fired.sh
+offpath-fired.sh:lib/inv15-fired.sh
 mentions-only.sh:scripts/inv15-mentions-only.sh
 ENTRYOK
 green_case 'a deferring entry point that reaches its restore at a path where restoring really fires, an ordinary verb that defers nothing at all, an off-path harness that calls orchid_root_stale_gate itself, and a file that names lib/common.sh without loading it were all left alone — so the four reports above are detection rather than a scan that flags every file it reads'
@@ -3866,7 +3876,7 @@ red_case "the lookup arm, out of a genuinely stale installation root, refused BE
 # And the gate is still BELOW the authorization decision: the same stale root,
 # a command that is simply wrong, which must be answered as a usage error.
 trust_show_probe "$TRUST_ROOT" "$TRUST_REPO" "$TRUST_REPO"
-assert_eq 1 "$trust_rc" \
+assert_eq 2 "$trust_rc" \
   "INV-15: 'orchid trust show' with too many arguments must fail (got rc=$trust_rc: $trust_out)"
 assert_match 'usage: orchid trust show' "$trust_out" \
   "INV-15: ...and out of a stale root it must still be the USAGE message. The gate belongs after the operator's command has been validated, not in front of a typo's diagnosis — otherwise every mistyped invocation is answered with a refusal about the checkout instead"
@@ -3982,6 +3992,119 @@ case "$svc_direct_out" in
     fail "INV-15: the directly entered service runner printed its status report anyway. The dispatched entry refuses and the direct one answers, which means the gate is placed where the dispatcher happens to arrive rather than above this file's own dispatch — and the entry a scheduler takes is the direct one" ;;
 esac
 red_case "the service runner entered directly at its own path, out of the same stale installation root, refused with its report absent — so the correction that moved this gate above the dispatch holds for the way in that a launchd agent or a crontab line takes, and not only for the way an operator types"
+
+# Direct libexec shims defer the gate to their runner. Prove that delegation
+# rather than treating the shim's lack of its own firing call as harmless.
+shim_repo_before="$(snapshot_source_tree "$TRUST_REPO")"
+for shim_verb in drive service; do
+  shim_rc=0
+  if [ "$shim_verb" = service ]; then
+    shim_out="$(env -u ORCHID_REPO -u ORCHID_EPOCH HOME="$TRUST_HOME" \
+      ORCHID_ALLOW_STALE_ROOT='' "$TRUST_ROOT/libexec/orchid-service" \
+      status --repo "$TRUST_REPO" --dry-run 2>&1)" || shim_rc=$?
+  else
+    shim_out="$(env -u ORCHID_EPOCH HOME="$TRUST_HOME" \
+      ORCHID_REPO="$TRUST_REPO" ORCHID_ALLOW_STALE_ROOT='' \
+      "$TRUST_ROOT/libexec/orchid-drive" 2>&1)" || shim_rc=$?
+  fi
+  assert_eq 1 "$shim_rc" "INV-15: direct $shim_verb shim must delegate stale-root refusal"
+  assert_match 'refusing to run: the checkout orchid itself runs from' "$shim_out" \
+    "INV-15: direct $shim_verb shim reaches the real runner guard"
+  assert_match 'templates/\.keep' "$shim_out" \
+    "INV-15: direct $shim_verb shim refusal names the staged kernel witness"
+  assert_eq "$shim_repo_before" "$(snapshot_source_tree "$TRUST_REPO")" \
+    "INV-15: refused direct $shim_verb shim leaves target state untouched"
+  shim_rc=0
+  shim_help="$(HOME="$TRUST_HOME" ORCHID_ALLOW_STALE_ROOT='' \
+    "$TRUST_ROOT/libexec/orchid-$shim_verb" --help 2>&1)" || shim_rc=$?
+  assert_eq 0 "$shim_rc" "INV-15: direct $shim_verb help remains available in the same stale root"
+  assert_match "usage: orchid $shim_verb" "$shim_help" \
+    "INV-15: direct $shim_verb help is its focused command reference"
+  assert_eq "$shim_repo_before" "$(snapshot_source_tree "$TRUST_REPO")" \
+    "INV-15: accepting direct $shim_verb help leaves target state untouched"
+done
+red_case "both direct libexec drive/service shims reach the runner's stale-root refusal before target effects"
+green_case "both identical shims admit focused help in that same stale root without target effects"
+
+# Function-definition libraries arm no operation merely by being sourced.
+# Their real public callback must nevertheless enforce the guard BEFORE
+# claiming or replaying effects; an exact declaration is not a path exemption.
+library_home="$TRUST_PROOF/receipt-home"
+mkdir -p "$library_home"
+library_home_before="$(snapshot_source_tree "$library_home")"
+library_defs_rc=0
+library_defs="$(env -u ORCHID_REPO -u ORCHID_EPOCH -u ORCHID_ACTOR \
+  HOME="$library_home" ORCHID_ROOT="$TRUST_ROOT" /bin/bash -c '
+    source "$ORCHID_ROOT/lib/agent-interface.sh"
+    source "$ORCHID_ROOT/lib/requests.sh"
+    printf "INV15-LIBRARY-DEFINITIONS-LOADED\n"
+  ' 2>&1)" || library_defs_rc=$?
+assert_eq 0 "$library_defs_rc" "INV-15: sourcing the two function libraries does not execute an operation"
+assert_eq INV15-LIBRARY-DEFINITIONS-LOADED "$library_defs" \
+  "INV-15: function-library source produces only the caller's marker"
+assert_eq "$library_home_before" "$(snapshot_source_tree "$library_home")" \
+  "INV-15: sourcing the function libraries creates no request cache"
+assert_eq "$shim_repo_before" "$(snapshot_source_tree "$TRUST_REPO")" \
+  "INV-15: sourcing the function libraries creates no target state"
+green_case "the exact two function libraries can be sourced in a genuinely stale root without executing a callback or changing target/cache state"
+
+library_new_rc=0
+library_new="$(env -u ORCHID_EPOCH -u ORCHID_ACTOR HOME="$library_home" \
+  ORCHID_OUTPUT=json ORCHID_REPO="$TRUST_REPO" ORCHID_ALLOW_STALE_ROOT='' \
+  "$TRUST_ROOT/bin/orchid" run start --request-id inv15-library-new 2>&1)" \
+  || library_new_rc=$?
+enrol_observe "$ENROL_LEDGER" "$TRUST_ROOT" lib/requests.sh "$library_new"
+assert_eq 1 "$library_new_rc" "INV-15: a new public function-library request refuses genuine staleness"
+assert_match 'templates/\.keep' "$library_new" \
+  "INV-15: the new callback refusal observes the staged kernel witness"
+assert_eq "$library_home_before" "$(snapshot_source_tree "$library_home")" \
+  "INV-15: refused new library callback creates no claim or cached result"
+assert_eq "$shim_repo_before" "$(snapshot_source_tree "$TRUST_REPO")" \
+  "INV-15: refused new library callback creates no target state"
+red_case "the function libraries' actual public callback refuses a new request from a stale kernel before claim/cache or target effects"
+
+# Initialize only the owned target fixture using the complete shipped source,
+# then refresh the probe root's index; its working-tree .keep remains intact.
+env -u ORCHID_EPOCH -u ORCHID_ACTOR HOME="$library_home" \
+  ORCHID_OUTPUT=raw ORCHID_REPO="$TRUST_REPO" "$ORCHID_BIN" init >/dev/null \
+  || fail "INV-15: accepting library callback target must initialize"
+git -C "$TRUST_REPO" checkout -q orchid/integration \
+  || fail "INV-15: accepting library callback must enter the initialized integration branch"
+git -C "$TRUST_ROOT" reset -q HEAD -- templates/.keep
+library_first_rc=0
+library_first="$(env -u ORCHID_EPOCH -u ORCHID_ACTOR HOME="$library_home" \
+  ORCHID_OUTPUT=json ORCHID_REPO="$TRUST_REPO" ORCHID_ALLOW_STALE_ROOT='' \
+  "$TRUST_ROOT/bin/orchid" run start --request-id inv15-library-owned 2>&1)" \
+  || library_first_rc=$?
+assert_eq 0 "$library_first_rc" "INV-15: refreshed root admits the actual library callback"
+library_epoch="$(cat "$TRUST_REPO/.orchid/runtime/epoch")"
+assert_eq "$library_epoch" "$(jq -r .epoch <<<"$library_first")" \
+  "INV-15: admitted callback reports its actual minted ownership epoch"
+library_result_file="$(find "$library_home/.orchid/requests" -type f -name result.json)"
+[ -f "$library_result_file" ] || fail "INV-15: admitted callback must publish its real receipt"
+jq -e -s 'length==1 and .[0].exit==0 and (.[0].data|type=="object")' \
+  "$library_result_file" >/dev/null \
+  || fail "INV-15: admitted callback must publish one successful typed result"
+library_result_before="$(cksum "$library_result_file")"
+library_cached_home="$(snapshot_source_tree "$library_home")"
+green_case "refreshing the identical root admits an actual ownership callback and publishes a successful receipt; the stale refusal is conditional admission"
+
+git -C "$TRUST_ROOT" add templates/.keep
+library_cached_rc=0
+library_cached="$(env -u ORCHID_EPOCH -u ORCHID_ACTOR HOME="$library_home" \
+  ORCHID_OUTPUT=json ORCHID_REPO="$TRUST_REPO" ORCHID_ALLOW_STALE_ROOT='' \
+  "$TRUST_ROOT/bin/orchid" run start --request-id inv15-library-owned 2>&1)" \
+  || library_cached_rc=$?
+assert_eq 1 "$library_cached_rc" "INV-15: a cached function-library callback rechecks genuine staleness"
+assert_match 'templates/\.keep' "$library_cached" \
+  "INV-15: cached callback refusal observes the staged kernel witness"
+assert_eq "$library_cached_home" "$(snapshot_source_tree "$library_home")" \
+  "INV-15: refused cached callback creates no extra claim/result"
+assert_eq "$library_result_before" "$(cksum "$library_result_file")" \
+  "INV-15: refused cached callback preserves historical receipt bytes"
+assert_eq "$library_epoch" "$(cat "$TRUST_REPO/.orchid/runtime/epoch")" \
+  "INV-15: refused cached callback cannot mint another ownership epoch"
+red_case "the same real cached callback from a newly stale root refuses before replay or another ownership epoch and preserves the receipt"
 
 # ===========================================================================
 # 9 -- THE SELF-HOSTED ENTRY POINTS, RUN: THE DENIAL COSTS NO TARGET-REPOSITORY

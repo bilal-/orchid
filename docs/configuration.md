@@ -228,6 +228,13 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   - Distinct from **`hook.before_merge`**, which is an engine hook satisfied by
     a reconciled envelope and refuses the verb before any merge is attempted
     (exit 15). `merge_gate` is a shell command scored on its exit status.
+Jobs reads `stall_minutes`, `timeout_minutes`, `cpu_stall_min_s`,
+`spool_max_bytes` and `gc_older_than_s` as literal nonnegative decimal data,
+with at most 18 digits. Leading zeros are decimal. Minute values must be at
+most `153722867280912930` so conversion to seconds cannot overflow; the other
+three values may be at most `999999999999999999`. Malformed or out-of-range
+values refuse before job processing, including an empty job list.
+
 - **`stall_minutes`** is the kernel's one "no sign of life for long enough to
   call it stuck" bound, and it is read in three places. For a job that stamped
   a pid, `orchid jobs check` kills it and reports `stalled` after that long
@@ -776,6 +783,12 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   instead. Any other file is never touched, including one that mentions
   `orchid pre-push guard` somewhere else in its body: a hook of yours that
   talks about orchid, or chains to it, is still yours.
+The HTML report is runtime-only output: `status_page` must name a regular file
+below the repository's owned `.orchid/runtime/`, using either a relative
+`runtime/...` value or its absolute owned path. External and durable-state
+paths, `.`/`..` aliases, linked or dangling ancestors, symlink final files and
+nonregular targets refuse before a page or parent directory is written.
+
 - **`status_page`** is where `orchid status --html` writes its
   self-contained static page — never served, open the file directly.
 - **`notify.plugin`** (default `openclaw`) selects WHICH `kind=notify`

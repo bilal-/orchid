@@ -634,6 +634,32 @@ fmt_dur() {
   fi
 }
 
+# Numeric configuration is literal decimal data, like the numeric jobs options.
+# Validate before arithmetic or empty loops; force base 10 for leading zeros.
+_jobs_config_integer() {
+  local key="$1" default="$2" maximum="${3:-999999999999999999}" value
+  value="$(config_get "$repo" "$key" "$default")"
+  case "$value" in
+    ''|*[!0-9]*) printf 'orchid: %s must be literal nonnegative decimal data\n' "$key" >&2; return 1 ;;
+  esac
+  if [ "${#value}" -gt 18 ]; then
+    printf 'orchid: %s exceeds the supported decimal range\n' "$key" >&2; return 1
+  fi
+  value=$((10#$value))
+  if [ "$value" -gt "$maximum" ]; then
+    printf 'orchid: %s exceeds the supported decimal range\n' "$key" >&2; return 1
+  fi
+  printf '%s\n' "$value"
+}
+
+_jobs_config_minutes_seconds() {
+  local minutes
+  minutes="$(_jobs_config_integer "$1" "$2" 153722867280912930)" || return 1
+  printf '%s\n' "$((minutes * 60))"
+}
+
+_jobs_stall_seconds() { _jobs_config_minutes_seconds stall_minutes 10; }
+
 # jobs_rows <show-all> -- one RAW row per job, tab-separated, numeric fields
 # left as numbers (-1 meaning "unknown"), prefixed by a sort key:
 #
@@ -649,7 +675,7 @@ jobs_rows() {
   local age_src age elapsed pct tf key
   local t_status t_started t_budget
   now="$(date +%s)"
-  stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+  stall_s="$(_jobs_stall_seconds)" || return 1
   for f in "$jobs_dir"/*.json; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     if [ "$strict" -eq 1 ] && { [ ! -f "$f" ] || [ -L "$f" ]; }; then
@@ -856,7 +882,7 @@ jobs_table() {
 jobs_warnings() {
   local stall_s label seen_budget=" "
   local jid jtask jrole jop jatt jeng jpid jstate age elapsed pct jby jlog
-  stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+  stall_s="$(_jobs_stall_seconds)" || return 1
   while IFS="$JOBS_TAB" read -r jid jtask jrole jop jatt jeng jpid jstate \
       age elapsed pct jby jlog; do
     [ -n "${jid:-}" ] || continue
@@ -1282,7 +1308,7 @@ case "$sub" in
     # each must keep reporting itself (exit 14) rather than being masked by a
     # wait about the state of the jobs directory.
     dup_now="$(date +%s)"
-    dup_stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+    dup_stall_s="$(_jobs_stall_seconds)" || exit 1
     for dupf in "$jobs_dir"/*.json; do
       [ -e "$dupf" ] || continue
       job_unlaunched_reapable "$dupf" "$dup_now" "$dup_stall_s" || continue
@@ -1329,11 +1355,11 @@ case "$sub" in
     ;;
   check)
     # Read-and-runtime-only: reports/kills by pgid, never mutates durable state.
-    stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
-    timeout_s=$(( $(config_get "$repo" timeout_minutes 60) * 60 ))
+    stall_s="$(_jobs_stall_seconds)" || exit 1
+    timeout_s="$(_jobs_config_minutes_seconds timeout_minutes 60)" || exit 1
     # 0 = the CPU-delta stall arm is OFF (the default; it is opt-in -- see
     # hb_cpu_flat's header for why CPU alone must not kill).
-    cpu_floor="$(config_get "$repo" cpu_stall_min_s 0)"
+    cpu_floor="$(_jobs_config_integer cpu_stall_min_s 0)" || exit 1
     now="$(date +%s)"
     budget_seen=" "
     for f in "$jobs_dir"/*.json; do
@@ -1465,12 +1491,12 @@ case "$sub" in
     # v0b2: a spool file bigger than this is quarantined on size alone,
     # before any JSON parsing — a cheap, early defense against a runaway or
     # forged tier-3 adapter dumping an oversized payload into the spool dir.
-    spool_max="$(config_get "$repo" spool_max_bytes 262144)"
+    spool_max="$(_jobs_config_integer spool_max_bytes 262144)" || exit 1
     # The bound on job_liveness's pid-0 (launcher-window) arm, read from
     # the same `stall_minutes` key `check`, `gc`, `prepare` and the driver all
     # read, so one manifest can never be live to one of them and finished to
     # another.
-    reconcile_stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+    reconcile_stall_s="$(_jobs_stall_seconds)" || exit 1
     for f in "$spool_dir"/*.json; do
       [ -e "$f" ] || continue
       base="$(basename "$f")"
@@ -1924,7 +1950,7 @@ case "$sub" in
     # reapable at all. `stall_minutes` is the kernel's existing "no sign of life
     # for long enough to call it stuck" knob -- the same one `check` kills a
     # stamped job over -- so no new number is invented here.
-    stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+    stall_s="$(_jobs_stall_seconds)" || exit 1
 
     # --reap-prepared (v1-m4): the EXCLUSIVE, explicit form of the unlaunched
     # reap -- unlaunched manifests only, nothing else touched, and
@@ -1957,7 +1983,11 @@ case "$sub" in
       exit 0
     fi
 
-    older_than_s="${older_than_s_arg:-$(config_get "$repo" gc_older_than_s 86400)}"
+    if [ -n "$older_than_s_arg" ]; then
+      older_than_s="$older_than_s_arg"
+    else
+      older_than_s="$(_jobs_config_integer gc_older_than_s 86400)" || exit 1
+    fi
     # T027 (dogfood F29/F41): ordinary `gc` reaps UNLAUNCHED manifests too. It
     # used to skip every pid==0 manifest outright, which left `orchid jobs gc
     # --older-than-s 0` -- the call the driver itself makes and the first one an
@@ -2155,7 +2185,7 @@ case "$sub" in
     recorded=""; recorded="$(job_exit_code "$job_id" || true)"
     [ -z "$recorded" ] \
       || orchid_die "job $job_id already has its exit on record as $recorded, written by the process itself — that record is not replaced; its envelope files on the next 'orchid jobs reconcile'"
-    stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+    stall_s="$(_jobs_stall_seconds)" || exit 1
     case "$(job_liveness "$manifest" "$(date +%s)" "$stall_s")" in
       running)
         orchid_die "job $job_id is running (pid $(jq -r '.pid // 0' "$manifest")) — the kernel can see it, so nothing here needs recording; 'orchid jobs check' is what ends a job that has stalled or run past its budget" ;;

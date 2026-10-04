@@ -3859,6 +3859,52 @@ orchid_physical_dir() {
   ( cd "$1" 2>/dev/null && pwd -P )
 }
 
+# orchid_status_page_path <repo> -- validate the HTML report's runtime-only
+# destination before creating any parent or writing a page. Shared by direct
+# status and the public agent preflight; this helper itself writes nothing.
+orchid_status_page_path() {
+  local repo="$1" physical_repo state physical_state configured relative path parent physical
+  while [ "$repo" != / ] && [ "${repo%/}" != "$repo" ]; do repo="${repo%/}"; done
+  physical_repo="$(orchid_physical_dir "$repo")" || return 1
+  state="${repo%/}/.orchid"; physical_state="${physical_repo%/}/.orchid"
+  if [ -L "${repo%/}/orchid.config" ] || {
+    [ -e "${repo%/}/orchid.config" ] && [ ! -f "${repo%/}/orchid.config" ];
+  }; then
+    printf 'orchid: unsafe status_page; project configuration must be an owned regular file\n' >&2
+    return 1
+  fi
+  configured="$(config_get "$repo" status_page runtime/status.html)"
+  case "$configured" in
+    runtime/*) relative="$configured" ;;
+    "$state/runtime/"*) relative="${configured#"$state/"}" ;;
+    "$physical_state/runtime/"*) relative="${configured#"$physical_state/"}" ;;
+    *) printf 'orchid: unsafe status_page; output must belong to .orchid/runtime\n' >&2; return 1 ;;
+  esac
+  case "/$relative/" in
+    *'/../'*|*'/./'*|*'//'*|*$'\t'*|*$'\r'*|*$'\n'*)
+      printf 'orchid: unsafe status_page; output requires a non-aliased runtime file path\n' >&2
+      return 1 ;;
+  esac
+  path="$state/$relative"; parent="$(dirname "$path")"
+  while [ "$parent" != "$repo" ]; do
+    if [ "$parent" = / ] || [ -L "$parent" ] || { [ -e "$parent" ] && [ ! -d "$parent" ]; }; then
+      printf 'orchid: unsafe status_page; output parent must be an owned directory\n' >&2
+      return 1
+    fi
+    parent="$(dirname "$parent")"
+  done
+  if [ -L "$path" ] || { [ -e "$path" ] && [ ! -f "$path" ]; }; then
+    printf 'orchid: unsafe status_page; output must be an owned regular file\n' >&2
+    return 1
+  fi
+  physical="$(_orchid_physical_path "$path")" || return 1
+  if [ "$physical" != "$physical_state/$relative" ]; then
+    printf 'orchid: unsafe status_page; output escapes repository runtime ownership\n' >&2
+    return 1
+  fi
+  printf '%s\n' "$path"
+}
+
 # A checkout Orchid creates holds exactly what is committed and nothing else:
 # a task's dispatch worktree (runners/orchid-drive) and the detached
 # validation worktree `orchid merge` runs the suite in are both `git worktree
@@ -4456,17 +4502,21 @@ orchid_plugin_entrypoint_check() {
     printf "entrypoint '%s' is a symlink; a regular-file entrypoint is required\n" "$ep"
     return 1
   fi
-  if [ ! -f "$dir/$ep" ] || [ ! -x "$dir/$ep" ]; then
+  if [ ! -f "$dir/$ep" ]; then
     printf "entrypoint '%s' is not an executable file in %s\n" "$ep" "$dir"
     return 1
   fi
   physical_root="$(orchid_physical_dir "$dir")" || return 1
   physical_entry="$(_orchid_physical_path "$dir/$ep")" || return 1
   case "$physical_entry" in
-    "$physical_root"/*) return 0 ;;
+    "$physical_root"/*) ;;
+    *) printf "entrypoint '%s' resolves outside the plugin directory\n" "$ep"; return 1 ;;
   esac
-  printf "entrypoint '%s' resolves outside the plugin directory\n" "$ep"
-  return 1
+  if [ ! -x "$dir/$ep" ]; then
+    printf "entrypoint '%s' is not an executable file in %s (fix: chmod +x %q)\n" "$ep" "$dir" "$physical_entry"
+    return 1
+  fi
+  return 0
 }
 
 _orchid_file_sha256() (  # file -> a line binding this file's path to its

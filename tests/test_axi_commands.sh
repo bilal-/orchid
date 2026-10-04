@@ -20,6 +20,85 @@ assert_eq '' "$($fixture_bin context --ambient)" 'ambient context is empty outsi
 [ ! -e "$ORCHID_REPO/.orchid" ] || fail 'context query wrote target state'
 green_case 'context reports uninitialized repo without creating project state'
 
+# Usage recovery is one response: the same scoped help as --help, with the
+# original error and exit2. The semantic walk must observe a later --json while
+# consuming an option's literal --json value even after an earlier failure.
+cat > "$payload/libexec/orchid-fixture-usage" <<'EOF'
+#!/bin/bash
+printf 'reached\n' >> "$ORCHID_REPO/usage-marker"
+printf '{"accepted":true}\n'
+EOF
+chmod 755 "$payload/libexec/orchid-fixture-usage"
+printf '%s\n' '{"description":"Scoped usage recovery fixture.","default":[],"commands":[{"path":[],"kind":"json","usage":"usage: orchid fixture-usage [--message <value>] [--approve]","options":{"--message":1,"--approve":0},"min_args":0,"max_args":0,"output_fields":["accepted"],"examples":["orchid fixture-usage --message example"],"notes":["No prompts."]}]}' > "$payload/lib/cli/fixture-usage.json"
+usage_help="$($fixture_bin --json fixture-usage --help --full)" || fail 'fixture scoped help failed'
+usage_error_json() {
+  local label="$1" rc=0 output; shift
+  ORCHID_OUTPUT=toon "$fixture_bin" fixture-usage "$@" > "$WORK/usage-$label.out" 2> "$WORK/usage-$label.err" || rc=$?
+  assert_eq 2 "$rc" "usage recovery $label exits2"
+  output="$(cat "$WORK/usage-$label.out")"
+  case "$output" in
+    \{*)
+      jq -e '.kernel_exit==2 and (.error|type=="string") and (.help|type=="string")' <<< "$output" >/dev/null \
+        || fail "usage recovery $label lacks structured error"
+      assert_eq "$(jq -c '{usage,commands,description,options,output,examples,notes}' <<< "$usage_help")" \
+        "$(jq -c '{usage,commands,description,options,output,examples,notes}' <<< "$output")" \
+        "usage recovery $label includes identical complete scoped help"
+      ;;
+    *) fail "usage recovery $label lost requested JSON format" ;;
+  esac
+}
+usage_error_json json-first --json --bad
+usage_error_json json-last --bad --json
+usage_error_json after-literal --bad --message --json --json
+usage_error_json bad-value --limit nope --json
+usage_error_json cache-refusal --bad --request-id usage-recovery-red --json
+assert_match 'positive integer' "$(jq -r .error "$WORK/usage-bad-value.out")" 'format recovery preserves the first bad-value cause'
+for label in literal inline-literal duplicate-literal separator-literal; do
+  rc=0
+  case "$label" in
+    literal) set -- --bad --message --json ;;
+    inline-literal) set -- --bad --message=--json ;;
+    duplicate-literal) set -- --message first --message --json --bad ;;
+    separator-literal) set -- --bad -- --json ;;
+  esac
+  ORCHID_OUTPUT=toon "$fixture_bin" fixture-usage "$@" > "$WORK/usage-$label.out" 2> "$WORK/usage-$label.err" || rc=$?
+  assert_eq 2 "$rc" "literal presentation twin $label exits2"
+  assert_match '^error:' "$(cat "$WORK/usage-$label.out")" "literal $label keeps default TOON format"
+  assert_match '^usage:.*orchid fixture-usage' "$(cat "$WORK/usage-$label.out")" "literal $label carries scoped recovery"
+done
+assert_match 'duplicate option --message' "$(cat "$WORK/usage-duplicate-literal.out")" 'duplicate literal option keeps its first error cause'
+[ ! -e "$ORCHID_REPO/usage-marker" ] || fail 'usage error reached its kernel body'
+[ ! -e "$ORCHID_REPO/.orchid" ] || fail 'usage error initialized target state'
+[ ! -e "$HOME/.orchid/requests" ] || fail 'usage error created a retry cache'
+red_case 'usage failures include full scoped help in requested format without kernel or cache effects'
+accepted="$(ORCHID_OUTPUT=toon "$fixture_bin" fixture-usage --message --json)" || fail 'literal --json semantic value failed valid admission'
+assert_match '^accepted: true' "$accepted" 'valid literal --json value remains default TOON'
+assert_eq reached "$(cat "$ORCHID_REPO/usage-marker")" 'valid literal option twin reaches its kernel exactly once'
+green_case 'same declared kernel accepts literal --json option value without changing presentation'
+
+# Recognized read failures refuse; only return2 means no adapter and permits
+# generic transport. A captured body must not become a successful fallback.
+cp "$payload/lib/agent-read.sh" "$WORK/agent-read.owned"
+cat > "$payload/libexec/orchid-fixture-read-failure" <<'EOF'
+#!/bin/bash
+printf '{"text":"ORCHID_FAKE_CAPTURED_BODY"}\n'
+EOF
+chmod 755 "$payload/libexec/orchid-fixture-read-failure"
+printf '%s\n' '{"description":"Read adapter failure fixture.","default":[],"commands":[{"path":[],"kind":"json","usage":"usage: orchid fixture-read-failure","options":{},"min_args":0,"max_args":0,"output_fields":["text"]}]}' > "$payload/lib/cli/fixture-read-failure.json"
+cat > "$payload/lib/agent-read.sh" <<'EOF'
+orchid_agent_read_json() { printf 'orchid: unsafe fixture input ownership\n' >&2; return 1; }
+EOF
+rc=0; "$fixture_bin" --json fixture-read-failure > "$WORK/read-failure.json" 2> "$WORK/read-failure.err" || rc=$?
+assert_eq 1 "$rc" 'recognized read adapter failure refuses public output'
+jq -e '.kernel_exit==1 and (.error|contains("ownership"))' "$WORK/read-failure.json" >/dev/null || fail 'read adapter failure lacks structured ownership refusal'
+if grep -F ORCHID_FAKE_CAPTURED_BODY "$WORK/read-failure.json" "$WORK/read-failure.err"; then fail 'recognized read failure disclosed captured body through fallback'; fi
+assert_match 'unsafe fixture input' "$(cat "$WORK/read-failure.err")" 'recognized read failure preserves safe ownership diagnostic'
+red_case 'recognized read failure returns structured1 without captured-body fallback'
+printf 'orchid_agent_read_json() { return 2; }\n' > "$payload/lib/agent-read.sh"
+assert_eq ORCHID_FAKE_CAPTURED_BODY "$("$fixture_bin" --json fixture-read-failure | jq -r .text)" 'unhandled2 permits declared JSON transport'
+cp "$WORK/agent-read.owned" "$payload/lib/agent-read.sh"
+green_case 'same declared response uses generic transport only for an unhandled adapter'
+
 # Every shipped verb needs command admission metadata, and every declared leaf
 # must expose scoped help without executing that leaf or requiring an epoch.
 for entry in "$REPO_ROOT"/libexec/orchid-*; do

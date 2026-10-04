@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
+source "$REPO_ROOT/tests/inv/neutrality_helpers.sh"
 # Kernel never branches on plugin names: engine literals may appear only in
 # defaults inside config lookups, never in conditionals.
 #
@@ -14,7 +15,16 @@ source "$(dirname "$0")/../helpers.sh"
 #      same pipeline, or the gate would be unusable and the RED case above
 #      would only prove that the pattern matches everything.
 NAME_BRANCH_RE='if .*(codex|agy|claude)|case .*(codex|agy|claude)'
-probe="$WORK/inv05-probe.sh"
+inv05_branch_hits() {
+  local root="$1" f found
+  while IFS= read -r f; do
+    found="$(grep -nE "$NAME_BRANCH_RE" "$f" | grep -v 'config_get.*role\.' || true)"
+    [ -z "$found" ] || printf '%s: %s\n' "$f" "$found"
+  done < <(inv_kernel_source_files "$root")
+}
+probe_root="$WORK/inv05-provider-probe"
+mkdir -p "$probe_root/bin" "$probe_root/lib" "$probe_root/libexec" "$probe_root/runners"
+probe="$probe_root/lib/injected.sh"
 {
   printf '#!/usr/bin/env bash\n'
   printf 'if [ "$engine" = codex ]; then echo branch; fi\n'
@@ -24,12 +34,12 @@ probe="$WORK/inv05-probe.sh"
 # is then promoted to the pipeline's status -- so the probe would report "no
 # match" for a pattern it did find. The scan below has never been exposed to
 # that because it uses no -q either.
-probe_hit="$(grep -nE "$NAME_BRANCH_RE" "$probe" | grep -v 'config_get.*role\.' || true)"
+probe_hit="$(inv05_branch_hits "$probe_root")"
 [ -n "$probe_hit" ] \
   || fail "INV-05 self-check: the scan does not match a real 'if ... = codex' branch, so a kernel full of them would pass this gate"
-probe_default="$WORK/inv05-probe-default.sh"
+probe_default="$probe"
 printf 'if [ -n "$(config_get role.implementer codex)" ]; then echo ok; fi\n' > "$probe_default"
-probe_default_hit="$(grep -nE "$NAME_BRANCH_RE" "$probe_default" | grep -v 'config_get.*role\.' || true)"
+probe_default_hit="$(inv05_branch_hits "$probe_root")"
 [ -z "$probe_default_hit" ] \
   || fail "INV-05 self-check: a config_get default naming an engine must stay legal -- the exemption is what makes this gate usable"
 red_case "INV-05's scan matched a real 'if ... = codex' engine-name branch"
@@ -42,7 +52,9 @@ red_case "INV-05's scan matched a real 'if ... = codex' engine-name branch"
 # literal, and the label is the text written here.
 green_case 'the same scan let a `config_get role.implementer codex` default through, so the match above is detection rather than a pattern that hits every line naming an engine'
 
-if grep -nE "$NAME_BRANCH_RE" "$REPO_ROOT"/libexec/* "$REPO_ROOT"/lib/*.sh \
-   | grep -v 'config_get.*role\.'; then
-  fail "INV-05: kernel branches on an engine name"
+inv_assert_native_host_boundary "$REPO_ROOT" INV-05
+hits="$(inv05_branch_hits "$REPO_ROOT")"
+if [ -n "$hits" ]; then
+  printf '%s\n' "$hits"
+  fail "INV-05: kernel branches on engine name"
 fi

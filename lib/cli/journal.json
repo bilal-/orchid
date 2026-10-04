@@ -1,5 +1,5 @@
 {
-  "description": "Read run history and record attributed notes without editing durable files.",
+  "description": "Read or append the journal; --task is a flat single-line label with an owned regular index.",
   "default": [
     "tail"
   ],
@@ -38,7 +38,7 @@
       "path": [
         "show"
       ],
-      "usage": "usage: orchid journal show --task <id>",
+      "usage": "usage: orchid journal show --task <flat-label>",
       "options": {
         "--task": 1
       },
@@ -68,7 +68,7 @@
       "path": [
         "add"
       ],
-      "usage": "usage: orchid journal add [--task <id>] [--kind <kind>] \"<text>\"",
+      "usage": "usage: orchid journal add [--task <flat-label>] [--kind <kind>] [--] \"<text>\"",
       "options": {
         "--task": 1,
         "--kind": 1

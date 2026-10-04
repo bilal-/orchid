@@ -323,3 +323,53 @@ installs release metadata and tests the fast version contract from installed
 files, including a missing-file RED and restored accepting twin. Native callbacks
 also explicitly select compact external output independent of inherited raw
 kernel compatibility settings. Re-pin and qualify the corrected assembled head.
+
+
+## Release admission and proof repair — 2026-10-04
+
+The frozen `2de34ef` source and extracted-archive full gates both finished
+with failures. Their unique findings were the installer/dispatcher fixture
+corrections already in `f6ee31b`, doctor recovery wording, an inherited XDG
+fixture, notification/start diagnostics, proof annotations, incomplete
+synthetic stale-root payloads, fixed-PATH status admission, and INV-05/13/14/15
+proof inventories. The `9dc827e` source/archive reruns were stopped after those
+same failures were confirmed; neither candidate was published.
+
+The current review corrects those fixtures without bypassing the kernel's
+admission fences. INV-05/14 separate the exact native-host Tier-2 adapters from
+the engine-neutral kernel and exercise the boundary. INV-13 audits the bounded
+context reader separately from the sole boundary writer. INV-15 now measures
+both receipt-library callbacks and the direct drive/service shims; its four
+exact library/delegation exceptions have local refusing and accepting proof.
+
+Two product defects were also reproduced and repaired: new or cached public
+requests could skip installation admission, and journal task labels/index
+links could escape their owned namespace. Receipt admission now precedes cache
+claims/replay, service installation rechecks machine-local authorization, and
+scope discovery uses the existing filesystem-only worktree helper. Journal
+add/show validate their label, ancestors and final index before publication
+or reading. Focused tests demonstrate the original refusals and owned twins.
+
+Usage errors now return complete scoped help in their structured stdout.
+One semantic parser preserves format selection on refusal while consuming
+literal option values correctly. An independent comparison retained 1,233
+accepted parser results and 181 refusals; a separate 194-assertion cross-check
+passed. Fresh frontend instructions distinguish the base kernel dependencies
+from optional native runtimes and give all four hosts equal setup commands.
+
+Public context and status now validate the bounded project inputs before raw
+reads or cached replay, including delegated job and HTML dashboard inputs.
+Literal decimal validation covers the numeric jobs configuration; HTML output
+is admitted only under the owned runtime directory. OpenCode callbacks use the
+same fixed helper PATH as shell callbacks. The expanded read suite passed
+25 RED and 26 GREEN cases, and the whole-tree syntax, portability and ShellCheck
+gate passed. All four native callbacks now bind context to the host directory,
+with a causal regression and accepting check: 27 RED and 23 GREEN cases passed.
+
+At this snapshot, final aggregate source/archive qualification, hosted CI and
+publication are still pending. The final candidate must be rebuilt and
+formula-pinned on an actual integration checkout, then qualify the exact
+source, archive and native Homebrew payload before any push/tag/release.
+Check the beta release page for publication status; these are dated local
+observations, not evidence of authenticated four-vendor sessions or genuine
+third-party beta use.

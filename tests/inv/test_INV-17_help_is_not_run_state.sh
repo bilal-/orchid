@@ -172,14 +172,31 @@ red_case 'third-level boundary show set and clear help outruns stale ownership, 
 # is intact rather than evidence that it is gone.
 inv17_shim="$WORK/shim"
 mkdir -p "$inv17_shim/libexec" "$inv17_shim/bin"
+mkdir -p "$inv17_shim/lib/cli" "$inv17_shim/release"
 cat > "$inv17_shim/libexec/orchid-notahelper" <<'SHIM'
 #!/usr/bin/env bash
 set -euo pipefail
-echo "did the thing instead of printing usage"
+echo "INV17_BAD_HELP_BODY"
 SHIM
 chmod +x "$inv17_shim/libexec/orchid-notahelper"
 cp "$REPO_ROOT/bin/orchid" "$inv17_shim/bin/orchid"
-inv17_shim_out="$("$inv17_shim/bin/orchid" notahelper --help 2>&1 || true)"
+cp "$REPO_ROOT/lib/common.sh" "$REPO_ROOT/lib/cli.sh" "$REPO_ROOT/lib/cli-parse.jq" "$inv17_shim/lib/"
+cp "$REPO_ROOT/release/metadata.conf" "$inv17_shim/release/metadata.conf"
+(
+  export ORCHID_ROOT="$inv17_shim"
+  source "$inv17_shim/lib/common.sh"
+  printf '%s\n' '{"description":"Deliberately bad standalone help control.","default":[],"commands":[{"path":[],"usage":"usage: orchid notahelper","kind":"scalar","options":{},"min_args":0,"max_args":0,"examples":["orchid notahelper --help"]}]}' \
+    | atomic_write "$inv17_shim/lib/cli/notahelper.json"
+) || fail 'INV-17: could not publish declared synthetic help control'
+# Public admission now answers help before the bad body can run. Keep that
+# protection as a positive control, then exercise the identical deliberately
+# bad standalone kernel as the classifier's negative control.
+inv17_public_out="$("$inv17_shim/bin/orchid" notahelper --help 2>&1)" || fail 'INV-17: complete public help control failed before its help response'
+assert_match '^usage: orchid notahelper' "$inv17_public_out" 'INV-17: public admission protects the declared command before its bad body'
+grep -q 'INV17_BAD_HELP_BODY' <<< "$inv17_public_out" \
+  && fail 'INV-17: public help reached the deliberately bad body'
+inv17_shim_out="$("$inv17_shim/libexec/orchid-notahelper" --help 2>&1)" || fail 'INV-17: standalone negative control failed before reaching its bad body'
+assert_eq INV17_BAD_HELP_BODY "$inv17_shim_out" 'INV-17: negative control actually reached the fake body, not a missing-helper error'
 case "$(printf '%s\n' "$inv17_shim_out" | head -1)" in
   "usage: orchid notahelper"*)
     fail "INV-17: the check accepted a verb that never printed usage — it would pass over the very defect it exists to find" ;;

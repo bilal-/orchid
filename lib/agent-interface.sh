@@ -9,14 +9,35 @@ orchid_agent_error() {
   jq -n --arg error "$message" --arg command "$command" --argjson kernel_exit "$code" \
     '{error:$error,kernel_exit:$kernel_exit,help:("Run " + $command + " --help for the accepted form")}' | orchid_agent_emit "$format"
 }
-orchid_agent_help() {
-  local verb="$1" command="$2" format="$3" view="${4:-}"
-  [ -n "$view" ] || view='{}'
+# One help data owner serves normal help and complete usage-error recovery.
+orchid_agent_help_data() {
+  local verb="$1" command="$2"
   jq -n --argjson command "$command" --slurpfile meta "$ORCHID_ROOT/lib/cli/$verb.json" \
     '{usage:$command.usage,commands:($command.commands // []),description:$meta[0].description,
       options: (($command.options // {}) | to_entries | map({flag:.key,value:(.value==1)})),
       output:["--json","--full","--fields <a,b>","--limit <n>","--request-id <id>"],
-      examples:$command.examples,notes:($command.notes // [])}' | jq --argjson command "$command" --argjson view "$view" -f "$ORCHID_ROOT/lib/agent-present.jq" | orchid_agent_emit "$format"
+      examples:$command.examples,notes:($command.notes // [])}'
+}
+orchid_agent_help() {
+  local verb="$1" command="$2" format="$3" view="${4:-}"
+  [ -n "$view" ] || view='{}'
+  orchid_agent_help_data "$verb" "$command" | \
+    jq --argjson command "$command" --argjson view "$view" -f "$ORCHID_ROOT/lib/agent-present.jq" | orchid_agent_emit "$format"
+}
+orchid_agent_usage_error() {
+  local verb="$1" format="$2" message="$3" command invocation
+  command="$(jq -c '.command // null' <<< "$ORCHID_CLI_PARSED")"
+  format="$(jq -r --arg default "$format" '.view.format // $default' <<< "$ORCHID_CLI_PARSED")"
+  if [ "$command" = null ]; then
+    orchid_agent_error 2 "$message" "$format" "orchid $verb"
+    return
+  fi
+  invocation="$(jq -r --arg verb "$verb" '"orchid " + $verb + (if (.path|length)>0 then " " + (.path|join(" ")) else "" end)' <<< "$command")"
+  # A usage error always includes full recovery, unaffected by data projection
+  # or truncation flags. Its format still comes from the same semantic walk.
+  orchid_agent_help_data "$verb" "$command" | \
+    jq --arg error "$message" --arg command "$invocation" \
+      '. + {error:$error,kernel_exit:2,help:("Run " + $command + " --help for the accepted form")}' | orchid_agent_emit "$format"
 }
 orchid_agent_catalog() {
   local format="$1"
@@ -32,7 +53,13 @@ orchid_agent_result_json() {
     local __orchid_entry_defer_restore=1
     source "$ORCHID_ROOT/lib/common.sh"
     source "$ORCHID_ROOT/lib/agent-read.sh"
-    if orchid_agent_read_json "$verb" "$path" "$raw" "$@"; then return 0; fi
+    local read_rc=0
+    orchid_agent_read_json "$verb" "$path" "$raw" "$@" || read_rc=$?
+    case "$read_rc" in
+      0) return 0 ;;
+      2) ;;  # Only an unhandled adapter uses the generic transport below.
+      *) return 1 ;;
+    esac
   fi
   if [ "$verb" = run ] && { [ "$path" = start ] || [ "$path" = resume ]; }; then
     jq -n --rawfile text "$raw" '{epoch:($text|capture("epoch: (?<n>[0-9]+)").n|tonumber),
@@ -48,6 +75,38 @@ orchid_agent_result_json() {
     *) jq -n --rawfile text "$raw" '{text:$text} | if $text=="" then .completed=true else . end' ;;
   esac
 }
+# Admission and input ownership precede raw reads and historical replays.
+# Reuse the receipt guard even without a request ID; it is read-only and keeps
+# status --explain's trust observation ahead of the installation-root guard.
+orchid_agent_public_read_preflight() (
+  local verb="$1" parsed="$2" format="$3" path="$4" diagnostic
+  local __orchid_entry_defer_restore=1
+  source "$ORCHID_ROOT/lib/common.sh"
+  source "$ORCHID_ROOT/lib/trust.sh"
+  source "$ORCHID_ROOT/lib/requests.sh"
+  source "$ORCHID_ROOT/lib/agent-read.sh"
+  if ! orchid_request_admit "$verb" "$parsed"; then
+    orchid_agent_error 1 'Public read admission refused; resolve the installation or authorization diagnostic before retrying' "$format" "orchid $verb $path"
+    return 1
+  fi
+  # This helper emits only logical-path ownership diagnostics, never input
+  # content. Preserve them on stderr and in the public structured error.
+  if ! diagnostic="$(orchid_agent_context_preflight "${ORCHID_REPO:-$PWD}" 2>&1)"; then
+    [ -z "$diagnostic" ] || printf '%s\n' "$diagnostic" >&2
+    orchid_agent_error 1 "${diagnostic:-Unsafe context input: repository ownership validation failed; restore regular owned files and retry}" "$format" "orchid $verb $path"
+    return 1
+  fi
+  if [ "$verb" = status ] && jq -e '.option_values | has("--html")' <<< "$parsed" >/dev/null; then
+    # The shared helper owns destination policy. Discard only its accepting
+    # path here; the raw writer obtains and validates it again before writing.
+    if ! diagnostic="$(orchid_status_page_path "${ORCHID_REPO:-$PWD}" 2>&1 >/dev/null)"; then
+      [ -z "$diagnostic" ] || printf '%s\n' "$diagnostic" >&2
+      orchid_agent_error 1 "${diagnostic:-Unsafe status_page: an owned runtime output path is required}" "$format" "orchid $verb $path"
+      return 1
+    fi
+  fi
+  return 0
+)
 orchid_agent_dispatch() {
   local verb="$1" format="$2"; shift 2
   local command view path exe output errors rc=0 data scratch request_id request_rc=0
@@ -61,7 +120,7 @@ orchid_agent_dispatch() {
     return 2
   fi
   if ! orchid_cli_prepare "$verb" "$format" "$@"; then
-    orchid_agent_error 2 "${ORCHID_CLI_ERROR:-Invalid arguments; see the diagnostic on stderr}" "$format" "orchid $verb"
+    orchid_agent_usage_error "$verb" "$format" "${ORCHID_CLI_ERROR:-Invalid arguments; see the diagnostic on stderr}"
     return 2
   fi
   command="$(jq -c '.command' <<< "$ORCHID_CLI_PARSED")"
@@ -80,6 +139,9 @@ orchid_agent_dispatch() {
   if [ ! -x "$exe" ]; then
     orchid_agent_error 2 "Command $verb is missing or not executable" "$format" "orchid $verb"
     return 2
+  fi
+  if [ "$verb" = context ] || [ "$verb" = status ]; then
+    orchid_agent_public_read_preflight "$verb" "$ORCHID_CLI_PARSED" "$format" "$path" || return 1
   fi
   request_id="$(jq -r '.view.request_id // empty' <<< "$ORCHID_CLI_PARSED")"
   if [ -n "$request_id" ]; then
@@ -133,7 +195,7 @@ orchid_agent_dispatch() {
     jq -n --rawfile warnings "$errors" '{completed:true,warnings:$warnings,
       bytes:($warnings|utf8bytelength),next:["orchid jobs ls"]}' > "$data"
   elif ! orchid_agent_result_json "$verb" "$path" "$output" "$command" ${result_args[@]+"${result_args[@]}"} > "$data"; then
-    orchid_agent_error 1 'Operation completed but its result could not be rendered; inspect state before retrying' "$format" "orchid $verb $path"
+    orchid_agent_error 1 'Operation completed but repository input ownership or result validation failed; inspect state before retrying' "$format" "orchid $verb $path"
     rm -rf "$scratch"; return 1
   fi
   if [ -n "$request_id" ]; then

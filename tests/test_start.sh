@@ -1756,8 +1756,9 @@ rc=0; out12b="$(ORCHID_REPO="$r12" "$ORCHID_BIN" start "$W/empty.md" 2>&1)" || r
 assert_match "never invents requirements" "$out12b" "the refusal says requirements are the operator's"
 
 rc=0; out12c="$(ORCHID_REPO="$r12" "$ORCHID_BIN" start "$REQ" --bogus 2>&1)" || rc=$?
-[ "$rc" -ne 0 ] || fail "start must reject an unknown option"
-assert_match "unknown option '--bogus'" "$out12c" "the refusal names the unknown option"
+assert_eq 2 "$rc" "start rejects an unknown flag as an argument error"
+assert_match "unknown flag --bogus" "$out12c" "the refusal identifies the offending flag"
+assert_match "run orchid start[[:space:]]+--help" "$out12c" "the refusal supplies focused recovery"
 
 # orchid.config is a LINE-ORIENTED key=value store, so a multi-line --verify
 # would be recorded truncated at its first line -- the run verifying with less
@@ -1775,8 +1776,9 @@ rc=0; out12f="$(ORCHID_REPO="$r12" "$ORCHID_BIN" start "$REQ" --verify "$(printf
 assert_match "must be a single line" "$out12f" "any control character is refused, not just a newline"
 
 rc=0; out12d="$(ORCHID_REPO="$r12" "$ORCHID_BIN" start "$REQ" "$req2" 2>&1)" || rc=$?
-[ "$rc" -ne 0 ] || fail "start must reject two requirements files"
-assert_match "exactly one requirements file" "$out12d" "the refusal names the arity"
+assert_eq 2 "$rc" "start rejects two requirements files as an argument error"
+case "$out12d" in *"$req2"*) ;; *) fail 'extra requirements refusal identifies the offending file' ;; esac
+assert_match "usage: orchid start|run orchid start[[:space:]]+--help" "$out12d" "extra requirements refusal supplies focused recovery"
 git -C "$r12" rev-parse --verify -q orchid/integration >/dev/null 2>&1 \
   && fail "argument refusals must happen before anything is initialized"
 

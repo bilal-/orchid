@@ -1,16 +1,50 @@
 #!/usr/bin/env bash
 # Optional exact-intent receipts; never a replacement for a kernel epoch fence.
 # An interrupted claim remains pending and refuses automatic re-execution.
+# Admission also applies to historical replays. Run in a subshell so a guard's
+# refusal returns through the public structured-error channel. This is read-only:
+# it never acquires a run epoch or performs the requested transition.
+orchid_request_admit() {
+  local verb="$1" parsed="$2" path repo
+  path="$(jq -r '.command.path|join(" ")' <<< "$parsed")" || return 1
+  repo="${ORCHID_REPO:-$PWD}"
+  case "$verb:$path" in
+    service:install)
+      repo="$(jq -r --arg default "$repo" '.option_values["--repo"] // $default' <<< "$parsed")" || return 1
+      [ -d "$repo" ] || orchid_die "no such repo directory: $repo"
+      repo="$(cd "$repo" && pwd -P)" || return 1
+      unattended_service_install_require "$repo" || return 1
+      ;;
+    trust:show)
+      repo="$(jq -r --arg default "$repo" '.positionals[0] // $default' <<< "$parsed")" || return 1
+      unattended_trust_inspect "$repo"
+      ;;
+    trust:revoke)
+      repo="$(jq -r --arg default "$repo" '.positionals[0] // $default' <<< "$parsed")" || return 1
+      unattended_trust_revoke_resolve "$repo" || :
+      ;;
+    status:*)
+      if jq -e '.option_values|has("--explain")' <<< "$parsed" >/dev/null; then
+        unattended_trust_inspect "$repo"
+      fi
+      ;;
+  esac
+  orchid_root_stale_gate
+}
+
 orchid_request_begin() {
   local request_id="$1" verb="$2" parsed="$3" root repo scope key intent existing
   ORCHID_REQUEST_DIR=""
   [ -n "$request_id" ] || return 0
   local __orchid_entry_defer_restore=1
   source "$ORCHID_ROOT/lib/common.sh"
+  source "$ORCHID_ROOT/lib/trust.sh"
+  (orchid_request_admit "$verb" "$parsed") || return 1
   repo="${ORCHID_REPO:-$PWD}"
   repo="$(cd "$repo" && pwd -P)" || return 1
-  # Resolve nested directories without changing the kernel's explicit target.
-  scope="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$repo")"
+  # Reuse filesystem-only worktree discovery: receipt scope does not need Git
+  # against a target that may have no unattended authorization.
+  scope="$(_unattended_worktree_root "$repo" 2>/dev/null || printf '%s' "$repo")"
   root="$HOME/.orchid/requests"
   [ ! -L "$HOME/.orchid" ] && [ ! -L "$root" ] || {
     printf 'orchid: request cache may not be a symlink\n' >&2; return 1;

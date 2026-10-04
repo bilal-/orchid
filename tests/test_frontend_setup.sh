@@ -50,6 +50,26 @@ assert_eq 4 "$(jq '.frontends|length' <<< "$overview")" 'overview declares all f
 [ ! -e "$HOME/.orchid" ] || fail 'read-only setup overview created user state'
 green_case 'frontend setup overview has no user-configuration writes'
 
+jq -e '.next == ["orchid setup --frontend claude","orchid setup --frontend codex","orchid setup --frontend hermes","orchid setup --frontend opencode"] and (.notes|type)=="array" and any(.notes[];contains("all four profiles") and contains("PyYAML"))' <<< "$overview" >/dev/null || fail 'fresh overview lacks equal runnable host choices or all-host prerequisites'
+
+# RED/GREEN: an unavailable Hermes parser makes all refuse before writes; a
+# selected Codex profile still registers without that optional host dependency.
+casehome="$WORK/fresh-codex-no-parser"
+mkdir -p "$casehome/.codex"
+printf '{"foreign":true}\n' > "$casehome/.codex/hooks.json"
+cp "$casehome/.codex/hooks.json" "$WORK/fresh-codex.before"
+rc=0; HOME="$casehome" ORCHID_FRONTEND_PYTHON="$WORK/missing-python" /bin/bash "$setup" --frontend all > "$WORK/fresh-all.out" 2> "$WORK/fresh-all.err" || rc=$?
+[ "$rc" -ne 0 ] || fail 'all registered without the required Hermes parser'
+cmp -s "$WORK/fresh-codex.before" "$casehome/.codex/hooks.json" || fail 'missing parser refusal changed existing Codex profile'
+for untouched in .claude .hermes .config/opencode .orchid/frontends; do [ ! -e "$casehome/$untouched" ] || fail "missing parser refusal created $untouched"; done
+red_case 'all-host parser prerequisite refuses before any selected profile changes'
+HOME="$casehome" ORCHID_FRONTEND_PYTHON="$WORK/missing-python" /bin/bash "$setup" --frontend codex > "$WORK/fresh-codex.out" || fail 'selected Codex unnecessarily required Hermes parser'
+jq -e '.next==["orchid setup"] and (.notes|type)=="array" and any(.notes[];contains("/hooks"))' "$WORK/fresh-codex.out" >/dev/null || fail 'selected setup lacks runnable verification or native trust notes'
+HOME="$casehome" ORCHID_FRONTEND_PYTHON="$WORK/missing-python" /bin/bash "$setup" --frontend codex --uninstall > "$WORK/fresh-codex-uninstall.out" || fail 'selected Codex uninstall required absent Hermes parser'
+jq -e '.next==["orchid setup"] and any(.notes[];contains("Restart") and contains("host-owned"))' "$WORK/fresh-codex-uninstall.out" >/dev/null || fail 'uninstall lacks runnable verification or retained trust notes'
+assert_eq true "$(jq -r .foreign "$casehome/.codex/hooks.json")" 'selected Codex preserves fresh foreign preference'
+green_case 'selected Codex registers and uninstalls without Hermes while returning runnable next commands'
+
 mkdir -p "$HOME/.claude" "$HOME/.codex"
 printf '{"theme":"keep","hooks":{"Stop":[{"hooks":[{"command":"foreign-stop","type":"command"}]}]}}\n' > "$HOME/.claude/settings.json"
 printf '{"hooks":{"SessionStart":[{"matcher":"resume","hooks":[{"type":"command","command":"foreign-start"}]}]},"foreign":true}\n' > "$HOME/.codex/hooks.json"
@@ -479,3 +499,94 @@ for phase in uninstall-config remove-artifact remove-record; do
   assert_eq 0 "$(jq '.hooks.SessionStart|length' "$casehome/.claude/settings.json")" "$phase uninstall retry removed owned entry"
   green_case "normal uninstall retry completes $phase interruption"
 done
+
+# Couple generated native callbacks to the real public context command. A
+# project-provided helper must never run in an ambient session integration.
+# Context also fails open when a project input aliases an external file.
+native_root="$WORK/native-runtime"
+native_home="$WORK/native-runtime-home"
+native_repo="$WORK/native-runtime-repo"
+native_neutral="$WORK/native-stale-repo"
+mkdir -p "$native_root" "$native_home" "$native_repo/.orchid/tasks" "$native_repo/.orchid/runtime" "$native_repo/tools" "$native_neutral"
+for dir in bin lib libexec runners release; do cp -R "$REPO_ROOT/$dir" "$native_root/"; done
+printf '%s\n' '---' 'run_id: native-owned-fixture' 'run_status: active' '---' > "$native_repo/.orchid/roadmap.md"
+printf '1\n' > "$native_repo/.orchid/runtime/epoch"
+assert_eq '' "$(cd "$native_repo" && ORCHID_REPO="$native_neutral" ORCHID_OUTPUT=toon "$native_root/bin/orchid" context --ambient)" \
+  'ordinary ambient CLI retains explicit repository override semantics'
+red_case 'stale inherited ORCHID_REPO suppresses owned project context without callback scoping'
+native_hosts='claude codex opencode'
+[ -z "$fixture_python" ] || native_hosts="$native_hosts hermes"
+for host in $native_hosts; do
+  HOME="$native_home" ORCHID_FRONTEND_PYTHON="$fixture_python" /bin/bash "$native_root/runners/orchid-setup" --frontend "$host" > "$WORK/native-$host-setup.json" \
+    || fail "real native context fixture setup failed: $host"
+done
+native_operator_path="$PATH"
+export ORCHID_FRONTEND_HELPER_MARKER="$WORK/native-helper.executed"
+for tool in jq git; do
+  native_real_tool="$(command -v "$tool")"
+  printf '#!/bin/bash\nprintf "%%s\\n" %q >> "$ORCHID_FRONTEND_HELPER_MARKER"\nexec %q "$@"\n' "$tool" "$native_real_tool" > "$native_repo/tools/$tool"
+  chmod 755 "$native_repo/tools/$tool"
+done
+"$native_repo/tools/jq" -n null >/dev/null
+"$native_repo/tools/git" --version >/dev/null
+assert_eq $'jq\ngit' "$(cat "$ORCHID_FRONTEND_HELPER_MARKER")" 'project-helper control actually reaches both marker proxies'
+rm "$ORCHID_FRONTEND_HELPER_MARKER"
+
+native_callback_shell() {
+  local host="$1" phase="$2" event=SessionStart payload
+  [ "$host" != hermes ] || event=pre_llm_call
+  payload="$(jq -cn --arg cwd "$native_repo" --arg event "$event" '{cwd:$cwd,hook_event_name:$event}')"
+  printf '%s\n' "$payload" | HOME="$native_home" ORCHID_REPO="$native_neutral" ORCHID_OUTPUT=raw PATH="$native_repo/tools:$native_operator_path" \
+    "$native_home/.orchid/frontends/$host-hook" > "$WORK/native-$phase-$host.json" 2> "$WORK/native-$phase-$host.err" \
+    || fail "native callback failed its optional host protocol: $phase $host"
+}
+native_callback_opencode() {
+  local phase="$1"
+  [ -n "$fixture_node" ] || return 0
+  cp "$native_home/.config/opencode/plugins/orchid.js" "$WORK/native-orchid.mjs"
+  HOME="$native_home" ORCHID_REPO="$native_neutral" ORCHID_OUTPUT=raw PATH="$native_repo/tools:$native_operator_path" \
+    "$fixture_node" --input-type=module - "$WORK/native-orchid.mjs" "$native_repo" <<'JS' > "$WORK/native-$phase-opencode.json" 2> "$WORK/native-$phase-opencode.err" || fail "real OpenCode context callback failed: $phase"
+import {pathToFileURL} from 'node:url';
+const {OrchidPlugin}=await import(pathToFileURL(process.argv[2]));
+const plugin=await OrchidPlugin({directory:process.argv[3]});
+const output={system:['foreign context']};
+await plugin['experimental.chat.system.transform']({},output);
+console.log(JSON.stringify(output));
+JS
+}
+cp -R "$native_repo/.orchid" "$WORK/native-owned-state.before"
+for host in claude codex hermes; do
+  [ "$host" != hermes ] || [ -n "$fixture_python" ] || continue
+  native_callback_shell "$host" owned
+  if [ "$host" = hermes ]; then native_context="$(jq -r '.context // ""' "$WORK/native-owned-$host.json")"
+  else native_context="$(jq -r '.hookSpecificOutput.additionalContext // ""' "$WORK/native-owned-$host.json")"; fi
+  assert_match 'native-owned-fixture' "$native_context" "owned real context reaches $host native transport"
+  assert_match 'tasks:' "$native_context" "owned real context remains compact agent format for $host"
+done
+native_callback_opencode owned
+if [ -n "$fixture_node" ]; then
+  jq -e '.system|length==2' "$WORK/native-owned-opencode.json" >/dev/null || fail 'owned real context did not reach OpenCode'
+  assert_match 'native-owned-fixture' "$(jq -r '.system[1] // ""' "$WORK/native-owned-opencode.json")" 'OpenCode owned context is the real compact dashboard'
+fi
+[ ! -e "$ORCHID_FRONTEND_HELPER_MARKER" ] || fail 'ambient native callback ran a project-owned jq or Git helper'
+diff -r "$WORK/native-owned-state.before" "$native_repo/.orchid" >/dev/null || fail 'owned native callbacks mutated project state'
+green_case 'generated native callbacks scope owned real context to host directory despite stale repository override, use trusted helpers, and preserve state'
+
+printf '%s\n' '---' 'run_id: ORCHID_FAKE_NATIVE_EXTERNAL_SECRET' 'run_status: active' '---' > "$WORK/native-external-roadmap"
+mv "$native_repo/.orchid/roadmap.md" "$WORK/native-owned-roadmap"
+ln -s "$WORK/native-external-roadmap" "$native_repo/.orchid/roadmap.md"
+cp -R "$native_repo/.orchid" "$WORK/native-unsafe-state.before"
+for host in claude codex hermes; do
+  [ "$host" != hermes ] || [ -n "$fixture_python" ] || continue
+  native_callback_shell "$host" unsafe
+  assert_eq '{}' "$(cat "$WORK/native-unsafe-$host.json")" "unsafe real context fails open for $host"
+done
+native_callback_opencode unsafe
+if [ -n "$fixture_node" ]; then
+  jq -e '.system==["foreign context"]' "$WORK/native-unsafe-opencode.json" >/dev/null || fail 'unsafe real context reached OpenCode prompt'
+fi
+if grep -F 'ORCHID_FAKE_NATIVE_EXTERNAL_SECRET' "$WORK"/native-unsafe-*.json "$WORK"/native-unsafe-*.err; then fail 'native callback disclosed external input content'; fi
+[ ! -e "$ORCHID_FRONTEND_HELPER_MARKER" ] || fail 'unsafe native callback ran a project-owned helper'
+diff -r "$WORK/native-unsafe-state.before" "$native_repo/.orchid" >/dev/null || fail 'unsafe native callbacks mutated project state'
+[ ! -e "$native_home/.orchid/requests" ] || fail 'ambient callbacks created retry cache'
+red_case 'generated native callbacks reject linked external input without disclosure helper execution or state writes'

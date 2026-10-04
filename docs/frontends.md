@@ -21,7 +21,8 @@ procedure..."*). There are exactly two shapes this takes:
 - **Interactive session** — an agent CLI (Claude Code, or any other) running
   in a terminal, told (via a skill, an `AGENTS.md` pointer, or a person just
   reading the file) to open `PROTOCOL.md` and drive it. This is the front-end
-  `skills/{orchid,orchid-plan,orchid-resume}` wire up for Claude Code today.
+  `skills/{orchid,orchid-plan,orchid-resume}` register for Claude Code, Codex,
+  Hermes, and OpenCode through the per-user installer.
 - **Headless tick** — `runners/orchid-pump` wakes an abandoned run and hands
   off to `runners/orchid-tick`, which resolves the orchestrator role to a
   vendor CLI and feeds it PROTOCOL.md's text plus a fixed instruction block,
@@ -225,12 +226,12 @@ Current Codex uses this user path; generic shell agents can discover the same
 skills or run `orchid --help` directly. When a host's profile already exists,
 the installer also wires its native skills path:
 
-| Host | Native user skill path | Explicit session integration |
-| --- | --- | --- |
-| Claude Code | `~/.claude/skills/<name>` | `SessionStart` command in `~/.claude/settings.json` |
-| Codex | `~/.agents/skills/<name>` | `SessionStart` command in `~/.codex/hooks.json` |
-| Hermes | `~/.hermes/skills/orchestration/<name>` | `pre_llm_call` shell hook in `~/.hermes/config.yaml` |
-| OpenCode | `~/.config/opencode/skills/<name>` | Local `~/.config/opencode/plugins/orchid.js` plugin |
+| Host | Native user skill path | Setup command | Explicit session integration |
+| --- | --- | --- | --- |
+| Claude Code | `~/.claude/skills/<name>` | `orchid setup --frontend claude` | `SessionStart` command in `~/.claude/settings.json` |
+| Codex | `~/.agents/skills/<name>` | `orchid setup --frontend codex` | `SessionStart` command in `~/.codex/hooks.json` |
+| Hermes | `~/.hermes/skills/orchestration/<name>` | `orchid setup --frontend hermes` | `pre_llm_call` shell hook in `~/.hermes/config.yaml` |
+| OpenCode | `~/.config/opencode/skills/<name>` | `orchid setup --frontend opencode` | Local `~/.config/opencode/plugins/orchid.js` plugin |
 
 The installer leaves foreign files and links alone, including dangling links.
 It creates the shared skills path even before an agent is installed. It does
@@ -242,18 +243,32 @@ Session integration is an explicit per-user operation:
 
 ```sh
 orchid setup
-orchid setup --frontend all
-orchid setup --frontend codex
-orchid setup --frontend codex --uninstall
 ```
 
-The first command only reports registration state. The selected setup commands
+This command only reports registration state. Choose your host's setup command
+from the table to register it. `orchid setup --frontend all` explicitly
+configures all four profiles, creating missing profile directories, and needs
+Hermes's Python runtime with PyYAML even when no Hermes profile exists. Every
+selected configuration is validated before any profile is edited. You can
+reverse a selected registration with its setup command plus `--uninstall`.
+Setup responses put runnable commands in `next` and prerequisites or host
+approval directions in `notes`. Successful setup and uninstall point back to
+the read-only `orchid setup` overview.
+
+The selected setup commands
 register a bounded, optional callback that runs `orchid context --ambient` in
 the host's working directory. This provides compact ambient context and the
 next useful command. It reads existing Orchid state and is silent outside an
 initialized Orchid repository. It does not initialize a project, acquire an
 epoch, check or signal jobs, reconcile, drive, or launch work. Missing, failed,
-oversized, or timed-out context produces no extra prompt. Claude and Codex get
+oversized, or timed-out context produces no extra prompt. Context checks the
+ownership of its project inputs before reading them, including inputs used by
+the existing jobs and orchestration-policy readers. Linked files, linked or
+dangling ancestors, and job references outside the owned runtime refuse with
+an error; unsafe state is unavailable rather than reported as empty. User
+configuration, installed engines and qualification records remain
+operator-controlled machine inputs. This read gate does not grant trust to
+project file contents or execute project code. Claude and Codex get
 native `SessionStart` JSON; Hermes gets native `{"context":"..."}` JSON; OpenCode
 appends the context to its system prompt through its plugin hook. Host callback
 JSON is independent of Orchid's default TOON command output.

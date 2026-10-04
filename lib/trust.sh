@@ -1984,6 +1984,15 @@ unattended_trust_revoke_loaded() {
   [ "$removed" -eq 1 ]
 }
 
+# Shared service-install admission: both native scheduling and public retry
+# receipts must authorize the target before any target Git or cache write.
+unattended_service_install_require() {
+  local repo="$1"
+  [ -d "$repo/.orchid" ] \
+    || orchid_die "cannot install service for uninitialized repo (no .orchid/ found): $repo -- run 'orchid init' first"
+  unattended_trust_require "$repo" "service installation"
+}
+
 # unattended_trust_require <repo> <surface> [scheduled]
 #
 # Pass `scheduled` from a detached entry point (a cron line or launchd agent).

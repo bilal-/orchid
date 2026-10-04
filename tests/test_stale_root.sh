@@ -132,6 +132,12 @@ KERNEL=("${KERNEL_DIRS[@]}" PROTOCOL.md)
 # for durable run state and one tracked `orchid.config`. The branch is pinned
 # explicitly so the fixture never depends on the machine's
 # `init.defaultBranch`.
+fixture_command_schema() {
+  local dir="$1" verb="$2"
+  mkdir -p "$dir/lib/cli"
+  jq -n --arg verb "$verb" '{description:"Synthetic stale-root fixture command",default:[],commands:[{path:[],usage:("usage: orchid "+$verb),options:{},min_args:0,max_args:0,examples:[("orchid "+$verb),("orchid "+$verb+" --help")],kind:"text",next:[]}]}' > "$dir/lib/cli/$verb.json"
+}
+
 make_root() {
   local dir="$1" branch="$2" d
   for d in "${KERNEL_DIRS[@]}"; do mkdir -p "$dir/$d"; printf 'fixture\n' > "$dir/$d/.keep"; done
@@ -139,6 +145,10 @@ make_root() {
   mkdir -p "$dir/.orchid"
   cp "$REPO_ROOT/bin/orchid" "$dir/bin/orchid"
   cp "$REPO_ROOT/lib/common.sh" "$dir/lib/common.sh"
+  cp "$REPO_ROOT/lib/cli.sh" "$REPO_ROOT/lib/cli-parse.jq" "$dir/lib/"
+  mkdir -p "$dir/lib/cli"
+  cp "$REPO_ROOT/lib/cli/version.json" "$dir/lib/cli/version.json"
+  fixture_command_schema "$dir" gone
   cat > "$dir/libexec/orchid-version" <<'VERB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -375,6 +385,7 @@ set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
 echo "adapter: post-merge-2"
 VERB
+fixture_command_schema "$elsewhere" fresh
 cat > "$elsewhere/libexec/orchid-fresh" <<'VERB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -447,6 +458,7 @@ git -C "$root" checkout HEAD -- libexec/orchid-version
 # So the restore has to ask, per path, and decline. That is the r-001
 # journal-loss hazard in kernel clothing: uncommitted work destroyed by a
 # refresh nobody asked for.
+fixture_command_schema "$elsewhere" added-later
 cat > "$elsewhere/libexec/orchid-added-later" <<'VERB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -514,6 +526,7 @@ git -C "$selfroot" commit -q -m "self-hosted fixture: kernel v1"
 # The candidate branch, committed BEFORE any .orchid state exists so `add -A`
 # cannot sweep durable state into it.
 git -C "$selfroot" checkout -q -b task/TS1
+fixture_command_schema "$selfroot" probe
 cat > "$selfroot/libexec/orchid-probe" <<'VERB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1434,6 +1447,7 @@ assert_match "adapter: post-merge" "$out" "with the merged kernel the one that e
 # HERE would leave a refusal nothing could clear, since the working tree is
 # already right and only the index keeps the refusal alive. Built by hand
 # rather than by killing a second process, because it is a state, not a race.
+fixture_command_schema "$crashelse" arrived
 cat > "$crashelse/libexec/orchid-arrived" <<'VERB'
 #!/usr/bin/env bash
 set -euo pipefail

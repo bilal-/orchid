@@ -128,20 +128,22 @@ fe_nogit="$WORK/fe-nogit"; mkdir -p "$fe_nogit"
 # RED/GREEN: a foreign shared skill is preserved, while empty native OpenCode
 # discovery paths receive exactly the same portable bundles as other hosts.
 fe4_home="$WORK/fe4-home"
-mkdir -p "$fe4_home/.config/opencode" "$fe4_home/.agents/skills"
+fe4_config="$fe4_home/native-config"
+mkdir -p "$fe4_config/opencode" "$fe4_home/.agents/skills"
 ln -s "$WORK/foreign-missing-skill" "$fe4_home/.agents/skills/orchid"
-fe4_out="$(cd "$fe_nogit" && HOME="$fe4_home" "$INSTALL" 2>&1)" || fail 'OpenCode-only installation failed'
+fe4_out="$(cd "$fe_nogit" && HOME="$fe4_home" XDG_CONFIG_HOME="$fe4_config" "$INSTALL" 2>&1)" || fail 'OpenCode-only installation failed'
 assert_eq "$WORK/foreign-missing-skill" "$(readlink "$fe4_home/.agents/skills/orchid")" 'foreign shared skill symlink preserved'
 assert_match 'foreign symlink' "$fe4_out" 'shared skill conflict diagnosed'
 red_case 'foreign shared Agent Skills symlink is never clobbered'
 for name in orchid orchid-plan orchid-resume; do
-  assert_eq "$REPO_ROOT/skills/$name" "$(readlink "$fe4_home/.config/opencode/skills/$name")" "OpenCode discovers portable $name"
+  assert_eq "$REPO_ROOT/skills/$name" "$(readlink "$fe4_config/opencode/skills/$name")" "OpenCode discovers portable $name"
 done
-[ ! -e "$fe4_home/.config/opencode/plugins" ] || fail 'ordinary install enabled OpenCode plugin'
-(cd "$fe_nogit" && HOME="$fe4_home" "$INSTALL" --uninstall >/dev/null 2>&1) || fail 'OpenCode-only uninstall failed'
+[ ! -e "$fe4_config/opencode/plugins" ] || fail 'ordinary install enabled OpenCode plugin'
+[ ! -e "$fe4_home/.config/opencode" ] || fail 'explicit XDG config must not wire a different OpenCode home profile'
+(cd "$fe_nogit" && HOME="$fe4_home" XDG_CONFIG_HOME="$fe4_config" "$INSTALL" --uninstall >/dev/null 2>&1) || fail 'OpenCode-only uninstall failed'
 [ -L "$fe4_home/.agents/skills/orchid" ] || fail 'uninstall deleted foreign shared skill'
 for name in orchid orchid-plan orchid-resume; do
-  [ ! -L "$fe4_home/.config/opencode/skills/$name" ] || fail "uninstall left OpenCode skill: $name"
+  [ ! -L "$fe4_config/opencode/skills/$name" ] || fail "uninstall left OpenCode skill: $name"
 done
 green_case 'OpenCode and shared skill wiring install and uninstall owned links'
 

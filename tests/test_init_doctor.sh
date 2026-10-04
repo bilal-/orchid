@@ -693,7 +693,7 @@ nfy_doctor
 assert_match "^FAIL: plugin manifests: validate failed" "$nfy_out" \
   "a non-executable entrypoint fails doctor via manifest validation, as it always has"
 assert_notify_advisory "and it fails as a manifest verdict, never as a notify one"
-assert_match "WARN: notify outbound: 'fixchan' resolves .* but its entrypoint 'send' is not executable" "$nfy_out" \
+assert_match "WARN: notify outbound: notify.plugin 'fixchan' is not usable .*invalid entrypoint.*entrypoint 'send' is not an executable file" "$nfy_out" \
   "doctor names a non-executable entrypoint"
 assert_match "chmod \\+x" "$nfy_out" \
   "doctor prints the one command that fixes a non-executable entrypoint"
@@ -966,3 +966,44 @@ red_case 'orchid doctor over frontmatter carrying a key-less remainder line: FAI
 # And the fixture is restored, so nothing downstream of this file inherits a
 # repo doctor considers damaged.
 printf -- '---\nschema: 1\nid: TK1\ntitle: intact\nstatus: pending\n---\nbody\n' > "$tskf/.orchid/tasks/TK1.md"
+
+# Permission recovery guidance belongs only to a contained regular file.
+entrypoint_check() (
+  export ORCHID_ROOT="$REPO_ROOT"
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_plugin_entrypoint_check "$@"
+)
+hint_dir="$WORK/entrypoint-diagnostic"
+foreign_hint_dir="$WORK/entrypoint-foreign"
+mkdir -p "$hint_dir" "$foreign_hint_dir"
+printf '#!/usr/bin/env bash\n' > "$hint_dir/owned entry"
+printf '#!/usr/bin/env bash\n' > "$foreign_hint_dir/escaped"
+ln -s "$foreign_hint_dir/escaped" "$hint_dir/foreign-link"
+for unsafe_hint in absent foreign-link ../entrypoint-foreign/escaped; do
+  hint_rc=0
+  hint_out="$(entrypoint_check "$hint_dir" notify "$unsafe_hint")" || hint_rc=$?
+  assert_eq 1 "$hint_rc" "unsafe entrypoint $unsafe_hint remains refused"
+  grep -Fq 'chmod +x' <<< "$hint_out" && fail "unsafe entrypoint $unsafe_hint suggests modifying an absent or foreign path"
+done
+red_case 'entrypoint refusal never offers chmod guidance for missing, linked or escaping paths'
+hint_rc=0
+hint_out="$(entrypoint_check "$hint_dir" notify 'owned entry')" || hint_rc=$?
+assert_eq 1 "$hint_rc" 'a contained non-executable file remains refused despite its recovery hint'
+physical_hint="$(
+  export ORCHID_ROOT="$REPO_ROOT"
+  source "$REPO_ROOT/lib/common.sh"
+  _orchid_physical_path "$hint_dir/owned entry"
+)" || exit 1
+expected_hint="$(printf 'fix: chmod +x %q' "$physical_hint")"
+case "$hint_out" in *"$expected_hint"*) ;; *) fail 'contained non-executable entrypoint lacks shell-quoted recovery command' ;; esac
+red_case 'a permission recovery hint does not admit a non-executable entrypoint'
+hint_rc=0
+relative_hint="$(cd "$WORK" && entrypoint_check entrypoint-diagnostic notify 'owned entry')" || hint_rc=$?
+assert_eq 1 "$hint_rc" 'relative plugin directory still refuses its non-executable entrypoint'
+case "$relative_hint" in *"$expected_hint"*) ;; *) fail 'relative plugin directory does not offer the validated absolute shell-quoted repair path' ;; esac
+chmod +x "$hint_dir/owned entry"
+hint_rc=0
+hint_out="$(entrypoint_check "$hint_dir" notify 'owned entry')" || hint_rc=$?
+assert_eq 0 "$hint_rc" 'repairing the same contained file restores entrypoint eligibility'
+assert_eq '' "$hint_out" 'an eligible entrypoint needs no refusal or chmod hint'
+green_case 'a repaired executable contained entrypoint accepts the same shared check'

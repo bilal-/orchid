@@ -33,8 +33,15 @@ kills a process or writes runtime state. Host trust and approvals remain host-ow
 retaining the total count. Bare context defaults to ten rows per collection;
 other lists default to 100. `--full` removes presentation limits. Output escaping
 follows TOON 4.1; the release gate independently round-trips representative output
-with the official decoder. The kernel has no Node or Python dependency. Native
-OpenCode and Hermes callbacks use the runtimes those hosts already own.
+with the official decoder. The base kernel requires Bash 3.2, Git and jq.
+Optional native integrations use host runtimes: Hermes registration requires
+its Python with PyYAML; OpenCode's callback uses its JavaScript host.
+
+`orchid setup` reads registration state. Choose the Claude Code, Codex, Hermes
+or OpenCode setup command in [frontends](frontends.md) to register that host.
+`orchid setup --frontend all` configures all four profiles, creating missing
+profile directories, and requires the Hermes parser. Missing PyYAML or invalid
+configuration is refused before any selected profile is edited.
 
 `orchid --raw <command>` or `ORCHID_OUTPUT=raw` preserves the kernel's historical
 text/TSV/JSON and domain-specific exit codes. Internal callers and existing kernel
@@ -51,8 +58,12 @@ run, use a stable ID such as `orchid run start --request-id session-20261003`.
 The secure user-local receipt binds the physical repository, verb, normalized
 arguments, actor and explicit epoch. Repeating that exact intent returns the
 recorded result and marks it `replayed` and `result_is_historical`; it does not
-claim the current state is unchanged. Changing the intent under the same ID is
-usage error 2. Different intentional operations need different IDs.
+claim the current state is unchanged. Every attempt, including a replay, first
+checks the installed kernel's stale-root safeguard. Service installation also
+rechecks current machine-local authorization for the exact target before any
+cache claim or replay; a revoked acknowledgement cannot return cached success.
+Changing the intent under the same ID is a usage error 2. Different intentional
+operations need different IDs.
 
 An interrupted or concurrent request without a published result is refused.
 Inspect current state before choosing a new ID. This refuses uncertainty rather

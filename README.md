@@ -58,11 +58,23 @@ only the detail the agent needs. [Agent interface](./docs/agent-interface.md) ·
 [Frontend setup](./docs/frontends.md).
 
 ```sh
-orchid setup --frontend all
+orchid setup
 ```
 
-This explicitly registers ambient context with installed host runtimes. Skill
-installation works independently; native hosts retain their own approval rules.
+This reports registration state without changing profiles. To register ambient
+context, choose the host you use:
+
+| Host | Setup command |
+| --- | --- |
+| Claude Code | `orchid setup --frontend claude` |
+| Codex | `orchid setup --frontend codex` |
+| Hermes | `orchid setup --frontend hermes` |
+| OpenCode | `orchid setup --frontend opencode` |
+
+`orchid setup --frontend all` configures all four profiles, creating missing
+profile directories, and requires Hermes's Python runtime with PyYAML. Setup
+validates every selected profile before editing any of them. Skill installation
+works independently; native hosts retain their own approval rules.
 
 ## The 60-second story
 
@@ -125,8 +137,9 @@ no code yet).
   or OpenClaw channel plugins; answers come back from your phone
   nonce-verified and sender-allowlisted — proven in a live round trip
   ([docs/dogfood-notes.md](./docs/dogfood-notes.md), F18).
-- **Zero infrastructure.** bash 3.2 + git + jq — nothing else. No Python,
-  no Node runtime, no cloud, no telemetry, no accounts. Unattended mode is
+- **Small kernel.** Bash 3.2 + Git + jq. Optional native integrations use their
+  host runtimes; Hermes registration needs its Python with PyYAML, and OpenCode
+  context runs in its JavaScript host. Unattended mode is
   one launchd/cron line running a short-lived pump, not a resident daemon.
 - **The record is public, failures included.**
   [docs/dogfood-notes.md](./docs/dogfood-notes.md) is the ledger: runs

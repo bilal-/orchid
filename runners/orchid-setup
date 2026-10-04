@@ -51,4 +51,4 @@ trap 'rm -rf "$scratch"' EXIT
 for host in $hosts; do frontend_prepare "$host" "$action" "$scratch" "$root"; done
 for host in $hosts; do frontend_apply "$host" "$action" "$scratch"; done
 rows="$(printf '%s\n' $hosts | jq -Rsc 'split("\n")|map(select(length>0))')"
-jq -cn --arg action "$action" --arg root "$root" --argjson frontends "$rows" '{operation:"setup",mode:$action,root:$root,frontends:$frontends,next:(if $action=="uninstall" then "Restart the host; native trust records remain host-owned" else "Restart the host. Codex: review via /hooks. Hermes: approve the native shell hook when prompted. Host trust remains host-owned" end)}'
+jq -cn --arg action "$action" --arg root "$root" --argjson frontends "$rows" '{operation:"setup",mode:$action,root:$root,frontends:$frontends,next:["orchid setup"],notes:[(if $action=="uninstall" then "Restart the host; native trust records remain host-owned" else "Restart the host. Codex: review via /hooks. Hermes: approve the native shell hook when prompted. Host trust remains host-owned" end)]}'

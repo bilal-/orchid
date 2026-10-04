@@ -1397,10 +1397,10 @@ qidF="$(page_orchid notify --task T900 "free text, no declared set")" \
   || fail "fixture: a question with no declared set must be raisable, or the witness below tests nothing"
 rcF=0
 errF="$(page_orchid answer "$qidF" -foo 2>&1 1>/dev/null)" || rcF=$?
-[ "$rcF" -ne 0 ] \
-  || fail "witness: 'orchid answer <qid> -foo' must be refused — the whole reason a leading-dash choice may not be minted"
-assert_match "usage: orchid answer <qid> <choice>" "$errF" \
-  "...and it is refused by the ARGV parser, on usage: the dash is read as a flag, so no such value can reach the choice slot"
+assert_eq 2 "$rcF" "an unescaped leading-dash answer choice is an argument error"
+assert_match "unknown flag -foo" "$errF" "answer parser identifies the offending unescaped choice token"
+assert_match "run orchid answer[[:space:]]+--help" "$errF" \
+  "answer parser supplies focused recovery before the unescaped dash-shaped token reaches the choice slot"
 
 # RED. So the mint refuses it, and refuses it BEFORE any durable write: no
 # question, no page, nothing for an operator to read and fail to answer.

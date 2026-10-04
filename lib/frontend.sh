@@ -85,7 +85,7 @@ export const OrchidPlugin = async ({ directory }) => ({
     try {
       const context = execFileSync($quoted, ["context", "--ambient"], {
         cwd: directory, timeout: 3000, maxBuffer: 8192,
-        env: { ...process.env, ORCHID_OUTPUT: "toon" },
+        env: { ...process.env, ORCHID_REPO: directory, ORCHID_OUTPUT: "toon", PATH: "/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" },
         encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
       }).trim();
       if (context && !output.system.includes(context)) output.system.push(context);
@@ -330,7 +330,7 @@ PY
     if [ -f "$record" ] && [ ! -L "$record" ]; then pending="$(jq -r '.pending == true' "$record" 2>/dev/null)" || pending=false; fi
     rows="$(jq -c --arg host "$host" --arg state "$state" --arg config "$config" --arg record "$record" --argjson pending "$pending" '. + [{frontend:$host,state:$state,config:$config,record:$record,pending:$pending,trust:"host_owned_not_verified"}]' <<< "$rows")" || return 1
   done
-  jq -cn --arg root "$root" --argjson frontends "$rows" '{operation:"setup",mode:"overview",root:$root,frontends:$frontends,next:"orchid setup --frontend claude|codex|hermes|opencode|all; host-native trust remains required"}'
+  jq -cn --arg root "$root" --argjson frontends "$rows" '{operation:"setup",mode:"overview",root:$root,frontends:$frontends,next:["orchid setup --frontend claude","orchid setup --frontend codex","orchid setup --frontend hermes","orchid setup --frontend opencode"],notes:["all configures all four profiles, creates missing profile directories, and requires the Hermes Python runtime with PyYAML.","Host trust and approvals remain required and host-owned."]}'
 }
 
 frontend_hook() {
@@ -341,7 +341,7 @@ frontend_hook() {
   if [ "$event" != "$expected_event" ]; then printf '{}\n'; return 0; fi
   cwd="$(jq -er '.cwd | select(type=="string" and length>0)' <<< "$payload" 2>/dev/null)" || cwd=''
   if [ -n "$cwd" ] && [ -d "$cwd" ]; then
-    context="$(cd "$cwd" && ORCHID_OUTPUT=toon with_timeout 3 "$ORCHID_ROOT/bin/orchid" context --ambient 2>/dev/null)" || context=''
+    context="$(cd "$cwd" && ORCHID_REPO="$cwd" ORCHID_OUTPUT=toon with_timeout 3 "$ORCHID_ROOT/bin/orchid" context --ambient 2>/dev/null)" || context=''
   fi
   [ "${#context}" -le 8192 ] || context=''
   if [ -z "$context" ]; then printf '{}\n'; return 0; fi

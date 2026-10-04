@@ -191,6 +191,25 @@ POLICY_IMPURE="fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:s
 # description, so the policy library is rejected without parsing it.
 policy_impurity() { operations_of "$1" | grep -nE "$POLICY_IMPURE" || true; }
 
+# A read-only presentation adapter owns the second boundary reference. It may
+# inspect task metadata and run exactly the bounded read below, never a state
+# verb or write helper. Reuse the existing quote-aware operation view; literal
+# diagnostic text does not become an operation merely by naming one.
+BOUNDARY_READER_READ='^[[:space:]]*"\$ORCHID_ROOT/bin/orchid"[[:space:]]+jobs[[:space:]]+ls[[:space:]]+--tsv[[:space:]]+--strict[[:space:]]*\|[[:space:]]*\\$'
+BOUNDARY_READER_MUTATION="${POLICY_IMPURE}|(^|[[:space:];|&()])(rm|mv|cp|mkdir|touch|ln|tee|dd)[[:space:]]|fm_write_task|orchid_runtime|verb_lock_guard|epoch_require|trust_store_(set|remove)|lessons_set_"
+boundary_reader_impurity() {
+  local operations
+  operations="$(operations_of "$1")"
+  printf '%s\n' "$operations" | grep -vE "$BOUNDARY_READER_READ" | \
+    grep -nE "$BOUNDARY_READER_MUTATION" || true
+  # /dev/null is an inert sink used for JSON shape checks. Every other
+  # output redirection to a path/variable is a writer; fd duplication is not.
+  printf '%s\n' "$operations" | \
+    sed -E 's/[012]?>{1,2}[[:space:]]*"?\/dev\/null"?//g' | \
+    grep -nE "(^|[[:space:];|&()])[012]?>{1,2}[[:space:]]*(\"|'|[\$/._[:alpha:]])" || true
+}
+
+
 # RED: a synthetic policy library containing a real `fm_set` line must be
 #      FLAGGED by policy_impurity -- the gate's own scan, fed the exact input
 #      it exists to reject. Every negative scan in this file passes when it
@@ -372,10 +391,41 @@ if operations_of "$DRIVER" | grep -nE '(^|[^_[:alnum:]])eval([^_[:alnum:]]|$)'; 
   fail "INV-13: the driver evaluates a constructed string"
 fi
 
-# The boundary record has exactly ONE writer in the whole kernel.
-boundary_writers="$(grep -rlE 'boundary\.json' "$REPO_ROOT"/bin "$REPO_ROOT"/lib "$REPO_ROOT"/libexec "$REPO_ROOT"/runners 2>/dev/null | LC_ALL=C sort || true)"
-assert_eq "$REPO_ROOT/libexec/orchid-run" "$boundary_writers" \
-  "INV-13: orchid run boundary is the single writer of the boundary record"
+# The boundary record has one writer and one explicitly audited read owner.
+# Reference ownership and mutation ownership are different facts: enrolling a
+# read path must not quietly give it the writer's state-transition authority.
+boundary_references="$(grep -rlE 'boundary\.json' "$REPO_ROOT"/bin "$REPO_ROOT"/lib "$REPO_ROOT"/libexec "$REPO_ROOT"/runners 2>/dev/null | LC_ALL=C sort || true)"
+assert_eq "$REPO_ROOT/lib/agent-read.sh
+$REPO_ROOT/libexec/orchid-run" "$boundary_references" \
+  "INV-13: boundary references belong only to writer orchid-run and reader agent-read"
+boundary_reader="$REPO_ROOT/lib/agent-read.sh"
+reader_impure="$(boundary_reader_impurity "$boundary_reader")"
+[ -z "$reader_impure" ] || fail "INV-13: boundary presentation reader mutates or invokes an unapproved verb: $reader_impure"
+
+reader_write_probe="$WORK/inv13-reader-write-probe.sh"
+cp "$boundary_reader" "$reader_write_probe"
+printf '%s\n' 'atomic_write "$rt/boundary.json"' >> "$reader_write_probe"
+assert_match 'atomic_write' "$(boundary_reader_impurity "$reader_write_probe")" \
+  'INV-13 self-check: actual writer injected into enrolled reader is rejected'
+red_case 'boundary reader audit rejects injected atomic_write through the production gate'
+reader_redirect_probe="$WORK/inv13-reader-redirect-probe.sh"
+cp "$boundary_reader" "$reader_redirect_probe"
+printf '%s\n' 'printf updated > "$rt/boundary.json"' >> "$reader_redirect_probe"
+assert_match 'boundary' "$(boundary_reader_impurity "$reader_redirect_probe")" \
+  'INV-13 self-check: output redirect injected into enrolled reader is rejected'
+red_case 'boundary reader audit rejects injected redirect through the production gate'
+reader_verb_probe="$WORK/inv13-reader-verb-probe.sh"
+cp "$boundary_reader" "$reader_verb_probe"
+printf '%s\n' '"$ORCHID_ROOT/bin/orchid" jobs check' >> "$reader_verb_probe"
+assert_match 'jobs check' "$(boundary_reader_impurity "$reader_verb_probe")" \
+  'INV-13 self-check: indirect mutating verb injected into enrolled reader is rejected'
+red_case 'boundary reader admits only exact bounded jobs ls, never jobs check'
+reader_literal_probe="$WORK/inv13-reader-literal-probe.sh"
+cp "$boundary_reader" "$reader_literal_probe"
+printf '%s\n' "printf '%s\\n' 'atomic_write > boundary.json; bin/orchid jobs check'" >> "$reader_literal_probe"
+assert_eq '' "$(boundary_reader_impurity "$reader_literal_probe")" \
+  'INV-13 self-check: inert writer diagnostic remains read-only'
+green_case 'same reader audit accepts inert diagnostic text and shipped pure reader'
 
 # ===========================================================================
 # 3 -- every verb the driver invokes is one it is allowed to invoke. The

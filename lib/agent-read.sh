@@ -122,8 +122,115 @@ orchid_agent_read_json() {
         *' --html '*) _orchid_agent_text_json "$input" ;;
         *) orchid_agent_context_json "$repo" ;;
       esac ;;
-    *) return 1 ;;
+    *) return 2 ;;
   esac
+}
+
+# A context input is owned only when its known path has no linked ancestors or
+# final file. Reuse the shared physical-path helpers; never open a rejected path,
+# including a dangling link. Missing inputs remain missing and create no state.
+_orchid_agent_context_input_owned() {
+  local repo="$1" physical_repo="$2" relative="$3" kind="$4" path parent physical
+  path="${repo%/}/$relative"; parent="$(dirname "$path")"
+  while [ "$parent" != "$repo" ]; do
+    if [ "$parent" = / ]; then
+      printf 'orchid: unsafe context input; parent does not belong to repository: %s\n' "$path" >&2
+      return 1
+    fi
+    if [ -L "$parent" ] || { [ -e "$parent" ] && [ ! -d "$parent" ]; }; then
+      printf 'orchid: unsafe context input; parent must be an owned directory: %s\n' "$parent" >&2
+      return 1
+    fi
+    parent="$(dirname "$parent")"
+  done
+  if [ -L "$path" ] || { [ -e "$path" ] && {
+    { [ "$kind" = file ] && [ ! -f "$path" ]; } ||
+    { [ "$kind" = directory ] && [ ! -d "$path" ]; }
+  }; }; then
+    printf 'orchid: unsafe context input; expected owned %s: %s\n' "$kind" "$path" >&2
+    return 1
+  fi
+  physical="$(_orchid_physical_path "$path")" || return 1
+  if [ "$physical" != "${physical_repo%/}/$relative" ]; then
+    printf 'orchid: unsafe context input; path escapes repository ownership: %s\n' "$path" >&2
+    return 1
+  fi
+}
+
+# orchid_agent_context_preflight <repo> -- admission for the complete bounded
+# read surface, including the existing jobs/routing readers. User configuration,
+# installed engines and qualification records outside the project remain
+# operator-controlled inputs. This function emits no stdout and writes nothing.
+orchid_agent_context_preflight() {
+  local repo="$1" physical_repo state rt f relative jid task log engine chain
+  while [ "$repo" != / ] && [ "${repo%/}" != "$repo" ]; do repo="${repo%/}"; done
+  physical_repo="$(orchid_physical_dir "$repo")" || return 1
+  state="$repo/.orchid"; rt="$state/runtime"
+  for relative in .orchid .orchid/tasks .orchid/runtime .orchid/runtime/jobs \
+    .orchid/runtime/logs .orchid/runtime/exits .orchid/runtime/spool \
+    .orchid/runtime/answers; do
+    _orchid_agent_context_input_owned "$repo" "$physical_repo" "$relative" directory || return 1
+  done
+  for relative in orchid.config .orchid/roadmap.md .orchid/journal.md \
+    .orchid/runtime/epoch .orchid/runtime/lease.json \
+    .orchid/runtime/boundary.json .orchid/runtime/engines.json; do
+    _orchid_agent_context_input_owned "$repo" "$physical_repo" "$relative" file || return 1
+  done
+  for f in "$state/tasks"/*.md; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    _orchid_agent_context_input_owned "$repo" "$physical_repo" "${f#"$repo/"}" file || return 1
+  done
+  for f in "$rt/answers"/*.question "$rt/answers"/*.choices "$rt/answers"/*.answer; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    _orchid_agent_context_input_owned "$repo" "$physical_repo" "${f#"$repo/"}" file || return 1
+  done
+  for f in "$rt/jobs"/*.json; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    _orchid_agent_context_input_owned "$repo" "$physical_repo" "${f#"$repo/"}" file || return 1
+    # Extract references only; jobs ls --strict owns manifest validity/liveness.
+    # Invalid identities are left to that existing reader, before it opens any
+    # referenced path. Valid identities still must be flat owned path operands.
+    jid="$(jq -er '.job_id | select(type == "string" and length > 0)' "$f" 2>/dev/null)" || continue
+    task="$(jq -er '.task | select(type == "string" and length > 0)' "$f" 2>/dev/null)" || continue
+    for relative in "$jid" "$task"; do
+      case "$relative" in
+        .|..|*/*|*$'\t'*|*$'\r'*|*$'\n'*)
+          printf 'orchid: unsafe context input; job references must be flat single-line identities: %s\n' "$f" >&2
+          return 1 ;;
+      esac
+    done
+    _orchid_agent_context_input_owned "$repo" "$physical_repo" ".orchid/tasks/$task.md" file || return 1
+    _orchid_agent_context_input_owned "$repo" "$physical_repo" ".orchid/runtime/exits/$jid" file || return 1
+    _orchid_agent_context_input_owned "$repo" "$physical_repo" ".orchid/runtime/spool/$jid.json" file || return 1
+    log="$(jq -r 'if (.log | type) == "string" then .log else "" end' "$f" 2>/dev/null)" || continue
+    [ -n "$log" ] || continue
+    case "$log" in
+      "$repo/.orchid/runtime/"*) relative="${log#"$repo/"}" ;;
+      "$physical_repo/.orchid/runtime/"*) relative="${log#"$physical_repo/"}" ;;
+      *) printf 'orchid: unsafe context input; job log must belong to repository runtime: %s\n' "$f" >&2; return 1 ;;
+    esac
+    case "/$relative/" in
+      *'/../'*|*'/./'*|*'//'*|*$'\t'*|*$'\r'*|*$'\n'*) printf 'orchid: unsafe context input; job log has an aliased path: %s\n' "$f" >&2; return 1 ;;
+    esac
+    _orchid_agent_context_input_owned "$repo" "$physical_repo" "$relative" file || return 1
+  done
+  if [ -f "$rt/boundary.json" ]; then
+    # drive_orchestrator_surface resolves this chain and reads config, ledger,
+    # local manifests and engine digests. Inspect exactly those local inputs
+    # before delegating; do not walk unused project/plugin trees.
+    chain="$(resolve_role_chain "$repo" orchestrator)" || return 1
+    while IFS= read -r engine; do
+      [ -n "$engine" ] || continue
+      case "$engine" in
+        .|..|*/*|*$'\t'*|*$'\r'*|*$'\n'*)
+          printf 'orchid: unsafe context input; orchestrator engine must be a flat single-line name\n' >&2
+          return 1 ;;
+      esac
+      _orchid_agent_context_input_owned "$repo" "$physical_repo" ".orchid/plugins/engines/$engine" directory || return 1
+      _orchid_agent_context_input_owned "$repo" "$physical_repo" ".orchid/plugins/engines/$engine/plugin.conf" file || return 1
+      _orchid_agent_context_input_owned "$repo" "$physical_repo" ".orchid/plugins/engines/$engine/run" file || return 1
+    done <<< "$chain"
+  fi
 }
 
 # orchid_agent_context_json <repo> -- directory-scoped, observational context.
@@ -134,6 +241,7 @@ orchid_agent_context_json() {
   local repo="$1" state rt f id status title why task_rows="" tasks jobs
   local run_id="" run_status=uninitialized epoch="" boundary boundary_json
   local boundary_kind boundary_task boundary_status="" surface operator_owned=false
+  orchid_agent_context_preflight "$repo" || return 1
   state="$(orchid_state "$repo")"; rt="$state/runtime"
   if [ -f "$state/roadmap.md" ]; then
     run_id="$(fm_get "$state/roadmap.md" run_id)"

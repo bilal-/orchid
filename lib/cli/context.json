@@ -1,5 +1,5 @@
 {
-  "description": "Read-only orientation for the current Orchid repository.",
+  "description": "Read-only orientation for the current Orchid repository; refuses linked or unowned project state before reading it.",
   "default": [],
   "commands": [
     {

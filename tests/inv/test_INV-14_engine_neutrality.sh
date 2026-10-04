@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
+source "$REPO_ROOT/tests/inv/neutrality_helpers.sh"
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/frontmatter.sh"
 source "$REPO_ROOT/lib/manifest.sh"; source "$REPO_ROOT/lib/roles.sh"
 source "$REPO_ROOT/lib/resolver.sh"; source "$REPO_ROOT/lib/envelope.sh"
@@ -9,12 +10,14 @@ export ORCHID_ROOT="$REPO_ROOT"
 
 # INV-14: no kernel source branches on any DISCOVERED engine identifier.
 #
-# INV-05 already asserts this for three hardcoded names in two directories.
-# That check cannot notice a fourth engine shipping tomorrow, or a branch
-# added to `bin/` or `runners/`. This one discovers the identifier set from
+# INV-05 scans the same kernel inventory for three hardcoded names.
+# That check cannot notice a fourth engine shipping tomorrow. This one
+# discovers the identifier set from
 # the plugin tree itself -- every kind=engine and kind=notify directory name
 # AND every manifest `id=` (qualified and bare) -- and scans all four kernel
-# source roots against it. Add an engine, and it is covered automatically.
+# source roots against it. The exact Tier2 native host adapters are separate;
+# the shared helper enforces their import and invocation boundary. Add an
+# engine, and it is covered automatically.
 #
 # Scope note: archetype names are deliberately NOT in the identifier set.
 # `review` is simultaneously a shipped archetype's directory name and the
@@ -79,15 +82,8 @@ for _i in $identifiers; do id_count=$((id_count + 1)); done
 # `config_get` -- a config DEFAULT VALUE is data passed to a lookup, the same
 # exemption INV-05 already makes.
 # ===========================================================================
-scan_files() {
-  printf '%s\n' "$REPO_ROOT/bin/orchid"
-  local f
-  for f in "$REPO_ROOT"/lib/*.sh "$REPO_ROOT"/libexec/* "$REPO_ROOT"/runners/*; do
-    [ -f "$f" ] && printf '%s\n' "$f"
-  done
-}
-
-hits=""
+inv14_branch_hits() {
+  local f body name found
 while IFS= read -r f; do
   [ -f "$f" ] || continue
   body="$(grep -nE '.' "$f" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -vE 'config_get' || true)"
@@ -97,31 +93,34 @@ while IFS= read -r f; do
       "(^[0-9]+:[[:space:]]*(if|elif|while|until|case)[[:space:]].*[^A-Za-z0-9_./-]$name([^A-Za-z0-9_./-]|\$))|([[:space:]](=|==|!=)[[:space:]]*\"?$name\"?([^A-Za-z0-9_./-]|\$))|([^A-Za-z0-9_./-]$name\))" \
       || true)"
     if [ -n "$found" ]; then
-      hits="$hits
-$f [$name]: $found"
+      printf '%s [%s]: %s\n' "$f" "$name" "$found"
     fi
   done
-done < <(scan_files)
-
+done < <(inv_kernel_source_files "$1")
+}
+inv_assert_native_host_boundary "$REPO_ROOT" INV-14
+hits="$(inv14_branch_hits "$REPO_ROOT")"
 if [ -n "$hits" ]; then
   printf '%s\n' "$hits"
-  fail "INV-14: kernel source branches on a discovered engine identifier"
+  fail "INV-14: kernel source branches on discovered engine identifier"
 fi
 
 # Self-check: the scan must actually be capable of finding something, or a
 # broken regex would pass this invariant vacuously forever.
-probe="$WORK/probe.sh"
+probe_root="$WORK/inv14-provider-probe"
+mkdir -p "$probe_root/bin" "$probe_root/lib" "$probe_root/libexec" "$probe_root/runners"
+probe="$probe_root/lib/injected.sh"
 first_id="${identifiers%% *}"
 {
   printf '#!/usr/bin/env bash\n'
   printf 'if [ "$engine" = %s ]; then echo branch; fi\n' "$first_id"
 } > "$probe"
-probe_hit="$(grep -nE "[[:space:]](=|==|!=)[[:space:]]*\"?$first_id\"?([^A-Za-z0-9_./-]|\$)" "$probe" || true)"
+probe_hit="$(inv14_branch_hits "$probe_root")"
 [ -n "$probe_hit" ] || fail "INV-14 self-check: the comparison pattern fails to match a real name branch"
 
-probe_assign="$WORK/probe-assign.sh"
+probe_assign="$probe"
 printf 'v=%s,other\n' "$first_id" > "$probe_assign"
-probe_assign_hit="$(grep -nE "[[:space:]](=|==|!=)[[:space:]]*\"?$first_id\"?([^A-Za-z0-9_./-]|\$)" "$probe_assign" || true)"
+probe_assign_hit="$(inv14_branch_hits "$probe_root")"
 [ -z "$probe_assign_hit" ] || fail "INV-14 self-check: an assignment (a config default table) must not read as a branch"
 red_case "INV-14's comparison pattern matched a real engine-name branch, so the scan above is capable of finding one"
 green_case 'the same pattern left an assignment (v=<engine>,other, a config default table) alone, so the match above is detection rather than a pattern that hits every line naming an engine'

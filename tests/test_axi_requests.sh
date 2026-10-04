@@ -122,7 +122,9 @@ concurrent_before="$(cat "$WORK/.orchid/runtime/epoch")"
 (
   export ORCHID_ROOT="$REPO_ROOT"
   source "$REPO_ROOT/lib/requests.sh"
-  orchid_request_begin concurrent-operation run '{"argv":["start"]}' || exit 1
+  source "$ORCHID_ROOT/lib/cli.sh"
+  orchid_cli_prepare run json start --request-id concurrent-operation || exit 1
+  orchid_request_begin concurrent-operation run "$ORCHID_CLI_PARSED" || exit 1
   printf '%s\n' "$ORCHID_REQUEST_DIR" > "$MACHINE_HOME/request-ready"
   eval "$(stub_hold_until "$MACHINE_HOME/request-release")"
   [ -e "$MACHINE_HOME/request-release" ] || exit 1
@@ -153,4 +155,80 @@ assert_eq true "$(jq -r '.request.replayed' <<< "$concurrent_replay")" 'complete
 assert_eq "$concurrent_after" "$(cat "$WORK/.orchid/runtime/epoch")" 'completed concurrent claim cannot repeat ownership acquisition'
 assert_eq "$(jq -c . "$MACHINE_HOME/request-concurrent-data.json")" "$(jq -c 'del(.request)' <<< "$concurrent_replay")" 'concurrent replay preserves winner result'
 green_case 'the same concurrent intent replays its recorded completion after the winner finishes'
+
+# RED: a stale self-hosted kernel cannot claim a new public request, replay a
+# completed request, or touch an unacknowledged service target through receipt
+# scope discovery. Every refusal must precede cache publication and target work.
+# GREEN: refreshing that same kernel allows the historical replay unchanged;
+# acknowledged service installation remains available through the same wrapper.
+admission_root="$WORK/request-admission-kernel"
+admission_home="$MACHINE_HOME/request-admission-home"
+mkdir -p "$admission_root" "$admission_home" || exit 1
+for payload in bin lib libexec runners templates plugins roles skills release PROTOCOL.md; do
+  cp -R "$REPO_ROOT/$payload" "$admission_root/" || exit 1
+done
+git -C "$admission_root" init -q || exit 1
+git -C "$admission_root" add . || exit 1
+git -C "$admission_root" commit -qm 'Receipt admission kernel' || exit 1
+HOME="$admission_home" ORCHID_REPO="$admission_root" "$admission_root/bin/orchid" init >/dev/null || exit 1
+git -C "$admission_root" checkout -q orchid/integration || exit 1
+admission_first="$(HOME="$admission_home" ORCHID_REPO="$admission_root" "$admission_root/bin/orchid" run start --request-id admitted-before-stale)" || exit 1
+admission_epoch="$(cat "$admission_root/.orchid/runtime/epoch")"
+admission_claims="$(find "$admission_home/.orchid/requests" -name intent.json | wc -l | tr -d ' ')"
+printf '\n# receipt stale-install witness\n' >> "$admission_root/libexec/orchid-version"
+git -C "$admission_root" add libexec/orchid-version || exit 1
+for admission_id in admitted-before-stale refused-new-stale; do
+  rc=0
+  admission_result="$(HOME="$admission_home" ORCHID_REPO="$admission_root" GIT_TRACE="$admission_home/stale.trace" \
+    "$admission_root/bin/orchid" run start --request-id "$admission_id" 2> "$admission_home/admission.err")" || rc=$?
+  assert_eq 1 "$rc" "stale kernel refuses $admission_id before claim or replay"
+  assert_match 'refusing to run' "$(cat "$admission_home/admission.err")" 'receipt admission retains stale-root diagnostic'
+  assert_match 'Request replay refused' "$(jq -r .error <<< "$admission_result")" 'admission refusal uses structured public output'
+  assert_eq "$admission_claims" "$(find "$admission_home/.orchid/requests" -name intent.json | wc -l | tr -d ' ')" 'stale refusal cannot publish a request claim'
+  assert_eq "$admission_epoch" "$(cat "$admission_root/.orchid/runtime/epoch")" 'stale refusal cannot acquire another epoch'
+done
+if grep -Eq 'rev-parse --show-toplevel' "$admission_home/stale.trace"; then
+  fail 'receipt scope invoked target Git before admission'
+fi
+red_case 'both new requests and cached successes refuse a staged self-hosted kernel before claim, replay or epoch change'
+
+rc=0
+service_denied="$(HOME="$admission_home" ORCHID_REPO="$WORK" GIT_TRACE="$admission_home/service-denied.trace" \
+  "$admission_root/bin/orchid" service install --repo="$admission_root" --dry-run --request-id service-admitted 2> "$admission_home/admission.err")" || rc=$?
+assert_eq 1 "$rc" 'explicit service target without acknowledgement refuses receipt admission'
+assert_match 'service installation refused' "$(cat "$admission_home/admission.err")" 'service authorization precedes the stale-kernel gate'
+assert_match 'root verification was not attempted' "$(cat "$admission_home/admission.err")" 'denial retains no-target-Git trust diagnosis'
+assert_match 'Request replay refused' "$(jq -r .error <<< "$service_denied")" 'service denial remains structured'
+[ ! -s "$admission_home/service-denied.trace" ] || fail 'unacknowledged receipt admission invoked target Git'
+assert_eq "$admission_claims" "$(find "$admission_home/.orchid/requests" -name intent.json | wc -l | tr -d ' ')" 'unacknowledged service cannot publish a claim'
+red_case 'explicit unacknowledged service target is refused before root Git or request cache writes'
+
+git -C "$admission_root" checkout HEAD -- libexec/orchid-version || exit 1
+admission_replay="$(HOME="$admission_home" ORCHID_REPO="$admission_root" "$admission_root/bin/orchid" run start --request-id admitted-before-stale)" || exit 1
+assert_eq true "$(jq -r .request.replayed <<< "$admission_replay")" 'refreshed kernel permits the same historical intent'
+assert_eq "$admission_epoch" "$(cat "$admission_root/.orchid/runtime/epoch")" 'admission never mints an epoch for replay'
+assert_eq "$(jq -c 'del(.request)' <<< "$admission_first")" "$(jq -c 'del(.request)' <<< "$admission_replay")" 'refreshed replay preserves recorded result'
+green_case 'refreshing the same staged kernel restores historical replay without another ownership transition'
+
+HOME="$admission_home" ORCHID_REPO="$admission_root" ORCHID_OUTPUT=raw \
+  "$admission_root/bin/orchid" trust unattended "$admission_root" --reason 'Disposable receipt admission proof' >/dev/null || exit 1
+service_admitted="$(HOME="$admission_home" ORCHID_REPO="$WORK" "$admission_root/bin/orchid" service install \
+  --repo "$admission_root" --dry-run --request-id service-admitted)" || exit 1
+assert_eq false "$(jq -r .request.replayed <<< "$service_admitted")" 'previous denial did not reserve service request ID'
+service_replay="$(HOME="$admission_home" ORCHID_REPO="$WORK" "$admission_root/bin/orchid" service install \
+  --repo "$admission_root" --dry-run --request-id service-admitted)" || exit 1
+assert_eq true "$(jq -r .request.replayed <<< "$service_replay")" 'authorized explicit service intent replays'
+green_case 'acknowledging the exact explicit target permits first install and its historical replay'
+HOME="$admission_home" ORCHID_REPO="$admission_root" ORCHID_OUTPUT=raw \
+  "$admission_root/bin/orchid" trust revoke "$admission_root" >/dev/null || exit 1
+rc=0
+service_revoked="$(HOME="$admission_home" ORCHID_REPO="$WORK" GIT_TRACE="$admission_home/service-revoked.trace" \
+  "$admission_root/bin/orchid" service install --repo "$admission_root" --dry-run --request-id service-admitted 2> "$admission_home/admission.err")" || rc=$?
+assert_eq 1 "$rc" 'cached service install cannot bypass revoked authorization'
+assert_match 'service installation refused' "$(cat "$admission_home/admission.err")" 'cached service replay rechecks current authorization'
+assert_match 'Request replay refused' "$(jq -r .error <<< "$service_revoked")" 'revoked historical replay remains structured'
+[ ! -s "$admission_home/service-revoked.trace" ] || fail 'revoked service replay invoked target Git'
+assert_eq "$admission_epoch" "$(cat "$admission_root/.orchid/runtime/epoch")" 'service admission and replay do not acquire run ownership'
+red_case 'revoking the same target prevents cached service success without target Git or epoch change'
+
 [ "$FAILS" -eq 0 ]

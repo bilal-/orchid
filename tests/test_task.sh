@@ -222,9 +222,11 @@ assert_eq "$pending_receipt" "$("$ORCHID_BIN" task show T005 | grep '^verify_fai
 rc=0
 charge_conflict_out="$("$ORCHID_BIN" task advance T005 blocked --charge-attempt \
   --waive-attempt --reason "contradictory accounting" 2>&1)" || rc=$?
-[ "$rc" -ne 0 ] || fail "--charge-attempt and --waive-attempt must be mutually exclusive"
-assert_match "cannot be combined" "$charge_conflict_out" \
+[ "$rc" -eq 2 ] || fail "--charge-attempt and --waive-attempt must be a usage error"
+assert_match "mutually exclusive options cannot be combined" "$charge_conflict_out" \
   "the contradictory accounting flags are refused explicitly"
+assert_match '\-\-charge-attempt' "$charge_conflict_out" "conflict names --charge-attempt"
+assert_match '\-\-waive-attempt' "$charge_conflict_out" "conflict names --waive-attempt"
 assert_eq 0 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
   "the contradictory request mutates no attempt budget"
 

@@ -355,6 +355,8 @@ pack_budget_bytes=65536
 # other runtime/ path this file documents) -- the "check from another
 # room" surface, regenerated best-effort at THE TICK's step 5. Never
 # served; open the file directly.
+# Output must be an owned regular file below .orchid/runtime (relative runtime/
+# path or absolute owned runtime path); aliases, links and durable paths refuse.
 # status_page=runtime/status.html
 
 # v1-m4 Task 7: OpenClaw notify channel (docs/engines/openclaw.md). Both
