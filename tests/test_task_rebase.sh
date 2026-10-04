@@ -73,6 +73,7 @@ rb_pid=$!
 # Only synthetic runtime fields are changed, matching tests/test_jobs.sh.
 jq --argjson pid "$rb_pid" '.pid=$pid' "$rb_job" > "$WORK/live.json"
 mv "$WORK/live.json" "$rb_job"
+plant_job_process_identity "$rb_job"
 rb_rows="$("$ORCHID_BIN" jobs ls --tsv)"
 assert_match "$rb_job_id.*running" "$rb_rows" "fixture: Orchid reports the implementer live"
 kill -0 "$rb_pid" 2>/dev/null || fail "fixture: implementer process must be alive"
@@ -105,6 +106,7 @@ rb_job="$("$ORCHID_BIN" jobs prepare OTHER implementer implement)" \
   || { fail 'fixture: prepare unrelated job'; exit 1; }
 jq --argjson pid "$$" '.pid=$pid' "$rb_job" > "$WORK/other.json"
 mv "$WORK/other.json" "$rb_job"
+plant_job_process_identity "$rb_job"
 rb_before_attempts="$("$ORCHID_BIN" task get RB1 attempts)"
 rb_rc=0
 rb_out="$("$ORCHID_BIN" task rebase RB1 2>&1)" || rb_rc=$?

@@ -2,6 +2,11 @@
 
 *Normative. One of four documents split from the design spec; see [2026-07-24-orchid-design.md](./2026-07-24-orchid-design.md) for the index and orientation.*
 
+Live jobs also carry a process birth fingerprint and host. When `jobs ls`
+reports `unverified`, inspect the original process before confirming its exit
+with `orchid jobs record-exit <job-id> <exit-code>`. The kernel holds its report
+and sends no signal until ownership or completion is established.
+
 ## Installation & configuration
 
 ### Install

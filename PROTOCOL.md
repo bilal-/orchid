@@ -1605,7 +1605,17 @@ ones its archetype never declares.
   state. Two of the shapes below are a WAIT, and each prints its own line; the
   third, further down, is not a wait at all:
 
-  - a stamped pid that `kill -0` still answers for → `deferred: <file> (job
+  The launcher records `pid_start` and `hostname` with pid/pgid. A live
+  numeric PID without that identity is `unverified`, including legacy live
+  records: no signal is sent, and completion evidence is held as `unresolved:`.
+  The driver raises an operator boundary and never relaunches that job. Inspect
+  the original process; only after confirming it ended, use
+  `orchid jobs record-exit <job-id> <exit code>`. A known different process
+  birth proves the original job ended without signalling the replacement PID.
+  Signals recheck the same identity immediately before targeting the process
+  group; the OS lookup and signal are separate operations, not one atomic act.
+
+  - a stamped pid whose recorded host, process birth, and group still match → `deferred: <file> (job
     <id> still running, pid <n>)`;
   - `pid: 0` whose log exists and has been written to within `stall_minutes`
     → `deferred: <file> (job <id> still starting, no pid stamped yet)`. That

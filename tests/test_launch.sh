@@ -46,6 +46,8 @@ manifest="$WORK/.orchid/runtime/jobs/$job_id.json"
 [ -f "$manifest" ] || fail "manifest file exists for job before reconcile"
 manifest_pid="$(jq -r .pid "$manifest")"
 manifest_pgid="$(jq -r .pgid "$manifest")"
+jq -e --arg host "$(hostname)" 'has("pid_start") and (.pid_start | type == "string") and .hostname == $host' "$manifest" >/dev/null \
+  || fail "launcher stamps the process birth and host alongside pid/pgid"
 own_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' || true)"
 assert_eq "$launched_pid" "$manifest_pid" "manifest pid matches launched pid"
 [ "$manifest_pgid" -gt 0 ] 2>/dev/null || fail "manifest pgid must be > 0 (got '$manifest_pgid')"

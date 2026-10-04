@@ -111,7 +111,11 @@ reviews_dest() {
 # corrupt data); `kill -- -0` in that case would signal OUR OWN process
 # group, not the job's — so guard it and fall back to killing pid directly.
 kill_stuck() {
-  local pgid="$1" pid="$2"
+  local manifest="$1" pgid="$2" pid="$3"
+  [ "$(orchid_job_process_state "$manifest")" = running ] || {
+    echo "orchid: refusing to signal job in $manifest: its process identity is no longer verified" >&2
+    return 1
+  }
   if [ "$pgid" -gt 0 ] 2>/dev/null; then
     kill -- "-$pgid" 2>/dev/null || true
   elif [ "$pid" -gt 0 ] 2>/dev/null; then
@@ -227,8 +231,8 @@ job_unlaunched_reapable() {  # manifest now stall_s
 # SILENCE IS NOT ON THAT LIST, and that is the whole point (T031 attempt-5
 # rework). "Nothing has been written to the log for `stall_minutes`" is an
 # INFERENCE FROM AN ABSENCE; these two are facts written by a process about
-# itself. For a job that stamped a pid the distinction rarely matters, because
-# `kill -0` can ask the operating system directly. For one that never stamped a
+# itself. A stamped pid must match its recorded process identity before the
+# kernel can treat it as running. For one that never stamped a
 # pid there is nothing to ask and nothing to signal, so the inference is the
 # only other thing on offer -- and taking it as an exit is exactly how a
 # live-but-silent engine (a long model call writes nothing for many minutes)
@@ -245,9 +249,9 @@ job_exit_recorded() {  # manifest
 # process that has finished -- and for a manifest that never stamped a pid,
 # "has it finished" has a third answer which is neither yes nor not-yet.
 #
-#   running     a stamped pid `kill -0` still answers for.
+#   running     a live pid with matching host, birth, and process group.
 #   exited      it is over, and something SAYS SO: a stamped pid that is gone
-#               (the kernel itself is the witness), or -- with pid 0 -- the
+#               or reused, or a positive exit record. With pid 0, use the
 #               positive record job_exit_recorded reads, or NO LOG AT ALL. The
 #               last of those is a fact about the launcher rather than a
 #               timeout: it creates the log by redirecting the spawn into it, so
@@ -284,7 +288,11 @@ job_liveness() {  # manifest now stall_s -> running|exited|starting|unresolved
   if [ "$pid" -gt 0 ]; then
     # `kill -0 0` would signal our OWN process group, so pid 0 never reaches
     # this probe.
-    if kill -0 "$pid" 2>/dev/null; then echo running; else echo exited; fi
+    case "$(orchid_job_process_state "$f")" in
+      running) echo running ;;
+      exited) echo exited ;;
+      *) if job_exit_recorded "$f"; then echo exited; else echo unresolved; fi ;;
+    esac
     return 0
   fi
   if job_exit_recorded "$f" || job_never_started "$f"; then echo exited; return 0; fi
@@ -585,7 +593,7 @@ history_append() {
 #   stamped and nothing ever unstamps it: the process can be gone for hours
 #   and the file still reads exactly as it did while it was running. So every
 #   row uses the same predicates as `jobs check`: a stamped pid is probed with
-#   `kill -0`; pid 0 with no log is `never-started`, with a fresh log is
+#   the shared process identity check; pid 0 with no log is `never-started`, with a fresh log is
 #   `prepared`, and with a stale log is `unstamped`. Dogfood F29 was 73
 #   never-launched manifests rendering as 73 identical `prepared` lines; the
 #   only way to find they were corpses was cat-ing manifests and noticing
@@ -706,13 +714,16 @@ jobs_rows() {
         # this is deliberately not reported as never-started or reaped.
         jstate=prepared
       fi
-    elif kill -0 "$jpid" 2>/dev/null; then
-      jstate=running
     else
-      jstate=dead
-      case "$jid" in
-        */*|*..*) ;;   # never build a path out of an unvalidated job_id
-        *) if [ -e "$spool_dir/$jid.json" ]; then jstate=delivered; fi ;;
+      case "$(job_liveness "$f" "$now" "$stall_s")" in
+        running) jstate=running ;;
+        unresolved) jstate=unverified ;;
+        *)
+          jstate=dead
+          case "$jid" in
+            */*|*..*) ;;   # never build a path out of an unvalidated job_id
+            *) if [ -e "$spool_dir/$jid.json" ]; then jstate=delivered; fi ;;
+          esac ;;
       esac
     fi
 
@@ -875,6 +886,8 @@ jobs_warnings() {
         fi ;;
       unstamped)
         echo "WARNING: job $label spawned but never stamped a pid and last wrote $(fmt_dur "$age") ago — nothing is visibly progressing; orchid jobs gc will retire the manifest but keep its log (log: $jlog)" >&2 ;;
+      unverified)
+        echo "WARNING: job $label has an unverified process identity — nothing will be signalled or admitted as completed without proof. Inspect its original process before using orchid jobs record-exit $jid <exit-code> (log: $jlog)" >&2 ;;
       running)
         if [ "${age:-0}" -gt "$stall_s" ] 2>/dev/null; then
           echo "WARNING: job $label is alive but last wrote $(fmt_dur "$age") ago — past the $(fmt_dur "$stall_s") stall threshold (log: $jlog)" >&2
@@ -1420,11 +1433,16 @@ case "$sub" in
         fi
         continue
       fi
-      if ! kill -0 "$pid" 2>/dev/null; then printf '%s\tdead\n' "$task"; continue; fi
+      case "$(job_liveness "$f" "$now" "$stall_s")" in
+        exited) printf '%s\tdead\n' "$task"; continue ;;
+        unresolved)
+          echo "orchid: $task job $(jq -r .job_id "$f"): process identity is unverified; nothing was signalled. Inspect the job, and record its exit only after confirming its original process ended: orchid jobs record-exit $(jq -r .job_id "$f") <exit-code>" >&2
+          printf '%s\tunverified\n' "$task"; continue ;;
+      esac
       pgid="$(jq -r .pgid "$f")"; log="$(jq -r .log "$f")"; started_at="$(jq -r .started_at "$f")"
       log_mtime="$(file_mtime "$log")"
       if [ "$log_mtime" -gt 0 ] && [ $(( now - log_mtime )) -gt "$stall_s" ]; then
-        kill_stuck "$pgid" "$pid"
+        kill_stuck "$f" "$pgid" "$pid" || { printf '%s\tunverified\n' "$task"; continue; }
         printf '%s\tstalled\n' "$task"
       elif [ "$cpu_floor" != 0 ] && cpu_flat="$(hb_cpu_flat "$log" "$stall_s" "$cpu_floor")"; then
         # SAME `stalled` token, deliberately: this is the same fact the arm
@@ -1436,10 +1454,10 @@ case "$sub" in
         # (`<task>\t<status>`) is untouched while an operator still sees why.
         cpu_span="${cpu_flat%% *}"; cpu_pair="${cpu_flat#* }"
         echo "orchid: $task job $(jq -r .job_id "$f"): no CPU progress across ${cpu_span}s of heartbeats (cpu ${cpu_pair% *} -> ${cpu_pair#* } seconds, floor ${cpu_floor}) — the heartbeats are alive but the work is not; killing it as stalled" >&2
-        kill_stuck "$pgid" "$pid"
+        kill_stuck "$f" "$pgid" "$pid" || { printf '%s\tunverified\n' "$task"; continue; }
         printf '%s\tstalled\n' "$task"
       elif [ $(( now - started_at )) -gt "$timeout_s" ]; then
-        kill_stuck "$pgid" "$pid"
+        kill_stuck "$f" "$pgid" "$pid" || { printf '%s\tunverified\n' "$task"; continue; }
         printf '%s\ttimeout\n' "$task"
       else
         printf '%s\trunning\n' "$task"
@@ -1528,7 +1546,7 @@ case "$sub" in
       #
       # THREE WAYS NOT TO FILE, and the third is not a wait (attempt-5 rework):
       #
-      #   running     a stamped, live pid. DEFER: bounded by `jobs check`,
+      #   running     a stamped, verified live pid. DEFER: bounded by `jobs check`,
       #               which kills a job that stalls or times out, after which
       #               the envelope reconciles on the very next pass.
       #   starting    the launcher's post-spawn/pre-stamp window. DEFER:
@@ -1560,7 +1578,11 @@ case "$sub" in
           echo "deferred: $base (job $jid still starting, no pid stamped yet)"
           continue ;;
         unresolved)
-          echo "unresolved: $base (job $jid never stamped a pid and its log has been silent past stall_minutes, with no exit recorded — silence is not an exit, so this is not a completion signal)"
+          if [ "$m_pid" = 0 ]; then
+            echo "unresolved: $base (job $jid never stamped a pid and its log has been silent past stall_minutes, with no exit recorded — silence is not an exit, so this is not a completion signal)"
+          else
+            echo "unresolved: $base (job $jid has no verified process identity or recorded exit — its PID may belong to another process, so this is not a completion signal)"
+          fi
           continue ;;
       esac
       m_task="$(jq -r .task "$manifest")"; e_task="$(envelope_field "$f" .task)"
@@ -1748,7 +1770,7 @@ case "$sub" in
       [ -e "$mf" ] || continue
       s_pid="$(jq -r '.pid // 0' "$mf" 2>/dev/null || echo 0)"
       [ "$s_pid" != 0 ] || continue                      # prepared, never launched
-      if kill -0 "$s_pid" 2>/dev/null; then continue; fi # still running
+      [ "$(job_liveness "$mf" "$(date +%s)" "$reconcile_stall_s")" = exited ] || continue
       s_jid="$(jq -r '.job_id // empty' "$mf" 2>/dev/null || true)"
       [ -n "$s_jid" ] || continue
       # IT DELIVERED. A job that exited between the drain above and this
@@ -1971,7 +1993,7 @@ case "$sub" in
         gc_reap_unlaunched "$f" "$now" "$prepared_older_than_s" "$stall_s"
         continue
       fi
-      if kill -0 "$pid" 2>/dev/null; then continue; fi   # still alive: untouched
+      [ "$(job_liveness "$f" "$now" "$stall_s")" = exited ] || continue
       started_at="$(jq -r .started_at "$f")"
       age=$(( now - started_at ))
       [ "$age" -gt "$older_than_s" ] || continue         # dead but too young: untouched

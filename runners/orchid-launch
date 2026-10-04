@@ -252,6 +252,7 @@ mkdir -p "$(dirname "$log")"
 # from the parent env is simply not forwarded (nothing to forward); the
 # plugin still runs and reports its own auth failure (see lib/manifest.sh's
 # manifest_validate warn for the "requested but not set" diagnostic).
+child_env=()
 spawn_child_env_load "$plugin_dir" || orchid_die "cannot construct adapter environment for $engine"
 
 # T040: RECORD THE ENGINE'S EXIT STATUS, because nothing else on this machine
@@ -317,8 +318,10 @@ set +m
 # even though process-group signalling remains available, and a `ps` query
 # could race a very short-lived adapter.
 pgid="$pid"
+pid_start="$(_pid_start "$pid")"
 
 jq --argjson pid "$pid" --argjson pgid "$pgid" --argjson started_at "$(date +%s)" \
-  '.pid=$pid | .pgid=$pgid | .started_at=$started_at' "$manifest" | atomic_write "$manifest"
+  --arg pid_start "$pid_start" --arg hostname "$(hostname)" \
+  '.pid=$pid | .pgid=$pgid | .started_at=$started_at | .pid_start=$pid_start | .hostname=$hostname' "$manifest" | atomic_write "$manifest"
 
 echo "launched $job_id pid $pid"

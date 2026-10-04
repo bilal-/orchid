@@ -4050,7 +4050,7 @@ config_provenance() {
   echo default
 }
 
-_pid_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -d ' ' || true; }
+_pid_start() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -d ' ' || true; }
 
 # _owner_field <owner-json> <field> -- print ONE field of a lock owner record,
 # reading from a SNAPSHOT string (never re-reading the file), so callers that
@@ -4069,6 +4069,36 @@ _pid_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -d ' ' || true; }
 # read here reaches the shell as code at all.
 _owner_field() {
   printf '%s' "$1" | jq -er --arg f "$2" '.[$f]|tostring' 2>/dev/null
+}
+
+# One process-ownership question for jobs, their display, and the driver.
+# Reuse the lock owner's parser and birth fingerprint. A live PID alone is
+# insufficient: legacy/incomplete identities remain unverified, while a known
+# different birth proves the original process ended. Never signal that PID.
+orchid_job_process_state() {
+  local owner pid start host pgid observed
+  owner="$(cat "$1")" || { printf 'unverified\n'; return 0; }
+  pid="$(_owner_field "$owner" pid)" || pid=0
+  case "$pid" in ''|0|*[!0-9]*) printf 'unverified\n'; return 0 ;; esac
+  host="$(_owner_field "$owner" hostname)" || host=''
+  if [ -n "$host" ] && [ "$host" != null ] && [ "$host" != "$(hostname)" ]; then
+    printf 'unverified\n'; return 0
+  fi
+  if ! kill -0 "$pid" 2>/dev/null; then printf 'exited\n'; return 0; fi
+  start="$(_owner_field "$owner" pid_start)" || start=''
+  if [ -z "$host" ] || [ "$host" = null ] || [ -z "$start" ] || [ "$start" = null ]; then
+    printf 'unverified\n'; return 0
+  fi
+  observed="$(_pid_start "$pid")"
+  [ -n "$observed" ] || { printf 'unverified\n'; return 0; }
+  if [ "$observed" != "$start" ]; then printf 'exited\n'; return 0; fi
+  pgid="$(_owner_field "$owner" pgid)" || pgid=0
+  case "$pgid" in ''|*[!0-9]*) printf 'unverified\n'; return 0 ;; esac
+  if [ "$pgid" -gt 0 ]; then
+    observed="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" || observed=''
+    [ "$observed" = "$pgid" ] || { printf 'unverified\n'; return 0; }
+  fi
+  printf 'running\n'
 }
 lock_acquire() {
   local repo="$1" rt lock brk

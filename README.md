@@ -552,6 +552,11 @@ never-started past the threshold, unstamped, or running but silent past the
 threshold print a `WARNING:` line that `orchid status` shows in every mode,
 with no flag.
 
+A live PID also needs its recorded process birth, host, and group to match.
+Legacy or incomplete live identities read `unverified`: no signal is sent and
+the driver asks an operator to inspect the original job. After confirming it
+ended, `orchid jobs record-exit <job-id> <exit-code>` resolves the held report.
+
 For checkout ownership checks, `orchid jobs ls --tsv --strict` refuses
 unreadable, aliased, empty, or ambiguous job manifests. Merge and task rebase
 use that mode and require no outstanding jobs, including prepared launches.

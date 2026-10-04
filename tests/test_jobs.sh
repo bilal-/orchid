@@ -75,6 +75,7 @@ jq -n --argjson pid "$spid" \
   '{job_id:"j-guard", task:"TGUARD", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:0, log:"/nonexistent.log", output:"/dev/null",
     base_sha:"", candidate_sha:""}' > "$WORK/.orchid/runtime/jobs/j-guard.json"
+plant_job_process_identity "$WORK/.orchid/runtime/jobs/j-guard.json"
 printf 'timeout_minutes=0\n' >> orchid.config
 "$ORCHID_BIN" jobs check >/dev/null
 echo "PGID_GUARD: caller survived jobs check"
@@ -113,6 +114,7 @@ jq -n --argjson pid "$dead_pid" --argjson started "$old_started" --arg log "$rt/
   '{job_id:"j-e1-TDEAD-a1-dead0001", task:"TDEAD", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:"/dev/null",
     base_sha:"", candidate_sha:""}' > "$rt/jobs/j-dead.json"
+plant_job_process_identity "$rt/jobs/j-dead.json"
 
 # Dead but too young: must survive (age alone, not just deadness, gates gc).
 ( exit 0 ) & young_dead_pid=$!
@@ -121,6 +123,7 @@ jq -n --argjson pid "$young_dead_pid" --argjson started "$now" --arg log "$rt/lo
   '{job_id:"j-young-dead", task:"TYOUNGDEAD", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:"/dev/null",
     base_sha:"", candidate_sha:""}' > "$rt/jobs/j-young-dead.json"
+plant_job_process_identity "$rt/jobs/j-young-dead.json"
 
 # Live + old: age must never override a live pid.
 sleep 100 &
@@ -130,6 +133,7 @@ jq -n --argjson pid "$live_pid" --argjson started "$old_started" --arg log "$rt/
   '{job_id:"j-live", task:"TLIVE", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:"/dev/null",
     base_sha:"", candidate_sha:""}' > "$rt/jobs/j-live.json"
+plant_job_process_identity "$rt/jobs/j-live.json"
 
 # Orphaned pack dir + orphaned request file: no manifest, no spool envelope.
 mkdir -p "$rt/packs/j-orphan"
@@ -201,6 +205,7 @@ jq -n --argjson pid "$pend_pid" --argjson started "$old_started" --arg log "$rt/
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:$out,
     base_sha:"", candidate_sha:""}' \
   > "$rt/jobs/j-pend.json"
+plant_job_process_identity "$rt/jobs/j-pend.json"
 echo '{"contract":1,"job_id":"j-e1-TPEND-a1-feed0001","task":"TPEND","operation":"implement","status":"ok"}' \
   > "$rt/spool/j-e1-TPEND-a1-feed0001.json"
 
@@ -245,6 +250,7 @@ jq -n --argjson pid "$hostile_pid" --argjson started "$hostile_started" --arg lo
   '{job_id:"../../../../etc/j-evil", task:"THOSTILE", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:"/dev/null",
     base_sha:"", candidate_sha:""}' > "$rt/jobs/j-hostile.json"
+plant_job_process_identity "$rt/jobs/j-hostile.json"
 
 hostile_out="$("$ORCHID_BIN" jobs gc --older-than-s 86400)"
 assert_match "^gc-skip j-hostile\.json \(suspect fields\)$" "$hostile_out" "gc skips the hostile manifest"
@@ -522,6 +528,7 @@ jq -n --argjson pid "$gone_pid" --argjson started "$(( $(date +%s) - 5 ))" \
   '{job_id:"j-e1-TGONE-a1-dead0002", task:"TGONE", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:"/dev/null",
     base_sha:"", candidate_sha:""}' > "$rt/jobs/j-gone.json"
+plant_job_process_identity "$rt/jobs/j-gone.json"
 
 assert_match "TGONE	dead" "$("$ORCHID_BIN" jobs check)" \
   "a launched job whose pid is gone is reported dead — never-started is the other shape, not this one"
@@ -582,6 +589,7 @@ jq -n --argjson pid "$f41_pid" --argjson started "$(( $(date +%s) - 5 ))" \
   '{job_id:"j-e1-TF41C-a1-f41c0001", task:"TF41C", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:"/dev/null",
     base_sha:"", candidate_sha:""}' > "$rt/jobs/j-f41-c.json"
+plant_job_process_identity "$rt/jobs/j-f41-c.json"
 
 f41_before=0
 for f41_m in "$rt/jobs"/*.json; do
@@ -710,6 +718,7 @@ jq -n --argjson pid "$runaway_pid" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TRUNAWAY-a1-run00001", task:"TRUNAWAY", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:"/nonexistent.log", output:"/dev/null",
     base_sha:"", candidate_sha:""}' > "$rt/jobs/j-runaway.json"
+plant_job_process_identity "$rt/jobs/j-runaway.json"
 # A second, concurrent manifest for the SAME task — the shape a real task
 # carries whenever more than one job is outstanding for it (implementer plus
 # one manifest per reviewer slot). The budget is a task-level fact, so it
@@ -833,8 +842,9 @@ ls_live_pid=$!
 echo running-log > "$rt/logs/j-ls-live.log"
 jq -n --argjson pid "$ls_live_pid" --argjson st "$ls_now" --arg log "$rt/logs/j-ls-live.log" \
   '{job_id:"j-e1-TLS-a3-1111aaaa", task:"TLS", attempt:3, role:"reviewer", operation:"review",
-    engine:"fake", pid:$pid, pgid:$pid, started_at:$st, log:$log, output:"/dev/null",
+    engine:"fake", pid:$pid, pgid:0, started_at:$st, log:$log, output:"/dev/null",
     base_sha:"", candidate_sha:"", launched_by:"drive"}' > "$rt/jobs/j-ls-live.json"
+plant_job_process_identity "$rt/jobs/j-ls-live.json"
 
 ( exit 0 ) & ls_dead_pid=$!
 wait "$ls_dead_pid" 2>/dev/null || true
@@ -845,6 +855,7 @@ jq -n --argjson pid "$ls_dead_pid" --argjson st "$(( ls_now - 45000 ))" \
   '{job_id:"j-e1-TLS-a4-2222bbbb", task:"TLS", attempt:4, role:"plan_critic", operation:"critique",
     engine:"fake", pid:$pid, pgid:0, started_at:$st, log:$log, output:"/dev/null",
     base_sha:"", candidate_sha:"", launched_by:"pump"}' > "$rt/jobs/j-ls-dead.json"
+plant_job_process_identity "$rt/jobs/j-ls-dead.json"
 
 jq -n '{job_id:"j-e1-TLS-a5-3333cccc", task:"TLS", attempt:5, role:"implementer", operation:"implement",
     engine:"fake", pid:0, pgid:0, started_at:0, log:"", output:"/dev/null",
@@ -973,6 +984,7 @@ jq -n --argjson pid "$ls_del_pid" --argjson st "$(( ls_now - 30 ))" \
   '{job_id:"j-e1-TDEL-a1-5555eeee", task:"TDEL", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$st, log:"/nonexistent.log", output:$out,
     base_sha:"", candidate_sha:"", launched_by:"drive"}' > "$rt/jobs/j-ls-del.json"
+plant_job_process_identity "$rt/jobs/j-ls-del.json"
 echo '{"contract":1,"job_id":"j-e1-TDEL-a1-5555eeee","task":"TDEL","operation":"implement","status":"ok","summary":"delivered fixture"}' \
   > "$rt/spool/j-e1-TDEL-a1-5555eeee.json"
 ls_del_out="$("$ORCHID_BIN" jobs ls 2>/dev/null)"
@@ -1021,6 +1033,7 @@ jq -n --argjson pid "$ls_hist_pid" --argjson st "$(( ls_now - 3661 ))" \
   '{job_id:"j-e1-T001-a9-4444dddd", task:"T001", attempt:9, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$st, log:"/nonexistent.log", output:$out,
     base_sha:"", candidate_sha:"", launched_by:"drive"}' > "$rt/jobs/j-ls-hist.json"
+plant_job_process_identity "$rt/jobs/j-ls-hist.json"
 echo '{"contract":1,"job_id":"j-e1-T001-a9-4444dddd","task":"T001","operation":"implement","status":"ok","summary":"history fixture"}' \
   > "$rt/spool/j-e1-T001-a9-4444dddd.json"
 "$ORCHID_BIN" jobs reconcile >/dev/null
@@ -1051,6 +1064,7 @@ jq -n --argjson pid "$ls_old_pid" --argjson st "$(( ls_now - 3661 ))" \
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$st,
     log:"/nonexistent.log", output:$out, base_sha:"", candidate_sha:""}' \
   > "$rt/jobs/j-ls-old.json"
+plant_job_process_identity "$rt/jobs/j-ls-old.json"
 echo '{"contract":1,"job_id":"j-e1-T001-a10-6666ffff","task":"T001","operation":"implement","status":"ok","summary":"pre-upgrade fixture"}' \
   > "$rt/spool/j-e1-T001-a10-6666ffff.json"
 "$ORCHID_BIN" jobs reconcile >/dev/null
@@ -1176,6 +1190,7 @@ jq -n --argjson pid "$salv_pid" --arg log "$salv_log" \
     operation:"critique", engine:"critic", pid:$pid, pgid:0, started_at:1,
     log:$log, output:"/dev/null", base_sha:"", candidate_sha:"cand0", hook_point:""}' \
   > "$rt/jobs/j-salv.json"
+plant_job_process_identity "$rt/jobs/j-salv.json"
 
 salv_out="$("$ORCHID_BIN" jobs reconcile)"
 assert_match "TSALV	no_envelope" "$salv_out" \
@@ -1240,6 +1255,7 @@ jq -n --argjson pid "$mute_pid" --arg log "$mute_log" \
     operation:"critique", engine:"critic", pid:$pid, pgid:0, started_at:1,
     log:$log, output:"/dev/null", base_sha:"", candidate_sha:"", hook_point:""}' \
   > "$rt/jobs/j-mute.json"
+plant_job_process_identity "$rt/jobs/j-mute.json"
 
 mute_out="$("$ORCHID_BIN" jobs reconcile)"
 assert_match "TMUTE	no_envelope	nothing-to-salvage" "$mute_out" \
@@ -1282,6 +1298,7 @@ jq -n --argjson pid "$evil_pid" --arg log "$evil_decoy" \
     operation:"critique", engine:"critic", pid:$pid, pgid:0, started_at:1,
     log:$log, output:"/dev/null", base_sha:"", candidate_sha:"", hook_point:""}' \
   > "$rt/jobs/j-evilsalv.json"
+plant_job_process_identity "$rt/jobs/j-evilsalv.json"
 evil_out="$("$ORCHID_BIN" jobs reconcile)"
 assert_match "salvage-skip: j-evilsalv.json \(suspect fields\)" "$evil_out" \
   "a dead manifest whose fields fail validation is skipped by the salvage pass, and says so"
@@ -1344,6 +1361,7 @@ jq -n --argjson pid "$cpu_stall_pid" --arg log "$cpu_stall_log" --argjson starte
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
     log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
   > "$rt/jobs/j-cpuflat.json"
+plant_job_process_identity "$rt/jobs/j-cpuflat.json"
 
 # stall_minutes=5 makes the window exactly the 5m30s the fixture spans;
 # timeout_minutes is 0 in this file's config (set far above for the pgid
@@ -1379,6 +1397,7 @@ jq -n --argjson pid "$cpu_busy_pid" --arg log "$cpu_busy_log" --argjson started 
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
     log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
   > "$rt/jobs/j-cpubusy.json"
+plant_job_process_identity "$rt/jobs/j-cpubusy.json"
 # Opted in (CPU_STALL_MIN_S=1), or the `running` below would be vacuous --
 # an unconfigured arm never consults the log at all.
 busy_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=1 \
@@ -1405,6 +1424,7 @@ jq -n --argjson pid "$cpu_young_pid" --arg log "$cpu_young_log" --argjson starte
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
     log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
   > "$rt/jobs/j-cpuyoung.json"
+plant_job_process_identity "$rt/jobs/j-cpuyoung.json"
 # Opted in for the same non-vacuity reason as the busy twin above.
 young_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=1 \
   "$ORCHID_BIN" jobs check 2>/dev/null)"
@@ -1429,6 +1449,7 @@ jq -n --argjson pid "$cpu_off_pid" --arg log "$cpu_stall_log" --argjson started 
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
     log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
   > "$rt/jobs/j-cpuoff.json"
+plant_job_process_identity "$rt/jobs/j-cpuoff.json"
 off_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=0 \
   "$ORCHID_BIN" jobs check 2>/dev/null)"
 assert_match "TCPUOFF	running" "$off_out" "cpu_stall_min_s=0 disables the CPU-delta check outright"
@@ -1460,6 +1481,7 @@ jq -n --argjson pid "$cpu_dflt_pid" --arg log "$cpu_stall_log" --argjson started
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
     log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
   > "$rt/jobs/j-cpudflt.json"
+plant_job_process_identity "$rt/jobs/j-cpudflt.json"
 dflt_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 "$ORCHID_BIN" jobs check 2>/dev/null)"
 assert_match "TCPUDFLT	running" "$dflt_out" \
   "with no floor configured the CPU arm must not fire -- CPU alone cannot tell a dead engine from a healthy one blocked on a vendor API"
@@ -1491,6 +1513,7 @@ jq -n --argjson pid "$cpu_back_pid" --arg log "$cpu_back_log" --argjson started 
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
     log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
   > "$rt/jobs/j-cpuback.json"
+plant_job_process_identity "$rt/jobs/j-cpuback.json"
 back_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=1 \
   "$ORCHID_BIN" jobs check 2>/dev/null)"
 assert_match "TCPUBACK	running" "$back_out" \
@@ -1621,8 +1644,9 @@ sleep 30 &
 live_engine_pid=$!
 # started_at deliberately in the past, so the gc assertion below turns on the
 # spool guard rather than on gc's own age bound.
-jq --argjson pid "$live_engine_pid" '.pid=$pid | .pgid=$pid | .started_at=((now|floor) - 600)' \
+jq --argjson pid "$live_engine_pid" '.pid=$pid | .pgid=0 | .started_at=((now|floor) - 600)' \
   "$mlive" > "$mlive.tmp" && mv "$mlive.tmp" "$mlive"
+plant_job_process_identity "$mlive"
 printf '{"contract":1,"job_id":"%s","task":"TDEFER","operation":"implement","status":"ok","summary":"filed early"}' \
   "$live_jid" > "$live_out"
 

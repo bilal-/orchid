@@ -222,6 +222,7 @@ PROOF_ENROLLED_FILES=(
   tests/test_config_data.sh
   tests/test_durable_copy.sh
   tests/test_kernel_refresh_paths.sh
+  tests/test_job_signal_identity.sh
   tests/test_merge_rebase_ownership.sh
   tests/test_objection_evidence.sh
   tests/test_plugin_digest.sh
@@ -530,6 +531,17 @@ trap '_scratch_cleanup; _proof_case_summary; _not_tested_summary; exit $((FAILS>
 # happened, so it lands on the right attempt. Assumes the caller has already
 # `cd`'d to the repo root (every test file that reaches arbitrating does)
 # and that ORCHID_BIN is set.
+# Stamp the identity of a deliberately created process in a disposable job
+# fixture, using the same birth fingerprint as the launcher and lock owner.
+plant_job_process_identity() (
+  local fixture="$1" fixture_pid birth
+  source "$REPO_ROOT/lib/common.sh"
+  fixture_pid="$(jq -r '.pid // 0' "$fixture")" || return 1
+  birth="$(_pid_start "$fixture_pid")"
+  jq --arg birth "$birth" --arg host "$(hostname)" \
+    '.pid_start=$birth | .hostname=$host' "$fixture" | atomic_write "$fixture"
+)
+
 plant_reviewer_envelope() {
   local id="$1" attempt="${2:-}" cand
   mkdir -p .orchid/reviews

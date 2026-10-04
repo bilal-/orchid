@@ -820,7 +820,15 @@ for _mf in "$rt/jobs"/*.json; do
   # so a job that finished cleanly this instant would read as dead-with-nothing
   # here and be charged for delivering exactly what it delivered.
   [ "$run_status" != planning ] || continue
-  if kill -0 "$_mpid" 2>/dev/null; then continue; fi
+  case "$(orchid_job_process_state "$_mf")" in
+    running) continue ;;
+    unverified)
+      _mjid="$(jq -r '.job_id // empty' "$_mf" 2>/dev/null || true)"
+      [ ! -e "$rt/exits/$_mjid" ] || continue
+      escalations="$escalations$(jq -r '[.task, .role, .operation, (.hook_point // ""), "unverified", (.job_id // ""), ""] | @tsv' "$_mf")
+"
+      continue ;;
+  esac
   # ...UNLESS ITS ENVELOPE IS ALREADY WRITTEN. A job that exited between the
   # reconcile above and this liveness read is dead with its envelope sitting
   # in the spool, undrained -- it delivered, and the next pass's reconcile is
@@ -3213,6 +3221,7 @@ if [ -n "$escalations" ]; then
       # process behind it has stopped (T031). Never relaunched over, and the
       # arm below stops the pass at a named boundary instead.
       untracked)     _ewhy="job was spawned but never recorded a pid and has been silent for stall_minutes, and it filed an envelope that cannot be admitted — with no pid to signal and no exit recorded, nothing can show it has stopped" ;;
+      unverified)    _ewhy="job process identity cannot be verified; nothing was signalled and no completion was inferred" ;;
       *)             _ewhy="job died without an acceptable envelope" ;;
     esac
     # THE RESERVED `plan` ID IS NOT SKIPPED (T027 rework). It used to be, and
@@ -3277,10 +3286,15 @@ if [ -n "$escalations" ]; then
     # boundary is about, and a record the launcher already wrote is never
     # replaced. An operator following instructions gets those for free; one
     # typing a path gets none of them.
-    if [ "$_ekind" = untracked ]; then
+    if [ "$_ekind" = untracked ] || [ "$_ekind" = unverified ]; then
       drive_escalate "$_etask" "$_erole" "$_eop" "$_epoint" "$_ewhy" "$_ekey" norelaunch
-      set_boundary operator-decision "$_etask" \
-        "job $_ekey filed an envelope and cannot be shown to have stopped: it never recorded a pid, so there is nothing to signal and nothing that proves it exited, and its report is being held rather than filed — read $rt/logs/$_ekey.log and check whether an engine is still running against this task's worktree. If one is, nothing needs doing: the envelope reconciles on its own as soon as that process exits and its status is recorded. If none is, record that it ended so the held report can be admitted: orchid jobs record-exit $_ekey <exit code>"
+      if [ "$(jq -r '.pid // 0' "$rt/jobs/$_ekey.json" 2>/dev/null || printf 0)" -gt 0 ] 2>/dev/null; then
+        set_boundary operator-decision "$_etask" \
+          "job $_ekey has an unverified process identity: its recorded PID, birth, host, or process group cannot be shown to belong to the original job. Nothing was signalled, and its report is held rather than filed. Inspect $rt/logs/$_ekey.log and the original process; after confirming that process ended, use: orchid jobs record-exit $_ekey <exit code>"
+      else
+        set_boundary operator-decision "$_etask" \
+          "job $_ekey filed an envelope and cannot be shown to have stopped: it never recorded a pid, so there is nothing to signal and nothing that proves it exited, and its report is being held rather than filed — read $rt/logs/$_ekey.log and check whether an engine is still running against this task's worktree. If one is, nothing needs doing: the envelope reconciles on its own as soon as that process exits and its status is recorded. If none is, record that it ended so the held report can be admitted: orchid jobs record-exit $_ekey <exit code>"
+      fi
       continue
     fi
     drive_escalate "$_etask" "$_erole" "$_eop" "$_epoint" "$_ewhy" "$_ekey"

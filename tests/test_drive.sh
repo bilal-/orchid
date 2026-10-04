@@ -10826,7 +10826,7 @@ printf 'starting implement\n' > "$DJLOG"
 DJMF="$DEADJ/.orchid/runtime/jobs/j-e1-D010-a1-dead.json"
 jq -n --argjson pid "$DJPID" --arg log "$DJLOG" \
   '{job_id:"j-e1-D010-a1-dead", task:"D010", attempt:1, role:"implementer",
-    operation:"implement", engine:"stubimpl", pid:$pid, pgid:$pid,
+    operation:"implement", engine:"stubimpl", pid:$pid, pgid:0,
     started_at:1, log:$log, output:"/dev/null",
     base_sha:"", candidate_sha:"", hook_point:""}' > "$DJMF"
 
@@ -10859,12 +10859,13 @@ dj_orchid task advance D011 implementing >/dev/null
 sleep 120 & DJLIVE=$!
 DJLOG2="$DEADJ/.orchid/runtime/logs/j-e1-D011-a1-live.log"
 printf 'working\n' > "$DJLOG2"
-jq -n --argjson pid "$DJLIVE" --arg log "$DJLOG2" \
+jq -n --argjson pid "$DJLIVE" --arg log "$DJLOG2" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-D011-a1-live", task:"D011", attempt:1, role:"implementer",
-    operation:"implement", engine:"stubimpl", pid:$pid, pgid:$pid,
-    started_at:1, log:$log, output:"/dev/null",
+    operation:"implement", engine:"stubimpl", pid:$pid, pgid:0,
+    started_at:$started, log:$log, output:"/dev/null",
     base_sha:"", candidate_sha:"", hook_point:""}' \
   > "$DEADJ/.orchid/runtime/jobs/j-e1-D011-a1-live.json"
+plant_job_process_identity "$DEADJ/.orchid/runtime/jobs/j-e1-D011-a1-live.json"
 DJ2_OUT="$(ORCHID_REPO="$DEADJ" ORCHID_EPOCH="$DJEPOCH" "$DRIVE" 2>&1)" || true
 kill "$DJLIVE" 2>/dev/null || true
 wait "$DJLIVE" 2>/dev/null || true
@@ -10874,3 +10875,29 @@ case "$DJ2_OUT" in
   *"j-e1-D011-a1-live"*" died"*) fail "a live job must never be reported as dead" ;;
 esac
 green_case 'the same walk over a live implement job charges no rung and reports no death'
+
+# A live numeric PID with no birth identity is an operator question, even if
+# it has not filed an envelope. It must not silently wait or launch a second
+# implementer into a checkout whose ownership cannot be established.
+dj_orchid task create D012 "legacy process identity needs an operator" >/dev/null
+dj_orchid task advance D012 implementing >/dev/null
+sleep 120 & DJUNKNOWN=$!
+DJUNKNOWNMF="$DEADJ/.orchid/runtime/jobs/j-e1-D012-a1-abcd.json"
+jq -n --argjson pid "$DJUNKNOWN" --argjson started "$(date +%s)" \
+  '{job_id:"j-e1-D012-a1-abcd",task:"D012",attempt:1,role:"implementer",operation:"implement",
+    engine:"stubimpl",pid:$pid,pgid:0,started_at:$started,log:"/nonexistent",output:"/dev/null",
+    base_sha:"",candidate_sha:"",hook_point:""}' > "$DJUNKNOWNMF"
+DJUNKNOWNOUT="$(ORCHID_REPO="$DEADJ" ORCHID_EPOCH="$DJEPOCH" "$DRIVE" 2>&1)" || true
+assert_match 'unverified process identity' "$DJUNKNOWNOUT" 'driver raises the unknown identity for an operator'
+assert_match 'orchid jobs record-exit j-e1-D012-a1-abcd' "$DJUNKNOWNOUT" 'driver names the supported recovery verb'
+kill -0 "$DJUNKNOWN" 2>/dev/null || fail 'driver never signals a PID with unknown ownership'
+[ -e "$DJUNKNOWNMF" ] || fail 'driver preserves the unresolved manifest'
+assert_eq 0 "$(dj_orchid task get D012 attempts)" 'unknown identity consumes no candidate attempt'
+red_case 'a live PID without its process identity becomes an operator boundary and never relaunches'
+plant_job_process_identity "$DJUNKNOWNMF"
+DJUNKNOWNOUT="$(dj_orchid jobs check 2>&1)"
+assert_match 'D012[[:space:]]running' "$DJUNKNOWNOUT" 'repaired identity is classified as a live owned job'
+kill -0 "$DJUNKNOWN" 2>/dev/null || fail 'verified live process remains running'
+kill "$DJUNKNOWN" 2>/dev/null || true
+wait "$DJUNKNOWN" 2>/dev/null || true
+green_case 'the same job is classified as running after its process identity is repaired'
