@@ -298,7 +298,10 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   an installer that asks to continue. The same applies to `verify`.
 - **`worktree_prepare_timeout_s`** bounds that command so a hung setup step
   cannot hang the driver pass that called it; a timeout is a failure like any
-  other. A non-numeric value falls back to the default.
+  other. The helper sends TERM at the deadline, allows one second for
+  cleanup, then kills the remaining owned process group. Commands and
+  descendants that ignore TERM are still bounded. A non-numeric value falls
+  back to the default.
 - **`cpu_stall_min_s`** (default `0`: the check is OFF until an operator
   opts in) is the CPU floor of the stall check. `stall_minutes` catches a
   job that stops writing to its log; this catches the job that keeps writing

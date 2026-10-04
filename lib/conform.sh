@@ -143,19 +143,19 @@ _conform_check_manifest_valid() {
 # same fallback lib/manifest.sh's validator and the trust arm both use)
 # must name a regular, executable file inside the plugin dir.
 _conform_check_entrypoint() {
-  local dir="$1" ep
-  ep="$(manifest_get "$dir" entrypoint run)"
-  if [ -n "$ep" ] && [ -f "$dir/$ep" ] && [ -x "$dir/$ep" ]; then
+  local dir="$1" ep kind
+  ep="$(manifest_get "$dir" entrypoint run)" || return 1
+  kind="$(manifest_get "$dir" kind)" || return 1
+  if _conform_reason="$(orchid_plugin_entrypoint_check "$dir" "$kind" "$ep")"; then
     return 0
   fi
-  _conform_reason="entrypoint '$ep' is not an executable file in $dir"
   return 1
 }
 
 # _conform_check_declared_ops_dryrun <plugin-dir> <entrypoint-path> -- for
 # EVERY operation _conform_ops_for_dir implies, invokes the adapter under
 # ORCHID_DRYRUN=1 with a minimal request naming that operation, then
-# envelope_validate's the result -- envelope_validate itself enforces the
+# requires a successful requested-operation reply -- envelope_validate enforces the
 # right union (implement -> summary; review/critique -> verdict +
 # scope_complete; orchestrate -> actions[] + summary; hook -> artifact +
 # summary), so a single call covers per-operation shape AND the common
@@ -196,10 +196,12 @@ _conform_check_declared_ops_dryrun() {
     ( cd "$scratch" && ORCHID_DRYRUN=1 "$dir/$ep" "$reqfile" </dev/null >/dev/null 2>&1 ) || rc=$?
     if [ "$rc" -eq 0 ] && [ -f "$outfile" ] && envelope_validate "$outfile"; then
       got_op="$(envelope_field "$outfile" '.operation')"
-      if [ "$got_op" = "$op" ]; then
+      if envelope_success_for_operation "$outfile" "$op"; then
         :
-      else
+      elif [ "$got_op" != "$op" ]; then
         ok=0; failed="$failed $op(envelope claims operation '$got_op' for a '$op' probe)"
+      else
+        ok=0; failed="$failed $op(reply must be a single status=ok envelope)"
       fi
     else
       ok=0; failed="$failed $op"
@@ -401,7 +403,7 @@ _conform_check_exit_discipline() {
 # manifest_valid and entrypoint_executable are the only two checks
 # unaffected by that.
 conform_run() {
-  local dir="$1" ep total=7 passed=0
+  local dir="$1" ep total=7 passed=0 entrypoint_ok=0
 
   dir="$(cd "$dir" 2>/dev/null && pwd)" || {
     echo "orchid: conform: no such directory: $1" >&2
@@ -416,12 +418,13 @@ conform_run() {
 
   ep="$(manifest_get "$dir" entrypoint run)"
   if _conform_check_entrypoint "$dir"; then
+    entrypoint_ok=1
     echo "ok: entrypoint_executable"; passed=$((passed + 1))
   else
     echo "FAIL: entrypoint_executable: $_conform_reason"
   fi
 
-  if [ -f "$dir/$ep" ] && [ -x "$dir/$ep" ]; then
+  if [ "$entrypoint_ok" -eq 1 ]; then
     if _conform_check_declared_ops_dryrun "$dir" "$ep"; then
       echo "ok: declared_ops_dryrun"; passed=$((passed + 1))
     else

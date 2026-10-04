@@ -248,11 +248,9 @@ manifest_validate() {  # plugin-dir
 
   case "$kind" in
     engine|notify|hook)
-      local ep; ep="$(manifest_get "$dir" entrypoint)"
-      if [ -z "$ep" ]; then
-        echo "FAIL: $dir: entrypoint missing (required for kind=$kind)"; ok=0
-      elif [ ! -f "$dir/$ep" ] || [ ! -x "$dir/$ep" ]; then
-        echo "FAIL: $dir: entrypoint '$ep' is not an executable file in $dir"; ok=0
+      local ep ep_why; ep="$(manifest_get "$dir" entrypoint)" || return 1
+      if ! ep_why="$(orchid_plugin_entrypoint_check "$dir" "$kind" "$ep")"; then
+        echo "FAIL: $dir: $ep_why"; ok=0
       fi
       ;;
   esac

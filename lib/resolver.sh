@@ -92,7 +92,7 @@ _resolve_engine_roots() {
 }
 
 resolve_engine_exe() {  # name -> executable path (search path; dup = error)
-  local name="$1" d found="" repo_dir abs trust_stat
+  local name="$1" d found="" repo_dir abs trust_stat entrypoint entrypoint_why
   local -a search_dirs=()
   # `|| continue` rather than `&& search_dirs+=(...)`: under `set -e` a while
   # loop whose LAST body command is a failed test returns that status, and this
@@ -121,14 +121,19 @@ resolve_engine_exe() {  # name -> executable path (search path; dup = error)
   if [ -n "${ORCHID_REPO:-}" ]; then
     repo_dir="$ORCHID_REPO/.orchid/plugins/engines/$name"
     if [ -x "$repo_dir/run" ]; then
-      abs="$(_trust_canon_path "$repo_dir" 2>/dev/null || true)"
-      trust_stat="untrusted"; [ -z "$abs" ] || trust_stat="$(trust_status_for "$abs")"
-      if [ "$trust_stat" = trusted ]; then
-        [ -z "$found" ] || { echo "orchid: duplicate engine '$name' ($found vs $repo_dir/run) (INV-10)" >&2; return 1; }
-        found="$repo_dir/run"
+      entrypoint="$(_cfg_file_get "$repo_dir/plugin.conf" entrypoint)" || return 1
+      if ! entrypoint_why="$(orchid_plugin_entrypoint_check "$repo_dir" engine "$entrypoint")"; then
+        echo "orchid: engine '$name' has an invalid entrypoint ($entrypoint_why) -- skipped (INV-09)" >&2
       else
-        local trust_cmd="trust"; [ "$trust_stat" = mismatch ] && trust_cmd="trust --update"
-        echo "orchid: engine '$name' found in <repo>/.orchid/plugins/engines but is $trust_stat -- run 'orchid plugins $trust_cmd $repo_dir' to enable it (skipped, INV-09)" >&2
+        abs="$(_trust_canon_path "$repo_dir" 2>/dev/null || true)"
+        trust_stat="untrusted"; [ -z "$abs" ] || trust_stat="$(trust_status_for "$abs")"
+        if [ "$trust_stat" = trusted ]; then
+          [ -z "$found" ] || { echo "orchid: duplicate engine '$name' ($found vs $repo_dir/run) (INV-10)" >&2; return 1; }
+          found="$repo_dir/run"
+        else
+          local trust_cmd="trust"; [ "$trust_stat" = mismatch ] && trust_cmd="trust --update"
+          echo "orchid: engine '$name' found in <repo>/.orchid/plugins/engines but is $trust_stat -- run 'orchid plugins $trust_cmd $repo_dir' to enable it (skipped, INV-09)" >&2
+        fi
       fi
     fi
   fi
@@ -161,7 +166,7 @@ resolve_engine_dir() {  # name -> plugin dir (dirname of resolve_engine_exe)
 # resolve_engine_exe handles INV-09 if a repo-local notify channel is ever
 # needed.
 resolve_notify_dir() {
-  local name="$1" d found="" p
+  local name="$1" d found="" p entrypoint entrypoint_why
   # Review finding (Important #2): `name` comes straight from `notify.plugin`
   # config -- operator-trusted today, but `orchid config commit` makes
   # orchid.config a tracked, merge-reachable file, so a value containing a
@@ -191,6 +196,11 @@ resolve_notify_dir() {
     found="$d/$name"
   done
   [ -n "$found" ] || return 1
+  entrypoint="$(_cfg_file_get "$found/plugin.conf" entrypoint)" || return 1
+  if ! entrypoint_why="$(orchid_plugin_entrypoint_check "$found" notify "$entrypoint")"; then
+    echo "orchid: notify plugin '$name' has an invalid entrypoint ($entrypoint_why)" >&2
+    return 1
+  fi
   echo "$found"
 }
 

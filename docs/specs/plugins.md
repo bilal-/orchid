@@ -258,6 +258,14 @@ inbound_probe=             # kind=notify only: argv token for the read-only
                            # inbound probe mode (v1-m4, optional)
 ```
 
+Executable plugin entrypoints must be regular executable files whose physical
+paths stay inside the plugin directory. Engine manifests must declare
+`entrypoint=run`, matching the engine ABI. Hook and notify entrypoints may use
+owned nested files. Validation, trust, conformance probes, repo-local engine
+resolution, and notify routing share this check; an old malformed trust pin
+does not authorize an escaped entrypoint. This check does not sandbox runtime
+dependencies or make path checking and execution one atomic operation.
+
 `permissions` is a comma-separated list of environment variable names. Each
 name must match `[A-Za-z_][A-Za-z0-9_]*`; array expressions and shell syntax
 are rejected before the kernel reads the variable. Values are forwarded only
@@ -319,6 +327,17 @@ milestones: a real filesystem-write capability probe (m1's
 `workspace_write_probe` is dryrun-only; a real-write probe is post-m1), and
 hooks + custom-role registration — SHIPPED in v1-m3, per the Hooks and
 Custom role registration sections below.
+
+Dryrun qualification requires one validated envelope with `status=ok` for the
+operation the role requested. A valid failure, a reply for a different
+operation, or multiple replies fail both capability-suite qualification and
+conformance. Job/task identity binding remains a separate runtime admission
+contract.
+
+Capability-suite receipts carry `qualification_contract:1`. A passed receipt
+must have that version and match the engine's current content digest before it
+can qualify a fallback. Older receipts are unqualified even when the plugin's
+bytes have not changed; run `orchid plugins test <engine> <role>` to requalify.
 
 **Custom role registration (v1-m3 — SHIPPED):** a `role.<id>=` binding for
 any id outside the built-in five resolves a `kind=role` plugin — a

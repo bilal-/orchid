@@ -219,15 +219,19 @@ _proof_receipt() {
 # is the same defect one level up. Enrolling them by path here means the trap
 # below asks the only question that matters: did a case actually RUN.
 PROOF_ENROLLED_FILES=(
+  tests/test_adapter_qualification.sh
   tests/test_config_data.sh
   tests/test_durable_copy.sh
   tests/test_kernel_refresh_paths.sh
   tests/test_job_signal_identity.sh
+  tests/test_job_id_reservation.sh
   tests/test_merge_rebase_ownership.sh
   tests/test_objection_evidence.sh
   tests/test_plugin_digest.sh
+  tests/test_plugin_entrypoints.sh
   tests/test_run_recovery.sh
   tests/test_spawn_env.sh
+  tests/test_timeout_group.sh
   tests/test_hermetic_suite.sh
   tests/test_red_case_rule.sh
 )

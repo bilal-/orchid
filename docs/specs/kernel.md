@@ -2005,6 +2005,14 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   ladder, and `jobs prepare` refuses (exit 18) to mint a second manifest for a
   slot that already has one — one orphan per slot, not one per pass.
 
+  Job IDs are claimed exclusively before a manifest is published. Allocation
+  refuses collisions with manifests, spool, logs, requests, packs, exits,
+  quarantine, and the runtime job history, including dangling artifact links.
+  New allocation claims survive GC so retired IDs remain occupied. Allocation
+  shares the bounded claim mechanism used for question IDs; exhaustion refuses
+  preparation without replacing ownership. It cannot reconstruct legacy IDs
+  whose entire runtime record has already been erased.
+
   **`pid: 0` is not the test.** The other half of the pid-0 class — pid 0 WITH
   a log — is a launcher killed inside the sub-second window between the spawn
   and the pid stamp, so an engine may be running with its pid recorded

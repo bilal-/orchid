@@ -23,6 +23,13 @@ assert_eq last=with-equals "$(config_get "$WORK" 'value+' fallback)" 'literal me
 assert_eq fallback "$(config_get "$WORK" 'value?' fallback)" 'regex-shaped key cannot match a sibling record'
 red_case 'configuration keys are exact strings rather than regular expressions'
 
+export ORCHID_=unrelated-value ORCHID__N=literal-override
+assert_eq literal-override "$(config_get "$WORK" -n)" 'option-shaped key maps to its literal environment name'
+assert_eq env "$(config_provenance "$WORK" -n)" 'option-shaped key has matching provenance'
+unset ORCHID_ ORCHID__N
+red_case 'configuration key -n is data during environment-name conversion'
+green_case 'the literal -n environment override is preserved'
+
 printf 'review.valid=repo-value\n' > "$WORK/orchid.config"
 printf 'review.valid=user-value\n' > "$HOME/.orchid/config"
 export ORCHID_REVIEW_VALID=env-value

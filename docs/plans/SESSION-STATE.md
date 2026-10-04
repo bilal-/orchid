@@ -6,6 +6,49 @@ you are. It records state that the code and git history do not make obvious,
 and it goes stale — **verify every claim below against the tree before relying
 on it.** Anything here that contradicts the code is wrong and the code wins.
 
+## Whole-codebase review — 2026-10-03
+
+The local review branch is `codex/full-codebase-review`, in the linked checkout
+`../orchid-review`, based on `main` at `03e78aac`. The original `main` checkout
+is preserved. PRs #15 and #17 were merged earlier in this session; the older
+pending-merge instructions below are historical and superseded. No remote
+status was refreshed during this review.
+
+Seven review passes were completed: five initial implementation passes, an
+independent parallel review, and a parallel cross-check. The review reproduced
+and repaired 21 issues. The changes concentrate on failed writes and hashes,
+literal configuration and permissions, durable publication and recovery,
+merge/worktree ownership, checked adapter environments, process identity,
+collision-safe runtime IDs, adapter qualification, plugin entrypoint ownership,
+installer diagnostics, and bounded timeout cleanup. Shared helpers replace
+repeated parsing, environment loading, and ownership checks. Every new
+admission fence has an exercised refusing case and accepting twin.
+
+The tracked review inventory covers the baseline's 188 code/data files plus
+13 new regression files. Coverage means whole-tree static checks, the aggregate
+regression suite, and targeted source/fixture review of the critical contracts;
+it does not mean every test or prose line was manually inspected.
+
+Focused tests and independent cross-checks passed on macOS `/bin/bash` 3.2.
+The canonical full local CI run is pending on the final committed candidate;
+earlier aggregate runs were canceled when later review passes reproduced new
+defects. They are not evidence of a full-suite pass. Review records and logs are
+under `/tmp/orchid-review.RpZ5fo/`; that directory is machine-local evidence,
+not a durable release artifact.
+
+The version remains `1.0.0-beta.1`. `Formula/orchid.rb` was not re-pinned.
+No hosted CI, actual vendor qualification, third-party beta, publication, or
+release is claimed by this review. Process/path checks and subsequent OS
+operations retain their documented race; durable Git/filesystem publication
+retains its crash window. Global engine discovery keeps its existing run-only
+compatibility behavior; manifest validation and repo-local trust/resolution
+have the stronger entrypoint contract. New job-ID claims survive normal GC;
+legacy IDs whose entire runtime record was already erased cannot be recovered.
+
+r-002 remains accepted, r-003 has not started, and Decision 0 remains the
+operator's choice. The unrelated integration-checkout journal edit and preserved
+`r-002/T024-preserve` branch are outside this review.
+
 ## PR integration follow-through — 2026-10-03
 
 PR #15 is merged into `main` at `e4819e52`. The accepted r-002 roadmap and

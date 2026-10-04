@@ -1320,8 +1320,8 @@ case "$sub" in
     [ -n "$launched_by" ] || launched_by=operator
 
     epoch="$(epoch_current "$repo")"
-    suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
-    job_id="j-e${epoch}-${task}-a${attempt}-${suffix}"
+    job_id="$(orchid_job_id_reserve "$repo" "j-e${epoch}-${task}-a${attempt}")" \
+      || orchid_die "cannot reserve an unused job id after $ORCHID_JOB_ID_RESERVE_TRIES draws; existing job ownership and artifacts are preserved"
     mkdir -p "$jobs_dir" "$spool_dir"
     manifest="$jobs_dir/$job_id.json"; output="$spool_dir/$job_id.json"
     jq -n --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \

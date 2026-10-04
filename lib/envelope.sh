@@ -58,6 +58,17 @@ envelope_validate() {
     )
   ' "$1" >/dev/null
 }
+# Diagnostic qualification requires one successful reply for the operation
+# actually requested. This checks reply shape and operation, not job/task identity.
+envelope_success_for_operation() {
+  envelope_validate "$1" || return 1
+  jq -e -s --arg operation "$2" '
+    length == 1
+    and .[0].operation == $operation
+    and .[0].status == "ok"
+  ' "$1" >/dev/null
+}
+
 envelope_field() { jq -r "$2" "$1"; }
 
 # envelope_salvage_json <log-file> -- what an exited-without-an-envelope job

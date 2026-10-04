@@ -467,7 +467,7 @@ fi
 # doctor's own exit code must never fail the installer itself — install
 # already completed by this point regardless of what doctor finds.
 if git rev-parse --git-dir >/dev/null 2>&1 && [ "$(git rev-parse --show-toplevel)" != "$ROOT" ]; then
-  "$ORCHID_BIN_DIR/orchid" doctor || { echo "orchid: doctor reported issues above (install itself still completed)" >&2; true; }
+  "$ROOT/bin/orchid" doctor || { echo "orchid: doctor reported issues above (install itself still completed)" >&2; true; }
 else
   cat <<EOF
 install complete — not currently inside a repository to orchestrate, so

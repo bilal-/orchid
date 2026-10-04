@@ -4,7 +4,7 @@
 # quota where possible (adapters are invoked with ORCHID_DRYRUN=1, never for
 # real), and records a durable result to
 # ~/.orchid/capsuite/<engine>--<role>.json -- {engine, role, passed,
-# checks:[{name,ok}], tested_at_marker}. `capsuite_passed <engine> <role>` is
+# checks:[{name,ok}], tested_at_marker, qualification_contract:1}. `capsuite_passed <engine> <role>` is
 # the read side v1-m2's failover gate consumes: reads that recorded result,
 # absent-or-stale reads as not-passed rather than erroring.
 #
@@ -126,7 +126,7 @@ capsuite_run() {
   fi
 
   # dryrun_envelope_valid: invoke the adapter with ORCHID_DRYRUN=1 for the
-  # role's operation, then envelope_validate the output -- skipped (not
+  # role's operation; require one successful reply for that operation -- skipped (not
   # recorded) for a role with no operation mapping (orchestrator).
   op="$(_capsuite_op_for_role "$role")"
   if [ -n "$dir" ] && [ -n "$op" ]; then
@@ -137,7 +137,7 @@ capsuite_run() {
         input_pack:"", output:$output, base_sha:"", candidate_sha:""}' \
       > "$reqfile"
     if ORCHID_DRYRUN=1 "$dir/run" "$reqfile" </dev/null >/dev/null 2>&1 \
-      && [ -f "$outfile" ] && envelope_validate "$outfile"; then
+      && [ -f "$outfile" ] && envelope_success_for_operation "$outfile" "$op"; then
       dryrun_ok=1
       _capsuite_note "$checks_file" dryrun_envelope_valid true
     else
@@ -180,7 +180,7 @@ capsuite_run() {
         --argjson passed "$([ "$all_ok" -eq 1 ] && echo true || echo false)" \
         --argjson checks "$(jq -s '.' "$checks_file")" \
         --arg marker "$marker" \
-    '{engine:$engine, role:$role, passed:$passed, checks:$checks, tested_at_marker:$marker}' \
+    '{engine:$engine, role:$role, passed:$passed, checks:$checks, tested_at_marker:$marker, qualification_contract:1}' \
     | atomic_write "$(_capsuite_result_file "$engine" "$role")"
 
   rm -f "$checks_file"
@@ -188,7 +188,8 @@ capsuite_run() {
 }
 
 # capsuite_passed <engine> <role> -- exit 0 iff a result is on record, it
-# passed, AND the engine dir's current content digest still matches the
+# qualified under the current contract, passed, AND the engine dir's current
+# content digest still matches the
 # marker recorded at test time. Absent file, passed=false, unreadable
 # engine dir, or a digest mismatch (the engine's files changed since it was
 # tested) all read the same way: not-passed. Never partially trusts a stale
@@ -197,7 +198,7 @@ capsuite_passed() {
   local engine="$1" role="$2" f dir marker recorded
   f="$(_capsuite_result_file "$engine" "$role")"
   [ -f "$f" ] || return 1
-  recorded="$(jq -r 'if .passed == true then (.tested_at_marker // "") else empty end' "$f" 2>/dev/null)" || recorded=""
+  recorded="$(jq -r 'if .qualification_contract == 1 and .passed == true then (.tested_at_marker // "") else empty end' "$f" 2>/dev/null)" || recorded=""
   [ -n "$recorded" ] || return 1
   dir="$(resolve_engine_dir "$engine" 2>/dev/null)" || return 1
   marker="$(plugin_digest "$dir" 2>/dev/null)" || return 1

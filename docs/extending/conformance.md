@@ -56,9 +56,10 @@ them has to spawn the entrypoint to do anything at all.
 For every operation the manifest's declared capabilities imply, invokes
 the entrypoint under `ORCHID_DRYRUN=1` with a minimal request document
 naming that operation, then validates the resulting envelope against that
-operation's required fields (`lib/envelope.sh`'s `envelope_validate`) AND
-asserts the envelope's own `.operation` field echoes back the SAME
-operation the request named. That second assertion matters on its own:
+operation's required fields (`lib/envelope.sh`'s `envelope_validate`).
+Qualification requires exactly one envelope with `status=ok`, and its
+`.operation` must echo the operation the request named
+(`envelope_success_for_operation`). That operation check matters on its own:
 `envelope_validate` only checks that `.operation` satisfies whatever union
 that field itself claims — it never cross-checks the claim against what
 was actually requested. Without it, an adapter that hardcodes one easy
@@ -83,8 +84,9 @@ invoked any other way.
 
 **Common failure modes:** the adapter exits nonzero for a declared
 operation, writes no envelope at all, writes one missing a required field
-for that specific operation, or writes an envelope whose `.operation`
-names a DIFFERENT operation than the one actually requested (the
+for that specific operation, writes multiple envelopes, reports a failed
+status, or writes an envelope whose `.operation` names a DIFFERENT
+operation than the one actually requested (the
 hardcoded-one-answer bug above). The `FAIL` line names every operation
 that failed, and for an operation mismatch specifically, both the
 requested operation and the one the envelope claimed.

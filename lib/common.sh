@@ -3022,6 +3022,7 @@ ORCHID_QID_RESERVATION_EXT=reserved
 # this bounds the loop so an exhausted namespace refuses to publish instead of
 # spinning forever.
 ORCHID_QID_RESERVE_TRIES=64
+ORCHID_JOB_ID_RESERVE_TRIES=64
 
 # _orchid_qid_taken <repo> <qid> -- 0 iff anything has ever been filed under
 # this id.
@@ -3048,10 +3049,10 @@ _orchid_qid_taken() {
   for f in "$repo/.orchid/runtime/answers/$qid".*; do
     # The glob matching nothing yields the pattern itself under bash's default
     # nullglob-off, which is not a file.
-    [ -e "$f" ] || continue
+    [ -e "$f" ] || [ -L "$f" ] || continue
     return 0
   done
-  [ ! -e "$repo/.orchid/runtime/outbox/$qid" ] || return 0
+  [ ! -e "$repo/.orchid/runtime/outbox/$qid" ] && [ ! -L "$repo/.orchid/runtime/outbox/$qid" ] || return 0
   blockers="$(orchid_state "$repo")/BLOCKERS.md"
   [ -f "$blockers" ] || return 1
   # libexec/orchid-notify's two header spellings, `## <qid>` and
@@ -3092,45 +3093,66 @@ _orchid_qid_suffix() {
   printf '%s\n' "${s:0:4}"
 }
 
+# Job IDs name a family of artifacts. An orphaned request, exit record, or
+# broken symlink occupies its ID just as a live manifest does. Reservations
+# remain after GC so a retired job cannot donate its ID to another launch.
+_orchid_job_id_taken() {
+  local id="$2" rt="$1/.orchid/runtime" area f known
+  for area in jobs spool logs requests packs exits quarantine; do
+    for f in "$rt/$area/$id" "$rt/$area/$id".*; do
+      [ -e "$f" ] || [ -L "$f" ] || continue
+      return 0
+    done
+  done
+  for f in "$rt/spool/bad/$id".*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    return 0
+  done
+  if [ -e "$rt/jobs-history.tsv" ] || [ -L "$rt/jobs-history.tsv" ]; then
+    known="$(ORCHID_JOB_ID="$id" awk -F '\t' '
+      $2 == ENVIRON["ORCHID_JOB_ID"] { found=1 }
+      END { print found+0 }
+    ' "$rt/jobs-history.tsv")" || return 0
+    [ "$known" = 0 ] || return 0
+  fi
+  return 1
+}
+
+# Shared exclusive ID claim, separate from the breakable verb lock. Both
+# question and job callers use the same bounded allocation protocol.
+_orchid_id_reserve() {
+  local repo="$1" family="$2" prefix="$3" tries="$4" dir id draw=0
+  [ -n "$repo" ] && [ -n "$prefix" ] || return 1
+  case "$family" in answers|jobs) ;; *) return 1 ;; esac
+  dir="$(orchid_runtime "$repo")/$family"
+  mkdir -p "$dir" || return 1
+  while [ "$draw" -lt "$tries" ]; do
+    draw=$(( draw + 1 ))
+    id="$prefix-$(_orchid_qid_suffix "$draw")"
+    case "$family" in
+      answers) if _orchid_qid_taken "$repo" "$id"; then continue; fi ;;
+      jobs) if _orchid_job_id_taken "$repo" "$id"; then continue; fi ;;
+    esac
+    # This atomic, permanent claim closes concurrent same-suffix allocation.
+    # A failed or interrupted publication burns its ID rather than reusing it.
+    mkdir "$dir/$id.$ORCHID_QID_RESERVATION_EXT" 2>/dev/null || continue
+    printf '%s\n' "$id"
+    return 0
+  done
+  return 1
+}
+
 # orchid_qid_reserve <repo> <epoch> -- draw an id nothing has ever been filed
 # under, claim it, and print it. Nonzero with nothing on stdout when no free id
 # could be claimed, which the caller MUST treat as a refusal to publish rather
 # than as permission to fall back to an unclaimed id.
 orchid_qid_reserve() {
-  local repo="$1" epoch="$2" answers qid draw=0
-  [ -n "$repo" ] && [ -n "$epoch" ] || return 1
-  answers="$(orchid_runtime "$repo")/answers"
-  mkdir -p "$answers" || return 1
-  while [ "$draw" -lt "$ORCHID_QID_RESERVE_TRIES" ]; do
-    draw=$(( draw + 1 ))
-    qid="q-${epoch}-$(_orchid_qid_suffix "$draw")"
-    # Cheap first, and it covers the one thing the claim below cannot: an
-    # artifact whose claim is gone. A page raised before claims existed, or one
-    # whose `runtime/` was swept while BLOCKERS.md kept the entry, has a name in
-    # use and no directory saying so.
-    if _orchid_qid_taken "$repo" "$qid"; then continue; fi
-    # ...and THIS is the allocation. `mkdir` is the kernel's exclusive-create
-    # primitive -- `verb_lock_acquire` takes the verb lock with the same call
-    # for the same reason: it is ONE filesystem operation that either creates
-    # the name or fails because somebody already holds it. The test above and
-    # the create are two operations with a window between them, and the create
-    # is what closes it: two allocations that drew the same suffix while both
-    # believed it free cannot both leave here owning it. `orchid notify` does
-    # hold the verb lock, so that overlap is not the ordinary case -- but the
-    # verb lock is breakable by design (see verb_lock_acquire's stale-owner
-    # arm), and a claim that were only as strong as a lock somebody else may
-    # break is not a claim.
-    #
-    # Crash-safe in the only direction that matters: the directory exists from
-    # the moment the call returns, so a notify killed anywhere after this line
-    # leaves the id RETIRED rather than free. An id burned by a crash costs one
-    # draw out of sixty-five thousand; an id handed out twice costs the
-    # operator's answer.
-    mkdir "$answers/$qid.$ORCHID_QID_RESERVATION_EXT" 2>/dev/null || continue
-    printf '%s\n' "$qid"
-    return 0
-  done
-  return 1
+  [ -n "$2" ] || return 1
+  _orchid_id_reserve "$1" answers "q-$2" "$ORCHID_QID_RESERVE_TRIES"
+}
+
+orchid_job_id_reserve() {
+  _orchid_id_reserve "$1" jobs "$2" "$ORCHID_JOB_ID_RESERVE_TRIES"
 }
 
 # --- run-state containment (T037) -----------------------------------------
@@ -3760,15 +3782,50 @@ orchid_install_push_guard() {
 #       branch below.
 with_timeout() {
   local secs="$1"; shift
+  local pid birth w watcher_birth deadline rc=0
+  deadline="$(mktemp "${TMPDIR:-/tmp}/orchid-timeout.XXXXXX")" || return 1
   set -m
-  "$@" & local pid=$!
+  (
+    # Keep a group leader alive through deadline cleanup, even if the command
+    # itself exits on TERM while one of its descendants ignores the signal.
+    set +m
+    trap : TERM
+    command_rc=0
+    "$@" & command_pid=$!
+    wait "$command_pid" || command_rc=$?
+    if [ -s "$deadline" ]; then
+      while :; do sleep 1; done
+    fi
+    exit "$command_rc"
+  ) & pid=$!
   set +m
+  birth="$(_pid_start "$pid")"
   set -m
-  ( sleep "$secs"; kill -- "-$pid" 2>/dev/null ) & local w=$!
+  (
+    sleep "$secs"
+    # Both signals require the original group leader. Its PID alone is not
+    # ownership after the command exits and the operating system reuses it.
+    [ -n "$birth" ] && [ "$(_pid_start "$pid")" = "$birth" ] || exit 0
+    printf 'timeout\n' > "$deadline"
+    kill -- "-$pid" 2>/dev/null || exit 0
+    sleep 1
+    [ "$(_pid_start "$pid")" = "$birth" ] || exit 0
+    kill -KILL -- "-$pid" 2>/dev/null || true
+  ) & w=$!
   set +m
-  local rc=0; wait "$pid" 2>/dev/null || rc=$?
-  if kill -0 "$w" 2>/dev/null; then kill -- "-$w" 2>/dev/null; wait "$w" 2>/dev/null; return "$rc"; fi
-  return 124
+  watcher_birth="$(_pid_start "$w")"
+  wait "$pid" 2>/dev/null || rc=$?
+  # Cancel the entire watcher group, including its deadline/grace sleep. A
+  # successful command must leave no later signal pending against its old PID.
+  if [ -n "$watcher_birth" ] && [ "$(_pid_start "$w")" = "$watcher_birth" ]; then
+    kill -- "-$w" 2>/dev/null || true
+    wait "$w" 2>/dev/null || true
+  else
+    wait "$w" 2>/dev/null || true
+  fi
+  [ ! -s "$deadline" ] || rc=124
+  rm -f "$deadline"
+  return "$rc"
 }
 
 # -- worktrees Orchid creates ------------------------------------------------
@@ -4004,7 +4061,7 @@ worktree_prepare() {
 # `eval "v=\${$env:-}"` line would in fact throw a "bad substitution" for that
 # exact shape were it ever reached with the raw hyphen still in place. `-`
 # now maps to `_` alongside `.`, so `role.code-reviewer` -> `ORCHID_ROLE_CODE_REVIEWER`.
-_cfg_env_name() { echo "ORCHID_$(echo "$1" | tr 'a-z.-' 'A-Z__')"; }
+_cfg_env_name() { printf 'ORCHID_%s\n' "$(printf '%s' "$1" | tr 'a-z.-' 'A-Z__')"; }
 
 # Indirect expansion also accepts array expressions in Bash. Only environment
 # identifiers are safe operands; configuration and manifests are data.
@@ -4366,6 +4423,41 @@ _trust_canon_path() {  # dir -> canonical absolute path (no trailing slash,
   # four call sites outside this file speak it; the implementation is shared
   # so there is exactly one place this repository canonicalizes a path.
   orchid_physical_dir "$1"
+}
+
+# orchid_plugin_entrypoint_check <plugin-dir> <kind> <entrypoint> -- check
+# the executable's owned path using the same physical-path helpers as kernel
+# publication. Prints the refusal reason only on failure. Engines use the
+# literal run ABI; other executable kinds may use an owned nested regular file.
+# This is a path/ABI check, not sandboxing or atomic check-and-exec.
+orchid_plugin_entrypoint_check() {
+  local dir="$1" kind="$2" ep="$3" physical_root physical_entry
+  if [ -z "$ep" ]; then
+    printf 'entrypoint missing (required for kind=%s)\n' "$kind"
+    return 1
+  fi
+  if [ "$kind" = engine ] && [ "$ep" != run ]; then
+    printf "engine entrypoint '%s' must be run (the engine ABI)\n" "$ep"
+    return 1
+  fi
+  case "$ep" in
+    /*) printf "entrypoint '%s' must be relative to the plugin directory\n" "$ep"; return 1 ;;
+  esac
+  if [ -L "$dir/$ep" ]; then
+    printf "entrypoint '%s' is a symlink; a regular-file entrypoint is required\n" "$ep"
+    return 1
+  fi
+  if [ ! -f "$dir/$ep" ] || [ ! -x "$dir/$ep" ]; then
+    printf "entrypoint '%s' is not an executable file in %s\n" "$ep" "$dir"
+    return 1
+  fi
+  physical_root="$(orchid_physical_dir "$dir")" || return 1
+  physical_entry="$(_orchid_physical_path "$dir/$ep")" || return 1
+  case "$physical_entry" in
+    "$physical_root"/*) return 0 ;;
+  esac
+  printf "entrypoint '%s' resolves outside the plugin directory\n" "$ep"
+  return 1
 }
 
 _orchid_file_sha256() (  # file -> a line binding this file's path to its
