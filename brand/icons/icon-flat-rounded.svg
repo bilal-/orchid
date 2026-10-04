@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><title>orchid app icon</title><defs>
+  <linearGradient id="plate" x1="0" y1="0" x2="0.85" y2="1">
+    <stop stop-color="#353942"/><stop offset="0.48" stop-color="#17191D"/><stop offset="1" stop-color="#090B0E"/>
+  </linearGradient>
+  <linearGradient id="glass" x1="0" y1="0" x2="0.3" y2="1">
+    <stop stop-color="#FFFFFF" stop-opacity="0.22"/><stop offset="0.65" stop-color="#FFFFFF" stop-opacity="0.035"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="rim" x1="0" y1="0" x2="0.7" y2="1">
+    <stop stop-color="#FFFFFF" stop-opacity="0.35"/><stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.04"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0.09"/>
+  </linearGradient>
+</defs><rect width="1024" height="1024" rx="224" fill="#17191D"/><g transform="translate(187 259.22222222222223) scale(1.8055555555555556)"><path d="M31 4Q36 -1 41 4L166 129Q177 140 166 151L41 276Q36 281 31 276L3 248Q-2 243 3 238L101 140L3 42Q-2 37 3 32Z" fill="#2DD4BF"/><path d="M190 220H344Q360 220 360 236V256Q360 272 344 272H190Q174 272 174 256V236Q174 220 190 220Z" fill="#2DD4BF"/><path d="M202.52 57.71L262.52 165.71L297.48 146.29L237.48 38.29Z" fill="#2DD4BF"/><path d="M322.52 38.29L262.52 146.29L297.48 165.71L357.48 57.71Z" fill="#2DD4BF"/><path d="M192 48A28 28 0 1 0 248 48A28 28 0 1 0 192 48Z" fill="#2DD4BF"/><path d="M312 48A28 28 0 1 0 368 48A28 28 0 1 0 312 48Z" fill="#2DD4BF"/><path d="M250 156A30 30 0 1 0 310 156A30 30 0 1 0 250 156Z" fill="#2DD4BF"/></g></svg>
