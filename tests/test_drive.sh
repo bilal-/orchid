@@ -9075,9 +9075,22 @@ rworchid task set R010 verification_commands 'echo "FAIL OrderTest::testRoundTri
 rworchid plan apply --reason "initial plan" >/dev/null
 
 RWDRIVE_RC=0; RWDRIVE_OUT=""
+RWDRIVE_HISTORY="$RWCTL/drive-passes.log"
+RWDRIVE_PASSES=0; RWDRIVE_FAILS_BEFORE="$FAILS"
+: > "$RWDRIVE_HISTORY"
 run_rwdrive() {
   RWDRIVE_RC=0
   RWDRIVE_OUT="$(ORCHID_REPO="$RW" ORCHID_EPOCH="$REPOCH" "$DRIVE" 2>&1)" || RWDRIVE_RC=$?
+  # Keep the first refusal, rather than only the last orphan-manifest wait.
+  # Bound both dimensions: at most 48 passes, 1024 output bytes per pass.
+  RWDRIVE_PASSES=$((RWDRIVE_PASSES + 1))
+  if [ "$RWDRIVE_PASSES" -le 48 ]; then
+    {
+      printf '== R010 drive pass %s (exit %s; first 1024 bytes)\n' "$RWDRIVE_PASSES" "$RWDRIVE_RC"
+      printf '%s\n' "$RWDRIVE_OUT" | head -c 1024 || true
+      printf '\n'
+    } >> "$RWDRIVE_HISTORY"
+  fi
 }
 rwfield() { ORCHID_REPO="$RW" "$ORCHID_BIN" task show R010 | grep "^$1: " | cut -d' ' -f2-; }
 
@@ -9139,6 +9152,10 @@ done
   || fail "the invalidating delete still happens -- INV-11 stays armed (the capture is a copy, not a reprieve)"
 assert_eq 3 "$(rwfield attempts)" \
   "an identical signature still CONSUMES its attempt (kernel.md: the attempt cap targets repeated identical failures)"
+if [ "$FAILS" -gt "$RWDRIVE_FAILS_BEFORE" ]; then
+  printf '%s\n' 'R010 chronological drive history (bounded to 48 passes):'
+  cat "$RWDRIVE_HISTORY"
+fi
 
 # A reroute record is a claim about a SPAWNED attempt, not an intention. Put a
 # fresh unlaunched manifest in the next slot so T027's prepare guard returns

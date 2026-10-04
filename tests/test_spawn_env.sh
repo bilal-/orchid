@@ -85,3 +85,52 @@ for env_entry in "${child_env[@]}"; do
 done
 assert_eq 1 "$env_found" 'checked loader retains the exact assignment'
 green_case 'checked loader accepts the same manifest after repair'
+
+# Enumeration failures must be known before any values reach the stream.
+# Only exported NAMES are faulted; the dummy value is never a credential.
+export ORCHID_ENV_NAME_PROBE='owned-name-producer-value'
+for name_fault in partial-seven partial-one empty-two; do
+  case "$name_fault" in
+    partial-seven) name_fault_status=7; name_fault_partial=1 ;;
+    partial-one) name_fault_status=1; name_fault_partial=1 ;;
+    empty-two) name_fault_status=2; name_fault_partial=0 ;;
+  esac
+  compgen() {
+    [ "$name_fault_partial" -eq 0 ] || printf '%s\n' ORCHID_ENV_NAME_PROBE
+    return "$name_fault_status"
+  }
+  child_env=('stale=value')
+  env_rc=0
+  spawn_child_env_load "$WORK/eng/probe" > "$WORK/names-$name_fault.out"     2> "$WORK/names-$name_fault.err" || env_rc=$?
+  assert_eq 1 "$env_rc" 'failed name enumeration refuses the checked load'
+  assert_eq 0 "${#child_env[@]}" 'failed name enumeration clears stale and partial values'
+  [ ! -s "$WORK/names-$name_fault.out" ] || fail 'failed name enumeration leaked stdout'
+  assert_match 'cannot enumerate exported environment names'     "$(cat "$WORK/names-$name_fault.err")" 'name enumeration preserves its failure reason'
+  grep -qF 'owned-name-producer-value' "$WORK/names-$name_fault.err"     && fail 'failed name enumeration leaked a dummy environment value'
+  unset -f compgen
+done
+red_case 'nonzero and partial exported-name production refuses before emitting values'
+
+# No matches is compgen's ordinary exit1 case, distinct from partial output.
+compgen() { return 1; }
+child_env=('stale=value')
+env_rc=0
+spawn_child_env_load "$WORK/eng/probe" > "$WORK/names-empty.out"   2> "$WORK/names-empty.err" || env_rc=$?
+assert_eq 0 "$env_rc" 'an empty exported-name set is accepted'
+assert_eq 1 "${#child_env[@]}" 'empty enumeration still forwards the one opted-in value'
+assert_eq "DATA_ALLOWED=$DATA_ALLOWED" "${child_env[0]}" 'empty enumeration preserves the exact permission value'
+[ ! -s "$WORK/names-empty.out" ] && [ ! -s "$WORK/names-empty.err" ]   || fail 'empty enumeration leaked stdout or stderr'
+unset -f compgen
+green_case 'empty exported-name enumeration preserves valid opted-in values'
+
+# The real Bash name producer still reaches the same complete NUL contract.
+env_rc=0
+spawn_child_env_load "$WORK/eng/probe" > "$WORK/names-valid.out"   2> "$WORK/names-valid.err" || env_rc=$?
+assert_eq 0 "$env_rc" 'real exported-name enumeration is accepted'
+env_found=0
+for env_entry in "${child_env[@]}"; do
+  [ "$env_entry" != "DATA_ALLOWED=$DATA_ALLOWED" ] || env_found=1
+done
+assert_eq 1 "$env_found" 'real enumeration retains exact multiline permission data'
+[ ! -s "$WORK/names-valid.out" ] && [ ! -s "$WORK/names-valid.err" ]   || fail 'valid enumeration leaked stdout or stderr'
+green_case 'real exported-name enumeration keeps the checked stream and permission data'
