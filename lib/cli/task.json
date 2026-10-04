@@ -1,0 +1,325 @@
+{
+  "description": "Read and transition run tasks with epoch and evidence checks.",
+  "default": [
+    "list"
+  ],
+  "commands": [
+    {
+      "path": [
+        "list"
+      ],
+      "usage": "usage: orchid task list",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid task list",
+        "orchid task list --json"
+      ],
+      "kind": "tsv",
+      "next": [
+        "orchid task show <id>",
+        "orchid task create <id> \"<title>\""
+      ],
+      "fields": [
+        "id",
+        "status",
+        "title"
+      ]
+    },
+    {
+      "path": [
+        "show"
+      ],
+      "usage": "usage: orchid task show <id>",
+      "options": {},
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid task show T001",
+        "orchid task show T001 --full"
+      ],
+      "kind": "text",
+      "next": [],
+      "output_fields": [
+        "id",
+        "title",
+        "status",
+        "text"
+      ]
+    },
+    {
+      "path": [
+        "get"
+      ],
+      "usage": "usage: orchid task get <id> <key>",
+      "options": {},
+      "min_args": 2,
+      "max_args": 2,
+      "examples": [
+        "orchid task get T001 status",
+        "orchid task get T001 candidate_sha"
+      ],
+      "kind": "scalar",
+      "next": [],
+      "output_fields": [
+        "task",
+        "key",
+        "value"
+      ]
+    },
+    {
+      "path": [
+        "create"
+      ],
+      "usage": "usage: orchid task create <id> \"<title>\" [--archetype <name>]",
+      "options": {
+        "--archetype": 1
+      },
+      "min_args": 2,
+      "max_args": 2,
+      "examples": [
+        "orchid task create T001 \"Fix login\"",
+        "orchid task create T002 \"Add tests\" --archetype feature"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>",
+        "orchid task list"
+      ]
+    },
+    {
+      "path": [
+        "set"
+      ],
+      "usage": "usage: orchid task set <id> <key> <value> [--reason \"...\"]",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 3,
+      "max_args": 3,
+      "examples": [
+        "orchid task set T001 acceptance_criteria \"Tests pass\"",
+        "orchid task set T001 risk_tier high --reason \"Touches authentication\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>"
+      ]
+    },
+    {
+      "path": [
+        "advance"
+      ],
+      "usage": "usage: orchid task advance <id> <status> [--reason \"...\"] [--waive-attempt|--charge-attempt]",
+      "options": {
+        "--reason": 1,
+        "--waive-attempt": 0,
+        "--charge-attempt": 0
+      },
+      "min_args": 2,
+      "max_args": 2,
+      "examples": [
+        "orchid task advance T001 implementing",
+        "orchid task advance T001 blocked --reason \"Needs operator input\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>"
+      ],
+      "exclusive_options": [
+        [
+          "--waive-attempt",
+          "--charge-attempt"
+        ]
+      ]
+    },
+    {
+      "path": [
+        "arbitrate"
+      ],
+      "usage": "usage: orchid task arbitrate <id> --result approve|request-changes --reason \"...\" [--waive-attempt]",
+      "options": {
+        "--result": 1,
+        "--reason": 1,
+        "--waive-attempt": 0
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid task arbitrate T001 --result approve --reason \"Evidence supports the candidate\"",
+        "orchid task arbitrate T001 --result request-changes --reason \"Review found a blocker\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>"
+      ],
+      "required_options": [
+        "--result",
+        "--reason"
+      ]
+    },
+    {
+      "path": [
+        "handoff"
+      ],
+      "usage": "usage: orchid task handoff <id> --ack|--clear --reason \"...\"",
+      "options": {
+        "--ack": 0,
+        "--clear": 0,
+        "--reason": 1
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid task handoff T001 --ack --reason \"Completed the mechanical handoff\"",
+        "orchid task handoff T001 --clear --reason \"Candidate needs another handoff\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>"
+      ],
+      "required_options": [
+        "--reason"
+      ],
+      "required_any_options": [
+        "--ack",
+        "--clear"
+      ],
+      "exclusive_options": [
+        [
+          "--ack",
+          "--clear"
+        ]
+      ]
+    },
+    {
+      "path": [
+        "prereq-ack"
+      ],
+      "usage": "usage: orchid task prereq-ack <id> --reason \"...\"",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid task prereq-ack T001 --reason \"Prepared the external store\"",
+        "orchid task prereq-ack --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    },
+    {
+      "path": [
+        "unblock"
+      ],
+      "usage": "usage: orchid task unblock <id> --reason \"...\"",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid task unblock T001 --reason \"Use the approved schema\"",
+        "orchid task unblock --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    },
+    {
+      "path": [
+        "retry"
+      ],
+      "usage": "usage: orchid task retry <id> --reason \"...\" [--attempts N]",
+      "options": {
+        "--reason": 1,
+        "--attempts": 1
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid task retry T001 --reason \"Address the review findings\"",
+        "orchid task retry T001 --attempts 0 --reason \"Operator granted a new budget\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    },
+    {
+      "path": [
+        "reverify"
+      ],
+      "usage": "usage: orchid task reverify <id> --reason \"...\"",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid task reverify T001 --reason \"The service is available again\"",
+        "orchid task reverify --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    },
+    {
+      "path": [
+        "rebase"
+      ],
+      "usage": "usage: orchid task rebase <id>",
+      "options": {},
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid task rebase T001",
+        "orchid task rebase --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>"
+      ]
+    },
+    {
+      "path": [
+        "infra-fail"
+      ],
+      "usage": "usage: orchid task infra-fail <id> --reason \"...\"",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid task infra-fail T001 --reason \"Test service unavailable\"",
+        "orchid task infra-fail --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    }
+  ]
+}

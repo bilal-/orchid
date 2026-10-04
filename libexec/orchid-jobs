@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate jobs "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
@@ -13,7 +15,7 @@ source "$ORCHID_ROOT/lib/schedule.sh"
 # capability.sh owns the kernel's step-to-capability table. Prepare is where
 # a resolved actor is finally bound to an operation, so it is the routing gate.
 source "$ORCHID_ROOT/lib/capability.sh"
-repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$state/runtime"
 jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
 # T035: the append-only record of jobs that are no longer outstanding, so
 # `jobs ls --all` can answer "what did this task run, in what order, and how
@@ -47,16 +49,6 @@ jobs_usage() {
 # Help ahead of the epoch fence and the verb lock, first position only -- see
 # the same gate in libexec/orchid-task for why both halves of that are
 # deliberate.
-case "${1:-}" in
-  --help|-h)
-    jobs_usage "$sub" || true
-    exit 0 ;;
-esac
-case "$sub" in
-  ''|--help|-h)
-    jobs_usage || true
-    exit 0 ;;
-esac
 
 # Moves $src into quarantine as <basename>.reason-<reason>, never clobbering
 # a prior drop of the same basename: on collision, appends .2, .3, ... until
@@ -1046,8 +1038,8 @@ case "$sub" in
         --watch) watch=1; shift ;;
         --interval)
           [ -n "${2:-}" ] || orchid_die "--interval requires a value"
-          case "$2" in ''|*[!0-9]*) orchid_die "--interval takes whole seconds (got '$2')" ;; esac
-          [ "$2" -gt 0 ] || orchid_die "--interval must be at least 1 second"
+          case "$2" in ''|*[!0-9]*) orchid_cli_usage_error jobs "--interval takes whole seconds (got '$2')"; exit 2 ;; esac
+          if [ "${#2}" -gt 18 ] || [ "$2" -le 0 ]; then orchid_cli_usage_error jobs "--interval must be at least 1 second (got '$2')"; exit 2; fi
           interval="$2"; shift 2 ;;
         *) orchid_die "$(jobs_usage ls)" ;;
       esac
@@ -1899,6 +1891,8 @@ case "$sub" in
         --reap-prepared) reap_prepared=1; shift ;;
         --older-than-s)
           [ -n "${2:-}" ] || orchid_die "--older-than-s requires a value"
+          case "$2" in ''|*[!0-9]*) orchid_cli_usage_error jobs "$1 takes nonnegative whole seconds (got '$2')"; exit 2 ;; esac
+          if [ "${#2}" -gt 18 ]; then orchid_cli_usage_error jobs "$1 accepts at most 18 decimal digits (got '$2')"; exit 2; fi
           older_than_s_arg="$2"; shift 2 ;;
         # --prepared-older-than-s (T027 rework): the retention bound for the
         # UNLAUNCHED class only, so a caller can hold that class back without
@@ -1916,6 +1910,8 @@ case "$sub" in
         # class that mode touches and therefore wins over --older-than-s.
         --prepared-older-than-s)
           [ -n "${2:-}" ] || orchid_die "--prepared-older-than-s requires a value"
+          case "$2" in ''|*[!0-9]*) orchid_cli_usage_error jobs "$1 takes nonnegative whole seconds (got '$2')"; exit 2 ;; esac
+          if [ "${#2}" -gt 18 ]; then orchid_cli_usage_error jobs "$1 accepts at most 18 decimal digits (got '$2')"; exit 2; fi
           prepared_older_than_s_arg="$2"; shift 2 ;;
         *) orchid_die "usage: orchid jobs gc [--older-than-s N] [--prepared-older-than-s N] | orchid jobs gc --reap-prepared [--older-than-s N] [--prepared-older-than-s N]" ;;
       esac

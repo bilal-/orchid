@@ -9,6 +9,11 @@
 # file-wide placement outright).
 orchid_die() { echo "orchid: $*" >&2; exit 1; }
 
+# Kernel libraries and standalone runners retain the historical machine channel.
+# bin/orchid selects and saves the public presentation format before loading us.
+export ORCHID_OUTPUT=raw
+
+
 # bin/orchid resolves itself and selects a libexec target while PATH is limited
 # to fixed machine-local system/package-manager directories. It carries the
 # caller's original PATH as inert environment data rather than restoring it
@@ -3118,6 +3123,10 @@ _orchid_job_id_taken() {
   return 1
 }
 
+# Permanent exclusive claim shared by IDs and exact-intent retry receipts.
+# A claim is never stolen or expired: uncertain publication cannot be retried.
+orchid_claim_once() { mkdir "$1" 2>/dev/null; }
+
 # Shared exclusive ID claim, separate from the breakable verb lock. Both
 # question and job callers use the same bounded allocation protocol.
 _orchid_id_reserve() {
@@ -3135,7 +3144,7 @@ _orchid_id_reserve() {
     esac
     # This atomic, permanent claim closes concurrent same-suffix allocation.
     # A failed or interrupted publication burns its ID rather than reusing it.
-    mkdir "$dir/$id.$ORCHID_QID_RESERVATION_EXT" 2>/dev/null || continue
+    orchid_claim_once "$dir/$id.$ORCHID_QID_RESERVATION_EXT" || continue
     printf '%s\n' "$id"
     return 0
   done
@@ -4899,3 +4908,10 @@ if [ "${ORCHID_ALLOW_STALE_ROOT:-}" != 1 ] && orchid_root_stale "${ORCHID_ROOT:-
     _orchid_root_stale_fire
   fi
 fi
+
+# CLI admission is shared by dispatched and direct entry. Lazy loading keeps
+# non-CLI library consumers independent of command metadata and jq parsing.
+orchid_cli_validate() {
+  source "${BASH_SOURCE[0]%/*}/cli.sh"
+  orchid_cli_validate_impl "$@"
+}

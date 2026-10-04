@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate run "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
+source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/lessons.sh"; source "$ORCHID_ROOT/lib/drive.sh"
 # plancheck.sh after lessons.sh, whose _lessons_journal_start_date it uses:
 # `advance` is one of the two verbs that can take a run OUT of planning, and
@@ -39,16 +42,6 @@ esac; }
 
 sub="${1:-}"; shift || true
 
-# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
-# out what to do when the run state is ALREADY wrong, so it must not be
-# answered by INV-02. First position only, and both spellings -- see the fuller
-# note on libexec/orchid-task's gate, which is the authority for this rule.
-case "$sub" in
-  --help|-h) printf '%s\n' "usage: orchid run start|resume|refresh-lease|release-lease|boundary|advance|accept|new"; exit 0 ;;
-esac
-case "${1:-}" in
-  --help|-h) printf '%s\n' "usage: orchid run start|resume|refresh-lease|release-lease|boundary|advance|accept|new"; exit 0 ;;
-esac
 case "$sub" in
   start|resume)
     # v0b2: both start and resume require initialized state. resume exists to
@@ -385,6 +378,14 @@ case "$sub" in
     roadmap="$state/roadmap.md"
     [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
     from="$(fm_get "$roadmap" run_status)"
+    if [ "$from" = "$to" ]; then
+      case "$to" in
+        planning|running|accepting|blocked)
+          echo "run_status: $to (already current; no change)"
+          exit 0
+          ;;
+      esac
+    fi
     legal_run "$from" "$to" || { echo "orchid: illegal run_status $from -> $to" >&2; exit 3; }
 
     # T021: LEAVING PLANNING is what the carry-forward cross-check gates, and

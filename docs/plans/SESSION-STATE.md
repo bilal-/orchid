@@ -281,3 +281,35 @@ assertion that a refusal for some *other* reason would satisfy.
   contained in `orchid/integration`. One was not contained and was renamed
   rather than deleted: **`r-002/T024-preserve`** — it holds work that never
   merged. Do not delete it without reading it.
+
+
+## Agent interface release review — 2026-10-04
+
+The operator authorized public beta publication, main/tap commits and pushes after
+checks pass, and requested all ten AXI principles across every public command.
+The new work is assembled on `codex/axi-agent-interface`, including PR19's merged
+branding, the earlier kernel safety review and the installer/tap preparation.
+The original integration checkout's unrelated journal and preserved run/task
+worktrees remain operator-owned; no real run acceptance was performed here.
+
+The AXI layer declares command forms once, admits help and usage before effects,
+uses compact TOON/JSON at the external boundary and keeps raw kernel contracts
+for direct/internal callers. Bare context and opt-in native hooks are read-only.
+Three small portable skills load canonical protocol sections on demand. Exact
+user-local intent receipts label historical replay and refuse interrupted
+uncertainty; they do not replace epoch or evidence fences.
+
+Parallel cross-checks repaired nested-help boundary clearing, plugin removal
+containment, unsafe numeric-input handling, missing-runtime read effects,
+ambiguous argument ordering, stale help/projection declarations and TOON edge
+cases. The full frozen source and extracted archive gates still own release
+qualification; focused checks alone are not publication evidence. Native isolated
+frontend tests prove all-four registration/callback contracts using host runtimes,
+not authenticated model completion or third-party use. Official TOON 4.1.1 decoder
+round-trips provide separate format evidence.
+
+The earlier `62bbdec`/`2e0c304` distribution rehearsal is historical: its native
+Homebrew path passed, but its full gates were canceled when AXI became a release
+requirement. Rebuild and pin the final assembled source on an actual integration
+checkout, requalify both source and archive, then publish that exact checked head.
+Never publish the temporary local-file Homebrew formula from the earlier smoke.

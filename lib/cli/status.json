@@ -1,0 +1,44 @@
+{
+  "description": "Inspect the current run, task progress, job liveness and engine health.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "usage": "usage: orchid status [--explain] [--jobs] [--html]",
+      "options": {
+        "--explain": 0,
+        "--jobs": 0,
+        "--html": 0
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid status",
+        "orchid status --jobs --explain",
+        "orchid status --html"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>",
+        "orchid jobs ls --all"
+      ],
+      "output_fields": [
+        "repo",
+        "initialized",
+        "run",
+        "epoch",
+        "boundary",
+        "operator_owned",
+        "tasks",
+        "jobs"
+      ],
+      "default_fields": [
+        "run",
+        "epoch",
+        "boundary",
+        "tasks",
+        "jobs"
+      ]
+    }
+  ]
+}

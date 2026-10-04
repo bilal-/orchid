@@ -1,5 +1,11 @@
 # Quickstart — greenfield (new product, no code yet)
 
+For an LLM-led workflow, ask Claude Code, Codex, Hermes or OpenCode to use the
+installed Orchid skills. `orchid` shows compact live context; `orchid setup
+--frontend all` explicitly registers native ambient context. See
+[frontends](frontends.md) and [the agent interface](agent-interface.md). Scripted
+recipes that parse historical text/TSV output should set `ORCHID_OUTPUT=raw`.
+
 For an **existing** repo, see [quickstart.md](./quickstart.md) instead —
 that's the more common path and the one timed for the 15-minute release
 rehearsal. This page covers the greenfield path: starting orchid before a

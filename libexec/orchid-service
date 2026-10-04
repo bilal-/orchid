@@ -25,6 +25,10 @@ while [ -L "$self" ]; do
 done
 ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
 export ORCHID_ROOT
+__orchid_entry_defer_restore=1
+source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate service "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
 
 # tier-1 -> tier-2 boundary (mirrors bin/orchid's own generic dispatch, and
 # the docs/specs/kernel.md determinism-boundary split behind `orchid jobs

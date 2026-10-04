@@ -18,6 +18,9 @@ FAILS=0
 # Keep dry-run available because adapter tests intentionally exercise that
 # public seam, but never inherit durable-run identity into a disposable repo.
 unset ORCHID_ACTOR ORCHID_REPO ORCHID_EPOCH
+# Existing kernel fixtures exercise the stable machine contract; AXI fixtures
+# explicitly select the public agent presentation boundary.
+export ORCHID_OUTPUT=raw
 # `merge_gate` (T007) is repo configuration, and a fixture's gate must come
 # from the fixture's own orchid.config — an operator with ORCHID_MERGE_GATE
 # exported would otherwise have their command run inside every scratch merge
@@ -219,6 +222,11 @@ _proof_receipt() {
 # is the same defect one level up. Enrolling them by path here means the trap
 # below asks the only question that matters: did a case actually RUN.
 PROOF_ENROLLED_FILES=(
+  tests/test_axi_commands.sh
+  tests/test_axi_mutations.sh
+  tests/test_axi_reads.sh
+  tests/test_axi_requests.sh
+  tests/test_frontend_setup.sh
   tests/test_adapter_qualification.sh
   tests/test_config_data.sh
   tests/test_durable_copy.sh

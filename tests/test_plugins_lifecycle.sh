@@ -198,7 +198,7 @@ assert_eq 0 "$rc" "remove succeeds"
 assert_match "plugins lock" "$out" "remove prints the generic lockfile-refresh reminder"
 
 rc=0; HOME="$homeH" ORCHID_REPO="$repoH" "$ORCHID_BIN" plugins remove removeme >/dev/null 2>&1 || rc=$?
-[ "$rc" -ne 0 ] || fail "remove must refuse an already-removed/unknown name"
+[ "$rc" -eq 0 ] || fail "remove acknowledges an already-removed valid name"
 
 # -- audit: per-plugin block, modified-since-install after a tamper --------
 homeI="$WORK/homeI"; mkdir -p "$homeI/.orchid"

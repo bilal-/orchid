@@ -13,6 +13,14 @@ transition table; the launch/trust rules are
 [specs/plugins.md](./specs/plugins.md); the live-proven claims cite
 [dogfood-notes.md](./dogfood-notes.md) by F-number.
 
+The outer agent interface is `bin/orchid`: TOON or JSON, compact live context,
+scoped help and on-demand protocol sections. Its declared admission layer rejects
+usage errors before dispatch. Internal verbs/runners explicitly use the raw
+kernel channel, preserving machine parsing and domain exit codes. Read-only
+ambient hooks feed the same context to Claude Code, Codex, Hermes and OpenCode;
+those hosts retain approval ownership. [Interface contract](agent-interface.md)
+and [frontend registration](frontends.md) describe the boundary.
+
 ## 1. Who runs whom
 
 <!-- Diagram grounding: docs/specs/kernel.md "Architecture" (tier split,
@@ -20,7 +28,9 @@ transition table; the launch/trust rules are
      Role labels are the tested defaults from orchid.config.example. -->
 ```mermaid
 flowchart TD
-    OP["Operator<br/>terminal + phone"]
+    OP["Operator<br/>agent session, terminal + phone"]
+    HOST["Claude Code / Codex / Hermes / OpenCode<br/>portable skills + opt-in ambient context"]
+    CONTEXT["orchid context / protocol / scoped help<br/>read-only discovery and live state"]
     PUMP["runners/orchid-pump<br/>launchd/cron heartbeat, short-lived"]
     TICK["runners/orchid-tick<br/>one bounded tick"]
     DRIVE["orchid drive<br/>one deterministic full-task pass"]
@@ -40,6 +50,9 @@ flowchart TD
     CHAN["notify channel plugin<br/>hermes send / openclaw message send"]
     PHONE["Telegram / WhatsApp"]
 
+    OP --> HOST
+    HOST --> CONTEXT
+    HOST -->|"explicit intent via Orchid verbs"| VERBS
     OP -->|"orchid run start - interactive session"| ORCH
     OP -->|"orchid service install"| PUMP
     PUMP -->|"lease stale? wake the run"| TICK

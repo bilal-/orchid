@@ -1,0 +1,23 @@
+{
+  "description": "Record a reply to a specific declared question using its local nonce and sender policy.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "usage": "usage: orchid answer <qid> <choice> [--nonce <nonce>]\nRecord only a declared choice while the question is unexpired. When answer_allowlist is configured, its recorded nonce and sender policy are required; --nonce is otherwise optional. This reply records the decision but does not impersonate completion of a prerequisite.",
+      "options": {
+        "--nonce": 1
+      },
+      "min_args": 2,
+      "max_args": 2,
+      "examples": [
+        "orchid answer <qid> approve --nonce <nonce>",
+        "ORCHID_REPO=<repo> orchid answer <qid> defer --nonce <nonce>"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid status --explain --jobs"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "description": "Transactionally re-verify and merge a task candidate into the integration branch.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "usage": "usage: orchid merge <task-id>\nMerge only a task in merging with current candidate/base evidence, no outstanding owned work and no live supervisor. Verification and the configured merge gate run before integration; refusal keeps the domain-specific raw exit code.",
+      "options": {},
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid merge T001",
+        "ORCHID_REPO=<repo> ORCHID_EPOCH=<epoch> orchid merge <id>"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid status --explain --jobs",
+        "orchid task show <id>"
+      ]
+    }
+  ]
+}

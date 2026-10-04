@@ -31,7 +31,9 @@ ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
 export ORCHID_ROOT
 __orchid_entry_defer_restore=1
 
-source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate status "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/trust.sh"
 # resolver/review/capability are here for lib/handoff.sh's capability arm
@@ -47,9 +49,6 @@ repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 # answered by INV-02 -- nor, on a verb that reads its first argument as data,
 # by DOING the thing being asked about. First position only, both spellings;
 # libexec/orchid-task's gate carries the full note.
-case "${1:-}" in
-  --help|-h) printf '%s\n' "usage: orchid status [--explain] [--jobs]"; exit 0 ;;
-esac
 
 # --explain, --html and --jobs are independent flags (any combination may be
 # given) -- a loop over every arg rather than the old single `[ "${1:-}"

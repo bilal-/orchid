@@ -1,0 +1,22 @@
+{
+  "description": "Run the repository verification command against the exact task candidate and record its evidence.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "usage": "usage: orchid verify <task-id>\nRun the configured verification command under a valid epoch after declared operator prerequisites and handoffs are acknowledged for the current candidate. Raw exit 16 is a prerequisite boundary; exit 1 is a verification failure.",
+      "options": {},
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid verify T001",
+        "ORCHID_REPO=<repo> ORCHID_EPOCH=<epoch> orchid verify <id>"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task show <id>",
+        "orchid status --explain --jobs"
+      ]
+    }
+  ]
+}

@@ -2,6 +2,14 @@
 
 *Normative. One of four documents split from the design spec; see [2026-07-24-orchid-design.md](./2026-07-24-orchid-design.md) for the index and orientation.*
 
+The public agent boundary validates each declared command form before invoking
+its kernel verb. TOON is the default external format; `--json` returns typed
+JSON and `--raw` preserves historical machine output and domain exits. Internal
+runners select raw output explicitly. Ambient `context` performs no epoch,
+runtime, lease or process mutation. Optional user-local request receipts bind an
+exact intent and refuse interrupted uncertainty; they do not replace epoch,
+evidence or permission checks. See [agent-interface](../agent-interface.md).
+
 ## Purpose
 
 Orchid is a multi-agent orchestrator for people who hold subscriptions to
@@ -2909,3 +2917,13 @@ pass changes that. A step name the kernel does not know is NOT 19 — that is a
 malformed request rather than an actor unable to do the work, so it is an
 ordinary usage error and says so instead of sending an operator to audit a
 plugin that is behaving perfectly.
+
+
+### Broker reference and agent views
+
+Read-only context, canonical protocol sections and installed skill discovery are
+admitted by the judgment-only broker. Its existing default-deny semantic table
+remains authoritative for actions. Focused help is observational even when it
+describes a forbidden action, and presentation options cannot widen that table.
+The broker and direct entries reuse the same value-aware declaration parser;
+wire argv preserves escaped data across dispatcher/direct-entry admission.

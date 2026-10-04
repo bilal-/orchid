@@ -5,7 +5,7 @@
   <img src="https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/brand/svg/horizontal-on-light.svg" alt="orchid" width="220">
 </picture>
 
-**A small, auditable orchestration kernel — bash + git + jq, no daemon, no
+**An agent-first orchestration kernel — bash + git + jq, no daemon, no
 API keys — that turns the coding-agent CLIs you already subscribe to
 (Claude Code, Codex, Antigravity, Hermes, …) into an autonomous dev team:
 it plans, implements, reviews, merges, and pings your phone only when a
@@ -50,6 +50,19 @@ requires them to be installed already.
 > [The beta release page](https://github.com/bilal-/orchid/releases/tag/v1.0.0-beta.1)
 > records current publication status. The timed rehearsal below used the
 > [git clone method](./docs/install.md#git-clone-for-hacking-on-orchid-itself).
+
+Ask Claude Code, Codex, Hermes or OpenCode to plan or continue an Orchid project.
+All four receive the same portable skills and can use the same compact command
+contract. `orchid` returns live context; scoped help and protocol sections supply
+only the detail the agent needs. [Agent interface](./docs/agent-interface.md) ·
+[Frontend setup](./docs/frontends.md).
+
+```sh
+orchid setup --frontend all
+```
+
+This explicitly registers ambient context with installed host runtimes. Skill
+installation works independently; native hosts retain their own approval rules.
 
 ## The 60-second story
 

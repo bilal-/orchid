@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
-repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
+orchid_cli_validate journal "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$state/runtime"
 sub="${1:-}"; shift || true
 
 # HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
 # out what to do when the run state is ALREADY wrong, so it must not be
 # answered by INV-02. First position only, and both spellings -- see the fuller
 # note on libexec/orchid-task's gate, which is the authority for this rule.
-case "$sub" in
-  --help|-h) printf '%s\n' "usage: orchid journal add|tail|show"; exit 0 ;;
-esac
-case "${1:-}" in
-  --help|-h) printf '%s\n' "usage: orchid journal add|tail|show"; exit 0 ;;
-esac
 case "$sub" in
   add)
     verb_lock_guard "$repo"
@@ -62,7 +58,20 @@ case "$sub" in
       { [ -f "$rt/journal-index/$task" ] && tail -n 40 "$rt/journal-index/$task"; echo "$entry"; echo "$text"; } \
         | atomic_write "$rt/journal-index/$task"
     fi ;;
-  tail) n=20; [ "${1:-}" = "-n" ] && n="$2"; tail -n $(( n * 4 )) "$state/journal.md" 2>/dev/null || true ;;
+  tail)
+    n=20
+    [ "${1:-}" != -n ] || n="$2"
+    # Never evaluate caller text as Bash arithmetic. The digit bound keeps
+    # multiplication within the signed 64-bit integer range on Bash 3.2.
+    case "$n" in
+      ''|*[!0-9]*) orchid_cli_usage_error journal "-n requires a nonnegative integer (got '$n')"; exit 2 ;;
+    esac
+    if [ "${#n}" -gt 18 ]; then
+      orchid_cli_usage_error journal "-n accepts at most 18 decimal digits (got '$n')"
+      exit 2
+    fi
+    tail -n "$(( 10#$n * 4 ))" "$state/journal.md" 2>/dev/null || true ;;
+
   show)
     [ "${1:-}" = "--task" ] || orchid_die "usage: journal show --task <id>"
     cat "$rt/journal-index/$2" 2>/dev/null || grep -A2 " $2 " "$state/journal.md" 2>/dev/null || true ;;

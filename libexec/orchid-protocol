@@ -1,0 +1,29 @@
+#!/bin/bash -p
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate protocol "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
+source "$ORCHID_ROOT/lib/protocol.sh"
+section="${1:-}"
+if [ -z "$section" ]; then
+  jq -n '{items:[
+    {id:"preamble",purpose:"Operating rules"},
+    {id:"boundaries",purpose:"Judgment and operator ownership"},
+    {id:"planning",purpose:"Prepare a run"},
+    {id:"tick",purpose:"Manual state-machine procedure"},
+    {id:"resume",purpose:"Recover session context"},
+    {id:"headless",purpose:"Supervised operation"},
+    {id:"completion",purpose:"Accept and hand off"},
+    {id:"discrepancies",purpose:"Historical documentation notes"}
+  ],count:8,total:8,fields:["id","purpose"],next:["orchid protocol <id> --full","orchid context"]}'
+  exit 0
+fi
+if ! orchid_protocol_heading "$section" >/dev/null; then
+  orchid_cli_usage_error protocol "unknown section $section"; exit 2
+fi
+scratch="$(mktemp "${TMPDIR:-/tmp}/orchid-protocol.XXXXXX")"
+trap 'rm -f "$scratch"' EXIT
+orchid_protocol_section "$section" > "$scratch"
+[ -s "$scratch" ] || orchid_die "canonical protocol section is missing: $section"
+jq -n --arg section "$section" --rawfile text "$scratch" \
+  '{section:$section,bytes:($text|utf8bytelength),text:$text}'

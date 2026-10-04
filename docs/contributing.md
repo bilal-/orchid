@@ -1,5 +1,13 @@
 # Contributing
 
+The agent interface's command schemas in `lib/cli/` are part of the public
+contract. Keep admission, focused help, declared fields and examples synchronized
+with each verb. Kernel fixtures select `ORCHID_OUTPUT=raw`; AXI fixtures explicitly
+exercise the public TOON/JSON boundary. Add a causal RED and accepting GREEN for
+new admission or ownership gates. Native frontend qualification additionally runs
+`ORCHID_REQUIRE_NATIVE_FRONTENDS=1 /bin/bash tests/test_frontend_setup.sh` using
+isolated profiles and actual host runtimes; it must not silently skip a host.
+
 ## One local CI command
 
 Run the same deterministic gate as Linux CI, macOS CI, and extracted-release

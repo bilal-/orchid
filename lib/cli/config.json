@@ -1,0 +1,53 @@
+{
+  "description": "Inspect effective configuration and safely commit a repository configuration edit.",
+  "default": [
+    "list"
+  ],
+  "commands": [
+    {
+      "path": [
+        "list"
+      ],
+      "usage": "usage: orchid config list",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid config list",
+        "orchid config list --fields key,value"
+      ],
+      "kind": "tsv",
+      "next": [
+        "orchid config list --full",
+        "orchid config commit --reason \"<reason>\""
+      ],
+      "fields": [
+        "key",
+        "value",
+        "source"
+      ]
+    },
+    {
+      "path": [
+        "commit"
+      ],
+      "usage": "usage: orchid config commit --reason \"...\"",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid config commit --reason \"Reviewed concurrency settings\"",
+        "orchid config commit --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid config list"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    }
+  ]
+}

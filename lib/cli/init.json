@@ -1,0 +1,24 @@
+{
+  "description": "Initialize a clean local repository and create its Orchid integration branch.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "usage": "usage: orchid init [--greenfield]\nCreate initialized state on the configured integration branch (default orchid/integration) and install the push guard. --greenfield permits an empty repository with no commits by creating its root commit. User work must be clean; an unrelated existing integration branch is never adopted.",
+      "options": {
+        "--greenfield": 0
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid init",
+        "orchid init --greenfield"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid start <requirements-file> --verify \"<test command>\"",
+        "orchid status --explain --jobs"
+      ]
+    }
+  ]
+}

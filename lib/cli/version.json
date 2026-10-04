@@ -1,0 +1,19 @@
+{
+  "description": "Report the installed Orchid version.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "usage": "usage: orchid version",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid version",
+        "orchid --version"
+      ],
+      "kind": "scalar",
+      "next": []
+    }
+  ]
+}

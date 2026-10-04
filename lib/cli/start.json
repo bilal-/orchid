@@ -1,0 +1,44 @@
+{
+  "description": "Set up an existing repository from user-approved requirements without resuming an active run.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "usage": "usage: orchid start <requirements-file> [--verify \"<command>\"] [--worktree <path>] [--ack-unattended --reason \"<reason>\"]\n       orchid start --refresh-push-guard\nUse a committed repository and explicit requirements. --verify is one line and never replaces an existing committed verify command. --worktree defaults to ../<repo>-orchid. Unattended trust stays off unless both --ack-unattended and --reason are supplied. The refresh form takes no requirements or other options; it only repairs an Orchid-owned pre-push guard.",
+      "options": {
+        "--verify": 1,
+        "--worktree": 1,
+        "--ack-unattended": 0,
+        "--reason": 1,
+        "--refresh-push-guard": 0
+      },
+      "min_args": 0,
+      "max_args": 1,
+      "examples": [
+        "orchid start requirements.md --verify \"<test command>\"",
+        "orchid start requirements.md --worktree <path>",
+        "orchid start --refresh-push-guard"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid status --explain --jobs",
+        "orchid plan apply --help"
+      ]
+    },
+    {
+      "path": [
+        "help"
+      ],
+      "usage": "usage: orchid start help\nShow setup and push-guard-maintenance reference. Equivalent to orchid start --help.",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid start help",
+        "orchid start --help"
+      ],
+      "kind": "text",
+      "next": []
+    }
+  ]
+}

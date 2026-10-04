@@ -1,0 +1,199 @@
+{
+  "description": "Inspect job liveness and explicitly prepare, reconcile or clean up jobs.",
+  "default": [
+    "ls"
+  ],
+  "commands": [
+    {
+      "path": [
+        "ls"
+      ],
+      "usage": "usage: orchid jobs ls [--all] [--tsv] [--strict] [--warnings] (raw interactive compatibility: orchid --raw jobs ls --watch [--interval <seconds>])",
+      "options": {
+        "--all": 0,
+        "--tsv": 0,
+        "--warnings": 0,
+        "--strict": 0
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid jobs ls",
+        "orchid jobs ls --all --full",
+        "orchid --raw jobs ls --watch --interval 5"
+      ],
+      "kind": "tsv",
+      "next": [
+        "orchid jobs ls --all",
+        "orchid task show <id>"
+      ],
+      "fields": [
+        "id",
+        "task",
+        "role",
+        "operation",
+        "attempt",
+        "engine",
+        "pid",
+        "state",
+        "age",
+        "elapsed",
+        "budget",
+        "launcher",
+        "log"
+      ],
+      "default_fields": [
+        "id",
+        "task",
+        "role",
+        "state"
+      ],
+      "internal_options": {
+        "--watch": 0,
+        "--interval": 1
+      },
+      "notes": [
+        "Agent mode returns a bounded snapshot. Use orchid --raw jobs ls --watch only for the explicit interactive stream."
+      ]
+    },
+    {
+      "path": [
+        "prepare"
+      ],
+      "usage": "usage: orchid jobs prepare <task> <role> <op> [--engine <name>] [--hook <point>]",
+      "options": {
+        "--engine": 1,
+        "--hook": 1
+      },
+      "min_args": 3,
+      "max_args": 3,
+      "examples": [
+        "orchid jobs prepare T001 implementer implement",
+        "orchid jobs prepare plan plan_critic critique --engine codex"
+      ],
+      "kind": "scalar",
+      "next": [
+        "orchid jobs ls"
+      ]
+    },
+    {
+      "path": [
+        "check"
+      ],
+      "usage": "usage: orchid jobs check",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid jobs check",
+        "orchid jobs check --help"
+      ],
+      "kind": "tsv",
+      "next": [
+        "orchid jobs ls"
+      ],
+      "fields": [
+        "task",
+        "state"
+      ]
+    },
+    {
+      "path": [
+        "reconcile"
+      ],
+      "usage": "usage: orchid jobs reconcile",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid jobs reconcile",
+        "orchid jobs reconcile --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid jobs ls",
+        "orchid task list"
+      ]
+    },
+    {
+      "path": [
+        "gc"
+      ],
+      "usage": "usage: orchid jobs gc [--older-than-s N] [--prepared-older-than-s N] [--reap-prepared]",
+      "options": {
+        "--older-than-s": 1,
+        "--prepared-older-than-s": 1,
+        "--reap-prepared": 0
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid jobs gc --older-than-s 86400",
+        "orchid jobs gc --reap-prepared --prepared-older-than-s 300"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid jobs ls --all"
+      ]
+    },
+    {
+      "path": [
+        "record-exit"
+      ],
+      "usage": "usage: orchid jobs record-exit <job-id> <exit-code>",
+      "options": {},
+      "min_args": 2,
+      "max_args": 2,
+      "examples": [
+        "orchid jobs record-exit j-e1-T001-a1-abcd 1",
+        "orchid jobs record-exit --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid jobs reconcile",
+        "orchid jobs ls"
+      ]
+    },
+    {
+      "path": [
+        "review-plan"
+      ],
+      "usage": "usage: orchid jobs review-plan <task> [--pin|--repin|--adopt-evidence]",
+      "options": {
+        "--pin": 0,
+        "--repin": 0,
+        "--adopt-evidence": 0
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid jobs review-plan T001",
+        "orchid jobs review-plan T001 --pin"
+      ],
+      "kind": "tsv",
+      "next": [
+        "orchid task show <id>"
+      ],
+      "fields": [
+        "slot",
+        "engine",
+        "level",
+        "diversity",
+        "qualification"
+      ],
+      "default_fields": [
+        "slot",
+        "engine",
+        "level",
+        "qualification"
+      ],
+      "exclusive_options": [
+        [
+          "--pin",
+          "--repin",
+          "--adopt-evidence"
+        ]
+      ]
+    }
+  ]
+}

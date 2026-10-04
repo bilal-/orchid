@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate answer "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
 # v1-m4 Task 7 (inbox hardening): needed for _manifest_split_csv, the same
 # bash-3.2-safe trimmed-CSV-split helper every other comma-list config value
 # in this codebase already shares (role.<id>=, capabilities=, hook.<point>=,
@@ -9,29 +11,16 @@ source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"
 repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"
 
-# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
-# out what to do when the run state is ALREADY wrong, so it must not be
-# answered by INV-02 -- nor, on a verb that reads its first argument as data,
-# by DOING the thing being asked about. First position only, both spellings;
-# libexec/orchid-task's gate carries the full note.
-case "${1:-}" in
-  --help|-h) printf '%s\n' "usage: orchid answer <qid> <choice> [--nonce <n>]"; exit 0 ;;
-esac
 verb_lock_guard "$repo"
 
-qid=""; choice=""; nonce_arg=""
+qid="${1:-}"; choice="${2:-}"; nonce_arg=""
+shift 2
 while [ $# -gt 0 ]; do
   case "$1" in
     --nonce)
       [ -n "${2:-}" ] || orchid_die "--nonce requires a value"
       nonce_arg="$2"; shift 2 ;;
-    -*) orchid_die "usage: orchid answer <qid> <choice> [--nonce <n>]" ;;
-    *)
-      if [ -z "$qid" ]; then qid="$1"
-      elif [ -z "$choice" ]; then choice="$1"
-      else orchid_die "usage: orchid answer <qid> <choice> [--nonce <n>]"
-      fi
-      shift ;;
+    *) orchid_die "usage: orchid answer <qid> <choice> [--nonce <n>]" ;;
   esac
 done
 [ -n "$qid" ] && [ -n "$choice" ] || orchid_die "usage: orchid answer <qid> <choice> [--nonce <n>]"

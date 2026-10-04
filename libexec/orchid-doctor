@@ -36,6 +36,8 @@ source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/trust.sh"
 # launcher's own env hygiene around the inbound probe (never re-invented
 # here).
 source "$ORCHID_ROOT/lib/spawn.sh"
+orchid_cli_validate doctor "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
 repo="${ORCHID_REPO:-$PWD}"; fails=0
 
 # HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds

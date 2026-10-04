@@ -1,0 +1,117 @@
+{
+  "description": "Inspect, acknowledge or revoke machine-local unattended repository trust.",
+  "default": [
+    "show"
+  ],
+  "commands": [
+    {
+      "path": [
+        "show"
+      ],
+      "usage": "usage: orchid trust show [<repo>]",
+      "options": {},
+      "min_args": 0,
+      "max_args": 1,
+      "examples": [
+        "orchid trust show",
+        "orchid trust show ./project"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid trust unattended <repo> --reason \"<reason>\"",
+        "orchid trust revoke <repo>"
+      ],
+      "output_fields": [
+        "unattended_trust",
+        "binding_state",
+        "gate",
+        "why",
+        "repo",
+        "worktree_root",
+        "git_common_dir",
+        "git_common_device",
+        "git_common_inode",
+        "root_commit",
+        "root_verification",
+        "policy_version",
+        "record",
+        "identity_anchor",
+        "identity_witness",
+        "recorded_schema",
+        "recorded_kind",
+        "acknowledged_at",
+        "acknowledged_repo",
+        "acknowledged_git_common_dir",
+        "recorded_git_common_device",
+        "recorded_git_common_inode",
+        "recorded_identity_anchor_device",
+        "recorded_identity_anchor_inode",
+        "recorded_root_commit",
+        "recorded_policy_version",
+        "reason"
+      ],
+      "default_fields": [
+        "unattended_trust",
+        "gate",
+        "why",
+        "repo"
+      ]
+    },
+    {
+      "path": [
+        "unattended"
+      ],
+      "usage": "usage: orchid trust unattended <repo> --reason \"<reason>\"",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid trust unattended ./project --reason \"I reviewed the prompt-injection risk\"",
+        "orchid trust unattended --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid trust show <repo>"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    },
+    {
+      "path": [
+        "revoke"
+      ],
+      "usage": "usage: orchid trust revoke [<repo>]",
+      "options": {},
+      "min_args": 0,
+      "max_args": 1,
+      "examples": [
+        "orchid trust revoke",
+        "orchid trust revoke ./project"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid trust show <repo>"
+      ]
+    },
+    {
+      "path": [
+        "help"
+      ],
+      "usage": "usage: orchid trust unattended <repo> --reason \"...\" | orchid trust show [<repo>] | orchid trust revoke [<repo>]",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid trust show",
+        "orchid trust unattended ./project --reason \"I reviewed the risk\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid trust show"
+      ]
+    }
+  ]
+}

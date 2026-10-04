@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate task "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
@@ -63,16 +65,6 @@ task_usage() {
 # recorded reason. The fence itself is untouched: nothing here reads, writes or
 # unlocks anything, and a mutating call on a stale epoch is refused exactly as
 # before (tests/test_task.sh Part AL pins both directions).
-case "${1:-}" in
-  --help|-h)
-    task_usage "$sub" || true
-    exit 0 ;;
-esac
-case "$sub" in
-  ''|--help|-h)
-    task_usage || true
-    exit 0 ;;
-esac
 
 # _no_newline <what> <value> [remedy] -- dies cleanly, BEFORE anything is
 # written, if value contains an embedded newline. Same guard (and same wording

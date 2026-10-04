@@ -25,6 +25,14 @@ for name in orchid orchid-plan orchid-resume; do
   [ "$(readlink "$link")" = "$REPO_ROOT/skills/$name" ] \
     || fail "skill symlink $link does not resolve to $REPO_ROOT/skills/$name (got: $(readlink "$link"))"
 done
+# Current Codex and generic Agent Skills discovery share one portable path.
+for name in orchid orchid-plan orchid-resume; do
+  [ -L "$HOME/.agents/skills/$name" ] || fail "shared agent skill missing: $name"
+  assert_eq "$REPO_ROOT/skills/$name" "$(readlink "$HOME/.agents/skills/$name")" "shared agent skill targets installed bundle"
+done
+[ ! -e "$HOME/.codex" ] || fail 'normal install should not create a Codex profile'
+[ ! -e "$HOME/.claude/settings.json" ] || fail 'normal install should not opt into Claude hooks'
+[ ! -e "$HOME/.orchid/frontends" ] || fail 'normal install should not opt into session integrations'
 
 bin_link="$HOME/.local/bin/orchid"
 [ -L "$bin_link" ] || fail "bin symlink missing: $bin_link"
@@ -93,6 +101,7 @@ printf '%s %s\n' "11111111111111111111111111111111111111111111111111111111111111
 "$INSTALL" --uninstall >/dev/null 2>&1 || fail "install.sh --uninstall failed"
 for name in orchid orchid-plan orchid-resume; do
   [ -e "$HOME/.claude/skills/$name" ] && fail "uninstall left skill symlink: $name"
+  [ -L "$HOME/.agents/skills/$name" ] && fail "uninstall left shared agent skill: $name"
 done
 [ -e "$HOME/.local/bin/orchid" ] && fail "uninstall left bin symlink"
 [ -f "$HOME/.orchid/config" ] || fail "uninstall must leave ~/.orchid/config in place"
@@ -116,6 +125,25 @@ ln -sfn "$WORK/somewhere-else" "$HOME/.claude/skills/orchid"
 #   fe3: neither present               -> both skipped, still exits 0
 # ===========================================================================
 fe_nogit="$WORK/fe-nogit"; mkdir -p "$fe_nogit"
+# RED/GREEN: a foreign shared skill is preserved, while empty native OpenCode
+# discovery paths receive exactly the same portable bundles as other hosts.
+fe4_home="$WORK/fe4-home"
+mkdir -p "$fe4_home/.config/opencode" "$fe4_home/.agents/skills"
+ln -s "$WORK/foreign-missing-skill" "$fe4_home/.agents/skills/orchid"
+fe4_out="$(cd "$fe_nogit" && HOME="$fe4_home" "$INSTALL" 2>&1)" || fail 'OpenCode-only installation failed'
+assert_eq "$WORK/foreign-missing-skill" "$(readlink "$fe4_home/.agents/skills/orchid")" 'foreign shared skill symlink preserved'
+assert_match 'foreign symlink' "$fe4_out" 'shared skill conflict diagnosed'
+red_case 'foreign shared Agent Skills symlink is never clobbered'
+for name in orchid orchid-plan orchid-resume; do
+  assert_eq "$REPO_ROOT/skills/$name" "$(readlink "$fe4_home/.config/opencode/skills/$name")" "OpenCode discovers portable $name"
+done
+[ ! -e "$fe4_home/.config/opencode/plugins" ] || fail 'ordinary install enabled OpenCode plugin'
+(cd "$fe_nogit" && HOME="$fe4_home" "$INSTALL" --uninstall >/dev/null 2>&1) || fail 'OpenCode-only uninstall failed'
+[ -L "$fe4_home/.agents/skills/orchid" ] || fail 'uninstall deleted foreign shared skill'
+for name in orchid orchid-plan orchid-resume; do
+  [ ! -L "$fe4_home/.config/opencode/skills/$name" ] || fail "uninstall left OpenCode skill: $name"
+done
+green_case 'OpenCode and shared skill wiring install and uninstall owned links'
 
 fe1_home="$WORK/fe1-home"; mkdir -p "$fe1_home/.claude"
 fe1_out="$(cd "$fe_nogit" && HOME="$fe1_home" "$INSTALL" 2>&1)" || fail "install.sh (front-end detection): ~/.claude-only HOME must exit 0"

@@ -1,0 +1,35 @@
+{
+  "description": "Read-only orientation for the current Orchid repository.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "usage": "usage: orchid context [--ambient]",
+      "options": {
+        "--ambient": 0
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "kind": "json",
+      "output_fields": [
+        "repo",
+        "initialized",
+        "run",
+        "epoch",
+        "boundary",
+        "operator_owned",
+        "tasks",
+        "jobs"
+      ],
+      "examples": [
+        "orchid context",
+        "orchid context --json",
+        "orchid context --ambient"
+      ],
+      "next": [
+        "orchid protocol preamble --full"
+      ],
+      "default_limit": 10
+    }
+  ]
+}

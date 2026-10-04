@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
+export ORCHID_OUTPUT=raw
 # INV-17: `--help` IS ANSWERED BY THE VERB, NEVER BY THE RUN STATE, AND NEVER
 # BY DOING THE THING IT ASKS ABOUT.
 #
@@ -51,10 +52,14 @@ source "$(dirname "$0")/../helpers.sh"
 cd_scratch "$WORK" || exit 1
 git init -q .
 git commit -q --allow-empty -m root
-export ORCHID_REPO="$WORK" HOME="$WORK/home"
+export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"
 mkdir -p "$HOME"
-"$ORCHID_BIN" init >/dev/null 2>&1 || true
-"$ORCHID_BIN" run start >/dev/null 2>&1 || true
+"$ORCHID_BIN" init > "$MACHINE_HOME/help-init.log" || exit 1
+git checkout -q orchid/integration || exit 1
+inv17_start_out="$("$ORCHID_BIN" run start)" || exit 1
+INV17_EPOCH="$(printf '%s\n' "$inv17_start_out" | sed -n 's/^epoch: //p')"
+ORCHID_EPOCH="$INV17_EPOCH" "$ORCHID_BIN" run boundary set \
+  --kind operator-decision --reason 'standing nested help proof' >/dev/null || exit 1
 
 # The stale epoch every probe below runs under. `run start` fenced epoch 0, so
 # this value is wrong by construction and every mutating verb must refuse it.
@@ -135,6 +140,18 @@ for inv17_f in "$REPO_ROOT"/libexec/orchid-*; do
   done <<< "$(inv17_subverbs "$inv17_f")"
 done
 
+# Third-level commands are a separate dispatch depth: run's bsub used to
+# interpret --help as an ignored option and clear a real decision record.
+for inv17_boundary_leaf in show set clear; do
+  inv17_probe run boundary "$inv17_boundary_leaf"
+done
+inv17_nested_rc=0
+inv17_nested_out="$(ORCHID_EPOCH="$INV17_EPOCH" "$ORCHID_BIN" run boundary clear \
+  --help --reason 'help is not a boundary resolution' 2>&1)" || inv17_nested_rc=$?
+assert_eq 0 "$inv17_nested_rc" 'INV-17: nested clear help succeeds under current ownership'
+assert_match '^usage: orchid run boundary clear' "$inv17_nested_out" \
+  'INV-17: nested clear prints its focused reference rather than clearing the boundary'
+
 # THE FLOOR IS SET ABOVE A KNOWN-BROKEN DERIVATION, not above zero. The first
 # version of inv17_subverbs stopped at the first `esac` and collected 25
 # probes -- enough to clear any floor written as "more than nothing", and
@@ -147,6 +164,7 @@ assert_eq "$INV17_BEFORE" "$INV17_AFTER" \
   "INV-17: asking for help wrote to .orchid/ — 'orchid plugins lock --help' used to mint the lock file, which is the shape this compares for"
 
 red_case "every verb and subverb in the shipped tree ($inv17_probed probes, derived from libexec/ and each file's own case block) answers --help itself, on a stale epoch, without writing anything"
+red_case 'third-level boundary show set and clear help outruns stale ownership, and clear help with otherwise valid mutation flags preserves the standing decision and journal'
 
 # GREEN twin: the checks above are not matchers that accept anything. A verb
 # that ignores --help fails check 2, and a mutating call on the same stale

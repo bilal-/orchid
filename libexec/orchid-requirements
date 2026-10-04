@@ -1,17 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate requirements "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
+source "$ORCHID_ROOT/lib/frontmatter.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
-# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
-# out what to do when the run state is ALREADY wrong, so it must not be
-# answered by INV-02. First position only, and both spellings -- see the fuller
-# note on libexec/orchid-task's gate, which is the authority for this rule.
-case "${1:-}" in
-  --help|-h) printf '%s\n' "usage: orchid requirements import <file>"; exit 0 ;;
-esac
-case "${2:-}" in
-  --help|-h) printf '%s\n' "usage: orchid requirements import <file>"; exit 0 ;;
-esac
 epoch_require "$repo"
 # Re-exported explicitly (already present from the caller, since
 # epoch_require only validates it) so the fact that `journal add` below
@@ -25,11 +18,18 @@ case "$sub" in
     verb_lock_guard "$repo"
     src="${1:-}"
     [ -n "$src" ] || orchid_die "usage: orchid requirements import <file>"
+    # A separator permits a filename beginning with a dash. Keep it a path
+    # operand for cmp, cat and basename too.
+    case "$src" in -*) src="./$src" ;; esac
     [ -f "$src" ] || orchid_die "no such file: $src"
 
     roadmap="$state/roadmap.md"
     [ -f "$roadmap" ] || orchid_die "no roadmap — run orchid init first"
     status="$(fm_get "$roadmap" run_status)"
+    if [ -f "$state/requirements.md" ] && cmp -s "$src" "$state/requirements.md"; then
+      echo "requirements already imported: $(basename "$src") (no change)"
+      exit 0
+    fi
     # requirements.md is the operator-owned EXCEPTION (kernel.md's ownership
     # table): authored by hand anywhere, imported by this verb, but
     # immutable once the run has left `planning` — a plan was drafted

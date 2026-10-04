@@ -11,26 +11,19 @@ and sends no signal until ownership or completion is established.
 
 ### Install
 
-`git clone` + `./install.sh`, which does exactly and only: symlink `skills/`
-into `~/.claude/skills/`; link `bin/orchid` into `~/.local/bin` (or
-`$ORCHID_BIN_DIR`), warning if that dir is not on `PATH`; create
-`~/.orchid/plugins/engines` and a commented `~/.orchid/config`; finish by
-running `orchid doctor` so the user's first output is a readiness report.
-The plugin-trust file (`~/.orchid/trust`) and unattended-trust directory
-(`~/.orchid/unattended-trust/`) are created on first use, never by tracked
-content. `./install.sh --uninstall` removes precisely installed symlinks
-(config and both trust stores are left with a note). `install.sh --prefix
-DIR` redirects only the `orchid` binary symlink to `DIR/bin`; skills,
-configuration, and trust stay per-user, unaffected by `--prefix`. At public
-launch additionally: a
-pinned `curl -fsSL … | bash` one-liner (fetching the same install.sh) and a
-Homebrew tap — install must feel first-class on a Mac. **v1-m4 — prepared,
-not yet released:** `Formula/orchid.rb` + `docs/install.md` are written and
-lint-tested (`ruby -c`, placeholder tokens, a simulated-prefix resolution
-proof), but the formula is never tapped, built, or installed by the test
-suite or by any part of orchid itself — tapping the Homebrew repo and
-publishing a real release tarball are release-day operator actions (see the
-release checklist, roadmap.md).
+The pinned curl installer and Homebrew instructions are in
+[install.md](../install.md). Install seeds user configuration, preserves owned
+paths and wires portable skills for detected Claude Code, Codex, Hermes and
+OpenCode hosts. Homebrew installs dependencies and the release payload;
+`bash "$(brew --prefix orchid)/libexec/install.sh"` performs per-user setup.
+`orchid setup --frontend all` explicitly registers native ambient context;
+installation alone grants no host approvals or unattended trust. Uninstall
+removes only artifacts whose ownership can be verified. Configuration and trust
+records remain per-user. See [frontends.md](../frontends.md).
+
+The prepared source snapshot predates publication; the beta release page records
+current release status. Local and isolated native installation tests are release
+evidence; neither establishes third-party beta qualification.
 
 ### Installing plugins (v1-m3)
 
@@ -605,3 +598,13 @@ shows the exact boundary in
   a complete interaction surface.
 - Non-goal: native app. `orchid status` (or `orchid status --html`, a
   self-contained static page — v1-m4 — SHIPPED) is the read surface.
+
+
+### Judgment-only agent broker discovery
+
+The default-deny orchestrator broker admits read-only `context`, canonical
+`protocol` sections and installed `skill` names. Shared declaration admission
+normalizes presentation flags before its existing semantic allowlist; focused
+help may describe a forbidden action but never authorizes or executes it. Final
+execution preserves the original output request. Operator-owned decisions and
+all effectful launches remain subject to the existing command-surface policy.

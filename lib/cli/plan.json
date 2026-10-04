@@ -1,0 +1,88 @@
+{
+  "description": "Inspect critique convergence and commit or defer planning decisions.",
+  "default": [
+    "rounds"
+  ],
+  "commands": [
+    {
+      "path": [
+        "apply"
+      ],
+      "usage": "usage: orchid plan apply --reason \"<reason>\"\nCommit the current draft and leave planning after the critique loop and carry-forward crosscheck are satisfied. Requires initialized integration state and a valid epoch.",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid plan apply --reason \"initial plan\"",
+        "ORCHID_REPO=<repo> ORCHID_EPOCH=<epoch> orchid plan apply --reason \"<plan decision>\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid status --explain --jobs",
+        "orchid drive"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    },
+    {
+      "path": [
+        "crosscheck"
+      ],
+      "usage": "usage: orchid plan crosscheck\nRead the carried-forward lessons and previous-run follow-ups that this plan must cover or explicitly defer. Raw exit 3 means unconsidered items remain.",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid plan crosscheck",
+        "ORCHID_REPO=<repo> orchid plan crosscheck"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plan defer <item-id> --reason \"<decision>\"",
+        "orchid task show <id>"
+      ]
+    },
+    {
+      "path": [
+        "rounds"
+      ],
+      "usage": "usage: orchid plan rounds\nRead critique-round totals and title-based repeat/new/resolved counts. Raw exit 3 means the rounds are not strictly converging; reworded findings may appear new.",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid plan rounds",
+        "ORCHID_REPO=<repo> orchid plan rounds"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plan crosscheck"
+      ]
+    },
+    {
+      "path": [
+        "defer"
+      ],
+      "usage": "usage: orchid plan defer <item-id> --reason \"<reason>\"\nJournal an explicit decision to defer a carried-forward item while planning. Item IDs are lesson IDs such as L001 or previous-run follow-up IDs such as r-001#1.",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid plan defer L001 --reason \"<decision>\"",
+        "orchid plan defer r-001#1 --reason \"<decision>\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plan crosscheck"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    }
+  ]
+}

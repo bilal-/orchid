@@ -1,0 +1,127 @@
+{
+  "description": "Read and maintain cross-run lessons with journaled evidence and retirement.",
+  "default": [
+    "list"
+  ],
+  "commands": [
+    {
+      "path": [
+        "list"
+      ],
+      "usage": "usage: orchid lessons list [--active]",
+      "options": {
+        "--active": 0
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid lessons list",
+        "orchid lessons list --active"
+      ],
+      "kind": "tsv",
+      "next": [
+        "orchid lessons update <id> --confirm",
+        "orchid lessons add --scope repo --invalidate-when \"<condition>\" \"<statement>\""
+      ],
+      "fields": [
+        "id",
+        "state",
+        "scope",
+        "statement"
+      ]
+    },
+    {
+      "path": [
+        "add"
+      ],
+      "usage": "usage: orchid lessons add --scope <repo|engine:<id>> --invalidate-when \"...\" [--evidence \"...\"] \"<statement>\"",
+      "options": {
+        "--scope": 1,
+        "--invalidate-when": 1,
+        "--evidence": 1
+      },
+      "min_args": 1,
+      "max_args": null,
+      "examples": [
+        "orchid lessons add --scope repo --invalidate-when \"Schema changes\" \"Use the canonical schema\"",
+        "orchid lessons add --scope engine:codex --invalidate-when \"Adapter changes\" --evidence \"T001\" \"Keep the process identity\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid lessons list --active"
+      ],
+      "required_options": [
+        "--scope",
+        "--invalidate-when"
+      ],
+      "positionals_prefix": 0
+    },
+    {
+      "path": [
+        "update"
+      ],
+      "usage": "usage: orchid lessons update <id> [--confirm] [--statement \"...\"] [--evidence \"...\"] [--invalidate-when \"...\"]",
+      "options": {
+        "--confirm": 0,
+        "--statement": 1,
+        "--evidence": 1,
+        "--invalidate-when": 1
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid lessons update L001 --confirm",
+        "orchid lessons update L001 --statement \"Use the canonical parser\" --evidence \"T002\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid lessons list --active"
+      ],
+      "required_any_options": [
+        "--confirm",
+        "--statement",
+        "--evidence",
+        "--invalidate-when"
+      ]
+    },
+    {
+      "path": [
+        "retire"
+      ],
+      "usage": "usage: orchid lessons retire <id> --reason \"...\"",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid lessons retire L001 --reason \"The adapter changed\"",
+        "orchid lessons retire --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid lessons list"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    },
+    {
+      "path": [
+        "consolidate"
+      ],
+      "usage": "usage: orchid lessons consolidate",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid lessons consolidate",
+        "orchid lessons consolidate --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid lessons list"
+      ]
+    }
+  ]
+}

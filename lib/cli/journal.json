@@ -1,0 +1,92 @@
+{
+  "description": "Read run history and record attributed notes without editing durable files.",
+  "default": [
+    "tail"
+  ],
+  "commands": [
+    {
+      "path": [
+        "tail"
+      ],
+      "usage": "usage: orchid journal tail [-n <count>]",
+      "options": {
+        "-n": 1
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid journal tail",
+        "orchid journal tail -n 20"
+      ],
+      "kind": "stream",
+      "next": [
+        "orchid journal show --task <id>",
+        "orchid journal tail -n <count> --full"
+      ],
+      "output_fields": [
+        "text",
+        "bytes",
+        "empty"
+      ],
+      "default_fields": [
+        "text",
+        "bytes",
+        "empty"
+      ]
+    },
+    {
+      "path": [
+        "show"
+      ],
+      "usage": "usage: orchid journal show --task <id>",
+      "options": {
+        "--task": 1
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid journal show --task T001",
+        "orchid journal show --task T001 --full"
+      ],
+      "kind": "stream",
+      "next": [],
+      "output_fields": [
+        "text",
+        "bytes",
+        "empty"
+      ],
+      "default_fields": [
+        "text",
+        "bytes",
+        "empty"
+      ],
+      "required_options": [
+        "--task"
+      ]
+    },
+    {
+      "path": [
+        "add"
+      ],
+      "usage": "usage: orchid journal add [--task <id>] [--kind <kind>] \"<text>\"",
+      "options": {
+        "--task": 1,
+        "--kind": 1
+      },
+      "min_args": 1,
+      "max_args": null,
+      "examples": [
+        "orchid journal add --task T001 --kind note \"Reviewed the task\"",
+        "orchid journal add --kind intervention \"Operator supplied a direction\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid journal tail -n 5"
+      ],
+      "internal_options": {
+        "--unfenced": 0
+      },
+      "positionals_prefix": 0
+    }
+  ]
+}

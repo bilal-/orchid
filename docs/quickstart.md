@@ -1,5 +1,11 @@
 # Quickstart — existing repo
 
+For an LLM-led workflow, ask Claude Code, Codex, Hermes or OpenCode to use the
+installed Orchid skills. `orchid` shows compact live context; `orchid setup
+--frontend all` explicitly registers native ambient context. See
+[frontends](frontends.md) and [the agent interface](agent-interface.md). Scripted
+recipes that parse historical text/TSV output should set `ORCHID_OUTPUT=raw`.
+
 Clone → install → doctor → init → your first completed task, in one sitting.
 This is the literal path rehearsed on a clean machine profile before
 release (`docs/specs/roadmap.md`'s release checklist) — if a step here

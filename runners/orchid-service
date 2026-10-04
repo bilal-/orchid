@@ -74,6 +74,8 @@ done
 ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
 __orchid_entry_defer_restore=1
 source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate service "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
 source "$ORCHID_ROOT/lib/trust.sh"
 # For `status` alone: reading the bound run's own run_status, so an operator
 # asking "is this schedule still doing anything?" is answered rather than

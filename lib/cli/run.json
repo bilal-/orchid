@@ -1,0 +1,220 @@
+{
+  "description": "Manage the run lifecycle, ownership epoch and recorded decision boundary.",
+  "default": [
+    "boundary",
+    "show"
+  ],
+  "commands": [
+    {
+      "path": [
+        "start"
+      ],
+      "usage": "usage: orchid run start\nAcquire a fresh ownership epoch for initialized state; prints the epoch. This does not plan or dispatch work.",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid run start",
+        "ORCHID_REPO=<repo> orchid run start"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid status --explain --jobs"
+      ],
+      "output_fields": [
+        "epoch",
+        "next"
+      ]
+    },
+    {
+      "path": [
+        "resume"
+      ],
+      "usage": "usage: orchid run resume\nFence a fresh ownership epoch after checking that the previous interactive session or supervisor has ended. Then reconcile jobs and load context before continuing.",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid run resume",
+        "ORCHID_REPO=<repo> orchid run resume"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid jobs check",
+        "orchid jobs reconcile",
+        "orchid status --explain --jobs"
+      ],
+      "output_fields": [
+        "epoch",
+        "next"
+      ]
+    },
+    {
+      "path": [
+        "refresh-lease"
+      ],
+      "usage": "usage: orchid run refresh-lease\nRefresh the current run lease. The active orchestrator owns this routine maintenance.",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid run refresh-lease",
+        "ORCHID_REPO=<repo> orchid run refresh-lease"
+      ],
+      "kind": "text",
+      "next": []
+    },
+    {
+      "path": [
+        "release-lease"
+      ],
+      "usage": "usage: orchid run release-lease\nRelease this session's lease under its valid ORCHID_EPOCH; use after its final action.",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid run release-lease",
+        "ORCHID_REPO=<repo> ORCHID_EPOCH=<epoch> orchid run release-lease"
+      ],
+      "kind": "text",
+      "next": []
+    },
+    {
+      "path": [
+        "boundary",
+        "show"
+      ],
+      "usage": "usage: orchid run boundary show\nRead the recorded decision boundary. Raw exit 16 means a boundary is present; exit 0 means none. This view does not clear or settle it.",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid run boundary show",
+        "ORCHID_REPO=<repo> orchid run boundary show"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid status --explain --jobs",
+        "orchid task show <id>"
+      ]
+    },
+    {
+      "path": [
+        "boundary",
+        "set"
+      ],
+      "usage": "usage: orchid run boundary set --kind <kind> [--task <id>] --reason \"<reason>\" [--no-count]\nRecord a fenced, journaled decision boundary. Kinds: planning, blocked-task, review-evidence, review-conflict, hook-failure, worktree-conflict, operator-handoff, task-prerequisite, run-complete, operator-decision. --no-count records without spending a model wakeup.",
+      "options": {
+        "--kind": 1,
+        "--task": 1,
+        "--reason": 1,
+        "--no-count": 0
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid run boundary set --kind operator-decision --reason \"<reason>\"",
+        "orchid run boundary set --kind review-conflict --task <id> --reason \"<reason>\" --no-count"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid run boundary show"
+      ],
+      "required_options": [
+        "--kind",
+        "--reason"
+      ]
+    },
+    {
+      "path": [
+        "boundary",
+        "clear"
+      ],
+      "usage": "usage: orchid run boundary clear --reason \"<reason>\"\nClear the recorded boundary under a valid epoch after its condition has been resolved. An absent boundary is a successful no-op; clearing the record does not perform the prerequisite or acceptance work.",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid run boundary clear --reason \"<resolution>\"",
+        "ORCHID_REPO=<repo> ORCHID_EPOCH=<epoch> orchid run boundary clear --reason \"<resolution>\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid status --explain --jobs"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    },
+    {
+      "path": [
+        "advance"
+      ],
+      "usage": "usage: orchid run advance <status> --reason \"<reason>\"\nRecord a legal run-state transition under a valid epoch. Statuses are planning, running, accepting, blocked, complete; complete can only be reached through run accept with evidence. Illegal transitions retain raw exit 3. Requesting the current non-complete state is a successful no-op.",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid run advance blocked --reason \"<reason>\"",
+        "orchid run advance accepting --reason \"<reason>\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid status --explain --jobs"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    },
+    {
+      "path": [
+        "accept"
+      ],
+      "usage": "usage: orchid run accept --reason \"<reason>\" --evidence <file>\nAccept only a run in accepting state. A readable acceptance evidence file and operator decision are required; this is the sole path to complete.",
+      "options": {
+        "--reason": 1,
+        "--evidence": 1
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid run accept --reason \"<acceptance decision>\" --evidence <file>",
+        "ORCHID_REPO=<repo> ORCHID_EPOCH=<epoch> orchid run accept --reason \"<acceptance decision>\" --evidence <file>"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid run release-lease"
+      ],
+      "required_options": [
+        "--reason",
+        "--evidence"
+      ]
+    },
+    {
+      "path": [
+        "new"
+      ],
+      "usage": "usage: orchid run new --reason \"<reason>\"\nArchive a complete or blocked run and begin fresh planning while carrying context and active lessons. Requires a valid epoch and no live orchestrator lease; never use this to resume an active run.",
+      "options": {
+        "--reason": 1
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid run new --reason \"<new run goal>\"",
+        "ORCHID_REPO=<repo> ORCHID_EPOCH=<epoch> orchid run new --reason \"<new run goal>\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid requirements import <file>"
+      ],
+      "required_options": [
+        "--reason"
+      ]
+    }
+  ]
+}

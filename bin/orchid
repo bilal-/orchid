@@ -27,23 +27,41 @@ while [ -L "$self" ]; do
 done
 ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"; export ORCHID_ROOT
 
-cmd="${1:-help}"; [ $# -gt 0 ] && shift
+# Standard version probes are answered before loading libraries or metadata.
+if [ "$#" -eq 1 ]; then
+  case "$1" in --version|-v|-V)
+    while IFS= read -r line; do case "$line" in version=*) printf '%s\n' "${line#version=}"; exit 0 ;; esac; done < "$ORCHID_ROOT/release/metadata.conf"
+    printf 'orchid: release version is missing\n' >&2; exit 1 ;;
+  esac
+fi
+format="${ORCHID_OUTPUT:-toon}"
+case "${1:-}" in --raw) format=raw; shift ;; --json) format=json; shift ;; esac
+case "$format" in raw|toon|json) ;; *) printf 'orchid: unknown output format %s\n' "$format" >&2; exit 2 ;; esac
+cmd="${1:-context}"; [ $# -gt 0 ] && shift
+source "$ORCHID_ROOT/lib/cli.sh"
 if [ "$cmd" = help ] || [ "$cmd" = -h ] || [ "$cmd" = --help ]; then
-  echo "usage: orchid <command> [args]"; echo "commands:"
-  for f in "$ORCHID_ROOT"/libexec/orchid-*; do [ -e "$f" ] && echo "  ${f##*/orchid-}"; done
+  if [ "$#" -gt 0 ]; then
+    cmd="$1"; shift
+    if [ "$format" = raw ]; then
+      orchid_cli_validate_impl "$cmd" "$@" --help
+    else
+      source "$ORCHID_ROOT/lib/agent-interface.sh"
+      orchid_agent_dispatch "$cmd" "$format" "$@" --help
+    fi
+  elif [ "$format" = raw ]; then
+    echo "usage: orchid <command> [args]"; echo "commands:"
+    for f in "$ORCHID_ROOT"/libexec/orchid-*; do [ -e "$f" ] && echo "  ${f##*/orchid-}"; done
+  else
+    source "$ORCHID_ROOT/lib/agent-interface.sh"
+    orchid_agent_catalog "$format"
+  fi
   exit 0
 fi
-# This dispatcher is deliberately dumb: it never special-cases a verb by
-# name or decides which subverbs are read-only vs. mutating (e.g. `config
-# list` vs. `config commit`, v1-m4) -- every libexec/orchid-* script owns
-# its own subverb dispatch, locking, and epoch fencing internally. Same
-# rule when a verb's libexec/orchid-* file is itself just a tier-1 -> tier-2
-# handoff to an effectful runners/ script (v1-m4: `service` forwards
-# straight through to runners/orchid-service, the launchctl/crontab side of
-# `orchid service install/uninstall/status`, mirroring the `jobs`/runners/
-# orchid-launch split docs/specs/kernel.md's determinism boundary
-# describes) -- this dispatcher doesn't know or care that the effectful
-# work actually happens one hop further down.
+if [ "$format" != raw ]; then
+  source "$ORCHID_ROOT/lib/agent-interface.sh"
+  orchid_agent_dispatch "$cmd" "$format" "$@"
+  exit $?
+fi
 exe="$ORCHID_ROOT/libexec/orchid-$cmd"
 # A VERB THAT IS NOT EXECUTABLE IS NOT AN UNKNOWN VERB. Both used to fail the
 # same `[ -x ]` test and be reported the same way, and they are different facts
@@ -67,4 +85,6 @@ if [ ! -x "$exe" ]; then
   echo "orchid: unknown command '$cmd'" >&2
   exit 2
 fi
+orchid_cli_validate_impl "$cmd" "$@"
+set -- ${ORCHID_CLI_WIRE_ARGS[@]+"${ORCHID_CLI_WIRE_ARGS[@]}"}
 exec /bin/bash -p "$exe" "$@"

@@ -233,9 +233,11 @@ fi
 # yet (e.g. a test harness pointing it at a scratch dir).
 CLAUDE_SKILLS_DIR_SET=0
 if [ -n "${CLAUDE_SKILLS_DIR+x}" ]; then CLAUDE_SKILLS_DIR_SET=1; fi
-CLAUDE_SKILLS_DIR="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
-HERMES_SKILLS_DIR="$HOME/.hermes/skills"
+CLAUDE_SKILLS_DIR="${CLAUDE_SKILLS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills}"
+HERMES_SKILLS_DIR="${HERMES_HOME:-$HOME/.hermes}/skills"
 HERMES_ORCH_DIR="$HERMES_SKILLS_DIR/orchestration"
+AGENTS_SKILLS_DIR="$HOME/.agents/skills"
+OPENCODE_SKILLS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills"
 ORCHID_BIN_DIR="${ORCHID_BIN_DIR:-$HOME/.local/bin}"
 SKILLS="orchid orchid-plan orchid-resume"
 
@@ -315,7 +317,9 @@ done
 ORCHID_ROOT="$ROOT"
 export ORCHID_ROOT
 source "$ROOT/lib/common.sh"
+source "$ROOT/lib/frontend.sh"
 orchid_root_stale_gate
+ROOT="$(frontend_root)"
 
 # link_one src dest: creates dest as a symlink to src, refusing to clobber
 # anything at dest that isn't already a symlink (a real file/dir there is
@@ -326,32 +330,21 @@ orchid_root_stale_gate
 # of something else at this path). `-L` is checked before `-e` on purpose,
 # since `-e` is false for a dangling symlink — this must catch that case too.
 link_one() {
-  local src="$1" dest="$2"
-  if [ -L "$dest" ]; then
-    if [ "$(readlink "$dest")" != "$src" ]; then
-      echo "orchid: skip (foreign symlink, left alone): $dest -> $(readlink "$dest")" >&2
-      return 0
-    fi
-  elif [ -e "$dest" ]; then
-    echo "orchid: skip (not a symlink, left alone): $dest" >&2
-    return 0
-  fi
-  ln -sfn "$src" "$dest"
-  echo "linked: $dest -> $src"
+  frontend_link_one "$@"
 }
 
 # unlink_one src dest: removes dest only if it is a symlink pointing at src
 # (this script's own doing) — never a bare `rm -f`, so a symlink some other
 # tool planted at the same path is never touched.
 unlink_one() {
-  local src="$1" dest="$2"
-  if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
-    rm -f "$dest"
-    echo "removed: $dest"
-  fi
+  frontend_unlink_one "$@"
 }
 
 if [ "$UNINSTALL" = 1 ]; then
+  # Preflight owned native registrations before uninstalling skills.
+  if [ -d "$HOME/.orchid/frontends" ]; then
+    /bin/bash -p "$ROOT/runners/orchid-setup" --frontend all --uninstall >/dev/null
+  fi
   # Reverses exactly what an install could have created, across every
   # front-end this script knows how to wire -- unlink_one is a no-op for a
   # front-end that was never wired in the first place (dest either doesn't
@@ -360,10 +353,23 @@ if [ "$UNINSTALL" = 1 ]; then
   for name in $SKILLS; do
     unlink_one "$ROOT/skills/$name" "$CLAUDE_SKILLS_DIR/$name"
     unlink_one "$ROOT/skills/$name" "$HERMES_ORCH_DIR/$name"
+    unlink_one "$ROOT/skills/$name" "$AGENTS_SKILLS_DIR/$name"
+    unlink_one "$ROOT/skills/$name" "$OPENCODE_SKILLS_DIR/$name"
   done
   unlink_one "$ROOT/bin/orchid" "$ORCHID_BIN_DIR/orchid"
   echo "uninstall complete (~/.orchid/config and ~/.orchid/trust left in place)"
   exit 0
+fi
+
+# Shared Agent Skills discovery is current Codex's user path and also works
+# for compatible shell agents. Native hooks remain explicitly opt-in.
+for name in $SKILLS; do
+  link_one "$ROOT/skills/$name" "$AGENTS_SKILLS_DIR/$name"
+done
+if [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/opencode" ]; then
+  for name in $SKILLS; do link_one "$ROOT/skills/$name" "$OPENCODE_SKILLS_DIR/$name"; done
+else
+  echo "orchid: skip OpenCode skills (no user OpenCode config found; shared ~/.agents/skills is available)"
 fi
 
 # --- Front-end wiring: whichever agent products are actually present on
@@ -373,7 +379,7 @@ fi
 # whose location was explicitly overridden), the same "leave what I don't
 # own alone" philosophy link_one/unlink_one already follow for symlinks.
 
-if [ "$CLAUDE_SKILLS_DIR_SET" = 1 ] || [ -d "$HOME/.claude" ]; then
+if [ "$CLAUDE_SKILLS_DIR_SET" = 1 ] || [ -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" ]; then
   mkdir -p "$CLAUDE_SKILLS_DIR"
   for name in $SKILLS; do
     link_one "$ROOT/skills/$name" "$CLAUDE_SKILLS_DIR/$name"
@@ -395,7 +401,7 @@ fi
 # per docs/dogfood-notes.md's v1-m4 Task 10 entry) -- symlinking here is
 # safe, not a guess, and keeps a `git pull` updating these in place exactly
 # like the Claude Code wiring above.
-if [ -d "$HERMES_SKILLS_DIR" ]; then
+if [ -d "${HERMES_HOME:-$HOME/.hermes}" ]; then
   mkdir -p "$HERMES_ORCH_DIR"
   for name in $SKILLS; do
     link_one "$ROOT/skills/$name" "$HERMES_ORCH_DIR/$name"

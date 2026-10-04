@@ -1,0 +1,24 @@
+{
+  "description": "Import the user's requirements snapshot during planning.",
+  "default": [],
+  "commands": [
+    {
+      "path": [
+        "import"
+      ],
+      "usage": "usage: orchid requirements import <file>\nImport the file verbatim under a valid epoch and journal its source. Changed requirements are immutable after planning. An exact-byte retry is a successful no-op under the valid epoch.",
+      "options": {},
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid requirements import requirements.md",
+        "ORCHID_REPO=<repo> ORCHID_EPOCH=<epoch> orchid requirements import <file>"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid task create <id> \"<title>\"",
+        "orchid plan crosscheck"
+      ]
+    }
+  ]
+}

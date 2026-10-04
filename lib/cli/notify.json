@@ -1,0 +1,30 @@
+{
+  "description": "Record a question for the operator and deliver it through configured notification channels.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "usage": "usage: orchid notify [--task <id>] [--choice <value>]... [--objection] \"<text>\"\nJournal a fenced blocker and emit its question ID. Each --choice is one alphanumeric-led [A-Za-z0-9_-] token, at most 64 characters. --objection is reserved for paging the task's existing operator objection; model-originated notices cannot mint that authority through the broker.",
+      "options": {
+        "--task": 1,
+        "--choice": 1,
+        "--objection": 0
+      },
+      "min_args": 1,
+      "max_args": null,
+      "examples": [
+        "orchid notify --task <id> --choice approve --choice defer \"<question>\"",
+        "orchid notify \"<question>\""
+      ],
+      "kind": "text",
+      "next": [
+        "orchid answer <qid> <choice> --nonce <nonce>",
+        "orchid status --explain --jobs"
+      ],
+      "positionals_prefix": 0,
+      "repeatable_options": [
+        "--choice"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+#!/bin/bash -p
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate skill "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
+source "$ORCHID_ROOT/lib/frontmatter.sh"
+name="${1:-}"
+if [ -z "$name" ]; then
+  jq -n '{items:[{name:"orchid",intent:"Drive an existing run"},{name:"orchid-plan",intent:"Plan a run"},{name:"orchid-resume",intent:"Resume a run"}],count:3,total:3,fields:["name","intent"],next:["orchid skill <name> --full","orchid setup --help"]}'
+  exit 0
+fi
+case "$name" in orchid|orchid-plan|orchid-resume) ;; *) orchid_cli_usage_error skill "unknown skill $name"; exit 2 ;; esac
+jq -n --arg name "$name" --rawfile text "$ORCHID_ROOT/skills/$name/SKILL.md" \
+  '{name:$name,text:$text}'

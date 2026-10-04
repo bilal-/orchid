@@ -1,0 +1,15 @@
+#!/bin/bash -p
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/frontmatter.sh"
+orchid_cli_validate context "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
+source "$ORCHID_ROOT/lib/agent-read.sh"
+repo="${ORCHID_REPO:-$PWD}"
+# A session in a nested directory still refers to its repository's root.
+repo="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$repo")"
+if [ "${1:-}" = --ambient ] && [ ! -f "$repo/.orchid/roadmap.md" ]; then exit 0; fi
+orchid_agent_context_json "$repo" | jq --arg repo "$repo" --arg bin "$ORCHID_ROOT/bin/orchid" --arg home "$HOME" '
+  .repo=(if $repo==$home then "~" elif ($repo|startswith($home+"/")) then "~"+$repo[($home|length):] else $repo end) |
+  .bin=$bin |
+  .description="Coordinate coding agents with a deterministic Bash, Git and jq kernel."'

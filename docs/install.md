@@ -1,5 +1,11 @@
 # Install
 
+For an LLM-led workflow, ask Claude Code, Codex, Hermes or OpenCode to use the
+installed Orchid skills. `orchid` shows compact live context; `orchid setup
+--frontend all` explicitly registers native ambient context. See
+[frontends](frontends.md) and [the agent interface](agent-interface.md). Scripted
+recipes that parse historical text/TSV output should set `ORCHID_OUTPUT=raw`.
+
 Three ways to get orchid onto a machine — the one-liner below (recommended
 for most people), a Homebrew tap, or a
 plain git clone (best if you're hacking on orchid itself). All three end up

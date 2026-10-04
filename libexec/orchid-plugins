@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
+source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate plugins "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}; source "$ORCHID_ROOT/lib/manifest.sh"
 # `test` (below) needs the full role/resolver/envelope/capsuite stack; sourced
 # unconditionally alongside the two above rather than lazily, matching this
 # file's existing style (list/validate/trust/untrust already pay the cost of
@@ -19,12 +21,6 @@ sub="${1:-}"; shift || true
 # answered by INV-02 -- nor, on the verbs below that read their first argument
 # as data, by DOING the thing being asked about. First position only, and both
 # spellings; libexec/orchid-task's gate carries the full note.
-case "$sub" in
-  --help|-h) printf '%s\n' "usage: orchid plugins list|validate [<id>|--all]|trust [--update] <dir>|untrust <dir>|test <engine-id> <role>|--all-defaults|conform <plugin-dir>|lock|verify-lock|install <src> [--kind <k>]|update <name>|remove <name>|audit [<name>|--all]"; exit 0 ;;
-esac
-case "${1:-}" in
-  --help|-h) printf '%s\n' "usage: orchid plugins list|validate [<id>|--all]|trust [--update] <dir>|untrust <dir>|test <engine-id> <role>|--all-defaults|conform <plugin-dir>|lock|verify-lock|install <src> [--kind <k>]|update <name>|remove <name>|audit [<name>|--all]"; exit 0 ;;
-esac
 
 # Discovery search path (docs/specs/plugins.md, Trust model): $ORCHID_PLUGIN_PATH
 # (colon-delimited; each entry is a root laid out exactly like the two below,
@@ -209,11 +205,31 @@ _plugins_lock_records() {
 # lifecycle installed -- a builtin or an $ORCHID_PLUGIN_PATH entry was never
 # put there by `install` and has no `update`/`remove` story.
 _plugins_find_installed() {
-  local name="$1" kdir
+  local name="$1" kdir root_phys candidate candidate_phys
+  # Installed names are manifest id basenames, never paths. Removal still
+  # permits cleanup of malformed manifests, so ownership does not depend on
+  # successful validation of the content that is about to be removed.
+  if ! grep -Eq '^[a-z0-9_-]+$' <<<"$name"; then
+    orchid_cli_usage_error plugins "invalid installed plugin name: $name"
+    return 2
+  fi
+  [ -d "$HOME/.orchid/plugins" ] || return 1
+  root_phys="$(orchid_physical_dir "$HOME/.orchid/plugins")" || return 1
   for kdir in "$HOME/.orchid/plugins"/*/; do
     [ -d "$kdir" ] || continue
-    [ -f "${kdir}${name}/plugin.conf" ] || continue
-    echo "${kdir}${name}"
+    candidate="${kdir}${name}"
+    [ -f "$candidate/plugin.conf" ] || continue
+    candidate_phys="$(orchid_physical_dir "$candidate")" || return 1
+    case "$candidate_phys" in
+      "$root_phys"/*) ;;
+      *) orchid_cli_usage_error plugins "installed plugin escapes managed directory: $candidate"
+         return 2 ;;
+    esac
+    if [ -L "$candidate" ]; then
+      orchid_cli_usage_error plugins "installed plugin directory is a symlink: $candidate"
+      return 2
+    fi
+    echo "$candidate"
     return 0
   done
   return 1
@@ -319,6 +335,10 @@ case "$sub" in
     [ "$_plugins_had_collision" -eq 0 ] || exit 1
     ;;
   validate)
+    if [ $# -gt 1 ]; then
+      orchid_cli_usage_error plugins "validate expects one target or --all: $*"
+      exit 2
+    fi
     target="${1:---all}"
     entries="$(_plugins_discover)"
     fails=0
@@ -347,9 +367,11 @@ case "$sub" in
     # is refused (fail closed): a stale local pin silently sliding to a new
     # digest would defeat the whole point of digest-pinning, so re-pinning is
     # always an explicit `--update`.
-    mode=trust
-    if [ "${1:-}" = --update ]; then mode=update; shift; fi
-    dir="${1:-}"; [ -n "$dir" ] || orchid_die "usage: orchid plugins trust [--update] <plugin-dir>"
+    mode=trust; dir=""
+    for arg in "$@"; do
+      case "$arg" in --update) mode=update ;; *) dir="$arg" ;; esac
+    done
+     [ -n "$dir" ] || orchid_die "usage: orchid plugins trust [--update] <plugin-dir>"
     [ -d "$dir" ] || orchid_die "no such directory: $dir"
     abs="$(_trust_canon_path "$dir")" || orchid_die "cannot resolve path: $dir"
     # A plugin whose manifest fails validation (unknown api_version, an
@@ -380,8 +402,12 @@ $validate_out"
     if [ "$mode" = trust ] && [ -n "$existing" ] && [ "$existing" != "$digest" ]; then
       orchid_die "$abs is already trusted at a different digest -- run 'orchid plugins trust --update $dir' to re-pin"
     fi
-    trust_store_set "$abs" "$digest"
-    echo "trusted: $abs $digest"
+    if [ "$existing" = "$digest" ]; then
+      echo "trusted: $abs $digest (already pinned; no-op)"
+    else
+      trust_store_set "$abs" "$digest"
+      echo "trusted: $abs $digest"
+    fi
     ;;
   untrust)
     dir="${1:-}"; [ -n "$dir" ] || orchid_die "usage: orchid plugins untrust <plugin-dir>"
@@ -390,6 +416,11 @@ $validate_out"
     echo "untrusted: $abs"
     ;;
   test)
+    if { [ "${1:-}" = --all-defaults ] && [ $# -ne 1 ]; } ||
+       { [ "${1:-}" != --all-defaults ] && [ $# -ne 2 ]; }; then
+      orchid_cli_usage_error plugins "test expects <engine-id> <role> or --all-defaults: $*"
+      exit 2
+    fi
     # test <engine-id> <role> | --all-defaults -- runs the (engine, role)
     # pair(s) through lib/capsuite.sh's check battery. All the actual work
     # (including the adapter-invoking dryrun probe) lives in capsuite_run, a
@@ -584,8 +615,10 @@ $validate_out"
     # re-validates, and swaps the installed dir atomically (temp-build +
     # mv, never an in-place overwrite -- see the swap comment below).
     name="${1:-}"; [ -n "$name" ] || orchid_die "usage: orchid plugins update <name>"
-    dest="$(_plugins_find_installed "$name")" \
-      || orchid_die "update: no installed plugin named '$name' under \$HOME/.orchid/plugins"
+    find_rc=0
+    dest="$(_plugins_find_installed "$name")" || find_rc=$?
+    [ "$find_rc" -ne 2 ] || exit 2
+    [ "$find_rc" -eq 0 ] || orchid_die "update: no installed plugin named '$name' under \$HOME/.orchid/plugins"
     [ -f "$dest/.provenance" ] \
       || orchid_die "update: $dest has no .provenance on record -- was it installed with 'orchid plugins install'?"
 
@@ -687,13 +720,22 @@ $validate_out"
     # this codebase, v1-m3 plan's own words: "best-effort: skip registry"),
     # so this just prints the generic reminder unconditionally.
     name="${1:-}"; [ -n "$name" ] || orchid_die "usage: orchid plugins remove <name>"
-    dest="$(_plugins_find_installed "$name")" \
-      || orchid_die "remove: no installed plugin named '$name' under \$HOME/.orchid/plugins"
+    find_rc=0
+    dest="$(_plugins_find_installed "$name")" || find_rc=$?
+    [ "$find_rc" -ne 2 ] || exit 2
+    if [ "$find_rc" -ne 0 ]; then
+      echo "removed: $name (already absent; no-op)"
+      exit 0
+    fi
     rm -rf "$dest"
     echo "removed: $name ($dest)"
     echo "note: if any repo's .orchid/plugins.lock referenced '$name', re-run 'orchid plugins lock' there to refresh it"
     ;;
   audit)
+    if [ $# -gt 1 ]; then
+      orchid_cli_usage_error plugins "audit expects one target or --all: $*"
+      exit 2
+    fi
     # audit [<name>|--all] -- report-only over the discovery search path
     # (the SAME set `list`/`validate --all` walk), one block per plugin.
     # Exit nonzero iff any audited plugin fails manifest_validate; every

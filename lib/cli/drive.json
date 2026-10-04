@@ -1,0 +1,33 @@
+{
+  "description": "Run one deterministic pass, dispatching local role work and stopping at named decisions.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "usage": "usage: orchid drive\nRun exactly one tick: refresh lease, reconcile/check/GC, dispatch and advance eligible tasks, verify, review, and serialize at most one merge. This starts local role jobs; do not run alongside a live supervisor. Raw exit 16 names a judgment boundary; exit 0 means the pass completed.",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid drive",
+        "ORCHID_REPO=<repo> orchid drive"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid run boundary show",
+        "orchid status --explain --jobs"
+      ],
+      "notes": [
+        "Run only with the current ORCHID_EPOCH and no live supervisor. A pass still walks every task when one has a decision boundary; a boundary does not stop unrelated eligible work. Repeating drive is idempotent for standing boundaries and raises one human blocker for each distinct stop.",
+        "Raw exit 16 means a decision is outstanding somewhere, not that further mechanical progress is impossible. Inspect orchid run boundary show and keep driving other tasks. Exit 1 means a precondition failed and the pass could not be made. Raw exit 0 means this pass completed.",
+        "Operator handoff and task-prerequisite acknowledgements bind to the current candidate; a changed candidate expires them. A handoff advances candidate_sha and therefore comes before prerequisite acknowledgement. Verify exit 20 is REFUSED, not FAIL: preserve testing, spend no attempt, and record worktree-conflict.",
+        "All done tasks advance the run to accepting and record run-complete. Only the operator may accept with evidence; the broker refuses run accept. Completing a run does not remove its schedule. Use orchid service uninstall, or orchid service teardown when removing its integration worktree.",
+        "Raw exit 16: A DECISION IS OUTSTANDING SOMEWHERE. The pass still walked EVERY task and took every eligible mechanical edge; keep driving unrelated work while the decision reaches a human.",
+        "An `ok` implementer envelope is not itself a candidate. A clean HEAD at base_sha with no recorded candidate is refused and infra-charged; a dirty or unreadable tree is a boundary. `orchid verify` exit 20 is REFUSED, not FAIL: preserve testing and spend no attempt.",
+        "An approval is also never deterministic while the task carries an unresolved objection from an earlier arbitration. A later review round cannot erase that standing operator decision.",
+        "An adapter that asks a review for `FINDING: <low|medium|high>: <title>` lines and parses them makes the clause LIVE. For an approving review an empty findings[] blocks nothing. A non-approving review with no blocking finding receives a kernel-composed finding from its summary, marked synthesized: true. Reconcile prints synthesized-finding: when it creates that entry. An approval with an empty findings[] reports that the severity clause weighed an empty array. The other approval clause reports N finding(s) filed and weighed against it.",
+        "Completing the run does not remove an installed schedule; the operator must uninstall it, or use `orchid service teardown` when the checkout is also being removed."
+      ]
+    }
+  ]
+}

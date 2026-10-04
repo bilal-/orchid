@@ -12,6 +12,7 @@ source "$(dirname "$0")/helpers.sh"
 # RED before this task: runners/orchid-orchestrator-command does not exist.
 
 BROKER="$REPO_ROOT/runners/orchid-orchestrator-command"
+BROKER="${ORCHID_BROKER_TEST_BIN:-$BROKER}"
 [ -x "$BROKER" ] || fail "runners/orchid-orchestrator-command must exist and be executable"
 
 cd_scratch "$WORK" || exit 1
@@ -98,6 +99,55 @@ admit 'run boundary show' run boundary show >/dev/null
 rc=0; out="$("$BROKER" run boundary show 2>&1)" || rc=$?
 assert_eq 16 "$rc" "the brokered read propagates orchid run boundary show's exit 16 verbatim"
 assert_eq review-conflict "$(printf '%s' "$out" | jq -r .kind)" "and its output, verbatim"
+
+# RED: the broker's original exact forms rejected agent presentation and
+# canonical orientation reads, leaving the model unable to discover its own
+# recovery procedure. Help must never waive the default-deny action surface.
+# GREEN: normalization admits only the declared view/read, while a help-shaped
+# reason remains data and forbidden writes still refuse without changing state.
+broker_digest() {
+  local f
+  find .orchid -type f | LC_ALL=C sort | while IFS= read -r f; do
+    printf '%s %s\n' "$f" "$(cksum < "$f")"
+  done
+}
+broker_before="$(broker_digest)"
+rc=0; out="$(ORCHID_OUTPUT=toon "$BROKER" context --json 2>&1)" || rc=$?
+assert_eq 0 "$rc" 'AXI broker: context is admitted'
+if [ "$rc" -eq 0 ]; then
+  assert_eq true "$(jq -r '.initialized' <<< "$out")" 'AXI broker: context is structured orientation'
+fi
+rc=0; out="$(ORCHID_OUTPUT=toon "$BROKER" protocol resume --full --json 2>&1)" || rc=$?
+assert_eq 0 "$rc" 'AXI broker: selected canonical resume guidance is admitted'
+if [ "$rc" -eq 0 ]; then
+  assert_eq resume "$(jq -r '.section' <<< "$out")" 'AXI broker: protocol reads only the requested canonical section'
+fi
+rc=0; out="$(ORCHID_OUTPUT=toon "$BROKER" skill orchid --json 2>&1)" || rc=$?
+assert_eq 0 "$rc" 'AXI broker: selected installed skill is admitted'
+if [ "$rc" -eq 0 ]; then
+  assert_eq orchid "$(jq -r '.name' <<< "$out")" 'AXI broker: skill reads only the requested installed name'
+fi
+rc=0; out="$(ORCHID_OUTPUT=toon "$BROKER" task get T001 status --json 2>&1)" || rc=$?
+assert_eq 0 "$rc" 'AXI broker: declared presentation does not widen task get'
+if [ "$rc" -eq 0 ]; then
+  assert_eq arbitrating "$(jq -r '.value' <<< "$out")" 'AXI broker: original JSON view reaches the final dispatcher'
+fi
+rc=0; out="$(ORCHID_OUTPUT=toon "$BROKER" run accept --help --json 2>&1)" || rc=$?
+assert_eq 0 "$rc" 'AXI broker: forbidden action help is available'
+if [ "$rc" -eq 0 ]; then
+  assert_match 'usage: orchid run accept' "$out" 'AXI broker: forbidden action reference is focused'
+fi
+rc=0; out="$(ORCHID_OUTPUT=toon "$BROKER" run boundary clear --help --reason fixture --json 2>&1)" || rc=$?
+assert_eq 0 "$rc" 'AXI broker: nested clear help is available'
+assert_eq "$broker_before" "$(broker_digest)" 'AXI broker: reads and help preserve the standing decision and every state file'
+red_case 'canonical agent reads and presentation/help were admitted through shared normalization before the broker action allowlist, without state writes'
+refuse 'protocol traversal' protocol ../../etc/passwd
+refuse 'skill traversal' skill ../../etc/passwd
+refuse 'command metadata traversal' ../../etc/passwd --help
+refuse 'help-shaped reason cannot authorize run accept' run accept --reason --help --evidence /dev/null
+refuse 'unknown presentation flag cannot authorize run accept' run accept --help --bogus
+assert_eq "$broker_before" "$(broker_digest)" 'AXI broker: forbidden data and unknown flags preserve every state file'
+green_case 'only selected canonical guidance and declared output views are exposed; help-shaped values and forbidden execution retain exit 17'
 
 # ===========================================================================
 # 2 -- refused: the whole point. Nothing that reconfigures the machine,

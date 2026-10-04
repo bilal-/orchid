@@ -1,0 +1,104 @@
+{
+  "description": "Inspect or explicitly manage a repository's host schedule.",
+  "default": [
+    "status"
+  ],
+  "commands": [
+    {
+      "path": [
+        "install"
+      ],
+      "usage": "usage: orchid service install [--repo <path>] [--interval-s <seconds>] [--dry-run]\nInstall or replace this repository's schedule after unattended trust is acknowledged. --repo defaults to ORCHID_REPO or the current directory; interval defaults to pump_interval_s (240). --dry-run renders and places inert schedule files and prints scheduler commands, without installing the schedule.",
+      "options": {
+        "--repo": 1,
+        "--interval-s": 1,
+        "--dry-run": 0
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid service install --repo <path> --dry-run",
+        "orchid service install --repo <path> --interval-s 240"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid service status --repo <path>"
+      ]
+    },
+    {
+      "path": [
+        "uninstall"
+      ],
+      "usage": "usage: orchid service uninstall [--repo <path>] [--dry-run]\nRemove exactly the schedule bound to this repository. An absent schedule is a successful no-op. --repo defaults to ORCHID_REPO or the current directory; --dry-run previews without removing.",
+      "options": {
+        "--repo": 1,
+        "--dry-run": 0
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid service uninstall --repo <path> --dry-run",
+        "orchid service uninstall --repo <path>"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid service status --repo <path>"
+      ]
+    },
+    {
+      "path": [
+        "status"
+      ],
+      "usage": "usage: orchid service status [--repo <path>] [--dry-run]\nInspect the exact schedule bound to this repository. --repo defaults to ORCHID_REPO or the current directory; --dry-run prints host-query commands without running them.",
+      "options": {
+        "--repo": 1,
+        "--dry-run": 0
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid service status",
+        "orchid service status --repo <path> --dry-run"
+      ],
+      "kind": "text",
+      "next": []
+    },
+    {
+      "path": [
+        "teardown"
+      ],
+      "usage": "usage: orchid service teardown [--repo <path>] [--force] [--dry-run]\nUninstall the repository's schedule and only then remove its linked integration worktree. --force applies only to git worktree remove, never scheduler ownership or unload safety; --dry-run removes nothing.",
+      "options": {
+        "--repo": 1,
+        "--force": 0,
+        "--dry-run": 0
+      },
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid service teardown --repo <path> --dry-run",
+        "orchid service teardown --repo <path> --force"
+      ],
+      "kind": "text",
+      "next": []
+    },
+    {
+      "path": [
+        "help"
+      ],
+      "usage": "usage: orchid service help\nShow schedule-management reference. Equivalent to orchid service --help.",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid service help",
+        "orchid service --help"
+      ],
+      "kind": "text",
+      "next": []
+    }
+  ],
+  "notes": [
+    "Inspect or explicitly manage a repository's host schedule. Install requires orchid trust unattended <repo> --reason \"<reason>\". Install and uninstall are idempotent; install idempotence is about the SAME path. A moved checkout must uninstall its original binding before reinstalling. Binding records must agree and identify the actual owner; copies and edited identities are refused before scheduler or file changes.\n\nTEARDOWN ORDERING: uninstall the service FIRST, then remove the integration worktree, as ONE conditional operation: orchid service teardown --repo <path>. A refused uninstall leaves the worktree intact. If doing the two steps yourself, run from the main checkout: orchid service uninstall --repo <path> && git worktree remove <path>. A schedule remains installed after a run finishes; inspect service status or doctor for the bound state and leftover schedule."
+  ]
+}

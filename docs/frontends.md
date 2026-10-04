@@ -96,16 +96,16 @@ blocker requiring an operator answer the same way any orchestrator does
 (`docs/troubleshooting.md#blocked-tasks`) if something the sandbox can't do
 comes up.
 
-**Interactive front-end: untested, describable.** Nothing in this repo
-wires codex's own `AGENTS.md` convention up to PROTOCOL.md today. The
-pattern would mirror the Claude Code skill: an `AGENTS.md` at the repo root
-telling an interactive `codex` session to read `PROTOCOL.md` and drive it by
-running the verbs named there. Nobody has tried this — label it exactly
-that, not "supported."
+**Interactive front-end: portable skills and native session registration are
+implemented.** Current Codex discovers the user skills in `~/.agents/skills`.
+Explicit `orchid setup --frontend codex` registers read-only session context in
+`~/.codex/hooks.json`; review it with Codex's `/hooks` before use. The registration
+and callback contract have disposable fixture coverage. A genuine interactive
+Codex session driving Orchid end to end remains unqualified. This is separate
+from the historical implementer and headless observations above.
 
 See [engines/codex.md](./engines/codex.md) and
-[engines/codex-review.md](./engines/codex-review.md) (the review-only
-identity wrapping the same adapter).
+[engines/codex-review.md](./engines/codex-review.md).
 
 ### agy (Google Antigravity)
 
@@ -217,39 +217,119 @@ full capability table (tested defaults, fallback chains, and every built-in
 engine's eligible roles), and the "Worked example" there for how to bind and
 capsuite-verify a non-default engine into any role before trusting it.
 
-## Install wiring
+## Install and session discovery
 
-`install.sh` auto-detects and wires:
+`install.sh` links the same three small, portable skills (`orchid`,
+`orchid-plan`, `orchid-resume`) into the shared `~/.agents/skills` directory.
+Current Codex uses this user path; generic shell agents can discover the same
+skills or run `orchid --help` directly. When a host's profile already exists,
+the installer also wires its native skills path:
 
-- **Claude Code** — if `~/.claude` exists (or `CLAUDE_SKILLS_DIR` is set),
-  symlinks `skills/{orchid,orchid-plan,orchid-resume}` into
-  `$CLAUDE_SKILLS_DIR` (default `~/.claude/skills`). Absent: skipped with a
-  one-line note; `~/.claude` is never created by this script.
-- **Hermes** — if `~/.hermes/skills` exists, symlinks the same three skills
-  into `~/.hermes/skills/orchestration/<name>/`. Absent: skipped with a
-  one-line note; `~/.hermes` is never created by this script.
-- **OpenClaw** — if the `openclaw` binary is on `PATH` and `~/.openclaw`
-  exists, prints an `openclaw skills install <repo-path>/skills-external/
-  openclaw-orchid --as orchid` command as a suggested next step (never run
-  automatically — it targets a specific agent/gateway, which `install.sh`
-  has no business choosing non-interactively).
+| Host | Native user skill path | Explicit session integration |
+| --- | --- | --- |
+| Claude Code | `~/.claude/skills/<name>` | `SessionStart` command in `~/.claude/settings.json` |
+| Codex | `~/.agents/skills/<name>` | `SessionStart` command in `~/.codex/hooks.json` |
+| Hermes | `~/.hermes/skills/orchestration/<name>` | `pre_llm_call` shell hook in `~/.hermes/config.yaml` |
+| OpenCode | `~/.config/opencode/skills/<name>` | Local `~/.config/opencode/plugins/orchid.js` plugin |
 
-`--uninstall` reverses exactly the symlinks it created, for whichever
-front-ends were actually wired (`tests/test_install.sh`'s front-end
-presence-detection cases cover all three combinations: Claude-only,
-Hermes-only, neither).
+The installer leaves foreign files and links alone, including dangling links.
+It creates the shared skills path even before an agent is installed. It does
+not create absent vendor profiles or enable session integrations. OpenClaw's
+answering skill remains a separate, manually registered bundle; when OpenClaw
+is present, the installer prints the suggested registration command.
 
-Manual one-liners for everything `install.sh` doesn't wire:
+Session integration is an explicit per-user operation:
 
-- **codex** — no skill to install; point an interactive session at
-  `PROTOCOL.md` yourself (an `AGENTS.md` pointer, untested — see above), or
-  bind `role.orchestrator=codex,claude` in `orchid.config` for the headless
-  pump path after capsuite-verifying it
-  (`orchid plugins test codex orchestrator`).
-- **agy** — reviewer/critic only; nothing to install beyond the CLI itself
-  (`engines/agy.md`'s Install section) — it is not, and cannot become,
-  orchestrator-eligible (see above).
-- **OpenClaw as an answering agent** — register the AgentSkill bundle
-  yourself: `openclaw skills install <this-repo>/skills-external/openclaw-orchid
-  --as orchid` (`skills-external/openclaw-orchid/README.md` has the full
-  configuration walkthrough — repo path, sender id, `answer_allowlist`).
+```sh
+orchid setup
+orchid setup --frontend all
+orchid setup --frontend codex
+orchid setup --frontend codex --uninstall
+```
+
+The first command only reports registration state. The selected setup commands
+register a bounded, optional callback that runs `orchid context --ambient` in
+the host's working directory. This provides compact ambient context and the
+next useful command. It reads existing Orchid state and is silent outside an
+initialized Orchid repository. It does not initialize a project, acquire an
+epoch, check or signal jobs, reconcile, drive, or launch work. Missing, failed,
+oversized, or timed-out context produces no extra prompt. Claude and Codex get
+native `SessionStart` JSON; Hermes gets native `{"context":"..."}` JSON; OpenCode
+appends the context to its system prompt through its plugin hook. Host callback
+JSON is independent of Orchid's default TOON command output.
+
+The three installed skills are on-demand entry points for discovering commands,
+planning a project, and resuming a run. An agent without native skills can use
+the same CLI help and protocol interface. Installing or registering Orchid is
+not permission to start a run; the normal command contracts, evidence gates,
+and operator authorization still apply.
+
+### Native trust and compatibility
+
+Restart the selected host after registration. **Codex** keeps hook trust in its
+own review workflow: open `/hooks` and approve the registered definition.
+Current Codex hooks are enabled by default; Orchid does not modify TOML feature
+flags or native approval records. **Hermes** prompts for approval of its native
+shell-hook command when first used; approve it in Hermes. Orchid does not write
+`shell-hooks-allowlist.json` or turn on fail-closed behavior. Claude and OpenCode
+retain their normal host trust and project controls.
+
+Hermes registration parses YAML using its Python runtime and PyYAML. Setup
+looks for the usual Hermes `hermes-agent/venv/bin/python` or `.venv/bin/python`
+under `HERMES_HOME`, then a `python3` with PyYAML. For another installation,
+set `ORCHID_FRONTEND_PYTHON` to its executable Python interpreter. Missing
+PyYAML or malformed/unsupported config is refused before any selected profile
+is edited. The YAML editor preserves unrelated source bytes and comments;
+Top-level flow-style YAML and aliases for the managed hook mapping/list must
+first be changed to an explicit block mapping/list. Ambiguous duplicate managed
+entries are refused rather than removed using an old ownership record.
+
+OpenCode's local plugin uses the current
+`experimental.chat.system.transform` typed plugin hook. Its experimental name
+is a compatibility limit: future OpenCode releases may change it. The plugin
+uses only native `node:child_process`, with a three-second timeout and an
+8 KiB output bound; it requires no plugin dependency downloads.
+
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME`, and `XDG_CONFIG_HOME` select
+native profiles for setup; `CLAUDE_SKILLS_DIR` still overrides Claude skill
+installation. Homebrew-generated registrations use the stable
+`opt/orchid/libexec` path when it resolves to the active Cellar installation.
+Re-running setup repairs an owned registration after source relocation. A
+moved profile requires uninstalling from its previous profile first.
+
+Registration records and small callback files live in `~/.orchid/frontends`.
+Setup preflights every selected host before editing profiles. Existing
+registration files must match their recorded contents; changed files or
+foreign hook definitions are refused. `--uninstall` removes only recorded
+entries and files, retaining foreign hooks, settings, user preferences, and
+host approval stores. `install.sh --uninstall` also reverses owned native
+registrations and owned skill links.
+
+Setup records a pending registration before publishing its callback or native
+configuration, then finalizes the record after both succeed. An interrupted
+setup remains visible as pending in `orchid setup`; repeat the same setup to
+complete it, or uninstall its owned entries. During relocation, a pending
+record recognizes the exact previously owned callback as well as its intended
+replacement. Changed callback bytes still cause refusal. Completed records
+retain ownership of only the current callback.
+
+### Qualification evidence
+
+Disposable tests exercise native config formats, callbacks, host working
+directories, malformed input, ownership refusal, idempotence, source relocation,
+stable Homebrew paths, and safe uninstall. Hermes uses real PyYAML and OpenCode's
+plugin runs under Node when those native test prerequisites are present;
+missing prerequisites are explicitly reported `NOT-TESTED`.
+`ORCHID_REQUIRE_NATIVE_FRONTENDS=1 /bin/bash tests/test_frontend_setup.sh`
+requires both for four-host local qualification. These fixtures do not prove a
+live host session or a genuine third-party beta. Historical adapter and
+skill-discovery observations above remain historical evidence.
+
+The integration formats are grounded in current primary documentation:
+[Claude hooks](https://code.claude.com/docs/en/hooks),
+[Codex hooks](https://learn.chatgpt.com/docs/hooks),
+[Codex skills](https://learn.chatgpt.com/docs/build-skills),
+[Hermes shell hooks](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks/),
+[OpenCode plugins](https://opencode.ai/docs/plugins/),
+[OpenCode skills](https://opencode.ai/docs/skills/), and
+[OpenCode's typed plugin hook](https://github.com/anomalyco/opencode/blob/dev/packages/plugin/src/index.ts).

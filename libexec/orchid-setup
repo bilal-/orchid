@@ -1,0 +1,14 @@
+#!/bin/bash -p
+set -euo pipefail
+# Resolve this installation for direct use as well as dispatcher use.
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+self="$0"
+while [ -L "$self" ]; do
+  target="$(readlink "$self")"
+  case "$target" in /*) self="$target" ;; *) self="$(dirname "$self")/$target" ;; esac
+done
+ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd -P)"
+export ORCHID_ROOT
+exec /bin/bash -p "$ORCHID_ROOT/runners/orchid-setup" "$@"

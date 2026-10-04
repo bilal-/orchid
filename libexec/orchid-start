@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate start "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
+source "$ORCHID_ROOT/lib/frontmatter.sh"
 
 
 # v1.1 Track 2: `orchid start <requirements-file>` -- the ONE-COMMAND
@@ -582,28 +585,28 @@ _start_require_planning() {
 # -- arguments --------------------------------------------------------------
 
 req=""; verify_opt=""; worktree_opt=""; ack_unattended=0; reason=""
-have_verify_opt=0; have_worktree_opt=0; refresh_guard=0
+have_verify_opt=0; have_worktree_opt=0; refresh_guard=0; positional_only=0
 # The bare-word `help` alias, and ONLY as the first argument: matched anywhere
 # in argv (as it was) it also swallows a requirements FILE named `help`,
 # printing usage instead of the setup that was asked for. `-h`/`--help` stay
 # positional-independent -- no requirements file is spelled like an option.
-[ "${1:-}" != help ] || { _start_usage; exit 0; }
+[ "$(jq -r '.command.path[0] // ""' <<< "$ORCHID_CLI_PARSED")" != help ] || { _start_usage; exit 0; }
 while [ $# -gt 0 ]; do
-  case "$1" in
-    -h|--help) _start_usage; exit 0 ;;
-    --verify)
+  case "$positional_only:$1" in
+    0:--verify)
       [ -n "${2:-}" ] || orchid_die "--verify requires a non-empty command"
       _start_require_single_line "$2" "--verify"
       verify_opt="$2"; have_verify_opt=1; shift 2 ;;
-    --worktree)
+    0:--worktree)
       [ -n "${2:-}" ] || orchid_die "--worktree requires a path"
       worktree_opt="$2"; have_worktree_opt=1; shift 2 ;;
-    --refresh-push-guard) refresh_guard=1; shift ;;
-    --ack-unattended) ack_unattended=1; shift ;;
-    --reason)
+    0:--refresh-push-guard) refresh_guard=1; shift ;;
+    0:--ack-unattended) ack_unattended=1; shift ;;
+    0:--reason)
       [ -n "${2:-}" ] || orchid_die "--reason requires a non-empty value"
       reason="$2"; shift 2 ;;
-    -*) orchid_die "orchid start: unknown option '$1' (see: orchid start --help)" ;;
+    0:--) positional_only=1; shift ;;
+    0:-*) orchid_die "orchid start: unknown option '$1' (see: orchid start --help)" ;;
     *)
       [ -z "$req" ] || orchid_die "orchid start takes exactly one requirements file (already given: $req)"
       req="$1"; shift ;;
@@ -708,7 +711,7 @@ if [ "$refresh_guard" -eq 1 ]; then
   esac
 fi
 
-[ -n "$req" ] || { _start_usage >&2; exit 1; }
+[ -n "$req" ] || { orchid_cli_usage_error start "missing requirements file (use <file> or --refresh-push-guard)"; exit 2; }
 
 # The unattended acknowledgement is a SEPARATE, two-part opt-in, never a side
 # effect of setup: both flags or neither. A bare --reason is refused rather

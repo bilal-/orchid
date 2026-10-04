@@ -1,0 +1,27 @@
+{
+  "description": "Read canonical operational guidance on demand.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "usage": "usage: orchid protocol [preamble|boundaries|planning|tick|resume|headless|completion|discrepancies]",
+      "options": {},
+      "min_args": 0,
+      "max_args": 1,
+      "kind": "json",
+      "output_fields": [
+        "section",
+        "bytes",
+        "text",
+        "id",
+        "purpose"
+      ],
+      "examples": [
+        "orchid protocol",
+        "orchid protocol resume --full",
+        "orchid protocol boundaries --full"
+      ],
+      "next": []
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+#!/bin/bash -p
+set -euo pipefail
+# One-shot, explicit per-user registration; this runner never acquires an epoch.
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+self="$0"
+while [ -L "$self" ]; do
+  target="$(readlink "$self")"
+  case "$target" in /*) self="$target" ;; *) self="$(dirname "$self")/$target" ;; esac
+done
+ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd -P)"
+export ORCHID_ROOT
+source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/frontend.sh"
+
+# Host callback protocol is intentionally separate from the public CLI parser.
+if [ "${1:-}" = --hook ]; then
+  [ "$#" -eq 2 ] || exit 0
+  case "$2" in claude|codex|hermes) frontend_hook "$2" ;; *) exit 0 ;; esac
+  exit 0
+fi
+
+orchid_cli_validate setup "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
+selected=''; action=install
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --frontend) selected="$2"; shift ;;
+    --uninstall) action=uninstall ;;
+    --help|-h) exit 0 ;;
+    *) printf 'orchid: setup: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+  esac
+  shift
+done
+if [ -z "$selected" ]; then
+  [ "$action" != uninstall ] || orchid_die 'setup --uninstall requires --frontend'
+  frontend_overview
+  exit 0
+fi
+case "$selected" in
+  all) hosts='claude codex hermes opencode' ;;
+  claude|codex|hermes|opencode) hosts="$selected" ;;
+  *) orchid_die "unknown frontend '$selected' (expected claude, codex, hermes, opencode or all)" ;;
+esac
+orchid_root_stale_gate
+root="$(frontend_root)"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/orchid-frontends.XXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+# Validate every selected profile before writing any of them.
+for host in $hosts; do frontend_prepare "$host" "$action" "$scratch" "$root"; done
+for host in $hosts; do frontend_apply "$host" "$action" "$scratch"; done
+rows="$(printf '%s\n' $hosts | jq -Rsc 'split("\n")|map(select(length>0))')"
+jq -cn --arg action "$action" --arg root "$root" --argjson frontends "$rows" '{operation:"setup",mode:$action,root:$root,frontends:$frontends,next:(if $action=="uninstall" then "Restart the host; native trust records remain host-owned" else "Restart the host. Codex: review via /hooks. Hermes: approve the native shell hook when prompted. Host trust remains host-owned" end)}'

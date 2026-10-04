@@ -7,6 +7,14 @@ this procedure by running the commands named here, in the order given.
 Front-ends are a convention (anything that executes this file via verbs), not
 part of the architecture; this file never changes to suit one.*
 
+Agent frontends begin with `orchid context` and load canonical sections through
+`orchid protocol <section> --full`. Routine mechanics can use the bounded
+`orchid drive` pass; the kernel retains the procedure's evidence and ownership
+gates. For scripted procedures using the historical text/TSV/JSON forms shown
+below, set `ORCHID_OUTPUT=raw` explicitly. Agent output defaults to compact TOON,
+with `--json` for typed queries; help is admitted before effects. See
+[the agent interface](docs/agent-interface.md) for schemas and retry semantics.
+
 ## Preamble
 
 - **No external mutation.** Never `git push`, never fetch/pull, never

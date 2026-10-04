@@ -1,22 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate plan "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
+source "$ORCHID_ROOT/lib/frontmatter.sh"
 # lessons.sh before plancheck.sh: the cross-check's "this run started here"
 # boundary IS `lessons consolidate`'s, and there must be exactly one of them.
 source "$ORCHID_ROOT/lib/lessons.sh"; source "$ORCHID_ROOT/lib/plancheck.sh"
 # findings.sh: the critique-round series `plan rounds` reports (F40).
 source "$ORCHID_ROOT/lib/findings.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
-# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
-# out what to do when the run state is ALREADY wrong, so it must not be
-# answered by INV-02. First position only, and both spellings -- see the fuller
-# note on libexec/orchid-task's gate, which is the authority for this rule.
-case "${1:-}" in
-  --help|-h) printf '%s\n' "usage: orchid plan apply --reason \"...\" | orchid plan crosscheck | orchid plan rounds | orchid plan defer <item-id> --reason \"...\""; exit 0 ;;
-esac
-case "${2:-}" in
-  --help|-h) printf '%s\n' "usage: orchid plan apply --reason \"...\" | orchid plan crosscheck | orchid plan rounds | orchid plan defer <item-id> --reason \"...\""; exit 0 ;;
-esac
 # `rounds` IS ANSWERED HERE, ahead of the epoch fence below, because it is a
 # read-only report and the argument is INV-17's: the critique loop consults it
 # while the draft is still cheap to change, and a report gated on run state is
@@ -249,6 +242,8 @@ case "$sub" in
         fm_set "$wt_roadmap" run_status running
       fi
     }
+    # ShellCheck rationale: orchid_commit_durable reads this hook name in lib/common.sh.
+    # shellcheck disable=SC2034
     ORCHID_COMMIT_DURABLE_HOOK=plan_apply_hook
     orchid_commit_durable "$repo" "orchid: plan apply" .orchid
     unset ORCHID_COMMIT_DURABLE_HOOK
@@ -283,10 +278,6 @@ case "$sub" in
         reason="$2"; shift 2 ;;
       *) shift ;;
     esac; done
-    # A flag in the item-id position means the id was omitted, not that a
-    # flag is a valid id: without this the next refusal would be the
-    # confusing "requires --reason" for a command that supplied one.
-    case "${id:-}" in -*) id="" ;; esac
     [ -n "$id" ] || orchid_die "usage: orchid plan defer <item-id> --reason \"...\""
     # An item id is one token of a one-line report (`L<nnn>` or `<run>#<n>`),
     # so whitespace in it is a caller that scraped too much -- and it must be

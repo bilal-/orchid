@@ -1,0 +1,26 @@
+{
+  "description": "Discover and retrieve portable LLM skills.",
+  "default": [],
+  "commands": [
+    {
+      "path": [],
+      "usage": "usage: orchid skill [orchid|orchid-plan|orchid-resume]",
+      "options": {},
+      "min_args": 0,
+      "max_args": 1,
+      "kind": "json",
+      "output_fields": [
+        "name",
+        "text",
+        "id",
+        "description"
+      ],
+      "examples": [
+        "orchid skill",
+        "orchid skill orchid --full",
+        "orchid --raw skill orchid"
+      ],
+      "next": []
+    }
+  ]
+}

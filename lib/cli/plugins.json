@@ -1,0 +1,256 @@
+{
+  "description": "Discover, validate, qualify, install and explicitly trust plugins.",
+  "default": [
+    "list"
+  ],
+  "commands": [
+    {
+      "path": [
+        "list"
+      ],
+      "usage": "usage: orchid plugins list",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid plugins list",
+        "orchid plugins list --full"
+      ],
+      "kind": "tsv",
+      "next": [
+        "orchid plugins validate <id>",
+        "orchid plugins audit <name>"
+      ],
+      "fields": [
+        "id",
+        "kind",
+        "version",
+        "origin",
+        "trust"
+      ],
+      "default_fields": [
+        "id",
+        "kind",
+        "version",
+        "trust"
+      ]
+    },
+    {
+      "path": [
+        "validate"
+      ],
+      "usage": "usage: orchid plugins validate [<id>|--all]",
+      "options": {
+        "--all": 0
+      },
+      "min_args": 0,
+      "max_args": 1,
+      "examples": [
+        "orchid plugins validate --all",
+        "orchid plugins validate acme/adapter"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plugins audit <name>"
+      ]
+    },
+    {
+      "path": [
+        "trust"
+      ],
+      "usage": "usage: orchid plugins trust [--update] <dir>",
+      "options": {
+        "--update": 0
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid plugins trust ./adapter",
+        "orchid plugins trust --update ./adapter"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plugins list"
+      ]
+    },
+    {
+      "path": [
+        "untrust"
+      ],
+      "usage": "usage: orchid plugins untrust <dir>",
+      "options": {},
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid plugins untrust ./adapter",
+        "orchid plugins untrust --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plugins list"
+      ]
+    },
+    {
+      "path": [
+        "test"
+      ],
+      "usage": "usage: orchid plugins test <engine-id> <role> | orchid plugins test --all-defaults",
+      "options": {
+        "--all-defaults": 0
+      },
+      "min_args": 0,
+      "max_args": 2,
+      "examples": [
+        "orchid plugins test codex reviewer",
+        "orchid plugins test --all-defaults"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plugins audit <name>"
+      ]
+    },
+    {
+      "path": [
+        "conform"
+      ],
+      "usage": "usage: orchid plugins conform <plugin-dir>",
+      "options": {},
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid plugins conform ./adapter",
+        "orchid plugins conform --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plugins install <src>"
+      ]
+    },
+    {
+      "path": [
+        "lock"
+      ],
+      "usage": "usage: orchid plugins lock",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid plugins lock",
+        "orchid plugins lock --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plugins verify-lock"
+      ]
+    },
+    {
+      "path": [
+        "verify-lock"
+      ],
+      "usage": "usage: orchid plugins verify-lock",
+      "options": {},
+      "min_args": 0,
+      "max_args": 0,
+      "examples": [
+        "orchid plugins verify-lock",
+        "orchid plugins verify-lock --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plugins lock"
+      ]
+    },
+    {
+      "path": [
+        "install"
+      ],
+      "usage": "usage: orchid plugins install <src> [--kind <kind>]",
+      "options": {
+        "--kind": 1
+      },
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid plugins install ./adapter",
+        "orchid plugins install ./role --kind role"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plugins list",
+        "orchid plugins audit <name>"
+      ]
+    },
+    {
+      "path": [
+        "update"
+      ],
+      "usage": "usage: orchid plugins update <name>",
+      "options": {},
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid plugins update adapter",
+        "orchid plugins update --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plugins audit <name>"
+      ]
+    },
+    {
+      "path": [
+        "remove"
+      ],
+      "usage": "usage: orchid plugins remove <name>",
+      "options": {},
+      "min_args": 1,
+      "max_args": 1,
+      "examples": [
+        "orchid plugins remove adapter",
+        "orchid plugins remove --help"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plugins list"
+      ]
+    },
+    {
+      "path": [
+        "audit"
+      ],
+      "usage": "usage: orchid plugins audit [<name>|--all]",
+      "options": {
+        "--all": 0
+      },
+      "min_args": 0,
+      "max_args": 1,
+      "examples": [
+        "orchid plugins audit --all",
+        "orchid plugins audit adapter"
+      ],
+      "kind": "text",
+      "next": [
+        "orchid plugins validate <id>",
+        "orchid plugins test <engine-id> <role>"
+      ],
+      "output_fields": [
+        "id",
+        "kind",
+        "version",
+        "origin",
+        "trust",
+        "validate",
+        "provenance",
+        "digest",
+        "capsuite",
+        "lockfile"
+      ],
+      "default_fields": [
+        "id",
+        "kind",
+        "version",
+        "validate"
+      ]
+    }
+  ]
+}

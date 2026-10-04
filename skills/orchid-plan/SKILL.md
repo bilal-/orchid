@@ -1,38 +1,10 @@
 ---
 name: orchid-plan
-description: Draft or revise an orchid run's roadmap from requirements.md before the tick starts — import requirements, draft/critique tasks, commit via orchid plan apply, per PROTOCOL.md's PLANNING procedure. Use when asked to plan, re-plan, or set up tasks for an orchid run.
+description: Plan and critique work for an Orchid-managed repository from user requirements. Use when asked to initialize or plan Orchid work.
 ---
 
-# orchid-plan — draft the roadmap before the run starts
+Read `orchid` first. Load `orchid protocol planning --full` for the canonical procedure, and use focused `orchid start --help` and `orchid plan --help` for command forms. Ask for a verification command when the user has not supplied one; never invent a passing test command.
 
-This is a thin front-end for `PROTOCOL.md`. It carries no procedure of its
-own; every step it performs is a command named there.
+On a new repository, the user-authorized `orchid start requirements.md --verify "<real test command>"` performs preflight, initialization, integration worktree setup, ownership and requirements import, then returns the planning handoff. On existing work, inspect the current run and ownership before issuing a mutation. Pass `ORCHID_REPO` and the returned `ORCHID_EPOCH` explicitly. Preserve unrelated working trees and files.
 
-## 1. Locate the orchid root
-
-Resolve `command -v orchid` the same way `bin/orchid` resolves itself
-(follow the symlink chain to its real file, then go up one directory):
-
-```sh
-self="$(command -v orchid)" || { echo "orchid: not on PATH — see install.sh"; exit 1; }
-while [ -L "$self" ]; do
-  t="$(readlink "$self")"
-  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
-done
-ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
-```
-
-## 2. Read PROTOCOL.md
-
-`cat "$ORCHID_ROOT/PROTOCOL.md"` — read the **PLANNING** section in full
-before doing anything else. It is the actual procedure; this file does not
-restate it.
-
-## 3. Execute PLANNING
-
-With `ORCHID_REPO` set to the target repo, run that section's steps in
-order, exactly as PROTOCOL.md specifies them.
-
-Once `orchid plan apply` reports `run_status: planning → running`, planning
-is over for this run — hand off to the `orchid` skill (THE TICK) or
-`orchid-resume` for subsequent sessions.
+Follow the planning procedure's independent critique and evidence gates. Use scoped task and requirement records, not a full protocol dump. Do not author or rewrite durable `.orchid/` state outside Orchid verbs. The kernel's refusal and stderr are evidence; inspect them before trying a different command. User choices, unresolved discrepancies and completion acceptance remain operator decisions. Hand off established work to the `orchid` skill.

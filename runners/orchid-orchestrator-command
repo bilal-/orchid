@@ -18,6 +18,9 @@ set -euo pipefail
 # not be one narrow, structured form.
 #
 # ADMITTED -- exact reads:
+#     context [--ambient]
+#     protocol [<canonical-section>]
+#     skill [<installed-name>]
 #     task show <id>
 #     task get <id> <key>
 #     task list
@@ -38,7 +41,7 @@ set -euo pipefail
 # ADMITTED -- releasing the boundary once judged:
 #     run boundary clear --reason <text>
 #
-# REFUSED, structurally (they are simply not in the table above): every
+# REFUSED ACTIONS, structurally (they are not in the table above): every
 # `trust`, `service`, `config`, `plugins`, `init`, `start`, `doctor`, `plan`,
 # `requirements`, `answer`, `merge`, `verify`, `jobs prepare|reconcile|gc`,
 # `run advance|accept|new|start|resume|boundary set`, `task
@@ -47,6 +50,8 @@ set -euo pipefail
 # would be interpreted by a shell. This file never builds a shell string and
 # never evaluates one -- it validates argv, then `exec`s `bin/orchid` with the
 # caller's own argv vector, so there is no quoting seam to escape through.
+# Focused help is an admitted read even for these refused actions; the shared
+# parser consumes option values before identifying a real help flag.
 #
 # Refusals exit 17 (kernel exit-code registry: ... 15 hook handler failure,
 # 16 judgment boundary, 17 brokered command refused, 18 slot already holds an
@@ -60,6 +65,11 @@ while [ -L "$self" ]; do
 done
 ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd -P)"
 ORCHID_BIN="$ORCHID_ROOT/bin/orchid"
+export ORCHID_ROOT
+# Kernel children explicitly select raw; an independently invoked model
+# broker uses the public agent view. Keep this preference across normalization.
+broker_format="${ORCHID_OUTPUT:-toon}"
+source "$ORCHID_ROOT/lib/cli.sh"
 
 usage() {
   cat <<'EOF'
@@ -67,6 +77,9 @@ usage: orchid-orchestrator-command <admitted orchid verb form>
 
 The brokered, judgment-only command surface. Admitted forms:
 
+  context [--ambient]
+  protocol [preamble|boundaries|planning|tick|resume|headless|completion|discrepancies]
+  skill [orchid|orchid-plan|orchid-resume]
   task show <id>                     task list
   task get <id> <key>
   status [--explain]                 jobs review-plan <id>
@@ -81,6 +94,8 @@ The brokered, judgment-only command surface. Admitted forms:
   run boundary clear --reason <text>
 
 Anything else is refused (exit 17).
+Focused --help is available for every installed command, including refused
+actions. Declared agent presentation flags change the view, never authority.
 
 The command surface does not grant arbitration authority. In particular, an
 unresolved operator objection remains operator-owned: an approval relayed by a
@@ -170,8 +185,43 @@ esac
 
 argv=("$@")
 verb="$1"
+# Metadata is selected by a command name, never a caller-supplied path.
+is_id "$verb" || refuse "'$verb' is not a valid command name"
+case "$broker_format" in raw|toon|json) ;; *) refuse "unknown output format '$broker_format'" ;; esac
+shift
+# One shared argv walker consumes semantic option values before recognizing
+# help/view flags. The allowlist below still owns command authority.
+if ! orchid_cli_prepare "$verb" "$broker_format" "$@"; then
+  refuse "${ORCHID_CLI_ERROR:-invalid command form}"
+fi
+if [ "$(jq -r '.help' <<< "$ORCHID_CLI_PARSED")" = true ]; then
+  export ORCHID_OUTPUT="$broker_format"
+  exec "$ORCHID_BIN" "${argv[@]}"
+fi
+set -- "$verb" ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
 
 case "$verb" in
+  context)
+    if [ "$#" -eq 2 ]; then
+      [ "$2" = --ambient ] || refuse "context accepts only --ambient"
+    elif [ "$#" -ne 1 ]; then
+      refuse "context takes no positional arguments"
+    fi
+    ;;
+  protocol)
+    [ "$#" -le 2 ] || refuse "protocol takes at most one canonical section"
+    if [ "$#" -eq 2 ]; then
+      source "$ORCHID_ROOT/lib/protocol.sh"
+      orchid_protocol_heading "$2" >/dev/null || refuse "'$2' is not a canonical protocol section"
+    fi
+    ;;
+  skill)
+    [ "$#" -le 2 ] || refuse "skill takes at most one installed skill name"
+    if [ "$#" -eq 2 ]; then
+      case "$2" in orchid|orchid-plan|orchid-resume) ;; *) refuse "'$2' is not an installed skill name" ;; esac
+      [ -f "$ORCHID_ROOT/skills/$2/SKILL.md" ] || refuse "skill '$2' is not installed"
+    fi
+    ;;
   task)
     case "${2:-}" in
       show)
@@ -401,4 +451,5 @@ esac
 
 # Validated. Hand the caller's OWN argv vector to the dispatcher -- never a
 # reconstructed string, and never through a shell.
+export ORCHID_OUTPUT="$broker_format"
 exec "$ORCHID_BIN" "${argv[@]}"

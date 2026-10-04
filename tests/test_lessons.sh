@@ -70,7 +70,7 @@ rc=0; "$ORCHID_BIN" lessons update L001 >/dev/null 2>&1 || rc=$?
 # ---------------------------------------------------------------------------
 rc=0; retire_noreason="$("$ORCHID_BIN" lessons retire L002 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "lessons retire without --reason must be refused"
-assert_match "requires --reason" "$retire_noreason" "retire-without-reason names INV-08"
+assert_match "required option.*reason|requires --reason" "$retire_noreason" "retire-without-reason names INV-08"
 
 before_journal_lines="$(wc -l < .orchid/journal.md | tr -d ' ')"
 "$ORCHID_BIN" lessons retire L002 --reason "engine upgraded past this quirk" || fail "lessons retire with --reason"
@@ -81,7 +81,7 @@ assert_match "L002 retire \(active -> retired\): engine upgraded past this quirk
   "retire journals the old->new state and the reason"
 
 rc=0; "$ORCHID_BIN" lessons retire L002 --reason "already gone" >/dev/null 2>&1 || rc=$?
-[ "$rc" -ne 0 ] || fail "retiring an already-retired lesson must be refused"
+[ "$rc" -eq 0 ] || fail "retiring already-retired lesson is a successful no-op"
 
 rc=0; "$ORCHID_BIN" lessons update L002 --statement "no" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "update on a retired lesson must be refused"

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate notify "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
 # fm_get: the page body below names the originating task's title and attempt
 # number, read from the task file's own frontmatter.
 source "$ORCHID_ROOT/lib/frontmatter.sh"
@@ -10,14 +12,6 @@ source "$ORCHID_ROOT/lib/frontmatter.sh"
 # live; it depends on nothing this tier-1 verb does not already source.
 source "$ORCHID_ROOT/lib/objection.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
-
-# HELP AHEAD OF THE EPOCH FENCE (dogfood F45). Help is how an operator finds
-# out what to do when the run state is ALREADY wrong, so it must not be
-# answered by INV-02. First position only, and both spellings -- see the fuller
-# note on libexec/orchid-task's gate, which is the authority for this rule.
-case "${1:-}" in
-  --help|-h) printf '%s\n' "usage: orchid notify [--task <id>] [--choice <value>]... [--objection] <text>"; exit 0 ;;
-esac
 
 # `orchid notify` is a plain mutating verb (INV-02): it writes durable
 # BLOCKERS.md, so it is epoch-fenced like every other durable-writing verb.
@@ -66,11 +60,9 @@ while [ $# -gt 0 ]; do
       # `orchid answer` cannot be GIVEN is worse than no declared set at all,
       # because the set also refuses everything outside itself -- the question
       # becomes unanswerable by any value. `-foo` is exactly that shape.
-      # libexec/orchid-answer parses its positional <choice> with a `-*)` arm
-      # that dies on usage, and offers no `--` terminator, so a leading dash
-      # can never reach the choice slot; minting one ships a page whose
-      # `choices:` line names something the reply command on the very next
-      # line cannot carry.
+      # Answer sets are printable CSV words and safe bare arguments in
+      # the reply command shown on each page. A leading dash would require
+      # a separator in that command, so it is not a declared choice word.
       #
       # The shape admitted here is therefore the identical one
       # runners/orchid-orchestrator-command's `is_id` already enforces for
@@ -98,8 +90,9 @@ while [ $# -gt 0 ]; do
       esac
       [ "${#2}" -le 64 ] || choice_bad=1
       [ -z "$choice_bad" ] \
-        || orchid_die "--choice '$2' is not a valid choice value (one [A-Za-z0-9_-] word, alphanumeric first, at most 64 characters) — it has to survive as a single argument to \`orchid answer <qid> <choice>\`, which accepts no leading-dash value and has no \`--\` terminator"
+        || orchid_die "--choice '$2' is not a valid choice value (one [A-Za-z0-9_-] word, alphanumeric first, at most 64 characters) — it has to survive as the bare choice argument in \`orchid answer <qid> <choice>\` shown on the page"
       choices="${choices:+$choices,}$2"; shift 2 ;;
+    --) shift; break ;;
     -*) orchid_die "$usage" ;;
     *) break ;;
   esac
