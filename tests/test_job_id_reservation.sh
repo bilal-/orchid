@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/common.sh"
+# RED: a colliding job ID must not replace a live job or legacy evidence.
+# GREEN: an unused job ID reserves its namespace and launches normally.
 export ORCHID_ROOT="$REPO_ROOT" HOME="$MACHINE_HOME"
 
 cd_scratch "$WORK" || exit 1
