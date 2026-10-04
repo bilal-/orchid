@@ -1,5 +1,10 @@
 # orchid
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/svg/horizontal-on-dark.svg">
+  <img src="brand/svg/horizontal-on-light.svg" alt="orchid" width="220">
+</picture>
+
 **A small, auditable orchestration kernel — bash + git + jq, no daemon, no
 API keys — that turns the coding-agent CLIs you already subscribe to
 (Claude Code, Codex, Antigravity, Hermes, …) into an autonomous dev team:
