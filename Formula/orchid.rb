@@ -1,11 +1,11 @@
 # Homebrew formula for orchid.
 #
-# Prepared for a future `bilal-/homebrew-orchid` tap. The pinned URL and
+# Prepared for the `bilal-/homebrew-tap` repository. The pinned URL and
 # checksum describe the deterministic archive produced by scripts/release.sh;
 # neither this formula nor that script publishes anything.
 class Orchid < Formula
   desc "Deterministic multi-agent orchestrator for AI coding CLIs"
-  homepage "https://github.com/bilal-/orchid"
+  homepage "https://orchid.bilal.sh"
   url "https://github.com/bilal-/orchid/releases/download/v1.0.0-beta.1/orchid-1.0.0-beta.1.tar.gz"
   sha256 "4af99eb827d50290f1256074a4865d01a3ffd9d07dbb3bd1e0dda373d8e2afc9"
   license "MIT"
@@ -34,7 +34,9 @@ class Orchid < Formula
     (libexec/"plugins").install Dir["plugins/*"]
     (libexec/"templates").install Dir["templates/*"]
     (libexec/"roles").install Dir["roles/*"] if File.directory?("roles")
-    libexec.install "PROTOCOL.md"
+    libexec.install "PROTOCOL.md", "README.md", "LICENSE", "orchid.config.example", "install.sh"
+    libexec.install "skills", "skills-external", "docs"
+    (libexec/"scripts").install "scripts/beta-qualify.sh"
 
     bin.install_symlink libexec/"bin/orchid" => "orchid"
   end
@@ -44,10 +46,11 @@ class Orchid < Formula
       orchid's bash+git+jq kernel is installed at:
         #{opt_libexec}
 
-      The per-user pieces install.sh also sets up (Claude Code skill
-      symlinks under ~/.claude/skills, a seeded ~/.orchid/config) are NOT
-      created by this formula -- see docs/install.md for the equivalent
-      manual steps if you drive orchid from inside a Claude Code session.
+      Set up skills for your installed agent frontends and seed user config:
+        bash "#{opt_libexec}/install.sh"
+
+      The stable Homebrew opt path keeps those skill links valid on upgrade.
+      Installation details: #{opt_libexec}/docs/install.md
 
       From any repo you want to orchestrate:
         orchid doctor
@@ -57,5 +60,13 @@ class Orchid < Formula
 
   test do
     assert_match "usage: orchid", shell_output("#{bin}/orchid help")
+    assert_match version.to_s, shell_output("#{bin}/orchid version")
+    assert_match "integration_branch", shell_output("#{bin}/orchid config list")
+    %w[install.sh README.md LICENSE orchid.config.example PROTOCOL.md
+       skills/orchid/SKILL.md skills/orchid-plan/SKILL.md skills/orchid-resume/SKILL.md
+       skills-external/openclaw-orchid/SKILL.md docs/install.md scripts/beta-qualify.sh].each do |path|
+      assert_path_exists libexec/path
+    end
+    assert_equal (libexec/"bin/orchid").realpath, (bin/"orchid").realpath
   end
 end

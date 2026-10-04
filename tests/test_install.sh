@@ -188,11 +188,9 @@ grep -q "/nowhere/example" "$f17_home/.orchid/trust" || fail "install.sh (F17 re
 # ===========================================================================
 # v1-m4 Task 11: Homebrew formula (prepare-only) + docs/install.md
 # ===========================================================================
-# Formula/orchid.rb is authored for a FUTURE bilal-/homebrew-orchid tap --
-# never tapped, installed, or built by this suite (no `brew` invocation
-# anywhere below; outward-facing actions are for the release-day operator,
-# per docs/install.md, not this test). Lint only: valid Ruby syntax, and the
-# pinned version, release-asset URL, and checksum are concrete.
+# Formula/orchid.rb targets bilal-/homebrew-tap. No real brew invocation or
+# public installation happens here: lint the metadata, then exercise the exact
+# formula install/test bodies offline below.
 FORMULA="$REPO_ROOT/Formula/orchid.rb"
 if [ "${ORCHID_RELEASE_ARCHIVE_TEST:-0}" = 1 ]; then
   [ ! -e "$FORMULA" ] || fail "release archive must keep the external tap formula export-ignored"
@@ -238,17 +236,9 @@ sim_bin="$WORK/formula-sim/bin"
 mkdir -p "$sim_bin"
 ln -sfn "$sim_prefix/bin/orchid" "$sim_bin/orchid"
 
-# stdout only (2>/dev/null): a pre-existing, unrelated common.sh wart
-# (config-keys.txt's documentation-only `role.<id>.blocking` template line
-# triggers a "bad substitution" warning on stderr that embeds the caller's
-# OWN absolute path) would otherwise make this comparison fail for a reason
-# that has nothing to do with whether ORCHID_ROOT resolution is correct --
-# the sim lives under a different absolute path than the real checkout by
-# construction, so that stderr text can never match even when everything
-# this test actually cares about (the resolved config values on stdout) is
-# identical.
-sim_direct_out="$("$ORCHID_BIN" config list 2>/dev/null)" || fail "direct orchid config list failed (formula-sim comparison)"
-sim_out="$("$sim_bin/orchid" config list 2>/dev/null)" || fail "formula-simulated bin/orchid failed to run (config list)"
+# Compare the config interface while preserving command diagnostics on stderr.
+sim_direct_out="$("$ORCHID_BIN" config list)" || fail "direct orchid config list failed (formula-sim comparison)"
+sim_out="$("$sim_bin/orchid" config list)" || fail "formula-simulated bin/orchid failed to run (config list)"
 assert_eq "$sim_direct_out" "$sim_out" "formula-simulated bin/orchid resolves ORCHID_ROOT to the simulated prefix, matching the direct binary's output"
 
 # --- docs/install.md must exist and its own relative links must resolve --
@@ -826,3 +816,175 @@ bs_out5="$(cd "$insidecheckout_nogit" && PATH="$bs_gitbin5:$PATH" ORCHID_HOME="$
 grep -qE '^clone|fetch --depth|checkout --detach' "$bs_gitlog5" && fail "inside-checkout install.sh must never invoke bootstrap's clone/fetch/checkout (git calls seen: $(cat "$bs_gitlog5"))"
 [ -e "$bs_insidecheckout_home" ] && fail "inside-checkout install.sh must never create/touch ORCHID_HOME -- bootstrap must not have triggered"
 assert_match "[Nn]ext steps" "$bs_out5" "inside-checkout install.sh (with bootstrap's fake git on PATH) still runs its normal flow, not bootstrap"
+
+# Execute the formula's actual install/test bodies against a disposable prefix.
+# This is a filesystem implementation of the small Homebrew DSL used here, not
+# a second package file list. Real Homebrew/download qualification is separate.
+if [ -f "$FORMULA" ] && command -v ruby >/dev/null 2>&1; then
+  formula_exact="$WORK/formula-exact"
+  formula_cellar="$formula_exact/Cellar/orchid/1.0.0-beta.1"
+  formula_opt="$formula_exact/opt/orchid"
+  formula_home="$formula_exact/user"
+  formula_nogit="$formula_exact/nogit"
+  mkdir -p "$formula_home/.claude" "$formula_exact/opt" "$formula_nogit"
+  cat > "$formula_exact/install-formula.rb" <<'RUBY'
+require "fileutils"
+require "pathname"
+require "open3"
+class Pathname
+  def install(*sources)
+    mkpath
+    sources.flatten.each { |source| FileUtils.cp_r(source.to_s, to_s, preserve: true) }
+  end
+  def install_symlink(links)
+    mkpath
+    links.each { |source, name| FileUtils.ln_sf(source.to_s, join(name).to_s) }
+  end
+end
+class Formula
+  [:desc, :homepage, :url, :sha256, :license, :depends_on].each do |name|
+    define_singleton_method(name) { |*_| }
+  end
+  def self.version(value = nil)
+    @version = value unless value.nil?
+    @version
+  end
+  def self.test(&block); @test_block = block; end
+  def self.test_block; @test_block; end
+  def initialize(prefix, opt)
+    @prefix = Pathname.new(prefix)
+    @opt = Pathname.new(opt)
+  end
+  def libexec; @prefix/"libexec"; end
+  def opt_libexec; @opt/"libexec"; end
+  def bin; @prefix/"bin"; end
+  def version; self.class.version; end
+  def assert_match(expected, actual)
+    matches = expected.is_a?(Regexp) ? expected.match(actual) : actual.include?(expected.to_s)
+    raise "expected #{expected.inspect} in #{actual.inspect}" unless matches
+  end
+  def assert_path_exists(path); raise "missing package path: #{path}" unless path.exist?; end
+  def assert_equal(expected, actual); raise "#{expected} != #{actual}" unless expected == actual; end
+  def shell_output(command)
+    output, status = Open3.capture2e(command)
+    raise "formula command failed: #{command}: #{output}" unless status.success?
+    output
+  end
+end
+source, formula, prefix, opt = ARGV
+Dir.chdir(source) do
+  load formula
+  package = Orchid.new(prefix, opt)
+  package.install
+  package.instance_eval(&Orchid.test_block)
+  File.write(prefix + "/caveats.txt", package.caveats)
+end
+RUBY
+  formula_rc=0
+  HOME="$formula_home" ORCHID_REPO="$formula_nogit" ruby "$formula_exact/install-formula.rb" \
+    "$REPO_ROOT" "$FORMULA" "$formula_cellar" "$formula_opt" > "$formula_exact/ruby.log" 2>&1 || formula_rc=$?
+  assert_eq 0 "$formula_rc" "exact Formula install and test bodies pass offline ($(cat "$formula_exact/ruby.log"))"
+  for package_path in install.sh README.md LICENSE orchid.config.example PROTOCOL.md \
+    skills/orchid/SKILL.md skills/orchid-plan/SKILL.md skills/orchid-resume/SKILL.md \
+    skills-external/openclaw-orchid/SKILL.md docs/install.md scripts/beta-qualify.sh; do
+    [ -f "$formula_cellar/libexec/$package_path" ] || fail "exact Formula omits $package_path"
+  done
+  ln -s "$formula_cellar" "$formula_opt"
+  if [ -f "$formula_opt/libexec/install.sh" ]; then
+    formula_setup() (
+      unset CLAUDE_SKILLS_DIR ORCHID_BIN_DIR ORCHID_HOME ORCHID_REPO ORCHID_EPOCH ORCHID_ROOT
+      export HOME="$formula_home"
+      cd "$formula_nogit" || exit 1
+      /bin/bash "$formula_opt/libexec/install.sh"
+    )
+    formula_rc=0; formula_setup > "$formula_exact/setup.log" 2>&1 || formula_rc=$?
+    assert_eq 0 "$formula_rc" "packaged opt installer performs per-user setup ($(cat "$formula_exact/setup.log"))"
+    for skill in orchid orchid-plan orchid-resume; do
+      assert_eq "$formula_opt/libexec/skills/$skill" "$(readlink "$formula_home/.claude/skills/$skill")" \
+        "packaged $skill link uses stable opt path"
+    done
+    assert_eq "$formula_opt/libexec/bin/orchid" "$(readlink "$formula_home/.local/bin/orchid")" \
+      'packaged user binary uses stable opt path'
+    assert_match "$formula_opt/libexec/install.sh" "$(cat "$formula_cellar/caveats.txt")" \
+      'formula caveats name the installed opt setup script'
+    printf '\nrole.implementer=preserve-my-engine\n' >> "$formula_home/.orchid/config"
+    cp "$formula_home/.orchid/config" "$formula_exact/config.before"
+    formula_rc=0; formula_setup > "$formula_exact/repeat.log" 2>&1 || formula_rc=$?
+    assert_eq 0 "$formula_rc" 'packaged setup accepts a repeat invocation'
+    cmp -s "$formula_exact/config.before" "$formula_home/.orchid/config" || fail 'packaged setup overwrote existing user config'
+    # Model a Cellar replacement: user-owned links must still work when opt moves.
+    formula_next="$formula_exact/Cellar/orchid/1.0.0-beta.1_1"
+    formula_rc=0
+    HOME="$formula_home" ORCHID_REPO="$formula_nogit" ruby "$formula_exact/install-formula.rb" \
+      "$REPO_ROOT" "$FORMULA" "$formula_next" "$formula_opt" > "$formula_exact/upgrade.log" 2>&1 || formula_rc=$?
+    assert_eq 0 "$formula_rc" 'exact Formula can install a replacement Cellar prefix'
+    ln -sfn "$formula_next" "$formula_opt"
+    for skill in orchid orchid-plan orchid-resume; do
+      [ -f "$formula_home/.claude/skills/$skill/SKILL.md" ] || fail "stable opt $skill link broke on Cellar replacement"
+    done
+    assert_eq 'orchid 1.0.0-beta.1' "$(HOME="$formula_home" "$formula_home/.local/bin/orchid" version)" \
+      'stable user binary runs after Cellar replacement'
+    formula_rc=0; formula_setup > "$formula_exact/after-upgrade.log" 2>&1 || formula_rc=$?
+    assert_eq 0 "$formula_rc" 'packaged setup accepts the replacement opt prefix'
+    cmp -s "$formula_exact/config.before" "$formula_home/.orchid/config" || fail 'replacement package setup overwrote existing user config'
+    green_case 'exact Formula payload supports opt-path setup, preserved config, and Cellar replacement'
+  fi
+else
+  not_tested 'exact-homebrew-formula-payload' 'Formula is export-ignored in release archives, or Ruby is unavailable; run this test in the source checkout with Ruby to execute its install/test bodies'
+fi
+
+# Complement the argument-focused fake-Git cases above with the real bootstrap:
+# a tag-shaped branch is refused, then the same fixture commit with a tag installs.
+# Git is restricted to file transport and the public URL rewrites only to this
+# disposable repository, so no remote service or publication is involved.
+bootstrap_real="$WORK/bootstrap-real"
+bootstrap_source="$bootstrap_real/source"
+bootstrap_home="$bootstrap_real/user"
+bootstrap_checkout="$bootstrap_home/.local/share/orchid"
+bootstrap_prefix="$bootstrap_home/command-prefix"
+bootstrap_nogit="$bootstrap_real/nogit"
+bootstrap_git_config="$bootstrap_real/gitconfig"
+mkdir -p "$bootstrap_source" "$bootstrap_home/.claude" "$bootstrap_nogit"
+for payload_dir in bin lib libexec runners plugins templates roles skills skills-external; do
+  cp -R "$REPO_ROOT/$payload_dir" "$bootstrap_source/$payload_dir"
+done
+cp "$INSTALL" "$REPO_ROOT/PROTOCOL.md" "$REPO_ROOT/LICENSE" "$bootstrap_source/"
+git -C "$bootstrap_source" init -q .
+git -C "$bootstrap_source" add .
+git -C "$bootstrap_source" commit -qm 'disposable installer payload'
+bootstrap_commit="$(git -C "$bootstrap_source" rev-parse HEAD)"
+git -C "$bootstrap_source" branch v1.0.0-beta.1
+git config -f "$bootstrap_git_config" "url.file://$bootstrap_source/.insteadOf" 'https://github.com/bilal-/orchid.git'
+bootstrap_pipe() (
+  unset CLAUDE_SKILLS_DIR ORCHID_BIN_DIR ORCHID_REPO ORCHID_EPOCH ORCHID_ROOT
+  unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  export HOME="$bootstrap_home" ORCHID_HOME="$bootstrap_checkout"
+  export GIT_CONFIG_GLOBAL="$bootstrap_git_config" GIT_CONFIG_NOSYSTEM=1
+  export GIT_ALLOW_PROTOCOL=file GIT_TERMINAL_PROMPT=0
+  cd "$bootstrap_nogit" || exit 1
+  cat "$INSTALL" | /bin/bash -s -- --prefix "$bootstrap_prefix"
+)
+bootstrap_rc=0; bootstrap_out="$(bootstrap_pipe 2>&1)" || bootstrap_rc=$?
+[ "$bootstrap_rc" -ne 0 ] || fail 'real piped bootstrap accepted a tag-shaped branch without the tag'
+assert_match 'refs/tags' "$bootstrap_out" 'real piped bootstrap names the missing tag reference'
+[ ! -e "$bootstrap_checkout" ] || fail 'refused real bootstrap left a canonical checkout'
+red_case 'real piped bootstrap refuses a branch masquerading as the pinned beta tag'
+git -C "$bootstrap_source" branch -D v1.0.0-beta.1 >/dev/null
+git -C "$bootstrap_source" tag v1.0.0-beta.1
+bootstrap_rc=0; bootstrap_out="$(bootstrap_pipe 2>&1)" || bootstrap_rc=$?
+assert_eq 0 "$bootstrap_rc" "real piped beta-tag bootstrap succeeds ($bootstrap_out)"
+assert_eq "$bootstrap_commit" "$(git -C "$bootstrap_checkout" rev-parse HEAD)" 'piped install selects the exact tagged fixture commit'
+bootstrap_attached=0; git -C "$bootstrap_checkout" symbolic-ref -q HEAD >/dev/null || bootstrap_attached=$?
+[ "$bootstrap_attached" -ne 0 ] || fail 'piped beta install left an attached branch'
+assert_eq 'orchid 1.0.0-beta.1' "$(HOME="$bootstrap_home" "$bootstrap_prefix/bin/orchid" version)" 'real piped custom-prefix binary runs'
+for skill in orchid orchid-plan orchid-resume; do
+  [ -f "$bootstrap_home/.claude/skills/$skill/SKILL.md" ] || fail "real piped install did not wire $skill"
+done
+printf '\nrole.implementer=keep-piped-config\n' >> "$bootstrap_home/.orchid/config"
+cp "$bootstrap_home/.orchid/config" "$bootstrap_real/config.before"
+bootstrap_rc=0; bootstrap_out="$(bootstrap_pipe 2>&1)" || bootstrap_rc=$?
+assert_eq 0 "$bootstrap_rc" "real piped beta reinstall succeeds ($bootstrap_out)"
+cmp -s "$bootstrap_real/config.before" "$bootstrap_home/.orchid/config" || fail 'real piped reinstall overwrote user config'
+assert_eq "$bootstrap_commit" "$(git -C "$bootstrap_checkout" rev-parse HEAD)" 'real piped reinstall remains on the pinned commit'
+green_case 'real piped beta tag clone and fetch install the pinned commit and preserve user config'
+not_tested 'published-curl-and-homebrew-install' 'these checks use file-only Git transport and an offline Formula DSL; qualify real published URLs and brew install bilal-/tap/orchid separately on clean macOS/Linux machines'

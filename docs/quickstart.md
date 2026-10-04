@@ -38,7 +38,7 @@ evidence earns.
 from — and `orchid` resolves to — your own checkout:
 
 ```sh
-git clone <this-repo-url> "$HOME/src/orchid"
+git clone https://github.com/bilal-/orchid.git "$HOME/src/orchid"
 cd "$HOME/src/orchid"
 ./install.sh
 ```

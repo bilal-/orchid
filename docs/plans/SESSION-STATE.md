@@ -6,6 +6,25 @@ you are. It records state that the code and git history do not make obvious,
 and it goes stale — **verify every claim below against the tree before relying
 on it.** Anything here that contradicts the code is wrong and the code wins.
 
+## Public beta preparation — 2026-10-03
+
+The operator requested a public beta available to anyone, explicitly authorized
+publishing a beta tag and release after checks pass, and chose the existing Sous
+tap: `brew install bilal-/tap/orchid`. Stable `1.0.0` remains unqualified.
+GitHub's homepage is set to `https://orchid.bilal.sh`; the operator is building
+that website separately. PR #19's brand kit is separate from this candidate.
+
+The distribution candidate includes the seven-pass review below and expands
+the Homebrew payload to include its source installer, skills, documentation,
+configuration example, and qualification harness. Per-user setup uses the stable
+Homebrew `opt` path. The installer and exact Formula payload passed offline
+tests, including real local-tag clone/fetch and upgrade retargeting. Those
+observations do not prove public curl or Homebrew downloads. At snapshot
+preparation, release-tree full CI, archive verification, hosted CI, publication,
+and genuine published installs are pending; record their actual results after
+they occur. Release pinning belongs to the assembled release checkout on its
+own `orchid/integration`, preserving the active integration worktree and journal.
+
 ## Whole-codebase review — 2026-10-03
 
 The local review branch is `codex/full-codebase-review`, in the linked checkout

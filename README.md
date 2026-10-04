@@ -23,6 +23,17 @@ Flags, channels, `--uninstall`, the prepared Homebrew tap, and the git-clone
 method:
 [docs/install.md](./docs/install.md).
 
+The beta's Homebrew command, once published to the same tap as Sous:
+
+```sh
+brew install bilal-/tap/orchid
+bash "$(brew --prefix orchid)/libexec/install.sh"
+```
+
+The second command sets up skills for your installed agent frontends and
+seeds user configuration. Homebrew provides Git and `jq`; the curl installer
+requires them to be installed already.
+
 > **The prepared tree remains `1.0.0-beta.1`, not `1.0.0`.** Orchid has now
 > been dogfooded on itself and on the webBooks and wasiyyat application
 > repositories, but every run was operated by Orchid's author. That is useful

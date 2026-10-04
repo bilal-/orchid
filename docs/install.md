@@ -8,6 +8,8 @@ for what happens after any of them.
 
 ## One-line install (recommended)
 
+Requires Bash 3.2 or newer, Git, and `jq`.
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
 ```
@@ -61,12 +63,30 @@ a one-line note confirming the clone's path.
 
 `Formula/orchid.rb` in the source repository is a tap-ready
 formula: it installs `bin/`, `libexec/`, `lib/`, `runners/`, `plugins/`,
-`templates/`, `roles/`, and `PROTOCOL.md` under the formula's own
+`templates/`, and `roles/` under the formula's own
 `libexec` prefix, then symlinks `bin/orchid` out into Homebrew's `bin` —
 `bin/orchid`'s existing self-resolution (it follows its own symlink to a
 real file, then takes that file's grandparent directory as `ORCHID_ROOT`)
 lands on that `libexec` prefix without any wrapper script or rewriting.
-`git` and `jq` are declared as formula dependencies.
+`git` and `jq` are declared as formula dependencies. The package also includes
+`install.sh`, the agent skills, documentation, configuration example, and
+`scripts/beta-qualify.sh`. Homebrew installs these files without changing
+your user configuration. To set up skills and seed that configuration, run:
+
+```sh
+bash "$(brew --prefix orchid)/libexec/install.sh"
+```
+
+Use this stable Homebrew `opt` path so skill links keep working after upgrades.
+
+If you ran that setup command, remove its per-user links before removing the keg:
+
+```sh
+bash "$(brew --prefix orchid)/libexec/install.sh" --uninstall
+brew uninstall orchid
+```
+
+User configuration and trust records are preserved.
 
 **This formula is not tapped, installed, or published by this repository or
 its tests.** Its version, release-asset URL, and SHA-256 are concrete inputs
@@ -197,11 +217,11 @@ hand-off.
    the tap with:
 
    ```sh
-   brew tap bilal-/orchid
+   brew tap bilal-/tap
    brew install orchid
    ```
 
-   (equivalently, `brew install bilal-/orchid/orchid` without a separate
+   (equivalently, `brew install bilal-/tap/orchid` without a separate
    `brew tap` step).
 
 No publication step is executed by repository tests or CI.
@@ -209,7 +229,7 @@ No publication step is executed by repository tests or CI.
 ## git clone (for hacking on orchid itself)
 
 ```sh
-git clone <this-repo-url> "$HOME/src/orchid"
+git clone https://github.com/bilal-/orchid.git "$HOME/src/orchid"
 cd "$HOME/src/orchid"
 ./install.sh
 ```
