@@ -21,11 +21,10 @@ and bash 3.2+ (macOS's shipped `/bin/bash` is fine).
 curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
 ```
 
-(this is the prepared release-day URL; see
-[docs/install.md](./install.md#one-line-install-recommended) for the publication
-caveat and how flags like `--prefix`/`--uninstall` pass through). Once the tag
-is published, the pinned install is independent of your current directory,
-even if it is a dirty Orchid checkout. The URL is immutable: running this
+See [docs/install.md](./install.md#one-line-install-recommended) for flags
+like `--prefix`/`--uninstall`. This pinned install is independent of the
+current directory, even inside a dirty Orchid checkout.
+The URL is immutable: running this
 exact line later reselects `v1.0.0-beta.1`; it does not upgrade Orchid. To
 upgrade, select the install URL for a newer immutable released tag.
 

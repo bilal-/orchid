@@ -1,7 +1,7 @@
 # Install
 
 Three ways to get orchid onto a machine — the one-liner below (recommended
-for most people), a Homebrew tap (prepared here, not yet published), or a
+for most people), a Homebrew tap, or a
 plain git clone (best if you're hacking on orchid itself). All three end up
 running the same bash+git+jq kernel — see [quickstart.md](./quickstart.md)
 for what happens after any of them.
@@ -14,7 +14,7 @@ Requires Bash 3.2 or newer, Git, and `jq`.
 curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
 ```
 
-**The prepared version is `1.0.0-beta.1`, a prerelease.** Orchid has run on
+**The version is `1.0.0-beta.1`, a prerelease.** Orchid has run on
 its own repository and on the webBooks and wasiyyat application repositories,
 but all of that was author-operated dogfood. The status recorded at snapshot
 preparation was: no genuine third-party beta or public release has happened; `1.0.0` is reserved for the stronger evidence in
@@ -22,9 +22,8 @@ preparation was: no genuine third-party beta or public release has happened; `1.
 
 **This snapshot was prepared before publication.** Check [the beta release
 page](https://github.com/bilal-/orchid/releases/tag/v1.0.0-beta.1) for current
-availability. r-002 did not push a tag or publish the repository, installer, or
-Homebrew tap. Until the operator performs those steps, use the
-[git clone method](#git-clone-for-hacking-on-orchid-itself) below instead.
+availability. The historical r-002 rehearsal did not publish a release or tap;
+it used the [git clone method](#git-clone-for-hacking-on-orchid-itself).
 
 This downloads the installer from the version tag and runs it. A piped
 invocation always selects that same exact tag in the canonical checkout at
@@ -60,7 +59,11 @@ the same as it would from a manual checkout — but the clone at
 reuses to upgrade, not the installer's scratch space); the command prints
 a one-line note confirming the clone's path.
 
-## Homebrew (prepared, not yet published)
+## Homebrew
+
+```sh
+brew install bilal-/tap/orchid
+```
 
 `Formula/orchid.rb` in the source repository is a tap-ready
 formula: it installs `bin/`, `libexec/`, `lib/`, `runners/`, `plugins/`,
@@ -71,7 +74,8 @@ real file, then takes that file's grandparent directory as `ORCHID_ROOT`)
 lands on that `libexec` prefix without any wrapper script or rewriting.
 `git` and `jq` are declared as formula dependencies. The package also includes
 `install.sh`, the agent skills, documentation, configuration example, and
-`scripts/beta-qualify.sh`. Homebrew installs these files without changing
+`scripts/beta-qualify.sh`. README and LICENSE live at the formula's prefix.
+Homebrew installs these files without changing
 your user configuration. To set up skills and seed that configuration, run:
 
 ```sh
@@ -89,8 +93,8 @@ brew uninstall orchid
 
 User configuration and trust records are preserved.
 
-**This formula is not tapped, installed, or published by this repository or
-its tests.** Its version, release-asset URL, and SHA-256 are concrete inputs
+Repository tests do not publish this formula. Its version, release-asset URL,
+and SHA-256 are concrete inputs
 cross-checked by the local release gate. The formula itself is export-ignored
 from the source archive, avoiding a checksum self-reference.
 

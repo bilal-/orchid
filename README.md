@@ -19,16 +19,15 @@ unaffiliated tool that shells out to each vendor's own CLI).
 curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
 ```
 
-That is the prepared release-day command; r-002 did not publish it. Once the
-operator publishes the immutable `v1.0.0-beta.1` tag, the command stays pinned
+This command selects the immutable `v1.0.0-beta.1` tag. It stays pinned
 to that version independent of the caller's current directory (including
 inside a dirty Orchid checkout). To upgrade, use the new version's equally
 pinned URL; following `main` is an explicitly labeled development channel.
-Flags, channels, `--uninstall`, the prepared Homebrew tap, and the git-clone
+Flags, channels, `--uninstall`, the Homebrew tap, and the git-clone
 method:
 [docs/install.md](./docs/install.md).
 
-The beta's Homebrew command, once published to the same tap as Sous:
+Homebrew uses the same tap as Sous:
 
 ```sh
 brew install bilal-/tap/orchid
@@ -39,7 +38,7 @@ The second command sets up skills for your installed agent frontends and
 seeds user configuration. Homebrew provides Git and `jq`; the curl installer
 requires them to be installed already.
 
-> **The prepared tree remains `1.0.0-beta.1`, not `1.0.0`.** Orchid has now
+> **This release remains `1.0.0-beta.1`, not `1.0.0`.** Orchid has now
 > been dogfooded on itself and on the webBooks and wasiyyat application
 > repositories, but every run was operated by Orchid's author. That is useful
 > external-repository evidence, not a genuine third-party beta. A `1.0.0`
@@ -49,10 +48,8 @@ requires them to be installed already.
 
 > The qualification evidence is author-operated dogfood.
 > [The beta release page](https://github.com/bilal-/orchid/releases/tag/v1.0.0-beta.1)
-> records current publication status. Until the operator
-> publishes the prepared tag, install from a clone
-> ([docs/install.md](./docs/install.md#git-clone-for-hacking-on-orchid-itself)); that is the
-> exact path the timed rehearsal below used.
+> records current publication status. The timed rehearsal below used the
+> [git clone method](./docs/install.md#git-clone-for-hacking-on-orchid-itself).
 
 ## The 60-second story
 

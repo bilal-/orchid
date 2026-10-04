@@ -855,6 +855,7 @@ class Formula
     @prefix = Pathname.new(prefix)
     @opt = Pathname.new(opt)
   end
+  def prefix; @prefix; end
   def libexec; @prefix/"libexec"; end
   def opt_libexec; @opt/"libexec"; end
   def bin; @prefix/"bin"; end
@@ -884,7 +885,10 @@ RUBY
   HOME="$formula_home" ORCHID_REPO="$formula_nogit" ruby "$formula_exact/install-formula.rb" \
     "$REPO_ROOT" "$FORMULA" "$formula_cellar" "$formula_opt" > "$formula_exact/ruby.log" 2>&1 || formula_rc=$?
   assert_eq 0 "$formula_rc" "exact Formula install and test bodies pass offline ($(cat "$formula_exact/ruby.log"))"
-  for package_path in install.sh README.md LICENSE orchid.config.example PROTOCOL.md \
+  for metadata_path in README.md LICENSE; do
+    [ -f "$formula_cellar/$metadata_path" ] || fail "exact Formula omits prefix metadata $metadata_path"
+  done
+  for package_path in install.sh orchid.config.example PROTOCOL.md \
     skills/orchid/SKILL.md skills/orchid-plan/SKILL.md skills/orchid-resume/SKILL.md \
     skills-external/openclaw-orchid/SKILL.md docs/install.md scripts/beta-qualify.sh; do
     [ -f "$formula_cellar/libexec/$package_path" ] || fail "exact Formula omits $package_path"

@@ -34,9 +34,10 @@ class Orchid < Formula
     (libexec/"plugins").install Dir["plugins/*"]
     (libexec/"templates").install Dir["templates/*"]
     (libexec/"roles").install Dir["roles/*"] if File.directory?("roles")
-    libexec.install "PROTOCOL.md", "README.md", "LICENSE", "orchid.config.example", "install.sh"
+    libexec.install "PROTOCOL.md", "orchid.config.example", "install.sh"
     libexec.install "skills", "skills-external", "docs"
     (libexec/"scripts").install "scripts/beta-qualify.sh"
+    prefix.install "README.md", "LICENSE"
 
     bin.install_symlink libexec/"bin/orchid" => "orchid"
   end
@@ -62,7 +63,8 @@ class Orchid < Formula
     assert_match "usage: orchid", shell_output("#{bin}/orchid help")
     assert_match version.to_s, shell_output("#{bin}/orchid version")
     assert_match "integration_branch", shell_output("#{bin}/orchid config list")
-    %w[install.sh README.md LICENSE orchid.config.example PROTOCOL.md
+    %w[README.md LICENSE].each { |path| assert_path_exists prefix/path }
+    %w[install.sh orchid.config.example PROTOCOL.md
        skills/orchid/SKILL.md skills/orchid-plan/SKILL.md skills/orchid-resume/SKILL.md
        skills-external/openclaw-orchid/SKILL.md docs/install.md scripts/beta-qualify.sh].each do |path|
       assert_path_exists libexec/path

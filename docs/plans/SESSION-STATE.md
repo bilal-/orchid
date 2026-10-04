@@ -22,12 +22,18 @@ README uses pinned hosted logos so its archive and Homebrew copies work too.
 The distribution candidate includes the eight-pass review below and expands
 the Homebrew payload to include its source installer, skills, documentation,
 configuration example, and qualification harness. Per-user setup uses the stable
-Homebrew `opt` path. The installer and exact Formula payload passed offline
-tests, including real local-tag clone/fetch and upgrade retargeting. Those
-observations do not prove public curl or Homebrew downloads. At snapshot
-preparation, release-tree full CI, archive verification, hosted CI, publication,
-and genuine published installs are pending; record their actual results after
-they occur. Release pinning belongs to the assembled release checkout on its
+Homebrew `opt` path. The installer and exact Formula payload passed offline tests, including real
+local-tag clone/fetch and upgrade retargeting. Native Homebrew verification
+then exposed automatic README/LICENSE relocation: the corrected formula
+installs those files at its prefix and tests that layout. The original layout
+failed both offline and native checks; the corrected layout passed both.
+Native opt-path setup, repeated config preservation, and per-user uninstall
+also passed against a provisional local archive. The preexisting global Orchid
+symlink was preserved. These observations do not prove published downloads.
+At snapshot preparation, final release-tree full CI, archive verification,
+hosted CI, publication, and genuine published installs are pending. The GitHub
+release and tap commit record publication after it occurs.
+Release pinning belongs to the assembled release checkout on its
 own `orchid/integration`, preserving the active integration worktree and journal.
 
 ## Whole-codebase review — 2026-10-03
