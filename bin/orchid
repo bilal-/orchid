@@ -30,7 +30,9 @@ ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"; export ORCHID_ROO
 # Standard version probes are answered before loading libraries or metadata.
 if [ "$#" -eq 1 ]; then
   case "$1" in --version|-v|-V)
-    while IFS= read -r line; do case "$line" in version=*) printf '%s\n' "${line#version=}"; exit 0 ;; esac; done < "$ORCHID_ROOT/release/metadata.conf"
+    if [ -r "$ORCHID_ROOT/release/metadata.conf" ]; then
+      while IFS= read -r line; do case "$line" in version=*) printf '%s\n' "${line#version=}"; exit 0 ;; esac; done < "$ORCHID_ROOT/release/metadata.conf"
+    fi
     printf 'orchid: release version is missing\n' >&2; exit 1 ;;
   esac
 fi

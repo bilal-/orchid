@@ -393,3 +393,37 @@ candidate, formula pin, full source/archive qualification, and native package
 verification. `a148735` and its prepared package are superseded and must not
 be published. Hosted checks and public downloads are still unproved at this
 snapshot; consult the beta release page for subsequent publication evidence.
+
+## GNU Bash release follow-through — 2026-10-04
+
+The `6275d16` integration candidate passed both complete local source and
+extracted-archive CI runs (108 test blocks each), exact native Homebrew
+installation, and isolated four-host setup fixtures. It was pushed to `main`.
+Hosted run `37212638946` then failed on Linux; no public beta tag or release
+was created. The passing macOS-local results do not qualify that candidate
+for publication.
+
+The Linux inventory found seven failed suite blocks and two underlying
+portability defects. The agent dispatcher declared `args` without initializing
+it; GNU Bash under `nounset` refuses the first array-length read, including
+implicit status arguments. The dispatcher now initializes both argument
+arrays explicitly. The fast version probe also used an unguarded input
+redirection on its metadata loop; GNU Bash under `errexit` exits before the
+intended missing-metadata diagnostic. An explicit readability guard keeps
+that diagnostic reachable without loading libraries or adding subprocesses.
+
+Private GNU Bash 5.2.21, built from signature-verified official source on
+macOS, subsequently reproduced both defects and accepted the repairs. The
+unchanged command and read suites failed on the old code and passed on the
+new code: 7 RED / 11 GREEN and 25 RED / 26 GREEN respectively. Their disposable
+copies changed only the entrypoint's two interpreter paths. The unchanged
+installation suite also failed only its missing-metadata diagnosis on the
+old code and passed on the repair; direct probes proved all three version
+flags with missing and restored metadata. These are GNU-runtime-on-macOS
+observations, not hosted Linux results.
+
+Fresh aggregate qualification remains pending at this snapshot. The next
+release candidate must retain the beta version,
+receive its integration-owned formula pin, and pass the required local,
+hosted, native-package, and public-download checks. `6275d16` must not be
+published. Historical passing evidence remains evidence for its own tree.

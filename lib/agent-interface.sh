@@ -129,7 +129,7 @@ orchid_agent_dispatch() {
   if [ "$(jq -r '.help' <<< "$ORCHID_CLI_PARSED")" = true ]; then
     orchid_agent_help "$verb" "$command" "$format" "$view"; return 0
   fi
-  local -a args result_args=()
+  local -a args=() result_args=()
   while IFS= read -r -d '' item; do args[${#args[@]}]="$item"; done \
     < <(jq -jr '.wire_argv[] | . + "\u0000"' <<< "$ORCHID_CLI_PARSED")
   result_args=()
