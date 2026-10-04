@@ -92,6 +92,16 @@ bash "$(brew --prefix orchid)/libexec/install.sh"
 
 Use this stable Homebrew `opt` path so skill links keep working after upgrades.
 
+Portable skills and native session hooks are separate. If the initial installer
+reported a skipped frontend because its profile directory was absent, create
+that profile through its selected native setup command in
+[frontends](frontends.md) or the host's first launch, then rerun the per-user
+installer to register its native skills path. For Homebrew, repeat
+`bash "$(brew --prefix orchid)/libexec/install.sh"`. For a curl installation,
+repeat the same pinned one-line installer command above. Shared `~/.agents/skills`
+remain available to Codex, OpenCode, and compatible shell agents. Existing
+profiles whose skills were already registered do not need this extra step.
+
 If you ran that setup command, remove its per-user links before removing the keg:
 
 ```sh
@@ -247,20 +257,23 @@ cd "$HOME/src/orchid"
 ./install.sh
 ```
 
-Does exactly and only: wires the interactive orchestrator skills
-(`skills/{orchid,orchid-plan,orchid-resume}`) into whichever agent
-front-ends are **actually present** on this machine — not one hardcoded
-vendor. Concretely: Claude Code (symlinked into `$CLAUDE_SKILLS_DIR`,
-default `~/.claude/skills` — today's tested default, wired if `~/.claude`
-exists or `CLAUDE_SKILLS_DIR` is set) and Hermes (symlinked into
-`~/.hermes/skills/orchestration/`, wired if that directory exists) each get
-wired when present, and skipped with a one-line note (no directory
-creation) when absent; OpenClaw gets a suggested `openclaw skills install`
-command printed instead of an automatic run, since registration targets a
-specific agent/gateway install.sh has no business choosing. See
-[frontends.md](./frontends.md) for the full per-engine breakdown (what's
-tested vs. untested) and for driving orchid from codex/agy, which need no
-install.sh wiring at all. Regardless of front-end, install.sh also
+The installer links the three portable orchestrator skills
+(`skills/{orchid,orchid-plan,orchid-resume}`) into shared `~/.agents/skills`
+for Codex, OpenCode, and compatible shell agents. When a host profile already
+exists, it
+also links those skills into Claude Code's `~/.claude/skills`, Hermes's
+`~/.hermes/skills/orchestration/`, and OpenCode's
+`~/.config/opencode/skills`. Claude Code also accepts an explicit
+`CLAUDE_SKILLS_DIR` override. Missing Claude Code, Hermes, or OpenCode profiles
+are skipped with a note; the shared skills remain available. Native session
+hooks are registered separately with your host's setup command. See
+[frontends.md](./frontends.md) for those commands, host paths, overrides, and the
+qualification boundary.
+
+OpenClaw receives a suggested `openclaw skills install` command rather than an
+automatic registration, because that operation selects an agent or gateway.
+
+Regardless of front-end, install.sh also
 symlinks `bin/orchid` into `$ORCHID_BIN_DIR` (default `~/.local/bin`),
 creates `~/.orchid/plugins/engines` and a commented `~/.orchid/config` (the
 `~/.orchid/trust` store file appears on first `orchid plugins trust`; the
