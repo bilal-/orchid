@@ -373,3 +373,23 @@ source, archive and native Homebrew payload before any push/tag/release.
 Check the beta release page for publication status; these are dated local
 observations, not evidence of authenticated four-vendor sessions or genuine
 third-party beta use.
+
+## Release-gate follow-through — 2026-10-04
+
+The immutable `a148735` candidate's source and extracted-archive hermetic
+reruns each exercised 108 test files and refused two gates. The new doctor
+permission-hint fixture used a bare `cd "$WORK"`; it now uses the shared
+`cd_scratch` helper. INV-06 mistook three data-only engine-path ownership
+checks in `lib/agent-read.sh` for engine execution. Its scanner now recognizes
+only those exact complete checks; separate and appended engine execution
+remain exercised RED cases. Focused helpers, doctor, and INV-06 checks pass;
+INV-06 reports three RED and two GREEN cases. File modes are preserved.
+
+An early progress counter missed indented failure lines. That counter's
+“passed” updates were incorrect; the preserved logs and process exit status
+own the verdict. The corrected inventory checked every nested test block and
+found no additional nested failure. These repairs require a new integration
+candidate, formula pin, full source/archive qualification, and native package
+verification. `a148735` and its prepared package are superseded and must not
+be published. Hosted checks and public downloads are still unproved at this
+snapshot; consult the beta release page for subsequent publication evidence.

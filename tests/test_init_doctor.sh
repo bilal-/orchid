@@ -998,7 +998,7 @@ expected_hint="$(printf 'fix: chmod +x %q' "$physical_hint")"
 case "$hint_out" in *"$expected_hint"*) ;; *) fail 'contained non-executable entrypoint lacks shell-quoted recovery command' ;; esac
 red_case 'a permission recovery hint does not admit a non-executable entrypoint'
 hint_rc=0
-relative_hint="$(cd "$WORK" && entrypoint_check entrypoint-diagnostic notify 'owned entry')" || hint_rc=$?
+relative_hint="$(cd_scratch "$WORK" && entrypoint_check entrypoint-diagnostic notify 'owned entry')" || hint_rc=$?
 assert_eq 1 "$hint_rc" 'relative plugin directory still refuses its non-executable entrypoint'
 case "$relative_hint" in *"$expected_hint"*) ;; *) fail 'relative plugin directory does not offer the validated absolute shell-quoted repair path' ;; esac
 chmod +x "$hint_dir/owned entry"
