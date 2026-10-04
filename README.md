@@ -1,8 +1,8 @@
 # orchid
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="brand/svg/horizontal-on-dark.svg">
-  <img src="brand/svg/horizontal-on-light.svg" alt="orchid" width="220">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/brand/svg/horizontal-on-dark.svg">
+  <img src="https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/brand/svg/horizontal-on-light.svg" alt="orchid" width="220">
 </picture>
 
 **A small, auditable orchestration kernel — bash + git + jq, no daemon, no

@@ -12,7 +12,10 @@ The operator requested a public beta available to anyone, explicitly authorized
 publishing a beta tag and release after checks pass, and chose the existing Sous
 tap: `brew install bilal-/tap/orchid`. Stable `1.0.0` remains unqualified.
 GitHub's homepage is set to `https://orchid.bilal.sh`; the operator is building
-that website separately. PR #19's brand kit is separate from this candidate.
+that website separately. The operator subsequently requested PR #19's brand
+kit in this beta if its checks pass. Its logo assets remain in the tagged Git
+tree, while the kernel archive excludes `brand/` as that PR specifies. The
+README uses pinned hosted logos so its archive and Homebrew copies work too.
 
 The distribution candidate includes the seven-pass review below and expands
 the Homebrew payload to include its source installer, skills, documentation,
