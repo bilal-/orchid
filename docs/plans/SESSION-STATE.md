@@ -313,3 +313,13 @@ Homebrew path passed, but its full gates were canceled when AXI became a release
 requirement. Rebuild and pin the final assembled source on an actual integration
 checkout, requalify both source and archive, then publish that exact checked head.
 Never publish the temporary local-file Homebrew formula from the earlier smoke.
+
+
+The first assembled AXI candidate (`f44c939`, formula pin `c393c4c`) was superseded
+before publication: native Homebrew `--version` exposed missing packaged
+`release/metadata.conf`. Its source/archive full runs were terminated with exit
+143 during static checks and are not passing evidence. The corrected formula
+installs release metadata and tests the fast version contract from installed
+files, including a missing-file RED and restored accepting twin. Native callbacks
+also explicitly select compact external output independent of inherited raw
+kernel compatibility settings. Re-pin and qualify the corrected assembled head.

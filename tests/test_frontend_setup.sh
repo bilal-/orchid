@@ -30,13 +30,16 @@ mkdir -p "$fixture_root/bin"
 cat > "$fixture_root/bin/orchid" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$PWD|$*" >> "$ORCHID_FIXTURE_CALLS"
+printf '%s\n' "${ORCHID_OUTPUT:-unset}" >> "$ORCHID_FIXTURE_FORMATS"
 if [ "${ORCHID_FIXTURE_FAIL:-0}" = 1 ]; then exit 1; fi
 if [ "${ORCHID_FIXTURE_SLOW:-0}" = 1 ]; then sleep 15; fi
 if [ "${ORCHID_FIXTURE_LARGE:-0}" = 1 ]; then printf '%09000d' 0; exit 0; fi
+if [ "${ORCHID_OUTPUT:-}" = raw ]; then printf 'legacy raw context\n'; exit 0; fi
 printf 'repo: fixture\nnext: orchid status --explain\n'
 EOF
 chmod 755 "$fixture_root/bin/orchid"
 export ORCHID_FIXTURE_CALLS="$WORK/context.calls"
+export ORCHID_FIXTURE_FORMATS="$WORK/context.formats"
 setup="$fixture_root/runners/orchid-setup"
 run_setup() { (cd "$WORK/nogit" && /bin/bash "$setup" "$@"); }
 
@@ -165,11 +168,14 @@ for host in $hosts; do
 done
 mkdir -p "$WORK/repo space"
 callback_repo="$(cd "$WORK/repo space" && pwd -P)"
+assert_eq 'legacy raw context' "$(ORCHID_OUTPUT=raw "$fixture_root/bin/orchid" context --ambient)" 'raw fixture exposes inherited compatibility format'
+red_case 'inherited raw output would expose legacy context without callback override'
+: > "$ORCHID_FIXTURE_CALLS"; : > "$ORCHID_FIXTURE_FORMATS"
 for host in claude codex hermes; do
   [ "$host" != hermes ] || [ -n "$fixture_python" ] || continue
   hook_event=SessionStart; [ "$host" != hermes ] || hook_event=pre_llm_call
   payload="$(jq -cn --arg cwd "$callback_repo" --arg event "$hook_event" '{cwd:$cwd,hook_event_name:$event}')"
-  callback="$(printf '%s\n' "$payload" | "$HOME/.orchid/frontends/$host-hook")" || fail "$host callback failed"
+  callback="$(printf '%s\n' "$payload" | ORCHID_OUTPUT=raw "$HOME/.orchid/frontends/$host-hook")" || fail "$host callback failed"
   if [ "$host" = hermes ]; then context="$(jq -r .context <<< "$callback")"
   else context="$(jq -r .hookSpecificOutput.additionalContext <<< "$callback")"; fi
   assert_match 'repo: fixture' "$context" "$host context injection"
@@ -177,7 +183,7 @@ done
 payload="$(jq -cn --arg cwd "$callback_repo" '{cwd:$cwd,hook_event_name:"SessionStart"}')"
 if [ -n "$fixture_node" ]; then
   cp "$HOME/.config/opencode/plugins/orchid.js" "$WORK/orchid.mjs"
-  "$fixture_node" --input-type=module - "$WORK/orchid.mjs" "$callback_repo" <<'JS' || fail 'OpenCode plugin callback failed'
+  ORCHID_OUTPUT=raw "$fixture_node" --input-type=module - "$WORK/orchid.mjs" "$callback_repo" <<'JS' || fail 'OpenCode plugin callback failed'
 import { pathToFileURL } from 'node:url';
 const { OrchidPlugin } = await import(pathToFileURL(process.argv[2]));
 const plugin = await OrchidPlugin({directory:process.argv[3]});
@@ -189,6 +195,8 @@ if (output.system.length!==2) throw Error('duplicate ambient context');
 JS
 fi
 while IFS= read -r call; do assert_eq "$callback_repo|context --ambient" "$call" 'callback exact read-only cwd/operation'; done < "$ORCHID_FIXTURE_CALLS"
+while IFS= read -r format; do assert_eq toon "$format" 'native callback explicitly forces compact agent format'; done < "$ORCHID_FIXTURE_FORMATS"
+green_case 'native callbacks use compact TOON context despite inherited raw output'
 [ ! -e "$WORK/repo space/.orchid" ] || fail 'callback created target state'
 
 # RED/GREEN: host callbacks fail open for missing cwd, failed/oversized/slow

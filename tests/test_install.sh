@@ -916,12 +916,27 @@ RUBY
   for metadata_path in README.md LICENSE; do
     [ -f "$formula_cellar/$metadata_path" ] || fail "exact Formula omits prefix metadata $metadata_path"
   done
-  for package_path in install.sh orchid.config.example PROTOCOL.md \
+  for package_path in install.sh orchid.config.example PROTOCOL.md release/metadata.conf \
     skills/orchid/SKILL.md skills/orchid-plan/SKILL.md skills/orchid-resume/SKILL.md \
     skills-external/openclaw-orchid/SKILL.md docs/install.md scripts/beta-qualify.sh; do
     [ -f "$formula_cellar/libexec/$package_path" ] || fail "exact Formula omits $package_path"
   done
-  ln -s "$formula_cellar" "$formula_opt"
+  # RED: metadata omitted from an installed payload must fail the public fast
+# version contract; source-only tests cannot exercise Homebrew's file manifest.
+# GREEN: the exact Formula payload supplies the immutable metadata and all
+# standard fast flags return the same bare version without loading libraries.
+mv "$formula_cellar/libexec/release/metadata.conf" "$formula_cellar/libexec/release/metadata.hidden" || exit 1
+fast_rc=0
+fast_out="$(HOME="$formula_home" "$formula_cellar/bin/orchid" --version 2>&1)" || fast_rc=$?
+assert_eq 1 "$fast_rc" 'installed fast version refuses a missing release metadata file'
+assert_match 'release version is missing' "$fast_out" 'installed version missing metadata diagnosis'
+red_case 'installed Formula payload without release metadata cannot satisfy the public fast-version contract'
+mv "$formula_cellar/libexec/release/metadata.hidden" "$formula_cellar/libexec/release/metadata.conf" || exit 1
+for fast_flag in --version -v -V; do
+  assert_eq 1.0.0-beta.1 "$(HOME="$formula_home" "$formula_cellar/bin/orchid" "$fast_flag")" 'installed payload supports each bare fast version flag'
+done
+green_case 'restored exact Formula release metadata satisfies all public fast-version flags'
+ln -s "$formula_cellar" "$formula_opt"
   if [ -f "$formula_opt/libexec/install.sh" ]; then
     formula_setup() (
       unset CLAUDE_SKILLS_DIR ORCHID_BIN_DIR ORCHID_HOME ORCHID_REPO ORCHID_EPOCH ORCHID_ROOT

@@ -85,6 +85,7 @@ export const OrchidPlugin = async ({ directory }) => ({
     try {
       const context = execFileSync($quoted, ["context", "--ambient"], {
         cwd: directory, timeout: 3000, maxBuffer: 8192,
+        env: { ...process.env, ORCHID_OUTPUT: "toon" },
         encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
       }).trim();
       if (context && !output.system.includes(context)) output.system.push(context);
@@ -340,7 +341,7 @@ frontend_hook() {
   if [ "$event" != "$expected_event" ]; then printf '{}\n'; return 0; fi
   cwd="$(jq -er '.cwd | select(type=="string" and length>0)' <<< "$payload" 2>/dev/null)" || cwd=''
   if [ -n "$cwd" ] && [ -d "$cwd" ]; then
-    context="$(cd "$cwd" && with_timeout 3 "$ORCHID_ROOT/bin/orchid" context --ambient 2>/dev/null)" || context=''
+    context="$(cd "$cwd" && ORCHID_OUTPUT=toon with_timeout 3 "$ORCHID_ROOT/bin/orchid" context --ambient 2>/dev/null)" || context=''
   fi
   [ "${#context}" -le 8192 ] || context=''
   if [ -z "$context" ]; then printf '{}\n'; return 0; fi
