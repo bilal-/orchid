@@ -109,6 +109,8 @@ green_case 'requalification accepts unchanged good bytes and restores current-co
 mkdir -p "$WORK/install-source/bin" "$WORK/install-source/lib" "$WORK/install-target"
 cp "$REPO_ROOT/install.sh" "$WORK/install-source/install.sh"
 cp "$REPO_ROOT/lib/common.sh" "$WORK/install-source/lib/common.sh"
+# The installer now requires the shared frontend helper before binary admission.
+cp "$REPO_ROOT/lib/frontend.sh" "$WORK/install-source/lib/frontend.sh"
 cp "$REPO_ROOT/lib/config-keys.txt" "$WORK/install-source/lib/config-keys.txt"
 cat > "$WORK/install-source/bin/orchid" <<'OWNED'
 #!/usr/bin/env bash
@@ -132,7 +134,7 @@ FOREIGN
   rc=0
   out="$(cd "$WORK/install-target" && HOME="$install_home" /bin/bash "$WORK/install-source/install.sh" 2>&1)" || rc=$?
   assert_eq 0 "$rc" "installer accepts occupied foreign $kind in a target Git checkout"
-  assert_match 'skip.*(not a symlink|foreign symlink)' "$out" "installer discloses occupied foreign $kind"
+  assert_match 'skip.*(not (a )?symlink|foreign symlink)' "$out" "installer discloses occupied foreign $kind"
   [ ! -e "$install_home/foreign-doctor" ] || fail "installer executed foreign $kind"
   assert_eq doctor "$(cat "$install_home/owned-doctor" 2>/dev/null)" "installer invokes its source doctor despite occupied $kind"
   cmp -s "$install_home/foreign-orchid" "$install_home/.local/bin/orchid" || fail "installer changed foreign $kind bytes"
