@@ -25,8 +25,16 @@ skills without maintaining a directory allowlist. `--list-shell` prints the
 discovered set without running the gate.
 
 The command runs Bash syntax, ShellCheck at warning severity, the full test
-suite, and then calls out invariant and documentation suites explicitly. It
-needs only Bash 3.2+, Git, jq, and ShellCheck; it reads no repository secrets.
+suite, and then calls out invariant and documentation suites explicitly. The
+portable local gate needs Bash 3.2+, Git, jq, and ShellCheck. Hosted source-matrix
+and pinned-archive jobs also install Node 22, Python 3.11, and PyYAML 6.0.3. They
+bind the absolute Python interpreter as `ORCHID_FRONTEND_PYTHON` and set
+`ORCHID_REQUIRE_NATIVE_FRONTENDS=1`, making all four native frontend fixtures
+required. The command-output fixture also uses the official
+`@toon-format/toon@4.1.1` decoder through `ORCHID_TOON_MODULE`. These are test
+runtimes; no vendor CLI or model call is needed. Local runs record unavailable
+optional native or decoder checks as `NOT-TESTED`. The gate reads no repository
+secrets.
 
 This repository also names that command as its `merge_gate` in `orchid.config`,
 so `orchid merge` runs it on the merged tree before advancing the integration

@@ -427,3 +427,37 @@ release candidate must retain the beta version,
 receive its integration-owned formula pin, and pass the required local,
 hosted, native-package, and public-download checks. `6275d16` must not be
 published. Historical passing evidence remains evidence for its own tree.
+
+## Native context release follow-through — 2026-10-04
+
+The subsequent `0c3ccbc` integration candidate passed complete local source
+and extracted-archive CI (108 test blocks each), exact native Homebrew
+installation, and isolated setup and context callbacks for all four hosts.
+It was pushed to `main`. Hosted run
+[`37225137285`](https://github.com/bilal-/orchid/actions/runs/37225137285)
+passed Linux, confirming the GNU repairs above, but failed macOS. No public
+beta tag, release, or tap update was published.
+
+The complete macOS log has one failed suite, `test_frontend_setup.sh`, and
+107 passing suites. Two positive fixtures, Codex and OpenCode, returned
+empty context. Hermes was skipped because that runner lacked PyYAML.
+Controlled local callbacks take about two seconds; inserting a four-second
+delay before the real context reproduces both empty transports under the
+three-second deadline. This establishes the deadline's failure mechanism,
+but the hosted log does not establish why those particular callbacks failed.
+
+The next repair gives native context a ten-second inner deadline and shell
+hosts a fifteen-second registration budget, retaining bounded output,
+fail-open transport, and repository ownership checks. Hosted CI must install
+the native runtime dependencies and require all four frontend checks.
+Controlled measurements also isolate a delay from an absent Linuxbrew entry
+in the trusted helper path. The repair includes that fixed entry only when
+it is a directory, preserving its original order when installed and leaving
+the operator's supplied path intact.
+The focused causal and accepting tests pass for all four callbacks and both
+shell entry points, as do documentation, whole-tree static checks, and an
+independent cross-review. Fresh integration-owned pinning, full source/archive
+qualification, native package checks, and successful hosted CI remain pending.
+`0c3ccbc` must not be
+published. This is a dated preparation snapshot; the release page owns any
+subsequent publication evidence.
