@@ -302,8 +302,17 @@ entries are refused rather than removed using an old ownership record.
 OpenCode's local plugin uses the current
 `experimental.chat.system.transform` typed plugin hook. Its experimental name
 is a compatibility limit: future OpenCode releases may change it. The plugin
-uses only native `node:child_process`, with a three-second timeout and an
-8 KiB output bound; it requires no plugin dependency downloads.
+uses only native `node:child_process` and `node:fs`, with a ten-second context
+timeout and an
+8 KiB output bound; it requires no plugin dependency downloads. The same
+ten-second context budget applies to Claude, Codex, and Hermes. Their native
+shell registrations allow fifteen seconds so startup and process-group cleanup
+can finish before the host deadline. The budgets are internal constants, not
+project or environment overrides. Timed-out commands, including ones that
+already emitted partial context, contribute no session context; unsafe input
+and oversized output are omitted too. Native callbacks retain the fixed trusted
+helper-prefix order; the Linuxbrew prefix participates only while its directory
+exists. Project and inherited helper paths do not enter that list.
 
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME`, and `XDG_CONFIG_HOME` select
 native profiles for setup; `CLAUDE_SKILLS_DIR` still overrides Claude skill

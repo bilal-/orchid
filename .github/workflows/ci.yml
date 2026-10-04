@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+env:
+  ORCHID_REQUIRE_NATIVE_FRONTENDS: "1"
+
 jobs:
   deterministic-suite:
     name: ${{ matrix.os }} / Bash
@@ -19,6 +22,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Set up native frontend Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Set up native frontend Python
+        id: frontend-python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install native frontend and TOON test dependencies
+        run: |
+          python="${{ steps.frontend-python.outputs.python-path }}"
+          "$python" -m pip install --disable-pip-version-check 'PyYAML==6.0.3'
+          "$python" -c 'import sys, yaml; assert sys.version_info[:2] == (3, 11); assert yaml.__version__ == "6.0.3"'
+          npm install --prefix "$RUNNER_TEMP/orchid-ci-toon" --ignore-scripts --no-audit --no-fund --package-lock=false '@toon-format/toon@4.1.1'
+          toon_module="$RUNNER_TEMP/orchid-ci-toon/node_modules/@toon-format/toon/dist/index.mjs"
+          test -r "$toon_module"
+          printf 'ORCHID_FRONTEND_PYTHON=%s\nORCHID_TOON_MODULE=%s\n' "$python" "$toon_module" >> "$GITHUB_ENV"
       - name: Install Linux lint dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y jq shellcheck
@@ -37,6 +59,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Set up native frontend Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Set up native frontend Python
+        id: frontend-python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install native frontend and TOON test dependencies
+        run: |
+          python="${{ steps.frontend-python.outputs.python-path }}"
+          "$python" -m pip install --disable-pip-version-check 'PyYAML==6.0.3'
+          "$python" -c 'import sys, yaml; assert sys.version_info[:2] == (3, 11); assert yaml.__version__ == "6.0.3"'
+          npm install --prefix "$RUNNER_TEMP/orchid-ci-toon" --ignore-scripts --no-audit --no-fund --package-lock=false '@toon-format/toon@4.1.1'
+          toon_module="$RUNNER_TEMP/orchid-ci-toon/node_modules/@toon-format/toon/dist/index.mjs"
+          test -r "$toon_module"
+          printf 'ORCHID_FRONTEND_PYTHON=%s\nORCHID_TOON_MODULE=%s\n' "$python" "$toon_module" >> "$GITHUB_ENV"
       - name: Install release dependencies
         run: sudo apt-get update && sudo apt-get install -y jq shellcheck
       - name: Build and test without publishing

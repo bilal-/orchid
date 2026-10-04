@@ -1,7 +1,10 @@
 #!/bin/bash -p
 set -euo pipefail
 # One-shot, explicit per-user registration; this runner never acquires an epoch.
-PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+PATH="/opt/homebrew/bin:/usr/local/bin"
+# Match the CLI's trusted entry order without searching an absent automount.
+if [ -d /home/linuxbrew/.linuxbrew/bin ]; then PATH="$PATH:/home/linuxbrew/.linuxbrew/bin"; fi
+PATH="$PATH:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 unset CDPATH
 self="$0"

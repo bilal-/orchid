@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Explicit, user-scoped frontend registration. No repository state is touched.
+# Internal budget, reset on source: ambient host environment cannot override it.
+FRONTEND_CONTEXT_TIMEOUT_S=10
 frontend_root() {
   local root="$ORCHID_ROOT" opt
   case "$root" in
@@ -64,12 +66,12 @@ frontend_python() {
 }
 
 frontend_entry() {
-  local command
+  local command host_timeout=$((FRONTEND_CONTEXT_TIMEOUT_S + 5))
   command="$(jq -rn --arg path "$FRONTEND_ARTIFACT" '$path | @sh')"
   if [ "$FRONTEND_HOST" = hermes ]; then
-    jq -cn --arg command "$command" '{command:$command,timeout:5}'
+    jq -cn --arg command "$command" --argjson timeout "$host_timeout" '{command:$command,timeout:$timeout}'
   else
-    jq -cn --arg command "$command" '{matcher:"",hooks:[{type:"command",command:$command,timeout:5}]}'
+    jq -cn --arg command "$command" --argjson timeout "$host_timeout" '{matcher:"",hooks:[{type:"command",command:$command,timeout:$timeout}]}'
   fi
 }
 
@@ -80,12 +82,18 @@ frontend_artifact() {
     cat <<EOF
 // Orchid managed frontend: read-only context; no model or runtime launches.
 import { execFileSync } from "node:child_process";
+import { statSync } from "node:fs";
 export const OrchidPlugin = async ({ directory }) => ({
   "experimental.chat.system.transform": async (_input, output) => {
     try {
+      const nativePrefixes = ["/opt/homebrew/bin", "/usr/local/bin"];
+      try {
+        if (statSync("/home/linuxbrew/.linuxbrew/bin").isDirectory()) nativePrefixes.push("/home/linuxbrew/.linuxbrew/bin");
+      } catch { /* An absent fixed prefix must not slow every helper lookup. */ }
+      nativePrefixes.push("/opt/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin");
       const context = execFileSync($quoted, ["context", "--ambient"], {
-        cwd: directory, timeout: 3000, maxBuffer: 8192,
-        env: { ...process.env, ORCHID_REPO: directory, ORCHID_OUTPUT: "toon", PATH: "/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" },
+        cwd: directory, timeout: $((FRONTEND_CONTEXT_TIMEOUT_S * 1000)), maxBuffer: 8192,
+        env: { ...process.env, ORCHID_REPO: directory, ORCHID_OUTPUT: "toon", PATH: nativePrefixes.join(":") },
         encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
       }).trim();
       if (context && !output.system.includes(context)) output.system.push(context);
@@ -341,7 +349,7 @@ frontend_hook() {
   if [ "$event" != "$expected_event" ]; then printf '{}\n'; return 0; fi
   cwd="$(jq -er '.cwd | select(type=="string" and length>0)' <<< "$payload" 2>/dev/null)" || cwd=''
   if [ -n "$cwd" ] && [ -d "$cwd" ]; then
-    context="$(cd "$cwd" && ORCHID_REPO="$cwd" ORCHID_OUTPUT=toon with_timeout 3 "$ORCHID_ROOT/bin/orchid" context --ambient 2>/dev/null)" || context=''
+    context="$(cd "$cwd" && ORCHID_REPO="$cwd" ORCHID_OUTPUT=toon with_timeout "$FRONTEND_CONTEXT_TIMEOUT_S" "$ORCHID_ROOT/bin/orchid" context --ambient 2>/dev/null)" || context=''
   fi
   [ "${#context}" -le 8192 ] || context=''
   if [ -z "$context" ]; then printf '{}\n'; return 0; fi

@@ -233,7 +233,7 @@ unset ORCHID_FIXTURE_LARGE
 export ORCHID_FIXTURE_SLOW=1
 start=$SECONDS
 assert_eq '{}' "$(printf '%s\n' "$payload" | "$HOME/.orchid/frontends/claude-hook")" 'slow context fails open'
-[ "$((SECONDS-start))" -le 8 ] || fail 'native callback exceeded bounded timeout'
+[ "$((SECONDS-start))" -le 15 ] || fail 'native callback exceeded bounded timeout'
 unset ORCHID_FIXTURE_SLOW
 if [ -n "$fixture_node" ]; then
   for rejected in FAIL LARGE SLOW; do
@@ -244,7 +244,7 @@ const {OrchidPlugin}=await import(pathToFileURL(process.argv[2]));
 const plugin=await OrchidPlugin({directory:process.argv[3]});
 const output={system:['foreign context']}; const start=Date.now();
 await plugin['experimental.chat.system.transform']({},output);
-if(output.system.length!==1 || Date.now()-start>8000) throw Error('callback did not fail open boundedly');
+if(output.system.length!==1 || Date.now()-start>15000) throw Error('callback did not fail open boundedly');
 JS
     unset "ORCHID_FIXTURE_$rejected"
   done
@@ -509,6 +509,24 @@ native_repo="$WORK/native-runtime-repo"
 native_neutral="$WORK/native-stale-repo"
 mkdir -p "$native_root" "$native_home" "$native_repo/.orchid/tasks" "$native_repo/.orchid/runtime" "$native_repo/tools" "$native_neutral"
 for dir in bin lib libexec runners release; do cp -R "$REPO_ROOT/$dir" "$native_root/"; done
+mv "$native_root/bin/orchid" "$native_root/bin/orchid-actual"
+cat > "$native_root/bin/orchid" <<'EOF'
+#!/bin/bash -p
+root="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [ "${1:-}" = context ]; then
+  printf 'entered\n' >> "$ORCHID_FIXTURE_NATIVE_TRACE"
+  printf 'path=%s\n' "$PATH" >> "$ORCHID_FIXTURE_NATIVE_TRACE"
+  sleep "${ORCHID_FIXTURE_NATIVE_DELAY:-0}"
+  "$root/bin/orchid-actual" "$@"; rc=$?
+  printf 'kernel_exit=%s\n' "$rc" >> "$ORCHID_FIXTURE_NATIVE_TRACE"
+  if [ "${ORCHID_FIXTURE_NATIVE_PARTIAL:-0}" = 1 ]; then sleep 15; fi
+  printf 'completed\n' >> "$ORCHID_FIXTURE_NATIVE_TRACE"
+  exit "$rc"
+fi
+exec "$root/bin/orchid-actual" "$@"
+EOF
+chmod 755 "$native_root/bin/orchid"
+export ORCHID_FIXTURE_NATIVE_TRACE="$WORK/native-initial.trace"
 printf '%s\n' '---' 'run_id: native-owned-fixture' 'run_status: active' '---' > "$native_repo/.orchid/roadmap.md"
 printf '1\n' > "$native_repo/.orchid/runtime/epoch"
 assert_eq '' "$(cd "$native_repo" && ORCHID_REPO="$native_neutral" ORCHID_OUTPUT=toon "$native_root/bin/orchid" context --ambient)" \
@@ -533,17 +551,22 @@ assert_eq $'jq\ngit' "$(cat "$ORCHID_FRONTEND_HELPER_MARKER")" 'project-helper c
 rm "$ORCHID_FRONTEND_HELPER_MARKER"
 
 native_callback_shell() {
-  local host="$1" phase="$2" event=SessionStart payload
+  local host="$1" phase="$2" event=SessionStart payload started=$SECONDS
+  export ORCHID_FIXTURE_NATIVE_TRACE="$WORK/native-$phase-$host.trace"
+  : > "$ORCHID_FIXTURE_NATIVE_TRACE"
   [ "$host" != hermes ] || event=pre_llm_call
   payload="$(jq -cn --arg cwd "$native_repo" --arg event "$event" '{cwd:$cwd,hook_event_name:$event}')"
   printf '%s\n' "$payload" | HOME="$native_home" ORCHID_REPO="$native_neutral" ORCHID_OUTPUT=raw PATH="$native_repo/tools:$native_operator_path" \
     "$native_home/.orchid/frontends/$host-hook" > "$WORK/native-$phase-$host.json" 2> "$WORK/native-$phase-$host.err" \
     || fail "native callback failed its optional host protocol: $phase $host"
+  printf '%s\n' "$((SECONDS-started))" > "$WORK/native-$phase-$host.seconds"
 }
 native_callback_opencode() {
-  local phase="$1"
+  local phase="$1" started=$SECONDS module="${2:-$native_home/.config/opencode/plugins/orchid.js}"
   [ -n "$fixture_node" ] || return 0
-  cp "$native_home/.config/opencode/plugins/orchid.js" "$WORK/native-orchid.mjs"
+  export ORCHID_FIXTURE_NATIVE_TRACE="$WORK/native-$phase-opencode.trace"
+  : > "$ORCHID_FIXTURE_NATIVE_TRACE"
+  cp "$module" "$WORK/native-orchid.mjs"
   HOME="$native_home" ORCHID_REPO="$native_neutral" ORCHID_OUTPUT=raw PATH="$native_repo/tools:$native_operator_path" \
     "$fixture_node" --input-type=module - "$WORK/native-orchid.mjs" "$native_repo" <<'JS' > "$WORK/native-$phase-opencode.json" 2> "$WORK/native-$phase-opencode.err" || fail "real OpenCode context callback failed: $phase"
 import {pathToFileURL} from 'node:url';
@@ -553,6 +576,16 @@ const output={system:['foreign context']};
 await plugin['experimental.chat.system.transform']({},output);
 console.log(JSON.stringify(output));
 JS
+  printf '%s\n' "$((SECONDS-started))" > "$WORK/native-$phase-opencode.seconds"
+}
+native_context_diagnostic() {
+  local host="$1" phase="$2" elapsed trace category=not_entered
+  elapsed="$(cat "$WORK/native-$phase-$host.seconds")"
+  trace="$WORK/native-$phase-$host.trace"
+  if grep -qx completed "$trace"; then category=completed_without_expected_context
+  elif grep -qx entered "$trace"; then category=deadline_or_interrupted_before_completion; fi
+  printf '  native fixture diagnostic: host=%s phase=%s elapsed=%ss category=%s\n' "$host" "$phase" "$elapsed" "$category" >&2
+  grep -E '^(entered|kernel_exit=[0-9]+|completed)$' "$trace" >&2 || true
 }
 cp -R "$native_repo/.orchid" "$WORK/native-owned-state.before"
 for host in claude codex hermes; do
@@ -560,17 +593,94 @@ for host in claude codex hermes; do
   native_callback_shell "$host" owned
   if [ "$host" = hermes ]; then native_context="$(jq -r '.context // ""' "$WORK/native-owned-$host.json")"
   else native_context="$(jq -r '.hookSpecificOutput.additionalContext // ""' "$WORK/native-owned-$host.json")"; fi
+  case "$native_context" in *native-owned-fixture*) ;; *) native_context_diagnostic "$host" owned ;; esac
   assert_match 'native-owned-fixture' "$native_context" "owned real context reaches $host native transport"
   assert_match 'tasks:' "$native_context" "owned real context remains compact agent format for $host"
 done
 native_callback_opencode owned
 if [ -n "$fixture_node" ]; then
-  jq -e '.system|length==2' "$WORK/native-owned-opencode.json" >/dev/null || fail 'owned real context did not reach OpenCode'
+  jq -e '.system|length==2' "$WORK/native-owned-opencode.json" >/dev/null || { native_context_diagnostic opencode owned; fail 'owned real context did not reach OpenCode'; }
   assert_match 'native-owned-fixture' "$(jq -r '.system[1] // ""' "$WORK/native-owned-opencode.json")" 'OpenCode owned context is the real compact dashboard'
 fi
 [ ! -e "$ORCHID_FRONTEND_HELPER_MARKER" ] || fail 'ambient native callback ran a project-owned jq or Git helper'
 diff -r "$WORK/native-owned-state.before" "$native_repo/.orchid" >/dev/null || fail 'owned native callbacks mutated project state'
 green_case 'generated native callbacks scope owned real context to host directory despite stale repository override, use trusted helpers, and preserve state'
+
+# RED: the former three-second deadline omits this valid four-second context.
+# GREEN: all four native transports retain it within the new internal budget.
+export ORCHID_FIXTURE_NATIVE_DELAY=4 FRONTEND_CONTEXT_TIMEOUT_S=1
+for host in claude codex hermes; do
+  [ "$host" != hermes ] || [ -n "$fixture_python" ] || continue
+  native_callback_shell "$host" delayed
+  if [ "$host" = hermes ]; then native_context="$(jq -r '.context // ""' "$WORK/native-delayed-$host.json")"
+  else native_context="$(jq -r '.hookSpecificOutput.additionalContext // ""' "$WORK/native-delayed-$host.json")"; fi
+  case "$native_context" in *native-owned-fixture*) ;; *) native_context_diagnostic "$host" delayed ;; esac
+  assert_match native-owned-fixture "$native_context" "valid four-second context reaches $host despite inherited budget override"
+  assert_match 'tasks:' "$native_context" "delayed $host context retains compact dashboard"
+  [ "$(cat "$WORK/native-delayed-$host.seconds")" -le 15 ] || fail "delayed $host callback exceeded native bound"
+  if [ "$host" = hermes ]; then jq -e '.entry.timeout==15' "$native_home/.orchid/frontends/$host.json" >/dev/null || fail 'Hermes native timeout lacks cleanup headroom'
+  else jq -e '.entry.hooks[0].timeout==15' "$native_home/.orchid/frontends/$host.json" >/dev/null || fail "$host native timeout lacks cleanup headroom"; fi
+ done
+native_callback_opencode delayed
+if [ -n "$fixture_node" ]; then
+  jq -e '.system|length==2' "$WORK/native-delayed-opencode.json" >/dev/null || { native_context_diagnostic opencode delayed; fail 'valid four-second context did not reach OpenCode'; }
+  assert_match native-owned-fixture "$(jq -r '.system[1] // ""' "$WORK/native-delayed-opencode.json")" 'delayed OpenCode uses real compact context'
+  [ "$(cat "$WORK/native-delayed-opencode.seconds")" -le 15 ] || fail 'delayed OpenCode exceeded native bound'
+fi
+unset ORCHID_FIXTURE_NATIVE_DELAY FRONTEND_CONTEXT_TIMEOUT_S
+green_case 'valid four-second real context reaches all native transports within internal budget and shell host cleanup headroom'
+
+# RED/GREEN: the exact fixed Linuxbrew prefix is omitted when absent or not a
+# directory, and remains in its original place when available. Substitute only
+# that literal in an owned generated plugin; never create global /home paths.
+if [ -n "$fixture_node" ]; then
+  native_virtual_prefix="$WORK/native-linuxbrew space/bin"
+  native_virtual_module="$WORK/native-virtual-prefix.mjs"
+  "$fixture_node" --input-type=module - "$native_home/.config/opencode/plugins/orchid.js" "$native_virtual_module" "$native_virtual_prefix" <<'JS' || fail 'owned virtual prefix fixture could not be generated'
+import {readFileSync,writeFileSync} from 'node:fs';
+const source=readFileSync(process.argv[2],'utf8');
+const literal='/home/linuxbrew/.linuxbrew/bin';
+if (!source.includes(literal)) throw Error('fixed prefix absent from generated artifact');
+writeFileSync(process.argv[3],source.replaceAll(literal,JSON.stringify(process.argv[4]).slice(1,-1)));
+JS
+  native_callback_opencode absent_prefix "$native_virtual_module"
+  native_env_path="$(sed -n 's/^path=//p' "$WORK/native-absent_prefix-opencode.trace")"
+  assert_eq '/opt/homebrew/bin:/usr/local/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' "$native_env_path" 'absent fixed native prefix is omitted while remaining trusted order is preserved'
+  jq -e '.system|length==2' "$WORK/native-absent_prefix-opencode.json" >/dev/null || fail 'absent optional prefix suppressed valid native context'
+  mkdir -p "$native_virtual_prefix"
+  native_callback_opencode existing_prefix "$native_virtual_module"
+  native_env_path="$(sed -n 's/^path=//p' "$WORK/native-existing_prefix-opencode.trace")"
+  assert_eq "/opt/homebrew/bin:/usr/local/bin:$native_virtual_prefix:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$native_env_path" 'existing fixed native directory keeps its trusted precedence'
+  jq -e '.system|length==2' "$WORK/native-existing_prefix-opencode.json" >/dev/null || fail 'existing fixed prefix suppressed valid native context'
+  rmdir "$native_virtual_prefix"
+  printf 'not a directory\n' > "$native_virtual_prefix"
+  native_callback_opencode file_prefix "$native_virtual_module"
+  native_env_path="$(sed -n 's/^path=//p' "$WORK/native-file_prefix-opencode.trace")"
+  assert_eq '/opt/homebrew/bin:/usr/local/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' "$native_env_path" 'regular file does not qualify as fixed native helper directory'
+  red_case 'absent or non-directory fixed prefix never enters generated native helper PATH'
+  green_case 'existing fixed directory retains precedence and actual native context on the same guarded path'
+fi
+
+# RED/GREEN: real valid output is partial until its process finishes. Expiry
+# must discard it rather than publish an otherwise correct dashboard.
+export ORCHID_FIXTURE_NATIVE_PARTIAL=1
+for host in claude codex hermes; do
+  [ "$host" != hermes ] || [ -n "$fixture_python" ] || continue
+  native_callback_shell "$host" partial
+  grep -qx kernel_exit=0 "$WORK/native-partial-$host.trace" || fail "$host partial-output fixture never produced valid context"
+  assert_eq '{}' "$(cat "$WORK/native-partial-$host.json")" "expired partial real context fails open for $host"
+  [ "$(cat "$WORK/native-partial-$host.seconds")" -le 15 ] || fail "expired $host callback exceeded native bound"
+done
+native_callback_opencode partial
+if [ -n "$fixture_node" ]; then
+  grep -qx kernel_exit=0 "$WORK/native-partial-opencode.trace" || fail 'OpenCode partial-output fixture never produced valid context'
+  jq -e '.system==["foreign context"]' "$WORK/native-partial-opencode.json" >/dev/null || fail 'expired partial context reached OpenCode prompt'
+  [ "$(cat "$WORK/native-partial-opencode.seconds")" -le 15 ] || fail 'expired OpenCode callback exceeded native bound'
+fi
+unset ORCHID_FIXTURE_NATIVE_PARTIAL
+red_case 'expired native commands discard already-emitted valid partial context for every host'
+[ ! -e "$ORCHID_FRONTEND_HELPER_MARKER" ] || fail 'delayed native callback ran a project-owned helper'
+diff -r "$WORK/native-owned-state.before" "$native_repo/.orchid" >/dev/null || fail 'delayed or expired callbacks mutated project state'
 
 printf '%s\n' '---' 'run_id: ORCHID_FAKE_NATIVE_EXTERNAL_SECRET' 'run_status: active' '---' > "$WORK/native-external-roadmap"
 mv "$native_repo/.orchid/roadmap.md" "$WORK/native-owned-roadmap"

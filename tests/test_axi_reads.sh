@@ -4,6 +4,46 @@
 # GREEN: Valid forms, pure reads, contained plugins and guarded idempotent
 # repeats accept through the same checks without extra durable writes.
 source "$(dirname "$0")/helpers.sh"
+# Trusted entry PATH must not repeatedly search an absent automounted prefix.
+# Observe the shipped bootstrap itself in owned copies, stopping immediately
+# after its PATH export so no kernel or frontend main code can run.
+make_scratch ENTRY_SCRATCH
+ENTRY_PREFIX="$ENTRY_SCRATCH/entry-linuxbrew-bin"
+ENTRY_TOOLS="$ENTRY_SCRATCH/entry-hostile-tools"
+mkdir -p "$ENTRY_TOOLS"
+for entry_tool in dirname readlink jq git; do
+  printf '#!/bin/bash\nprintf "executed\\n" >> "$ORCHID_ENTRY_HELPER_MARKER"\nexit 1\n' > "$ENTRY_TOOLS/$entry_tool"
+  chmod 755 "$ENTRY_TOOLS/$entry_tool"
+done
+printf 'printf "executed\\n" >> "$ORCHID_ENTRY_HELPER_MARKER"\n' > "$ENTRY_SCRATCH/entry-bash-env"
+for entry in bin/orchid runners/orchid-setup; do
+  entry_copy="$ENTRY_SCRATCH/entry-${entry##*/}"
+  sed "s|/home/linuxbrew/.linuxbrew/bin|$ENTRY_PREFIX|g" "$REPO_ROOT/$entry" | \
+    awk '/^export PATH$/ && !recorded {
+      print
+      print "printf '\''%s\\n'\'' \"$PATH\" > \"$ORCHID_ENTRY_PATH_CAPTURE\""
+      print "exit 0"
+      recorded=1
+      next
+    } { print }' > "$entry_copy"
+  for prefix_state in absent present; do
+    [ "$prefix_state" != present ] || mkdir "$ENTRY_PREFIX"
+    rc=0
+    PATH="$ENTRY_TOOLS" BASH_ENV="$ENTRY_SCRATCH/entry-bash-env" \
+      ORCHID_ENTRY_HELPER_MARKER="$ENTRY_SCRATCH/entry-helper.executed" \
+      ORCHID_ENTRY_PATH_CAPTURE="$ENTRY_SCRATCH/entry-path.out" \
+      /bin/bash -p "$entry_copy" > "$ENTRY_SCRATCH/entry.out" 2> "$ENTRY_SCRATCH/entry.err" || rc=$?
+    assert_eq 0 "$rc" "$entry $prefix_state trusted bootstrap accepts"
+    expected_entry_path='/opt/homebrew/bin:/usr/local/bin'
+    [ "$prefix_state" != present ] || expected_entry_path="$expected_entry_path:$ENTRY_PREFIX"
+    expected_entry_path="$expected_entry_path:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    assert_eq "$expected_entry_path" "$(cat "$ENTRY_SCRATCH/entry-path.out")" "$entry $prefix_state prefix preserves exact trusted order"
+    [ ! -e "$ENTRY_SCRATCH/entry-helper.executed" ] || fail "$entry bootstrap executed an inherited helper"
+    [ "$prefix_state" != present ] || rmdir "$ENTRY_PREFIX"
+  done
+done
+red_case 'trusted entries omit absent Linuxbrew prefix without executing inherited helpers'
+green_case 'trusted entries retain an existing owned Linuxbrew directory in its exact position'
 # The override executes the same assertions against the frozen pre-AXI tree.
 ORCHID_BIN="${ORCHID_AXI_BIN_OVERRIDE:-$ORCHID_BIN}"
 export ORCHID_OUTPUT=raw HOME="$MACHINE_HOME" ORCHID_REPO="$WORK"
