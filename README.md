@@ -39,10 +39,12 @@ requires them to be installed already.
 > repositories, but every run was operated by Orchid's author. That is useful
 > external-repository evidence, not a genuine third-party beta. A `1.0.0`
 > would claim an unfamiliar operator can run and recover it unattended; r-002
-> proved that claim is not earned yet. No genuine third-party beta or public
-> release has happened.
+> proved that claim is not earned yet. The status recorded at snapshot
+> preparation was: no genuine third-party beta or public release has happened.
 
-> Orchid remains in private, author-operated dogfood. Until the operator
+> The qualification evidence is author-operated dogfood.
+> [The beta release page](https://github.com/bilal-/orchid/releases/tag/v1.0.0-beta.1)
+> records current publication status. Until the operator
 > publishes the prepared tag, install from a clone
 > ([docs/install.md](./docs/install.md#git-clone-for-hacking-on-orchid-itself)); that is the
 > exact path the timed rehearsal below used.

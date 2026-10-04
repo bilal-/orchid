@@ -3,7 +3,9 @@
 This file applies to the entire repository. Orchid is a Bash 3.2+, Git, and
 `jq` orchestration kernel. It is still in the `1.0.0-beta.x` series: the
 author has dogfooded it on Orchid and on external application repositories,
-but no genuine third-party beta or public release has happened.
+and the status recorded at snapshot preparation was: no genuine third-party
+beta or public release has happened. Check GitHub releases for current
+publication status and SESSION-STATE.md for subsequent observations.
 
 ## Start here
 

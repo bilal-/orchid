@@ -16,12 +16,13 @@ curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install
 
 **The prepared version is `1.0.0-beta.1`, a prerelease.** Orchid has run on
 its own repository and on the webBooks and wasiyyat application repositories,
-but all of that was author-operated dogfood. No genuine third-party beta or
-public release has happened; `1.0.0` is reserved for the stronger evidence in
+but all of that was author-operated dogfood. The status recorded at snapshot
+preparation was: no genuine third-party beta or public release has happened; `1.0.0` is reserved for the stronger evidence in
 [the r-002 retrospective](./r-002-retrospective.md#the-requirements-for-10).
 
-**This is the prepared release-day URL, not evidence that a release was
-published.** r-002 did not push a tag or publish the repository, installer, or
+**This snapshot was prepared before publication.** Check [the beta release
+page](https://github.com/bilal-/orchid/releases/tag/v1.0.0-beta.1) for current
+availability. r-002 did not push a tag or publish the repository, installer, or
 Homebrew tap. Until the operator performs those steps, use the
 [git clone method](#git-clone-for-hacking-on-orchid-itself) below instead.
 

@@ -30,8 +30,10 @@ exact line later reselects `v1.0.0-beta.1`; it does not upgrade Orchid. To
 upgrade, select the install URL for a newer immutable released tag.
 
 The prepared version is a prerelease on purpose. Orchid has author-operated
-dogfood on its own repository plus webBooks and wasiyyat, but no genuine
-third-party beta or public release has happened. `1.0.0` is what that stronger
+dogfood on its own repository plus webBooks and wasiyyat. The status recorded
+at snapshot preparation was: no genuine third-party beta or public release has happened.
+[The beta release page](https://github.com/bilal-/orchid/releases/tag/v1.0.0-beta.1)
+records current availability. `1.0.0` is what that stronger
 evidence earns.
 
 **Developing on orchid itself?** Clone it instead, so `install.sh` runs
