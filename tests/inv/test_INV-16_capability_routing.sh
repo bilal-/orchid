@@ -1041,8 +1041,14 @@ eplant ETHREE 00e5
 run_edrive
 assert_eq 0 "$(erefusals ETHREE)" \
   "INV-16: the identical relaunch is not refused when the bound actor declares what orchestrate needs (out: $EDRIVE_OUT)"
-assert_eq 1 "$(list_dir_files "$erepo/.orchid/runtime/jobs" | grep -c ETHREE || true)" \
-  "INV-16: and it mints the job it always did — so the refusals above are capability decisions, not a ladder that had stopped relaunching"
+# The admitted no-op adapter can exit before this pass's GC. The public jobs
+# table includes both outstanding manifests and persisted retired-job history;
+# a positive PID and drive attribution prove an actual spawn in either state.
+assert_eq 1 "$("$ORCHID_BIN" jobs ls --all --tsv | awk -F '\t' '
+  $2 == "ETHREE" && $3 == "runner" && $4 == "orchestrate" &&
+  $6 == "withshell" && $7 ~ /^[1-9][0-9]*$/ && $12 == "drive" { n++ }
+  END { print n+0 }')" \
+  "INV-16: the admitted relaunch spawned its job, whether outstanding or already retired by GC"
 ethree_boundary="$(eboundary | jq -r '(.kind // "") + " " + (.task // "")' 2>/dev/null || true)"
 [ "$ethree_boundary" != "operator-handoff ETHREE" ] \
   || fail "INV-16: an admitted relaunch must raise no hand-off boundary at all (it recorded: $ethree_boundary)"

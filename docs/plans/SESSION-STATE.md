@@ -12,12 +12,14 @@ The operator requested a public beta available to anyone, explicitly authorized
 publishing a beta tag and release after checks pass, and chose the existing Sous
 tap: `brew install bilal-/tap/orchid`. Stable `1.0.0` remains unqualified.
 GitHub's homepage is set to `https://orchid.bilal.sh`; the operator is building
-that website separately. The operator subsequently requested PR #19's brand
-kit in this beta if its checks pass. Its logo assets remain in the tagged Git
+that website separately. The operator requested PR #19's brand kit in this
+beta and merged it at `77a2e1b`; that history is incorporated here. All 64
+generated brand assets rebuilt byte-identically in an independent scratch
+check. Its logo assets remain in the tagged Git
 tree, while the kernel archive excludes `brand/` as that PR specifies. The
 README uses pinned hosted logos so its archive and Homebrew copies work too.
 
-The distribution candidate includes the seven-pass review below and expands
+The distribution candidate includes the eight-pass review below and expands
 the Homebrew payload to include its source installer, skills, documentation,
 configuration example, and qualification harness. Per-user setup uses the stable
 Homebrew `opt` path. The installer and exact Formula payload passed offline
@@ -33,11 +35,13 @@ own `orchid/integration`, preserving the active integration worktree and journal
 The local review branch is `codex/full-codebase-review`, in the linked checkout
 `../orchid-review`, based on `main` at `03e78aac`. The original `main` checkout
 is preserved. PRs #15 and #17 were merged earlier in this session; the older
-pending-merge instructions below are historical and superseded. No remote
-status was refreshed during this review.
+pending-merge instructions below are historical and superseded. Remote status
+was not refreshed during the initial code-only passes; beta preparation later
+verified the repository, homepage, existing tap, and operator's #19 merge.
 
-Seven review passes were completed: five initial implementation passes, an
-independent parallel review, and a parallel cross-check. The review reproduced
+Eight review passes were completed: five initial implementation passes, an
+independent parallel review, a parallel cross-check, and aggregate verification.
+The review reproduced
 and repaired 21 issues. The changes concentrate on failed writes and hashes,
 literal configuration and permissions, durable publication and recovery,
 merge/worktree ownership, checked adapter environments, process identity,
@@ -52,13 +56,20 @@ regression suite, and targeted source/fixture review of the critical contracts;
 it does not mean every test or prose line was manually inspected.
 
 Focused tests and independent cross-checks passed on macOS `/bin/bash` 3.2.
-The canonical full local CI run is pending on the final committed candidate;
-earlier aggregate runs were canceled when later review passes reproduced new
-defects. They are not evidence of a full-suite pass. Review records and logs are
+The full run on `413421a` completed with exit 1: the proof-annotation gate found
+two missing standalone case comments, and INV-16's accepting twin counted only
+live manifests after its short-lived job could already be GC'd. Both are fixed
+in this candidate. The routing assertion uses `jobs ls --all --tsv` and proves
+an actual spawned job with its provider, operation, positive PID, and launcher;
+a suppressed-launch RED and forced-GC GREEN passed, as did focused INV-16 and
+the annotation gate. This was a fixture race, not a product routing regression.
+The final release-tree and extracted-archive full gates remain pending.
+Earlier interrupted runs are not full-suite passes. Review records and logs are
 under `/tmp/orchid-review.RpZ5fo/`; that directory is machine-local evidence,
 not a durable release artifact.
 
-The version remains `1.0.0-beta.1`. `Formula/orchid.rb` was not re-pinned.
+The version remains `1.0.0-beta.1`. The code-only review did not re-pin the
+formula; release preparation pins the assembled tree in its release checkout.
 No hosted CI, actual vendor qualification, third-party beta, publication, or
 release is claimed by this review. Process/path checks and subsequent OS
 operations retain their documented race; durable Git/filesystem publication
