@@ -997,8 +997,8 @@ grep -qF 'both of its output streams discarded unread' "$BETA_MD" \
   || fail "docs/beta-qualification.md must state that the verify command's output is never recorded"
 grep -qF 'never as a pass' "$BETA_MD" \
   || fail "docs/beta-qualification.md must state that an unperformed check is recorded as not-tested, never as a pass"
-grep -qF 'Still operator-owned, and not claimed anywhere in this repository' "$BETA_MD" \
-  || fail "docs/beta-qualification.md must keep its operator-owned section heading"
+grep -qF 'Operator-owned, not established by local checks' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must scope its operator-owned section to what local checks establish"
 beta_doc_one_line="$(tr '\n' ' ' < "$BETA_MD" | tr -s '[:space:]' ' ')"
 grep -qF 'Completed rows are an operator acceptance policy, not a condition enforced by the verb.' <<<"$beta_doc_one_line" \
   || fail "docs/beta-qualification.md must distinguish the operator policy requiring completed rows from what orchid run accept enforces"
@@ -1040,11 +1040,46 @@ grep -qF 'persistent answering agent' "$BETA_MD" \
 grep -qF 'no command allowlist' "$BETA_MD" \
   || fail "docs/beta-qualification.md must explain why a manifest capability is not a grant"
 
-# README's own summary must not soften either claim.
-grep -qF 'A genuine third-party beta run and any publication remain operator-owned.' "$REPO_ROOT/README.md" \
-  || fail "README.md must state that a third-party beta run and publication remain operator-owned"
-grep -qF 'Neither has happened, and nothing in this repository claims otherwise.' "$REPO_ROOT/README.md" \
-  || fail "README.md must state that neither has happened"
+# README must preserve the unproved third-party boundary while directing
+# publication status to the versioned release page. Local rehearsals cannot
+# establish either; they must not require a denial that becomes stale on release.
+readme_beta_release_scope_ok() {
+  local one_line="$1"
+  grep -qF 'A genuine third-party beta run remains operator-owned and unproved.' <<<"$one_line" || return 1
+  grep -qF 'https://github.com/bilal-/orchid/releases/tag/v1.0.0-beta.1' <<<"$one_line" || return 1
+  grep -qF 'for publication status; the local checks above establish neither.' <<<"$one_line" || return 1
+  ! grep -qF 'Neither has happened, and nothing in this repository claims otherwise.' <<<"$one_line"
+}
+readme_release_one_line="$(tr '\n' ' ' < "$REPO_ROOT/README.md" | tr -s '[:space:]' ' ')"
+if readme_beta_release_scope_ok "$readme_release_one_line"; then
+  green_case "README preserves unproved third-party qualification and points publication status to the beta release page without claiming local checks establish either"
+else
+  fail "README.md must preserve unproved third-party qualification, versioned publication status, and local-check scope without an unqualified release denial"
+fi
+
+# Mutate only the actual short summary paragraph. Bash 3.2's global string
+# replacement over the full README is needlessly expensive for these witnesses.
+readme_release_probe_base="$(grep -A 2 -F 'A genuine third-party beta run remains operator-owned and unproved.' "$REPO_ROOT/README.md" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+readme_beta_release_scope_ok "$readme_release_probe_base" \
+  || fail "README release-scope probes must begin with the accepting actual publication paragraph"
+readme_release_probe="$(printf '%s\n' "$readme_release_probe_base" | sed 's/operator-owned and unproved/operator-owned/g')"
+if readme_beta_release_scope_ok "$readme_release_probe"; then
+  fail "the README release-scope gate accepted removal of the unproved third-party qualifier"
+else
+  red_case "the same README release-scope gate rejects removing the unproved third-party qualifier"
+fi
+readme_release_probe="$(printf '%s\n' "$readme_release_probe_base" | sed 's#https://github[.]com/bilal-/orchid/releases/tag/v1[.]0[.]0-beta[.]1##g')"
+if readme_beta_release_scope_ok "$readme_release_probe"; then
+  fail "the README release-scope gate accepted removal of the versioned release-page pointer"
+else
+  red_case "the same README release-scope gate rejects removing the versioned publication-status pointer"
+fi
+readme_release_probe="$readme_release_probe_base Neither has happened, and nothing in this repository claims otherwise."
+if readme_beta_release_scope_ok "$readme_release_probe"; then
+  fail "the README release-scope gate accepted reintroducing the unqualified global publication denial"
+else
+  red_case "the same README release-scope gate rejects reintroducing the unqualified global publication denial"
+fi
 
 # Candidate evidence must remain honest while the operator completes the steps
 # an implementer cannot. The suite and remote rows stay explicitly open; the
