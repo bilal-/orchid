@@ -635,8 +635,9 @@ tool, vendor CLI, and remote-capable `git` subcommand shadowed by a `PATH`
 tripwire that logs and fails, and with the source checkout proven unchanged
 afterwards.
 
-**A genuine third-party beta run and any publication remain operator-owned.**
-Neither has happened, and nothing in this repository claims otherwise. Full
+**A genuine third-party beta run remains operator-owned and unproved.**
+Check [the beta release page](https://github.com/bilal-/orchid/releases/tag/v1.0.0-beta.1)
+for publication status; the local checks above establish neither. Full
 checklist: [docs/beta-qualification.md](./docs/beta-qualification.md).
 
 ## Extending orchid

@@ -291,14 +291,15 @@ Run it directly:
 /bin/bash tests/test_e2e_release_rehearsal.sh
 ```
 
-## Still operator-owned, and not claimed anywhere in this repository
+## Operator-owned, not established by local checks
 
 - A **genuine third-party beta run**, on a repository this operator does not
   control. Nothing here has done that, and no file in this repository records
   that it happened.
 - **Publication** of any kind: pushing a tag, uploading an archive, updating a
   tap, or announcing a release. The release gate builds and verifies locally and
-  stops there ([install.md](./install.md)).
+  stops there ([install.md](./install.md)). Check [the beta release page](https://github.com/bilal-/orchid/releases/tag/v1.0.0-beta.1)
+  for publication status.
 - **Re-pinning `Formula/orchid.rb` once on the integration branch at release
   time**, immediately before the local release gate. This is release
   preparation, never a candidate hand-off. **`chmod +x`** on a newly added

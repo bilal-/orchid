@@ -512,6 +512,6 @@ allowed; skipping silently is not. Qualify those claims out of band with
 
 `scripts/beta-qualify.sh` qualifies one operator-supplied repository against
 this build and writes anonymized local evidence. Genuine third-party beta runs
-and publication remain operator-owned; this repository performs neither and
-claims neither. See [beta-qualification.md](./beta-qualification.md) for the
+and publication remain operator-owned; this local harness neither publishes
+nor proves third-party qualification. See [beta-qualification.md](./beta-qualification.md) for the
 probe list, the evidence rule, and the manual checklist.
