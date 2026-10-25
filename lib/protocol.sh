@@ -6,6 +6,7 @@ orchid_protocol_heading() {
     boundaries) printf '%s\n' '## Judgment boundaries (`orchid drive`, `orchid run boundary`, `orchid task arbitrate`)' ;;
     planning) printf '%s\n' '## PLANNING (pre-run, before THE TICK ever runs)' ;;
     tick) printf '%s\n' '## THE TICK' ;;
+    revision) printf '%s\n' '## TASK CONTRACT REVISION' ;;
     resume) printf '%s\n' '## RESUME' ;;
     headless) printf '%s\n' '## HEADLESS OPERATION' ;;
     completion) printf '%s\n' '## COMPLETION' ;;

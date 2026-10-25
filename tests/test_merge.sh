@@ -56,10 +56,20 @@ base1="$(git rev-parse "$integ")"
 
 walk_to_merging T001 task/T001 "$base1" "$cand1" "test -f feature1.txt"
 
+plant_publication_fence || { fail 'plant cross-checkout publication'; exit 1; }
+pending_head="$(git rev-parse "$integ")"
+rc=0; pending_out="$("$ORCHID_BIN" merge T001 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail 'merge refuses another checkout pending publication'
+assert_match 'pending transaction' "$pending_out" 'merge names shared publication fence'
+assert_eq "$pending_head" "$(git rev-parse "$integ")" 'guarded merge cannot advance integration'
+red_case 'direct merge publication refuses a prepared transaction owned by another checkout'
+retire_publication_fence || { fail 'retire cross-checkout publication'; exit 1; }
+
 pre_integ="$(git rev-parse "$integ")"
 out="$WORK/merge1.out"; rc=0
 "$ORCHID_BIN" merge T001 >"$out" 2>&1 || rc=$?
 assert_eq 0 "$rc" "clean merge exits 0"
+green_case 'the same merge publishes after the other checkout retires its intent'
 assert_match "^merged T001: $integ -> " "$(cat "$out")" "prints merged message"
 assert_eq "done" "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "task advances to done"
 post_integ="$(git rev-parse "$integ")"

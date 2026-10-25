@@ -1,17 +1,25 @@
 # Quickstart — greenfield (new product, no code yet)
 
-For an LLM-led workflow, ask Claude Code, Codex, Hermes or OpenCode to use the
-installed Orchid skills. `orchid` shows compact live context; `orchid setup`
-reports registration state without editing profiles. Choose your host's native
-setup command in [frontends](frontends.md). All-host setup configures all four
-profiles and requires Hermes's Python with PyYAML. See also
-[the agent interface](agent-interface.md). Scripted
-recipes that parse historical text/TSV output should set `ORCHID_OUTPUT=raw`.
+Use Orchid from your coding harness through the portable skills and CLI.
+The scope includes Claude Code, Codex, Pi, Antigravity/agy, Kimi, Hermes,
+OpenCode, and other harnesses; implemented integrations and qualification
+vary. Ask your agent to plan, continue, or resume the project. Orchid carries
+the run state and evidence between sessions.
 
-For an **existing** repo, see [quickstart.md](./quickstart.md) instead —
-that's the more common path and the one timed for the 15-minute release
-rehearsal. This page covers the greenfield path: starting orchid before a
-single line of product code exists.
+Where native registration is implemented, use your host's selected setup
+command in [frontends](frontends.md). Other harnesses use the
+[command-level entry path](frontends.md#other-harnesses).
+`orchid setup` reports registration state without editing profiles.
+All-host setup currently configures four profiles and requires Hermes's
+Python with PyYAML.
+
+The manual commands below describe the same workflow the skills use.
+Interactive hosts and worker engine bindings are separate choices. See
+[the agent interface](agent-interface.md) for scoped reads and help. Scripts
+that parse historical text or TSV output should set `ORCHID_OUTPUT=raw`.
+
+For a repository with existing code, use the
+[existing-repository quickstart](./quickstart.md).
 
 **Prerequisites:** same as the existing-repo quickstart — at least one
 engine CLI logged in under your own subscription, `git`, `jq`, bash 3.2+.

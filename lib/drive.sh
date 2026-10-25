@@ -2206,6 +2206,9 @@ drive_worktree_path() {
   phys="$(_drive_physical "$repo")" || return 1
   parent="$(dirname "$phys")"
   base="$(basename "$phys")"
+  local generation
+  generation="$(fm_version "$(orchid_state "$repo")/tasks/$id.md" execution_generation)" || return 1
+  if [ "$generation" -gt 1 ]; then id="$id-g$generation"; fi
   printf '%s/%s-%s\n' "$parent" "$base" "$id"
 }
 

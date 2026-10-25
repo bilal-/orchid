@@ -185,6 +185,8 @@ refuse "importing requirements"         requirements import "$WORK/requirements.
 refuse "answering a blocker"            answer q-1 "yes"
 refuse "merging"                        merge T001
 refuse "running the verification suite" verify T001
+refuse "restarting a task subgraph" task restart T001 --reason x
+refuse "revising a task contract" task revise T001 --acceptance-criteria changed --reason x
 refuse "preparing a job"                jobs prepare T001 implementer implement
 refuse "reconciling jobs"               jobs reconcile
 refuse "collecting jobs"                jobs gc

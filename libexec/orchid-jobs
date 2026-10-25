@@ -12,6 +12,7 @@ source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/hooks.sh"
 # `check`'s backstop escalates at 100%; `ls`'s BUDGET column renders the same
 # number continuously, so the table can never disagree with the escalation.
 source "$ORCHID_ROOT/lib/schedule.sh"
+source "$ORCHID_ROOT/lib/revision.sh"
 # capability.sh owns the kernel's step-to-capability table. Prepare is where
 # a resolved actor is finally bound to an operation, so it is the routing gate.
 source "$ORCHID_ROOT/lib/capability.sh"
@@ -1337,6 +1338,13 @@ case "$sub" in
     launched_by="$(printf '%s' "${ORCHID_LAUNCHED_BY:-operator}" | tr -cd 'A-Za-z0-9._-' | cut -c1-16)"
     [ -n "$launched_by" ] || launched_by=operator
 
+    job_contract_revision=1; job_execution_generation=1; job_input_revisions='{}'; job_contract_terms='{}'
+    if [ "$task" != plan ]; then
+      job_contract_terms="$(revision_terms "$tf")" || exit 1
+      job_contract_revision="$(fm_version "$tf" contract_revision)" || exit 1
+      job_execution_generation="$(fm_version "$tf" execution_generation)" || exit 1
+      job_input_revisions="$(revision_inputs "$repo" "$task")" || orchid_die 'cannot bind job input revisions'
+    fi
     epoch="$(epoch_current "$repo")"
     job_id="$(orchid_job_id_reserve "$repo" "j-e${epoch}-${task}-a${attempt}")" \
       || orchid_die "cannot reserve an unused job id after $ORCHID_JOB_ID_RESERVE_TRIES draws; existing job ownership and artifacts are preserved"
@@ -1347,10 +1355,12 @@ case "$sub" in
       --arg log "$rt/logs/$job_id.log" --arg output "$output" \
       --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
       --arg hook_point "$hook_point" --arg launched_by "$launched_by" \
+      --argjson contract_revision "$job_contract_revision" --argjson execution_generation "$job_execution_generation" \
+      --argjson input_revisions "$job_input_revisions" --argjson contract_terms "$job_contract_terms" \
       '{job_id:$job_id, task:$task, attempt:$attempt, role:$role, operation:$operation,
         engine:$engine, pid:0, pgid:0, started_at:0, log:$log, output:$output,
         base_sha:$base_sha, candidate_sha:$candidate_sha, hook_point:$hook_point,
-        launched_by:$launched_by}' | atomic_write "$manifest"
+        launched_by:$launched_by, contract_revision:$contract_revision, execution_generation:$execution_generation, input_revisions:$input_revisions, contract_terms:$contract_terms}' | atomic_write "$manifest"
     echo "$manifest"
     ;;
   check)
@@ -1536,6 +1546,11 @@ case "$sub" in
         echo "quarantined: $base (unknown-job)"
         continue
       fi
+      if ! revision_manifest_current "$repo" "$manifest"; then
+        quarantine_file "$f" obsolete-revision
+        echo "quarantined: $base (obsolete-revision)"
+        continue
+      fi
       # T031: AN ENVELOPE IS A COMPLETION REPORT. A job that has not exited
       # has not completed, so its envelope is not yet a completion signal --
       # DEFER it, leaving both the spool file and the manifest exactly where
@@ -1648,6 +1663,12 @@ case "$sub" in
         echo "quarantined: $base (mismatch)"
         continue
       fi
+      if ! revision_bound="$(revision_bind_envelope "$f" "$manifest")"; then
+        quarantine_file "$f" revision-mismatch
+        echo "quarantined: $base (revision-mismatch)"
+        continue
+      fi
+      printf '%s\n' "$revision_bound" | atomic_write "$f"
       attempt="$(jq -r .attempt "$manifest")"; role="$(jq -r .role "$manifest")"
       status="$(envelope_field "$f" .status)"
       verdict="$(envelope_field "$f" '.verdict // "n/a"')"
@@ -1839,6 +1860,10 @@ case "$sub" in
       s_exit=""; s_exit="$(job_exit_code "$s_jid" || true)"
       s_salvage="$(envelope_salvage_json "$s_log")"
 
+      if ! revision_manifest_current "$repo" "$mf"; then
+        echo "salvage-skip: $(basename "$mf") (obsolete-revision)"
+        continue
+      fi
       s_filed=""
       if ! envelope_salvage_empty "$s_salvage"; then
         s_dest="$(reviews_dest "$s_task" "$s_attempt" "$s_role" "$s_op" "$s_point")"

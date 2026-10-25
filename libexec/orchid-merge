@@ -4,6 +4,7 @@ source "$ORCHID_ROOT/lib/common.sh"
 orchid_cli_validate merge "$@"
 set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
 source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/publication.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
@@ -133,6 +134,7 @@ task_branch="$(fm_get "$tf" branch)"
 [ -n "$task_branch" ] || orchid_die "task $id has no branch recorded"
 
 integ="$(config_get "$repo" integration_branch orchid/integration)"
+orchid_publication_admit "$repo" "$integ" || orchid_die 'integration has a pending durable publication'
 
 # merge_release_worktree <task> -- remove the task's own checkout, now that the
 # task is done, under conditions that make removing it provably safe.
@@ -942,6 +944,7 @@ if [ "$rc" -eq 0 ]; then
   # and this write, the CAS refuses — the task stays in `merging` (safe to
   # retry) rather than silently clobbering the concurrent commit or
   # reporting a success that didn't happen.
+  orchid_publication_admit "$repo" "$integ" || orchid_die 'integration has a pending durable publication'
   if ! git -C "$repo" update-ref "refs/heads/$integ" "$merged_sha" "$integ_head"; then
     ORCHID_ACTOR="${ORCHID_ACTOR:-orchestrator}" "$ORCHID_ROOT/bin/orchid" journal add --task "$id" --kind intervention \
       "merge CAS failed: update-ref refs/heads/$integ expected $integ_head but it moved concurrently; task remains in merging for retry"

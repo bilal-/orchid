@@ -6,6 +6,84 @@ you are. It records state that the code and git history do not make obvious,
 and it goes stale — **verify every claim below against the tree before relying
 on it.** Anything here that contradicts the code is wrong and the code wins.
 
+## Unchanged-contract restart — 2026-10-25
+
+The next local slice adds `orchid task restart <id> --reason "..." [--dry-run]`.
+It shares the existing revision transaction and ownership gates, preserving all
+contract revisions and terms while advancing execution generations for the
+selected task and its transitive dependents. It refuses contract-changing flags;
+`task revise` still requires a changed contract. Both remain operator-owned.
+
+Existing report-outcome tasks can represent independent verification branches.
+The new regression completes `A -> B,C -> D`, restarts B, and proves that A and C
+and their evidence survive unchanged while B and D rerun. It rejects a late old
+result even when the target candidate commit is identical, accepts a fresh
+replacement result, and repeats the loop without spending contract revisions.
+It also covers a capped contract revision. Candidate-ready dependencies and
+nested verifier graphs within an active implementation task remain unbuilt.
+
+The new restart regression passed (3 RED cases, 4 GREEN cases), as did the
+existing revision regression (15 RED cases, 10 GREEN cases). Command-boundary
+(`test_axi_commands.sh`), broker (`test_orchestrator_command.sh`), documentation,
+and proof-enrollment (`test_red_case_rule.sh`) checks passed. Whole-tree static
+CI passed with `/bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests`;
+the machine-local log is `/tmp/orchid-restart-static.log`. The optional official
+TOON decoder remained NOT-TESTED in the command-boundary fixture. Prior full
+local CI applies to the previous slice, not this additional restart
+implementation. Working changes
+remain local and uncommitted; no remote or live operational run was touched.
+
+## Selective task restart — 2026-10-25
+
+The current uncommitted candidate adds operator-owned `orchid task revise`.
+It changes task acceptance criteria or verification commands, versions the
+contract, and queues fresh execution generations for the task and its
+transitive dependents. It archives previous task records and evidence while
+preserving merged code, original branches and checkouts, and unrelated work.
+Job manifests bind contracts, generations, and dependency inputs; obsolete
+results cannot become current evidence. Revision archives follow run rollover,
+and historical execution branches remain covered by ownership checks.
+
+This is the first selective-restart slice, not a complete autonomous graph
+runtime. Affected tasks must be idle, with no outstanding jobs, dirty recorded
+checkouts, or unresolved objections. Requirements remain immutable after
+planning; nested verification graphs and autonomous contract replanning are
+not implemented. See [the design and in-session review](2026-10-24-selective-restart.md).
+The operator chose review in this session; no independent model review ran.
+
+The accompanying framing cleanup treats Orchid as an orchestration layer for
+existing harnesses, with open scope including Pi, Antigravity/agy, Kimi, and
+others. Documentation distinguishes that scope from implemented native
+integrations and from actual qualification. No harness is the primary host.
+
+Canonical full local CI passed, including the complete vendor-CLI-free suite,
+the additional invariant checks, and documentation checks. The machine-local
+log is `/tmp/orchid-revise-ci.log`. This does not establish hosted CI, live
+vendor qualification, third-party beta evidence, or publication. Existing
+optional checks that report NOT-TESTED retain that status.
+
+A final additional fixture reproduced a revision failure before any review
+evidence exists: Git rejected the missing selected review path. The staging
+hook now creates that directory. The RED/GREEN regression covers both dirty
+checkout refusal and clean-checkout preservation without previous evidence.
+After this small fix, the focused revision suite, documentation checks, and
+whole-tree static gate were rerun; the earlier full-CI result precedes it.
+
+Implementation trap: revision publication must select durable subpaths rather
+than copying the entire `.orchid` directory. Replacing runtime directories can
+detach an unrelated live worker's log descriptor. The regression exercises an
+open descriptor across publication. Rebase also derives the canonical branch
+from task ID and generation independently of editable task branch metadata.
+Test-fixture aborts must increment `FAILS` before exiting: the shared cleanup
+trap reports failure from that counter and can mask a bare `exit 1`.
+
+No operational run state outside disposable fixtures was changed. The beta
+version and formula pin are unchanged. No remote contact, push, publication,
+release operation, or non-fixture run acceptance occurred in this session.
+Earlier release authorizations below are historical, not authorization for
+this candidate. Changes remain uncommitted, including the earlier framing
+cleanup; preserve unrelated work when integrating.
+
 ## Public beta preparation — 2026-10-03
 
 The operator requested a public beta available to anyone, explicitly authorized

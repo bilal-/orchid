@@ -154,3 +154,25 @@ assert_eq 'task work' "$(cat "$rb_worktree/task.txt")" 'the corrected rebase pre
 assert_eq "$rb_foreign_before" "$(git -C "$rb_foreign" rev-parse HEAD)" \
   'rebasing the corrected task never changes the foreign clone'
 green_case "the same stale sibling rebases successfully after its record names this repository's registered task worktree, leaving the foreign clone unchanged"
+
+# Versioned executions retain the task-specific branch fence. Seed the next
+# generation in this disposable fixture, then construct the operator-branch
+# condition that a record-only comparison would mistakenly admit.
+source "$REPO_ROOT/lib/frontmatter.sh"
+git -C "$rb_worktree" branch -m task/RB1-g2
+fm_set "$rb_integration/.orchid/tasks/RB1.md" execution_generation 2
+"$ORCHID_BIN" task set RB1 branch task/RB1-g2 >/dev/null || fail 'record canonical generation branch'
+rb_move_integration
+rb_operator_branch="$(git -C "$rb_repo" symbolic-ref --short HEAD)"
+fm_set "$rb_integration/.orchid/tasks/RB1.md" branch "$rb_operator_branch"
+"$ORCHID_BIN" task set RB1 worktree "$rb_repo" >/dev/null
+rb_assert_refused 'operator branch recorded as a generation worktree' 'not task/RB1-g2' 'orchid task rebase' "$rb_repo"
+red_case 'versioned rebase refuses an operator branch even when both task records point to its registered checkout'
+"$ORCHID_BIN" task set RB1 branch task/RB1-g2 >/dev/null
+"$ORCHID_BIN" task set RB1 worktree "$rb_worktree" >/dev/null
+rb_rc=0
+rb_out="$("$ORCHID_BIN" task rebase RB1 2>&1)" || rb_rc=$?
+assert_eq 0 "$rb_rc" "generation-two rebase accepts its canonical registered branch (out: $rb_out)"
+assert_eq "$rb_target" "$("$ORCHID_BIN" task get RB1 base_sha)" 'generation-two base is current'
+assert_match 'rebase: task/RB1-g2 onto' "$(cat "$rb_integration/.orchid/journal.md")" 'rebase journal identifies the actual execution branch'
+green_case 'generation-two rebase accepts its own branch and records its real branch identity'

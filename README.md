@@ -5,15 +5,21 @@
   <img src="https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/brand/svg/horizontal-on-light.svg" alt="orchid" width="220">
 </picture>
 
-**An agent-first orchestration kernel — bash + git + jq, no daemon, no
-API keys — that turns the coding-agent CLIs you already subscribe to
-(Claude Code, Codex, Antigravity, Hermes, …) into an autonomous dev team:
-it plans, implements, reviews, merges, and pings your phone only when a
-human decision is needed.**
+**Delivery state and verification for coding agents.**
 
-Works with **Claude Code · Codex · Antigravity · Hermes · OpenClaw**
-(compatibility, not endorsement or partnership — orchid is an independent,
-unaffiliated tool that shells out to each vendor's own CLI).
+Orchid adds durable tasks, evidence gates, and recovery procedures to the
+coding harness you already use. The scope includes Claude Code, Codex, Pi,
+Antigravity/agy, Kimi, Hermes, OpenCode, and other harnesses through an
+extensible command and adapter contract. These are examples, not an exhaustive
+list or a claim that every integration is implemented. Your host keeps its
+tools and approval rules; Orchid records the run and checks the evidence
+required to advance it.
+
+Interactive hosts and worker engines are separate choices. Orchid launches
+implementation and review jobs through configured CLI adapters, including
+Claude Code, Codex, Antigravity, and Hermes, subject to their capabilities.
+See [frontend and engine status](./docs/frontends.md) for what has been tested.
+Orchid is independent of these vendors.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
@@ -51,9 +57,11 @@ requires them to be installed already.
 > records current publication status. The timed rehearsal below used the
 > [git clone method](./docs/install.md#git-clone-for-hacking-on-orchid-itself).
 
-Ask Claude Code, Codex, Hermes or OpenCode to plan or continue an Orchid project.
-All four receive the same portable skills and can use the same compact command
-contract. `orchid` returns live context; scoped help and protocol sections supply
+Ask your coding harness to plan or continue an Orchid project using the
+portable skills and compact command contract. Native skill installation and
+session callbacks currently cover Claude Code, Codex, Hermes, and OpenCode.
+Other harnesses can use the command-level procedure described in the
+[frontend guide](./docs/frontends.md#other-harnesses). `orchid` returns live context; scoped help and protocol sections supply
 only the detail the agent needs. [Agent interface](./docs/agent-interface.md) ·
 [Frontend setup](./docs/frontends.md).
 
@@ -61,8 +69,8 @@ only the detail the agent needs. [Agent interface](./docs/agent-interface.md) ·
 orchid setup
 ```
 
-This reports registration state without changing profiles. To register ambient
-context, choose the host you use:
+This reports registration state without changing profiles. The native ambient
+context integrations currently implemented are:
 
 | Host | Setup command |
 | --- | --- |
@@ -78,39 +86,59 @@ works independently; native hosts retain their own approval rules.
 
 ## The 60-second story
 
-1. Install (the one line above).
-2. `cd` into your repo. `orchid doctor` names what's missing — a
-   `verify=<your test command>` line, an engine CLI — then `orchid init`
-   creates an integration branch. Your own branches are never touched.
-3. Write `requirements.md`: goal, constraints, acceptance criteria. A
-   second engine critiques the plan before it becomes real work.
+1. Install Orchid and open your repository in your coding harness. Use its
+   installed Orchid skills or the [command-level entry path](./docs/frontends.md#other-harnesses).
+2. Where a native integration exists, register session context with the setup
+   command above. Registration adds a read-only callback; the host retains its
+   approval rules. Other harnesses request context explicitly with `orchid`.
+3. Ask your agent to use Orchid to plan the work. Supply the goal, constraints,
+   acceptance criteria, and the project's real verification command. The agent
+   uses `orchid start` for initialization and the planning skill for critique.
+   Worker engine bindings are separate from your interactive host; configure
+   the available CLIs using [configuration.md](./docs/configuration.md).
+4. Continue in that conversation. The agent uses bounded driver passes to
+   dispatch configured workers, collect reviews, run verification, and merge
+   eligible candidates onto the integration branch.
+5. In a later session, ask the agent to resume the Orchid project. The resume
+   skill checks ownership and recovers context before further execution.
+   Decisions and final run acceptance retain their authorization requirements.
+6. For execution outside the interactive session, use the optional
+   [unattended workflow](./docs/specs/operations.md#unattended-trust-gate).
+   It requires a separate acknowledgement for the target repository.
 
-   Steps 2–3's mechanical half is also one command:
-   `orchid start requirements.md --verify "<your test command>"` runs the
-   full preflight, initializes, creates the integration worktree, sets up
-   the epoch, imports your requirements, and hands off to planning. It
-   never guesses a verification command, never overwrites your files, and
-   refuses (with the exact recovery command) anything it cannot do safely —
-   the lower-level verbs above stay exactly as they are.
-4. For a headless tick/service, review the target and run `orchid trust
-   unattended "$PWD" --reason "..."`; then `orchid run start` or `orchid
-   service install`. Engines implement, independent engines review, `orchid
-   verify` runs your real test command, and merges land only after
-   re-verification. Interactive/manual operation needs no acknowledgement.
-5. When something genuinely needs a human, one Telegram message arrives on
-   your phone. You reply; the answer lands nonce-verified.
-6. Come back to merged, verified code on the integration branch, with
-   every decision journaled and every merge carrying its evidence.
+The historical clean-machine rehearsal took **13m19s** using the
+[git clone installation](./docs/install.md#git-clone-for-hacking-on-orchid-itself).
+See [dogfood notes](./docs/dogfood-notes.md), "v1-m4 Task 12", for that
+observation. It is not a general completion-time guarantee.
 
-That pace is measured, not aspirational: the release rehearsal ran clone →
-install → doctor → plan → implement → review → merge → accepted on a
-clean-machine profile, following the quickstart alone, in **13m19s**
-([docs/dogfood-notes.md](./docs/dogfood-notes.md), "v1-m4 Task 12 —
-release rehearsal").
+Full walkthroughs: [existing repository](./docs/quickstart.md) and
+[new product](./docs/quickstart-greenfield.md).
 
-Full walkthrough: [quickstart.md](./docs/quickstart.md) (existing repo) ·
-[quickstart-greenfield.md](./docs/quickstart-greenfield.md) (new product,
-no code yet).
+## Scope and recovery
+
+`orchid task restart <id> --reason "..."` reruns an unchanged task contract
+and its downstream dependency subgraph. It preserves completed upstream and
+sibling tasks, archives prior executions, and requires fresh evidence even for
+the same candidate commit. Report-outcome tasks can represent independent
+verification branches; restarting one branch does not rerun the others.
+Use `--dry-run` to preview the affected set.
+
+The shipped kernel schedules tasks through an explicit lifecycle. Result
+contracts check structured replies, while verification and review gates
+supply evidence about a candidate. A valid reply alone does not establish
+that the requested outcome is correct.
+
+Current recovery includes session resumption, task retry, rework,
+reverification, and guarded rebasing. `orchid task revise` versions a task's
+acceptance criteria or verification command and restarts its transitive
+dependents once they are idle. Previous task records and evidence are archived;
+new execution branches preserve code that has already merged.
+
+This first revision path is operator-owned and refuses outstanding affected
+jobs, uncommitted worktrees, and unresolved objections. Requirements remain
+immutable after planning. Requirement-level replanning and nested verification
+graphs are not implemented. See [contract revision](./docs/frontends.md#task-contract-revision)
+and [the architecture](./docs/architecture.md) for the current boundaries.
 
 ## What makes orchid different
 
@@ -227,6 +255,10 @@ Every transition below is a kernel verb, refused unless its evidence gate
 holds — a passing `orchid verify` log, reconciled review envelopes bound to
 this exact candidate SHA, a journaled reason. State lives in git commits on
 the integration branch, so a crash anywhere resumes from files.
+
+An operator-owned contract revision or restart creates fresh execution generations at
+`pending` for the affected dependency set. The diagram shows one generation's
+lifecycle; revision does not add a shortcut to `task advance`.
 
 <!-- Source of truth: PROTOCOL.md "THE TICK - 3. State-machine walk" (the
      feature archetype's walk) and docs/specs/kernel.md "Task lifecycle"
@@ -688,21 +720,19 @@ wiring up a real CLI: [docs/engines/](./docs/engines/).
 
 ## FAQ
 
-**Can an engine spawn another engine?** Orchid never does so in its supported
-launch flow: INV-01/INV-06 statically test that kernel launch sites use the
-tier-2 runners. That is source-level mediation, not OS containment. A
-shell-capable engine process is not jailed by those invariants, and no
-command broker is wired yet.
+**Can an engine spawn another engine?** Orchid routes its supported engine
+launches through tier-2 runners; INV-01/INV-06 test Orchid-owned launch sites.
+Headless orchestrator adapters that declare `command_surface=brokered` use a
+broker that admits only specific judgment commands. These are source and
+command-surface checks. They do not jail a shell-capable engine process.
 
-**Is this sandboxed?** Plugins (including the built-ins) are **trusted
-code** — orchid v1 doesn't containerize them and says so plainly rather
-than implying protection it doesn't have. Vendor-CLI sandbox flags
-(`--sandbox workspace-write`, read-only modes, etc.) are a real second
-layer. The launcher's stripped environment is hygiene, PROTOCOL.md's
-command restrictions are prompt policy, no command broker is wired yet,
-and full OS-level plugin/process containment is post-v1 roadmap. The
-unattended acknowledgement makes this residual target-repository
-prompt-injection risk explicit; it does not remove it.
+**Is this sandboxed?** Plugins, including built-ins, are **trusted code**.
+Orchid does not containerize them. Vendor CLI sandbox flags provide their
+own restrictions. The orchestrator command broker limits admitted commands;
+it does not isolate filesystem writes or network access. The launcher's
+stripped environment is hygiene, and protocol restrictions outside enforced
+checks remain prompt policy. Unattended acknowledgement records the residual
+risk for the target repository; it does not remove it.
 
 **Does orchid push or deploy?** Orchid's shipped verbs and adapters do not
 intentionally perform those actions; PROTOCOL.md requires external mutation
@@ -717,10 +747,13 @@ the exact invocation it verified and why (`docs/engines/*.md`) — a drifted
 flag is a real, visible failure (`rate_limited`/`auth`/`failed`
 classification, or a `malformed` envelope), never a silent misbehavior.
 
-**Why not just use one really good agent?** Because nobody should grade
-their own homework, and because harness quality — verification, memory,
-guardrails, role separation — dominates any single model's capability; see
-[research.md](./docs/research.md).
+**What does Orchid add to an existing coding harness?** Durable task state,
+evidence tied to a candidate, and explicit recovery procedures across
+sessions. You continue using the host's conversation and tools. Orchid
+launches configured workers and enforces the conditions for advancing their
+work. A valid result envelope and a successful delivery are separate claims;
+verification and review supply the evidence. The current recovery limits are
+listed in [Scope and recovery](#scope-and-recovery).
 
 **Does orchid have a hosted/web version?** No, and it never will by
 design — no server, no dashboard, no multi-user account system. `orchid

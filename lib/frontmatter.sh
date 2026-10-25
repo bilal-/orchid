@@ -1,7 +1,66 @@
 #!/usr/bin/env bash
-fm_get() {
-  awk -v k="$2" '/^---$/{n++;next} n==1 && index($0,k": ")==1{print substr($0,length(k)+3);exit} n>=2{exit}' "$1"
+# One reader owns framing for scalar, presence, and batch reads. Structural
+# validation remains fm_check: ordinary reads deliberately retain their
+# historical behavior on partial documents.
+_fm_read() {
+  local mode="$1" file="$2" key="${3:-}"
+  case "$mode" in value|has|json) ;; *) return 2 ;; esac
+  awk -v mode="$mode" -v k="$key" '
+    function quote_json(value, out, i, c) {
+      out = "\""
+      for (i = 1; i <= length(value); i++) {
+        c = substr(value, i, 1)
+        if (c == "\\") out = out "\\\\"
+        else if (c == "\"") out = out "\\\""
+        else if (c in control) out = out control[c]
+        else out = out c
+      }
+      return out "\""
+    }
+    BEGIN {
+      for (i = 1; i < 32; i++) control[sprintf("%c", i)] = sprintf("\\u%04x", i)
+    }
+    /^---$/ { n++; next }
+    n >= 2 { exit }
+    n == 1 {
+      if (mode == "value" && index($0, k ": ") == 1) {
+        print substr($0, length(k) + 3); exit
+      }
+      if (mode == "has" && (index($0, k ": ") == 1 || $0 == k ":")) {
+        found = 1; exit
+      }
+      if (mode == "json") {
+        colon = index($0, ":")
+        if (!colon) next
+        name = substr($0, 1, colon - 1)
+        if (name !~ /^[A-Za-z_][A-Za-z0-9_-]*$/) next
+        rest = substr($0, colon + 1)
+        if (rest != "" && substr(rest, 1, 1) != " ") next
+        if (!(name in present)) { present[name] = 1; order[++count] = name; values[name] = "" }
+        # A bare key is present but does not hide a later spaced value.
+        if (rest != "" && !(name in readable)) {
+          readable[name] = 1; values[name] = substr(rest, 2)
+        }
+      }
+    }
+    END {
+      if (mode == "has") exit(found ? 0 : 1)
+      if (mode == "json") {
+        printf "{"
+        for (i = 1; i <= count; i++) {
+          name = order[i]
+          printf "%s%s:%s", (i == 1 ? "" : ","), quote_json(name), quote_json(values[name])
+        }
+        print "}"
+      }
+    }
+  ' "$file"
 }
+fm_get() { _fm_read value "$1" "$2"; }
+
+# fm_json <file> -- all recognized keys as strings; absent keys stay absent.
+# The object preserves first occurrence order, not a semantic key ordering.
+fm_json() { _fm_read json "$1"; }
 
 # fm_has <file> <key> -- 0 iff <key> is a line in the FIRST frontmatter block.
 #
@@ -25,9 +84,7 @@ fm_get() {
 # the trailing-space form alone, every unset field in a fresh task would be
 # reported absent, which is precisely the distinction this function exists to
 # make. Matching both is what makes "present, and empty" expressible.
-fm_has() {
-  awk -v k="$2" '/^---$/{n++;next} n==1 && (index($0,k": ")==1 || $0==k":"){found=1;exit} n>=2{exit} END{exit(found?0:1)}' "$1"
-}
+fm_has() { _fm_read has "$1" "$2"; }
 
 # fm_check <file> [required-key] -- 0 when <file> can be read as a frontmatter
 # document; otherwise prints ONE line saying what is wrong with it and returns
@@ -416,4 +473,15 @@ fm_set() {
   rm -f "$t"
   echo "orchid: refusing to rewrite $f: setting '$k' produced an empty document (the file is unreadable, or already empty). Left byte-for-byte as it was — an empty rewrite here is how a task file gets destroyed, not how one gets updated." >&2
   return 1
+}
+
+# Version fields default to 1 only when absent, never when malformed or empty.
+fm_version() {
+  local value
+  if fm_has "$1" "$2"; then value="$(fm_get "$1" "$2")"; else value=1; fi
+  if ! jq -en --arg value "$value" '$value | test("^[1-9][0-9]{0,5}$")' >/dev/null; then
+    printf 'orchid: invalid %s in %s (expected 1..999999)\n' "$2" "$1" >&2
+    return 1
+  fi
+  printf '%s\n' "$value"
 }

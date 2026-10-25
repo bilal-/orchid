@@ -21,6 +21,41 @@ ambient hooks feed the same context to Claude Code, Codex, Hermes and OpenCode;
 those hosts retain approval ownership. [Interface contract](agent-interface.md)
 and [frontend registration](frontends.md) describe the boundary.
 
+## Host and kernel responsibilities
+
+The interactive host can be any coding harness that follows Orchid's CLI
+contract. Claude Code, Codex, Pi, Antigravity/agy, Kimi, Hermes, OpenCode,
+and other harnesses are in scope; native integrations and qualification vary.
+Portable skills call Orchid for context, planning, bounded execution, and
+resumption. Hosts retain their tools and approval rules. Orchid owns durable
+run state, scheduling, evidence gates, and epoch fencing. Interactive host
+selection does not select the worker engines; role bindings do that.
+
+The diagrams below describe the shipped task lifecycle. Task dependencies
+control dispatch, and candidate changes invalidate candidate-bound evidence.
+`task revise` changes an idle task's acceptance criteria or verification
+command and invalidates its transitive dependents. Archived task records and
+evidence preserve the previous executions. Fresh branches and worktree paths
+keep their merged code and old checkouts intact.
+
+Each revised task has a contract revision and execution generation. Dependents
+receive a new execution generation while retaining their own contract revision.
+Prepared jobs bind both values and the direct input versions; obsolete results
+cannot become current evidence. This operator-owned revision path requires
+idle affected tasks with no outstanding jobs or unresolved objections.
+Requirements remain immutable after planning. Requirement-level replanning,
+live job cancellation during revision, and nested verification graphs remain
+outside the implemented slice.
+
+`task restart` reuses the same transaction and safety gates while retaining
+every contract revision and contract term. It increments execution generations
+only. Independent report-outcome verification tasks can form branches through
+`depends_on`: restarting one check invalidates its downstream tasks and leaves
+completed upstream and sibling checks intact. The report task's candidate is
+repinned for the new execution; old-generation results remain obsolete even
+against an identical candidate. These are ordinary done-dependent task edges,
+not candidate-ready edges inside an active implementation task.
+
 ## 1. Who runs whom
 
 <!-- Diagram grounding: docs/specs/kernel.md "Architecture" (tier split,
@@ -29,7 +64,7 @@ and [frontend registration](frontends.md) describe the boundary.
 ```mermaid
 flowchart TD
     OP["Operator<br/>agent session, terminal + phone"]
-    HOST["Claude Code / Codex / Hermes / OpenCode<br/>portable skills + opt-in ambient context"]
+    HOST["Interactive coding harness<br/>portable skills / CLI<br/>native context where integrated"]
     CONTEXT["orchid context / protocol / scoped help<br/>read-only discovery and live state"]
     PUMP["runners/orchid-pump<br/>launchd/cron heartbeat, short-lived"]
     TICK["runners/orchid-tick<br/>one bounded tick"]
@@ -144,6 +179,10 @@ that cannot enforce a command allowlist declare `command_surface=soft` and say
 so on every tick.
 
 ## 2. The task lifecycle
+
+An operator-owned contract revision or restart creates fresh execution generations at
+`pending` for the affected dependency set. The diagram shows one generation's
+lifecycle; revision does not add a shortcut to `task advance`.
 
 <!-- Source of truth: PROTOCOL.md "THE TICK - 3. State-machine walk" (the
      feature archetype's walk) and docs/specs/kernel.md "Task lifecycle"

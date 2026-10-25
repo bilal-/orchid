@@ -283,6 +283,25 @@ cp -R .orchid/runtime "$WORK/runtime.before"
 orchid_agent_context_json "$WORK" > "$WORK/context.json" || fail 'live context'
 diff -r "$WORK/runtime.before" .orchid/runtime >/dev/null || fail 'context leaves runtime byte identical'
 jq -e '.tasks.count == 1 and .tasks.by_status.pending == 1 and .jobs.count == 0' "$WORK/context.json" >/dev/null || fail 'context shares typed tasks/jobs counts'
+
+# Session guidance follows the run stage even when no decision boundary has
+# been recorded. These synthetic snapshots exercise the public context entry
+# without acquiring ownership or starting any work.
+make_scratch GUIDANCE_REPO
+mkdir -p "$GUIDANCE_REPO/.orchid"
+for guidance_stage in planning accepting blocked; do
+  printf -- '---\nrun_id: guidance\nrun_status: %s\n---\n' "$guidance_stage" > "$GUIDANCE_REPO/.orchid/roadmap.md"
+  cp "$GUIDANCE_REPO/.orchid/roadmap.md" "$WORK/guidance-before.md"
+  ORCHID_REPO="$GUIDANCE_REPO" ORCHID_OUTPUT=json "$ORCHID_BIN" context > "$WORK/guidance.json" || fail "$guidance_stage public context"
+  case "$guidance_stage" in
+    planning) guidance_expected='["orchid skill orchid-plan --full","orchid protocol planning --full"]' ;;
+    accepting) guidance_expected='["orchid protocol completion --full","orchid status --explain --jobs"]' ;;
+    blocked) guidance_expected='["orchid status --explain --jobs","orchid protocol boundaries --full"]' ;;
+  esac
+  assert_eq "$guidance_expected" "$(jq -c .next "$WORK/guidance.json")" "$guidance_stage context offers relevant session guidance"
+  cmp "$WORK/guidance-before.md" "$GUIDANCE_REPO/.orchid/roadmap.md" || fail "$guidance_stage context preserves run state"
+  [ ! -e "$GUIDANCE_REPO/.orchid/runtime" ] || fail "$guidance_stage context must not create runtime"
+done
 # Numeric read/retention options are literal decimal values, not arithmetic.
 for form in 'journal tail -n nope' 'jobs ls --interval nope' 'jobs gc --older-than-s nope' 'jobs gc --prepared-older-than-s nope'; do
   read -r -a probe <<<"$form"
@@ -331,6 +350,7 @@ cp .orchid/runtime/boundary.json "$WORK/boundary.before"
 orchid_agent_context_json "$WORK" > "$WORK/context-boundary.json" || fail 'boundary context'
 jq -e '.boundary.kind == "operator-decision" and .operator_owned == true' "$WORK/context-boundary.json" >/dev/null || fail 'operator boundary ownership uses drive policy'
 cmp "$WORK/boundary.before" .orchid/runtime/boundary.json || fail 'context does not charge or acknowledge boundary'
+jq -e '.next == ["orchid run boundary show","orchid protocol boundaries --full"]' "$WORK/context-boundary.json" >/dev/null || fail 'standing boundary guidance takes precedence over the run stage'
 "$ORCHID_BIN" run boundary set --kind planning --reason fixture >/dev/null || fail 'record planning boundary'
 orchid_agent_context_json "$WORK" > "$WORK/context-planning.json" || fail 'planning context'
 surface="$(drive_orchestrator_surface "$WORK")"

@@ -4,7 +4,7 @@
   "commands": [
     {
       "path": [],
-      "usage": "usage: orchid protocol [preamble|boundaries|planning|tick|resume|headless|completion|discrepancies]",
+      "usage": "usage: orchid protocol [preamble|boundaries|planning|tick|revision|resume|headless|completion|discrepancies]",
       "options": {},
       "min_args": 0,
       "max_args": 1,

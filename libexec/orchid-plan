@@ -216,7 +216,7 @@ case "$sub" in
     plan_apply_hook() {
       local wt="$1" wt_roadmap status
       wt_roadmap="$wt/.orchid/roadmap.md"
-      status="$(fm_get "$wt_roadmap" run_status)"
+      status="$(fm_get "$wt_roadmap" run_status)" || return 1
 
       # Journal-first (INV-08) still holds *within* this commit: the reason
       # is written to the worktree's journal.md before the run_status edit
@@ -228,18 +228,18 @@ case "$sub" in
       # copy-in step already excludes it, but this arm minted a fresh one
       # here for the nested `journal add` call, so it must clean up after
       # itself too).
-      mkdir -p "$wt/.orchid/runtime"
-      echo "$ORCHID_EPOCH" > "$wt/.orchid/runtime/epoch"
+      mkdir -p "$wt/.orchid/runtime" || return 1
+      echo "$ORCHID_EPOCH" > "$wt/.orchid/runtime/epoch" || return 1
       ORCHID_REPO="$wt" ORCHID_EPOCH="$ORCHID_EPOCH" \
-        "$ORCHID_ROOT/bin/orchid" journal add --kind plan_revision "$reason"
-      rm -rf "$wt/.orchid/runtime"
+        "$ORCHID_ROOT/bin/orchid" journal add --kind plan_revision "$reason" || return 1
+      rm -rf "$wt/.orchid/runtime" || return 1
 
       # Plan apply is the sole writer of run_status's planning->running edge
       # (kernel.md's ownership table: "orchid plan apply ... run_status").
       # Applied here, into the worktree, so it rides in the same commit as
       # the journal entry above.
       if [ "$status" = planning ]; then
-        fm_set "$wt_roadmap" run_status running
+        fm_set "$wt_roadmap" run_status running || return 1
       fi
     }
     # ShellCheck rationale: orchid_commit_durable reads this hook name in lib/common.sh.

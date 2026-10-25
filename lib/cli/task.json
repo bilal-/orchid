@@ -5,6 +5,20 @@
   ],
   "commands": [
     {
+      "path": ["restart"],
+      "kind": "text",
+      "usage": "usage: orchid task restart <id> --reason \"...\" [--dry-run]",
+      "min_args": 1,
+      "max_args": 1,
+      "options": {"--reason": 1, "--dry-run": 0},
+      "required_options": ["--reason"],
+      "examples": [
+        "orchid task restart T001 --reason \"Repeat independent verification\" --dry-run",
+        "orchid task restart T001 --reason \"Repeat independent verification\""
+      ],
+      "next": ["orchid context"]
+    },
+    {
       "path": [
         "list"
       ],
@@ -319,6 +333,35 @@
       ],
       "required_options": [
         "--reason"
+      ]
+    },
+    {
+      "path": [
+        "revise"
+      ],
+      "kind": "text",
+      "usage": "usage: orchid task revise <id> [--acceptance-criteria \"...\"] [--verification-commands \"...\"] --reason \"...\" [--dry-run]",
+      "min_args": 1,
+      "max_args": 1,
+      "options": {
+        "--acceptance-criteria": 1,
+        "--verification-commands": 1,
+        "--reason": 1,
+        "--dry-run": 0
+      },
+      "required_options": [
+        "--reason"
+      ],
+      "examples": [
+        "orchid task revise T001 --acceptance-criteria \"Handle empty input\" --reason \"Integration exposed missing behavior\" --dry-run",
+        "orchid task revise T001 --acceptance-criteria \"Handle empty input\" --reason \"Integration exposed missing behavior\""
+      ],
+      "next": [
+        "orchid context"
+      ],
+      "required_any_options": [
+        "--acceptance-criteria",
+        "--verification-commands"
       ]
     }
   ]

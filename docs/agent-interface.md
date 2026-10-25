@@ -1,9 +1,18 @@
 # Agent interface
 
-Orchid's public command surface is designed for LLM callers. The kernel still
-owns deterministic transitions, evidence, locking and authorization. Claude
-Code, Codex, Hermes and OpenCode share this contract; native frontend registration
-is described in [frontends](frontends.md).
+Orchid adds durable delivery state and evidence gates to coding harnesses
+through an extensible command contract. Claude Code, Codex, Pi,
+Antigravity/agy, Kimi, Hermes, OpenCode, and other harnesses are in scope;
+implemented integrations and live qualification are listed in
+[frontends](frontends.md). Hosts retain their
+interactive tools and approval rules. The kernel owns deterministic
+transitions, evidence, locking, and authorization. Native session
+registration is described in [frontends](frontends.md).
+
+Context offers guidance for the current run stage: planning, acceptance,
+and blocked runs link to their relevant procedures. A standing decision
+boundary takes precedence. Guidance is observational; it does not acquire
+ownership, settle a decision, or authorize acceptance.
 
 The implementation follows all ten [AXI principles](https://axi.md/), reviewed
 against [AXI commit `9fb95abba854`](https://github.com/kunchenguid/axi/blob/9fb95abba8546697512ea70befd3c73c445a4cb2/.agents/skills/axi/SKILL.md). This is a local conformance contract,

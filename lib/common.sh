@@ -8,6 +8,10 @@
 # later (T004 rework; scripts/ci-local.sh's exception policy now rejects the
 # file-wide placement outright).
 orchid_die() { echo "orchid: $*" >&2; exit 1; }
+# Resolve optional library loads at source time, including relative standalone sources.
+_ORCHID_COMMON_LIBDIR="${BASH_SOURCE[0]%/*}"
+[ "$_ORCHID_COMMON_LIBDIR" != "${BASH_SOURCE[0]}" ] || _ORCHID_COMMON_LIBDIR=.
+case "$_ORCHID_COMMON_LIBDIR" in /*) ;; *) _ORCHID_COMMON_LIBDIR="$(cd "$_ORCHID_COMMON_LIBDIR" && pwd -P)" ;; esac
 
 # Kernel libraries and standalone runners retain the historical machine channel.
 # bin/orchid selects and saves the public presentation format before loading us.
@@ -2584,19 +2588,26 @@ _ocd_cleanup_wt() {
 # ride into a durable commit); a FILE is copied verbatim; a <src> that does
 # not exist at all leaves <dst> absent (a deletion, carried through).
 _ocd_copy_path() {
-  local src="$1" dst="$2" entry name
+  local src="$1" dst="$2" mode="${3:-legacy}" entry name
   rm -rf "$dst" || return 1
   if [ -d "$src" ]; then
     mkdir -p "$dst" || return 1
-    for entry in "$src"/*; do
-      [ -e "$entry" ] || continue
-      name="$(basename "$entry")"
-      [ "$name" = runtime ] && continue
-      cp -R "$entry" "$dst/$name" || return 1
+    for entry in "$src"/* "$src"/.[!.]* "$src"/..?*; do
+      [ -e "$entry" ] || [ -L "$entry" ] || continue
+      name="${entry##*/}"
+      if [ "$mode" != exact ]; then
+        case "$name" in runtime|.*) continue ;; esac
+      fi
+      if [ "$mode" = exact ]; then
+        cp -Rp "$entry" "$dst/$name" || return 1
+      else
+        cp -R "$entry" "$dst/$name" || return 1
+      fi
     done
   elif [ -f "$src" ]; then
     mkdir -p "$(dirname "$dst")" || return 1
-    cp "$src" "$dst" || return 1
+    if [ "$mode" = exact ]; then cp -p "$src" "$dst" || return 1
+    else cp "$src" "$dst" || return 1; fi
   fi
   return 0
 }
@@ -2606,7 +2617,7 @@ _ocd_copy_path() {
 # copy) via the same staged directory swap `orchid run new` already
 # uses for its own whole-tree resync: build the complete replacement in a
 # sibling shadow dir first (nothing observable changes yet), carry <dst-
-# dir>'s own LIVE runtime/ across untouched (the worktree copy never had
+# dir>'s runtime contents across (the worktree copy never had
 # one), then swap it in with two same-parent `mv`s -- each is a single
 # filesystem rename, so the only observable window is BETWEEN the two
 # renames, when <dst-dir> briefly does not exist at all (never split-brain:
@@ -2614,19 +2625,33 @@ _ocd_copy_path() {
 # Checked publication errors roll back the first rename. A failed rollback
 # retains the old directory for recovery. SIGKILL between the renames still
 # requires recovery; Git's ref advance and this swap are separate operations.
+# Callers with active workers should sync durable subdirectories, leaving the
+# runtime directory and open log descriptors in place. An absent destination
+# directory is published from a complete staging copy without a partial mkdir.
 _ocd_sync_dir_atomic() {
-  local dst="$1" src="$2" shadow old
-  shadow="$dst.new.$$"; old="$dst.old.$$"
-  [ -d "$src" ] && [ -d "$dst" ] || return 1
+  local dst="$1" src="$2" shadow="${3:-$1.new.$$}" old="${4:-$1.old.$$}" mode="${5:-legacy}" missing=0
+  [ -d "$src" ] || return 1
+  if [ ! -e "$dst" ] && [ ! -L "$dst" ]; then
+    missing=1
+  elif [ ! -d "$dst" ] || [ -L "$dst" ]; then
+    return 1
+  fi
   if [ -e "$old" ] || [ -L "$old" ]; then
     echo "orchid: durable sync backup already exists at $old; recover it before retrying" >&2
     return 1
   fi
-  if ! _ocd_copy_path "$src" "$shadow"; then
+  if ! _ocd_copy_path "$src" "$shadow" "$mode"; then
     rm -rf "$shadow"
     return 1
   fi
-  if [ -d "$dst/runtime" ] && ! cp -R "$dst/runtime" "$shadow/runtime"; then
+  if [ "$missing" -eq 1 ]; then
+    if [ -e "$dst" ] || [ -L "$dst" ] || ! mv "$shadow" "$dst"; then
+      rm -rf "$shadow"
+      return 1
+    fi
+    return 0
+  fi
+  if [ "$mode" != exact ] && [ -d "$dst/runtime" ] && ! cp -R "$dst/runtime" "$shadow/runtime"; then
     rm -rf "$shadow"
     return 1
   fi
@@ -2636,7 +2661,7 @@ _ocd_sync_dir_atomic() {
   fi
   if ! mv "$shadow" "$dst"; then
     if ! mv "$old" "$dst"; then
-      echo "orchid: durable sync rollback failed; previous directory is preserved at $old" >&2
+      echo "orchid: durable sync rollback failed; previous directory preserved at $old" >&2
     fi
     rm -rf "$shadow"
     return 1
@@ -2702,13 +2727,21 @@ orchid_commit_durable() {
   local repo="$1" message="$2"; shift 2
   [ "$#" -gt 0 ] || orchid_die "orchid_commit_durable: at least one path required"
 
+  local recoverable="${ORCHID_COMMIT_DURABLE_RECOVERABLE:-0}" publication_nonce="" copy_mode=legacy publication_view publication_before
+  source "$_ORCHID_COMMON_LIBDIR/publication.sh"
+  if [ "$recoverable" = 1 ]; then
+    repo="$(orchid_physical_dir "$repo")" || return 1
+    orchid_publication_validate_paths "$repo" "$@" || return 1
+    publication_before="$(orchid_publication_capture "$repo" "$@")" || return 1
+    copy_mode=exact
+  fi
   local integ integ_head
   integ="$(config_get "$repo" integration_branch orchid/integration)"
   git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
     || orchid_die "integration branch '$integ' does not exist"
-  integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")"
+  integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")" || return 1
 
-  local wt; wt="$(mktemp -d "${TMPDIR:-/tmp}/orchid-commit.XXXXXX")"
+  local wt; wt="$(mktemp -d "${TMPDIR:-/tmp}/orchid-commit.XXXXXX")" || return 1
   local wt_q repo_q; printf -v wt_q '%q' "$wt"; printf -v repo_q '%q' "$repo"
   local prev_trap; prev_trap="$(trap -p EXIT)"
   local prev_cmd=""
@@ -2731,11 +2764,11 @@ orchid_commit_durable() {
 
   local p
   for p in "$@"; do
-    _ocd_copy_path "$repo/$p" "$wt/$p" || orchid_die "cannot stage durable path '$p'"
+    _ocd_copy_path "$repo/$p" "$wt/$p" "$copy_mode" || orchid_die "cannot stage durable path '$p'"
   done
 
   if [ -n "${ORCHID_COMMIT_DURABLE_HOOK:-}" ]; then
-    "$ORCHID_COMMIT_DURABLE_HOOK" "$wt"
+    "$ORCHID_COMMIT_DURABLE_HOOK" "$wt" || { echo "orchid: staging hook rejected durable publication" >&2; return 1; }
   fi
 
   # Staging, and the ONE place `-f` is legitimate (T037, dogfood F21 + the
@@ -2786,23 +2819,49 @@ orchid_commit_durable() {
   local ocd_p
   for ocd_p in "$@"; do
     case "$ocd_p" in
-      .orchid|.orchid/*) git -C "$wt" add -f -- "$ocd_p" ':(exclude).orchid/runtime' ;;
-      *) git -C "$wt" add -- "$ocd_p" ;;
+      .orchid|.orchid/runtime|.orchid/runtime/*)
+        git -C "$wt" add -f -- "$ocd_p" ':(top,exclude,literal).orchid/runtime' || return 1 ;;
+      .orchid/*)
+        # Negative pathspecs can prune a fresh nested selection entirely.
+        # These selections cannot contain the top-level runtime namespace.
+        git -C "$wt" add -f -- "$ocd_p" || return 1 ;;
+      *) git -C "$wt" add -- "$ocd_p" || return 1 ;;
     esac
   done
-  if git -C "$wt" diff --cached --quiet -- "$@"; then
-    orchid_die "orchid_commit_durable: nothing to commit -- no changes in: $*"
-  fi
-  git -C "$wt" commit -q -m "$message"
-  local new_sha; new_sha="$(git -C "$wt" rev-parse HEAD)"
+  local diff_status=0
+  git -C "$wt" diff --cached --quiet -- "$@" || diff_status=$?
+  case "$diff_status" in
+    0) orchid_die "orchid_commit_durable: nothing to commit -- no changes in: $*" ;;
+    1) ;;
+    *) echo 'orchid: cannot inspect staged durable changes' >&2; return 1 ;;
+  esac
+  git -C "$wt" commit -q -m "$message" || return 1
+  local new_sha; new_sha="$(git -C "$wt" rev-parse HEAD)" || return 1
 
+  if [ "$recoverable" = 1 ]; then
+    publication_view="$wt/.orchid-publication-view"
+    orchid_publication_materialize "$repo" "$new_sha" "$publication_view" "$@" || return 1
+    publication_nonce="$(orchid_publication_prepare "$repo" "$publication_view" "$integ" "$integ_head" "$new_sha" "$publication_before" "$@")" || return 1
+  fi
+  orchid_publication_admit "$repo" "$integ" "$publication_nonce" || return 1
+  if [ "$recoverable" = 1 ] && ! orchid_publication_preimages_match "$repo" "$publication_before"; then
+    orchid_publication_abort "$repo" || return 1
+    return 1
+  fi
   if ! git -C "$repo" update-ref "refs/heads/$integ" "$new_sha" "$integ_head"; then
+    if [ "$recoverable" = 1 ]; then
+      orchid_publication_abort "$repo" || return 1
+    fi
     local moved_to; moved_to="$(git -C "$repo" rev-parse "refs/heads/$integ" 2>/dev/null || echo "?")"
     ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind intervention \
       "commit-durable CAS failure ($message) — integration branch '$integ' changed concurrently (expected $integ_head, now $moved_to) — retry"
     orchid_die "update-ref CAS failed: integration branch '$integ' changed concurrently (expected $integ_head) — retry"
   fi
 
+  if [ "$recoverable" = 1 ]; then
+    orchid_publication_sync "$repo" "$publication_view" || return 1
+    orchid_publication_finish "$repo" || return 1
+  else
   for p in "$@"; do
     if [ -f "$wt/$p" ]; then
       atomic_write "$repo/$p" < "$wt/$p" || orchid_die "cannot synchronize durable path '$p' after commit $new_sha"
@@ -2813,6 +2872,7 @@ orchid_commit_durable() {
     fi
   done
 
+  fi
   _ocd_cleanup_wt "$wt" "$repo"
   if [ -n "$prev_cmd" ]; then
     # ShellCheck rationale: this restores the exact previously captured EXIT command.
@@ -3203,7 +3263,8 @@ _orchid_in_run_branches() {
   local repo="$1" integ="$2" state tf
   state="$(orchid_state "$repo")"
   printf '%s\n' "$integ"
-  for tf in "$state"/tasks/*.md "$state"/runs/*/tasks/*.md; do
+  for tf in "$state"/tasks/*.md "$state"/revisions/*/tasks/*.md \
+    "$state"/runs/*/tasks/*.md "$state"/runs/*/revisions/*/tasks/*.md; do
     [ -f "$tf" ] || continue
     grep -m1 '^branch: ' "$tf" 2>/dev/null | cut -d' ' -f2- || true
   done
@@ -4460,7 +4521,58 @@ epoch_current() { cat "$(orchid_runtime "$1")/epoch" 2>/dev/null || echo 0; }
 epoch_require() {
   local cur; cur="$(epoch_current "$1")"
   [ "${ORCHID_EPOCH:-}" = "$cur" ] || orchid_die "stale epoch '${ORCHID_EPOCH:-unset}' (current $cur) — refused (INV-02)"
+  if [ -e "${1%/}/.orchid/runtime/publication.json" ] || [ -L "${1%/}/.orchid/runtime/publication.json" ]; then
+    orchid_die 'interrupted durable publication; run orchid run resume before further mutations'
+  fi
 }
+
+# Shared owned-input admission. The historical helper name is retained so
+# agent reads, graph snapshots, and revision publication share one mechanism.
+_orchid_agent_context_input_owned() {
+  local repo="$1" physical_repo="$2" relative="$3" kind="$4" path parent physical
+  path="${repo%/}/$relative"; parent="$(dirname "$path")"
+  while [ "$parent" != "$repo" ]; do
+    if [ "$parent" = / ]; then
+      printf 'orchid: unsafe context input; parent does not belong to repository: %s\n' "$path" >&2
+      return 1
+    fi
+    if [ -L "$parent" ] || { [ -e "$parent" ] && [ ! -d "$parent" ]; }; then
+      printf 'orchid: unsafe context input; parent must be an owned directory: %s\n' "$parent" >&2
+      return 1
+    fi
+    parent="$(dirname "$parent")"
+  done
+  if [ -L "$path" ] || { [ -e "$path" ] && {
+    { [ "$kind" = file ] && [ ! -f "$path" ]; } ||
+    { [ "$kind" = directory ] && [ ! -d "$path" ]; }
+  }; }; then
+    printf 'orchid: unsafe context input; expected owned %s: %s\n' "$kind" "$path" >&2
+    return 1
+  fi
+  physical="$(_orchid_physical_path "$path")" || return 1
+  if [ "$physical" != "${physical_repo%/}/$relative" ]; then
+    printf 'orchid: unsafe context input; path escapes repository ownership: %s\n' "$path" >&2
+    return 1
+  fi
+}
+
+
+# Traverse durable namespaces through the same owned-path admission used by
+# context and graph readers. Traversal adds no alternate ownership rule.
+orchid_state_tree_owned() (
+  local repo="$1" relative="$2" child kind
+  _orchid_agent_context_input_owned "$repo" "$repo" "$relative" directory || return 1
+  shopt -s nullglob dotglob
+  for child in "$repo/$relative"/*; do
+    kind="file"
+    [ ! -d "$child" ] || kind=directory
+    _orchid_agent_context_input_owned "$repo" "$repo" "${child#"$repo/"}" "$kind" || return 1
+    if [ "$kind" = directory ]; then
+      orchid_state_tree_owned "$repo" "${child#"$repo/"}" || return 1
+    fi
+  done
+)
+
 
 # -- Digest-pinned trust store (docs/specs/plugins.md, Trust model; INV-09) --
 # Records live in `~/.orchid/trust` — OUTSIDE any repo, so cloning a repo can

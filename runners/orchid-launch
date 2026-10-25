@@ -223,7 +223,7 @@ model="$(config_get "$repo" model "")"
 effort="$(config_get "$repo" effort medium)"
 
 mkdir -p "$rt/requests"; req_file="$rt/requests/$job_id.json"
-jq -n --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
+jq -n --slurpfile revision_manifest "$manifest" --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
   --arg role "$role" --arg operation "$operation" \
   --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
   --arg worktree "$worktree" --arg input_pack "$pack_dir" --arg output "$output" \
@@ -233,7 +233,7 @@ jq -n --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
     operation:$operation, base_sha:$base_sha, candidate_sha:$candidate_sha,
     worktree:$worktree, input_pack:$input_pack, output:$output,
     deadline_s:$deadline_s, policy:$policy, model:$model, effort:$effort,
-    hook_point:$hook_point}' \
+    hook_point:$hook_point} + ($revision_manifest[0] | {contract_revision,execution_generation,input_revisions,contract_terms})' \
   | atomic_write "$req_file"
 
 # exe/plugin_dir already resolved above (before pack_build) -- reused here

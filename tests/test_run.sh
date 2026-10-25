@@ -154,6 +154,14 @@ red_case 'run new refuses a rollover that would hand the next run a colliding ta
 # survivors are gone. Without it this guard could be a wall rather than a gate.
 git branch -D task/T001 >/dev/null 2>&1 || fail "fixture: could not delete the planted branch"
 
+plant_publication_fence || { fail 'plant cross-checkout rollover fence'; exit 1; }
+pending_head="$(git rev-parse orchid/integration)"
+rc=0; pending_out="$("$ORCHID_BIN" run new --reason 'pending publication' 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail 'rollover refuses another checkout pending publication'
+assert_match 'pending transaction' "$pending_out" 'rollover names shared publication fence'
+assert_eq "$pending_head" "$(git rev-parse orchid/integration)" 'guarded rollover cannot advance integration'
+red_case 'direct rollover publication refuses another checkout prepared transaction'
+retire_publication_fence || { fail 'retire cross-checkout rollover fence'; exit 1; }
 old_journal_before="$(cat .orchid/journal.md)"
 "$ORCHID_BIN" run new --reason "rollover to r-002" || fail "run new on a legal (blocked) run_status"
 green_case 'the same rollover proceeds once the surviving task branches are deleted: the guard is a gate, not a wall'

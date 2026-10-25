@@ -1,41 +1,82 @@
-# Driving orchid from any agent
+# Orchid in your coding harness
 
-Orchid's kernel/verbs/roles are engine-neutral by construction: a role is a
-capability requirement (`shell`, `git`, `workspace_write`, `structured_text`),
-never a hardcoded vendor name, and any engine whose adapter declares enough
-capability can hold any role (`README.md`'s
-[any-engine-any-role](../README.md#any-engine-any-role)). This page is the
-other half of that promise — which agent *products* can sit in the driver's
-seat today, what's actually been proven live versus what's true "by
-construction" but not yet exercised, and how `install.sh` wires each one up.
+Orchid's host contract is open to coding harnesses that can invoke its CLI
+and follow the planning, execution, and resume procedures. Claude Code, Codex,
+Pi, Antigravity/agy, Kimi, Hermes, OpenCode, and other harnesses belong in that
+scope. Naming a harness does not establish that its integration is implemented
+or qualified.
 
-## Two front-end modes
+Orchid supplies durable run state and evidence gates. The host supplies the
+interactive conversation, tools, and approvals. Native skill installation,
+session callbacks, worker adapters, and live qualification are separate
+integration surfaces; the status entries below describe what exists today.
 
-Every front-end — an interactive Claude Code session, a headless pump tick,
-a human typing verbs by hand — executes the exact same procedure,
-`PROTOCOL.md`, by running the commands it names, in the order given
-(`PROTOCOL.md`'s own opening paragraph: *"Any front-end — a Claude Code
-skill, a codex-driven tick runner, a human typing commands — executes this
-procedure..."*). There are exactly two shapes this takes:
+Choose an interactive host independently of worker engines. A Claude Code
+session can coordinate Codex workers, for example. Role bindings select
+adapters by capability rather than by the host's name. See the
+[agent interface](agent-interface.md) and
+[role matrix](../README.md#any-engine-any-role).
 
-- **Interactive session** — an agent CLI (Claude Code, or any other) running
-  in a terminal, told (via a skill, an `AGENTS.md` pointer, or a person just
-  reading the file) to open `PROTOCOL.md` and drive it. This is the front-end
-  `skills/{orchid,orchid-plan,orchid-resume}` register for Claude Code, Codex,
-  Hermes, and OpenCode through the per-user installer.
-- **Headless tick** — `runners/orchid-pump` wakes an abandoned run and hands
-  off to `runners/orchid-tick`, which resolves the orchestrator role to a
-  vendor CLI and feeds it PROTOCOL.md's text plus a fixed instruction block,
-  exactly once, no human in the loop. Both runners require the separate
-  machine-local `orchid trust unattended` acknowledgement (`PROTOCOL.md`'s
-  **HEADLESS OPERATION** section).
+## Interactive and unattended execution
 
-Neither mode is more "real" than the other — they're the same procedure, two
-different callers. See `PROTOCOL.md` itself for the full THE TICK / RESUME /
-HEADLESS OPERATION procedures this page never restates. Orchid's supported
-source paths use the one-way topology drawn in
-[architecture.md](./architecture.md) (diagram 1, "Who runs whom"). That
-diagram is not an OS sandbox or command broker for a shell-capable engine.
+**Interactive:** ask your agent to plan, continue, or resume an Orchid
+project. Begin with the compact read-only `orchid` context, then load the
+appropriate skill. A new session follows the resume procedure before taking
+ownership. The deterministic driver handles routine transitions; the host
+handles authorized judgment boundaries. `PROTOCOL.md` remains the canonical
+procedure, available in sections through `orchid protocol`.
+
+**Unattended:** the optional pump runs the deterministic driver first and
+wakes a configured orchestrator only for a judgment boundary that it can
+settle. Operator decisions remain outstanding for the operator. Both the
+pump and headless tick require a separate machine-local
+`orchid trust unattended` acknowledgement for the target repository.
+
+Both modes use the same verbs and evidence gates. Ambient session hooks only
+read context; they do not acquire ownership or launch work. Orchid's launch
+topology is shown in [architecture.md](architecture.md). It describes
+Orchid-owned calls, not operating-system containment of a shell-capable
+agent.
+
+## Other harnesses
+
+The four native setup targets below are the current registration
+implementations. They do not define which harnesses may drive Orchid.
+A host with shell access can use the command-level entry path:
+
+1. Make the installed `orchid` command available in the target repository.
+2. Ask the host to run `orchid` for read-only context.
+3. Load the relevant portable instructions with `orchid skill orchid-plan --full`
+   for planning, `orchid skill orchid-resume --full` for a new session on an
+   existing run, or `orchid skill orchid --full` to continue owned work.
+4. Follow the same ownership, evidence, and authorization procedures used by
+   native integrations. Request context explicitly when no ambient callback
+   is installed.
+
+Pi and Kimi have no dedicated skill installation, session callback, or worker
+adapter in this tree, and their command-level use has not been qualified
+live. Antigravity/agy has a shipped review adapter with the restrictions
+listed below; native interactive registration is not implemented. Further
+harness integrations should reuse the public command contract. A harness
+that Orchid launches as a worker also needs an engine adapter; see
+[your first engine](extending/first-engine.md).
+
+## Task contract revision
+
+To repeat work with the same contract, use
+`orchid task restart <id> --reason "..." --dry-run`, then omit `--dry-run`
+after establishing current operator ownership. It reruns the selected task and
+its transitive dependents while preserving their contract terms and revisions.
+Independent report-task checks can be restarted separately from completed
+upstream work and sibling checks. All harnesses use this same command.
+
+Every harness uses the same revision verb. When an upstream task's acceptance
+criteria or verification command needs correction, load
+`orchid protocol revision --full`. Preview the affected tasks with
+`orchid task revise <id> --acceptance-criteria "..." --reason "..." --dry-run`.
+The canonical procedure covers ownership, readiness checks, archived evidence,
+and fresh executions. This operator-owned path does not change requirements
+or grant a worker authority to revise its own acceptance conditions.
 
 ## Per-engine status
 

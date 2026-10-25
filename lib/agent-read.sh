@@ -129,33 +129,7 @@ orchid_agent_read_json() {
 # A context input is owned only when its known path has no linked ancestors or
 # final file. Reuse the shared physical-path helpers; never open a rejected path,
 # including a dangling link. Missing inputs remain missing and create no state.
-_orchid_agent_context_input_owned() {
-  local repo="$1" physical_repo="$2" relative="$3" kind="$4" path parent physical
-  path="${repo%/}/$relative"; parent="$(dirname "$path")"
-  while [ "$parent" != "$repo" ]; do
-    if [ "$parent" = / ]; then
-      printf 'orchid: unsafe context input; parent does not belong to repository: %s\n' "$path" >&2
-      return 1
-    fi
-    if [ -L "$parent" ] || { [ -e "$parent" ] && [ ! -d "$parent" ]; }; then
-      printf 'orchid: unsafe context input; parent must be an owned directory: %s\n' "$parent" >&2
-      return 1
-    fi
-    parent="$(dirname "$parent")"
-  done
-  if [ -L "$path" ] || { [ -e "$path" ] && {
-    { [ "$kind" = file ] && [ ! -f "$path" ]; } ||
-    { [ "$kind" = directory ] && [ ! -d "$path" ]; }
-  }; }; then
-    printf 'orchid: unsafe context input; expected owned %s: %s\n' "$kind" "$path" >&2
-    return 1
-  fi
-  physical="$(_orchid_physical_path "$path")" || return 1
-  if [ "$physical" != "${physical_repo%/}/$relative" ]; then
-    printf 'orchid: unsafe context input; path escapes repository ownership: %s\n' "$path" >&2
-    return 1
-  fi
-}
+# Owned-path admission is shared from common.sh.
 
 # orchid_agent_context_preflight <repo> -- admission for the complete bounded
 # read surface, including the existing jobs/routing readers. User configuration,
@@ -309,6 +283,9 @@ orchid_agent_context_json() {
        boundary:.[2],operator_owned:$operator_owned,tasks:.[0],jobs:.[1],
        next:(if .[2] != null then ["orchid run boundary show","orchid protocol boundaries --full"]
          elif $run_status == "uninitialized" then ["orchid start --help","orchid protocol planning --full"]
+         elif $run_status == "planning" then ["orchid skill orchid-plan --full","orchid protocol planning --full"]
+         elif $run_status == "accepting" then ["orchid protocol completion --full","orchid status --explain --jobs"]
+         elif $run_status == "blocked" then ["orchid status --explain --jobs","orchid protocol boundaries --full"]
          elif $run_status == "complete" then ["orchid protocol completion --full","orchid run new --help"]
          else ((.[0].items | map(select(.status!="done"))[0:3] | map("orchid task show " + (.id|@sh))) + ["orchid jobs ls --all"]) end)}'
 }

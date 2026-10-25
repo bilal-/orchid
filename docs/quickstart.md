@@ -1,20 +1,25 @@
 # Quickstart — existing repo
 
-For an LLM-led workflow, ask Claude Code, Codex, Hermes or OpenCode to use the
-installed Orchid skills. `orchid` shows compact live context; `orchid setup`
-reports registration state without editing profiles. Choose your host's native
-setup command in [frontends](frontends.md). All-host setup configures all four
-profiles and requires Hermes's Python with PyYAML. See also
-[the agent interface](agent-interface.md). Scripted
-recipes that parse historical text/TSV output should set `ORCHID_OUTPUT=raw`.
+Use Orchid from your coding harness through the portable skills and CLI.
+The scope includes Claude Code, Codex, Pi, Antigravity/agy, Kimi, Hermes,
+OpenCode, and other harnesses; implemented integrations and qualification
+vary. Ask your agent to plan, continue, or resume the project. Orchid carries
+the run state and evidence between sessions.
 
-Clone → install → doctor → init → your first completed task, in one sitting.
-This is the literal path rehearsed on a clean machine profile before
-release (`docs/specs/roadmap.md`'s release checklist) — if a step here
-doesn't work as written, that's a docs bug, not something to route around.
+Where native registration is implemented, use your host's selected setup
+command in [frontends](frontends.md). Other harnesses use the
+[command-level entry path](frontends.md#other-harnesses).
+`orchid setup` reports registration state without editing profiles.
+All-host setup currently configures four profiles and requires Hermes's
+Python with PyYAML.
 
-Greenfield (no existing code yet)? See
-[quickstart-greenfield.md](./quickstart-greenfield.md) instead.
+The manual commands below describe the same workflow the skills use.
+Interactive hosts and worker engine bindings are separate choices. See
+[the agent interface](agent-interface.md) for scoped reads and help. Scripts
+that parse historical text or TSV output should set `ORCHID_OUTPUT=raw`.
+
+For a new product without existing code, use the
+[greenfield quickstart](./quickstart-greenfield.md).
 
 **Prerequisites:** at least one of the engine CLIs orchid orchestrates,
 already logged in under your own subscription — `claude`, `codex`, `agy`,
@@ -269,13 +274,15 @@ cautious.
 
 ## 5. Start the orchestrator and walk away
 
-Two equivalent front-ends execute the same `PROTOCOL.md` procedure — pick
-whichever fits how you work:
+Interactive and unattended execution use the same protocol and evidence
+gates.
 
-**Interactive (default bindings — a Claude Code session):** open Claude
-Code in this worktree and invoke the `orchid` skill (installed in step 1).
-It reads `PROTOCOL.md` and drives the tick via `orchid` verbs, the same
-commands shown throughout this page.
+**Interactive:** open your coding harness in the integration worktree and
+ask it to continue the Orchid project using the portable `orchid` skill.
+Load it through `orchid skill orchid --full` if native skill discovery is
+not integrated. The skill starts with compact context and uses bounded driver passes for
+routine execution. A new session follows the resume skill before taking
+ownership. Host selection does not change configured worker bindings.
 
 **Headless, right now:**
 

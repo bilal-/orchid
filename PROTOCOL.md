@@ -3065,6 +3065,61 @@ one-pass driver could otherwise stop progressing in silence:
   auto-blocks at `infra_max` — and relaunches for as long as that cap has not
   blocked the task. Same ladder, same bound, one counter, no hidden state.
 
+## TASK CONTRACT REVISION
+
+Use `orchid task restart <id> --reason "..."` when the contract is unchanged
+and the selected task plus its transitive dependents need another execution.
+Add `--dry-run` to preview that subgraph. Restart follows the ownership,
+idle-task, evidence-archiving, and publication procedure below, but preserves
+every task's `contract_revision` and contract terms. It increments execution
+generations only. It accepts no acceptance-criteria or verification-command
+flags. Use revision when the declared contract itself needs correction.
+
+Independent verification can use existing report-outcome tasks connected by
+`depends_on`. Restart a verification node to rerun that branch and its downstream
+tasks while retaining completed upstream and sibling checks. Re-pin the target
+candidate through the normal report-task procedure; even an identical candidate
+requires fresh evidence for the new execution. These dependency edges still
+wait for `done`; they do not introduce candidate-ready edges or nested verifier
+graphs within an active implementation task.
+
+This is an operator-owned change within the current run requirements. The
+headless judgment broker does not admit it. Requirements themselves remain
+immutable after planning; a changed top-level requirement needs a new run.
+
+1. Read `orchid task show <id>` and the current run context. Supply revised
+   acceptance criteria, verification commands, or both, with a recorded reason.
+2. Preview the transitive affected set with
+   `orchid task revise <id> --acceptance-criteria "..." --reason "..." --dry-run`.
+   Preview does not acquire ownership or mutate state. It reports impact, not
+   readiness to execute the revision.
+3. Establish current interactive ownership through RESUME if needed. A running
+   supervisor retains ownership. Stop or finish affected execution through
+   existing procedures, then reconcile and retire outstanding jobs. Preserve
+   uncommitted work and resolve standing objections through their normal authority.
+4. Run the same revision command without `--dry-run`, passing the current
+   `ORCHID_EPOCH` explicitly. `--verification-commands "..."` revises the task's
+   verification command. At least one supplied contract field must change.
+5. The verb requires a running or accepting run and idle affected tasks
+   (`pending`, `rework`, `blocked`, or `done`). It refuses outstanding affected
+   jobs, unresolved objections, unsafe worktrees, and replacement branch
+   collisions before publishing anything. An unrelated task may continue.
+6. One durable transaction records the reason, archives affected task records
+   and evidence under `.orchid/revisions/<root>-g<generation>/`, and queues their
+   new execution generations as `pending`. The root's `contract_revision` also
+   increases; dependent contracts retain their own revision. An accepting run
+   returns to running. Original branches, checkouts, and merged code remain.
+7. Continue with the normal driver. Replacement generations use fresh branches
+   and worktree paths. Prepared jobs pin the current task and direct input
+   versions. Reconciliation quarantines obsolete results. After execution starts,
+   versioned semantic fields must be changed through revision, not `task set`.
+
+Revision creates corrective work; it does not revert merged code or establish
+that the revised contract is correct. The existing verification, review, and
+operator acceptance gates still apply. `run new` archives these revision records
+with their run. The existing durable-commit filesystem publication crash window
+also applies here.
+
 ## RESUME
 
 1. `orchid run resume` — fences a new epoch; if the previous run's lock is

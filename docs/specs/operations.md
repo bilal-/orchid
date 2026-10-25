@@ -7,6 +7,33 @@ reports `unverified`, inspect the original process before confirming its exit
 with `orchid jobs record-exit <job-id> <exit-code>`. The kernel holds its report
 and sends no signal until ownership or completion is established.
 
+Orchid can be driven by a coding harness through its public CLI and portable
+skills. Native registration covers a subset of hosts; Pi, Kimi,
+Antigravity/agy, and further harnesses are also in scope, with implemented
+integration and qualification status listed in [frontends](../frontends.md).
+The interactive host supplies tools and approvals;
+Orchid records the run and enforces transition and evidence rules. Worker
+engine bindings are independent of the host. Unattended operation is an
+optional execution mode with separate target-repository authorization.
+
+## Task contract revision
+
+Use `orchid task restart <id> --reason "..."` to re-execute an unchanged
+contract and its downstream dependency subgraph. `--dry-run` previews the
+affected set. Restart uses the same operator ownership and idle-task gates as
+revision, but increments execution generations without spending contract
+revisions. Existing report-outcome tasks can represent independent checks:
+restarting one check preserves completed upstream and sibling checks. Repin
+the check's candidate before dispatch; fresh approval is required even if the
+candidate commit is unchanged.
+
+Use `orchid protocol revision --full` for the canonical procedure. The
+operator-owned `orchid task revise` path changes task acceptance criteria or
+verification commands and queues the idle transitive dependent set in fresh
+execution generations. Preview with `--dry-run`; actual revision requires the
+current epoch. Previous records and evidence remain under `.orchid/revisions/`
+and are archived with the run. Requirements and merged code are preserved.
+
 ## Installation & configuration
 
 ### Install

@@ -62,6 +62,14 @@ Front-ends (Claude skill, headless tick, a future TUI) are a documented
 CONVENTION — anything that executes PROTOCOL.md through verbs — not a
 discovered plugin kind.
 
+Task jobs additionally carry `contract_revision`, `execution_generation`,
+`contract_terms` (acceptance criteria and the explicit verification command), and
+`input_revisions` (direct dependency contract revisions, execution generations,
+candidate SHAs, and contract terms). These additive request fields do not change request schema
+1. Adapters may omit them from replies; reconciliation binds accepted evidence
+from the kernel manifest. If a reply supplies version fields, they must match.
+Obsolete task or input bindings are quarantined before evidence admission.
+
 **Engine invocation — request document + input pack.** The tier-2 launcher
 invokes `<plugin>/run <request.json>`. Requests are a discriminated union on
 `operation` (`implement | review | critique | research | hook | orchestrate`

@@ -2,6 +2,15 @@
 source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/common.sh"
 
+# Exact mode must preserve names byte-for-byte, even when two names differ
+# only by a trailing newline. Command substitution around basename loses it.
+mkdir -p "$WORK/byte-names"
+printf 'original\n' > "$WORK/byte-names/a"
+printf 'newline-name\n' > "$WORK/byte-names/"$'a\n'
+_ocd_copy_path "$WORK/byte-names" "$WORK/byte-copy" exact || fail 'exact byte-name copy'
+cmp "$WORK/byte-names/a" "$WORK/byte-copy/a" || fail 'exact copy preserves ordinary sibling content'
+cmp "$WORK/byte-names/"$'a\n' "$WORK/byte-copy/"$'a\n' || fail 'exact copy preserves trailing-newline sibling'
+
 # RED: copy and publication failures cannot discard the previous directory.
 # GREEN: a complete directory replaces durable files and preserves live runtime.
 copy_src="$WORK/source"; mkdir -p "$copy_src/runtime"
@@ -96,3 +105,29 @@ mv "$copy_dst.old.$$" "$copy_dst" || fail 'fixture recovers its retained backup'
 _ocd_sync_dir_atomic "$copy_dst" "$copy_src" || fail 'sync accepts a recovered directory'
 assert_eq 'new first' "$(cat "$copy_dst/a")" 'recovered sync publishes the complete new state'
 green_case 'successful publication after backup recovery replaces the recovered directory'
+
+copy_missing="$WORK/new-namespace"
+copy_rc=0
+copy_error="$(
+  (
+    mv() {
+      if [ "$2" = "$copy_missing" ]; then printf 'simulated new namespace publication failure\n' >&2; return 7; fi
+      command mv "$@"
+    }
+    _ocd_sync_dir_atomic "$copy_missing" "$copy_src"
+  ) 2>&1
+)" || copy_rc=$?
+[ "$copy_rc" -ne 0 ] || fail 'new namespace publication failure refuses'
+[ ! -e "$copy_missing" ] || fail 'failed new namespace remains absent'
+assert_match 'publication failure' "$copy_error" 'new namespace error remains visible'
+red_case 'new durable namespace publication failure leaves no partial directory'
+_ocd_sync_dir_atomic "$copy_missing" "$copy_src" || fail 'new namespace publication accepts'
+assert_eq 'new first' "$(cat "$copy_missing/a")" 'new namespace contains complete first file'
+assert_eq 'new last' "$(cat "$copy_missing/b")" 'new namespace contains complete last file'
+green_case 'durable sync creates a previously absent archive namespace from a complete staged directory'
+ln -s "$copy_missing" "$WORK/linked-namespace"
+copy_rc=0
+_ocd_sync_dir_atomic "$WORK/linked-namespace" "$copy_src" || copy_rc=$?
+[ "$copy_rc" -ne 0 ] || fail 'sync refuses a linked destination'
+[ -L "$WORK/linked-namespace" ] || fail 'linked destination retained on refusal'
+red_case 'directory publication refuses a linked destination instead of replacing its target'

@@ -238,6 +238,13 @@ PROOF_ENROLLED_FILES=(
   tests/test_plugin_digest.sh
   tests/test_plugin_entrypoints.sh
   tests/test_run_recovery.sh
+  tests/test_task_revise.sh
+tests/test_task_restart.sh
+tests/test_graph.sh
+tests/test_output_contract.sh
+tests/test_json.sh
+tests/test_publication.sh
+  tests/test_publication_hooks.sh
   tests/test_spawn_env.sh
   tests/test_timeout_group.sh
   tests/test_hermetic_suite.sh
@@ -565,6 +572,54 @@ plant_reviewer_envelope() {
     '{contract:1, job_id:$jid, task:$task, operation:"review", status:"ok",
       verdict:"approve", scope_complete:true, summary:"fixture reviewer", candidate_sha:$cand}' \
     > ".orchid/reviews/$id-a$attempt-reviewer.json"
+}
+
+# Claim a real, prepared publication from another checkout without advancing
+# integration. Direct publishers must observe this common-directory fence.
+plant_publication_fence() {
+  local sequence owner view branch old new epoch
+  sequence="${ORCHID_TEST_PUBLICATION_SEQUENCE:-0}"
+  sequence=$((sequence + 1)); ORCHID_TEST_PUBLICATION_SEQUENCE="$sequence"
+  owner="$WORK/publication-owner-$sequence"; view="$WORK/publication-view-$sequence"
+  branch="$(ORCHID_ROOT="$REPO_ROOT" /bin/bash -c '
+    source "$ORCHID_ROOT/lib/common.sh"
+    config_get "$1" integration_branch orchid/integration
+  ' _ "$ORCHID_REPO")" || { fail 'publication fence configuration'; return 1; }
+  old="$(git -C "$ORCHID_REPO" rev-parse "refs/heads/$branch")" || { fail 'publication fence integration'; return 1; }
+  git -C "$ORCHID_REPO" worktree add -q --detach "$owner" "$old" || { fail 'publication fence checkout'; return 1; }
+  mkdir -p "$owner/.orchid/tasks" "$owner/.orchid/reviews" "$view"
+  printf -- '---\nrun_status: planning\nrun_id: r-fence\n---\n' > "$owner/.orchid/roadmap.md"
+  printf '# Journal\n' > "$owner/.orchid/journal.md"
+  epoch="$(ORCHID_REPO="$owner" "$ORCHID_BIN" run start | sed -n 's/^epoch: //p')" || { fail 'publication fence ownership'; return 1; }
+  ORCHID_REPO="$owner" ORCHID_EPOCH="$epoch" "$ORCHID_BIN" task create FENCE 'pending publication' >/dev/null || { fail 'publication fence task'; return 1; }
+  git -C "$owner" add -f .orchid/tasks/FENCE.md
+  git -C "$owner" commit -q -m 'prepared publication fixture'
+  new="$(git -C "$owner" rev-parse HEAD)"
+  ORCHID_ROOT="$REPO_ROOT" ORCHID_REPO="$owner" ORCHID_EPOCH="$epoch" /bin/bash -c '
+    source "$ORCHID_ROOT/lib/common.sh"
+    source "$ORCHID_ROOT/lib/frontmatter.sh"
+    source "$ORCHID_ROOT/lib/publication.sh"
+    verb_lock_acquire "$1"
+    trap '\''verb_lock_release "$ORCHID_REPO"'\'' EXIT
+    orchid_publication_materialize "$1" "$5" "$2" .orchid/tasks || exit 1
+    before="$(orchid_publication_capture "$1" .orchid/tasks)" || exit 1
+    orchid_publication_prepare "$1" "$2" "$3" "$4" "$5" "$before" .orchid/tasks >/dev/null
+  ' _ "$owner" "$view" "$branch" "$old" "$new" || { fail 'prepare publication fence'; return 1; }
+  ORCHID_TEST_PUBLICATION_OWNER="$owner"
+  ORCHID_TEST_PUBLICATION_VIEW="$view"
+}
+
+retire_publication_fence() {
+  local owner="${ORCHID_TEST_PUBLICATION_OWNER:?}" view="${ORCHID_TEST_PUBLICATION_VIEW:?}"
+  ORCHID_ROOT="$REPO_ROOT" /bin/bash -c '
+    source "$ORCHID_ROOT/lib/common.sh"
+    source "$ORCHID_ROOT/lib/frontmatter.sh"
+    source "$ORCHID_ROOT/lib/publication.sh"
+    orchid_publication_abort "$1"
+  ' _ "$owner" || { fail 'retire unpublished fence'; return 1; }
+  git -C "$ORCHID_REPO" worktree remove --force "$owner" || { fail 'remove publication fixture'; return 1; }
+  rm -rf "${view:?}"
+  unset ORCHID_TEST_PUBLICATION_OWNER ORCHID_TEST_PUBLICATION_VIEW
 }
 
 # --------------------------------------------------------------------------

@@ -13,6 +13,7 @@ source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/findings.sh"
 source "$ORCHID_ROOT/lib/capability.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
 source "$ORCHID_ROOT/lib/rework.sh"
+source "$ORCHID_ROOT/lib/revision.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; tasks="$state/tasks"
 sub="${1:-}"; shift || true
 tf() { echo "$tasks/$1.md"; }
@@ -44,8 +45,10 @@ task_usage() {
     retry)       printf '%s\n' 'usage: orchid task retry <id> --reason "..." [--attempts N]' ;;
     reverify)    printf '%s\n' 'usage: orchid task reverify <id> --reason "..."' ;;
     rebase)      printf '%s\n' 'usage: orchid task rebase <id>' ;;
+    revise) printf '%s\n' 'usage: orchid task revise <id> [--acceptance-criteria "..."] [--verification-commands "..."] --reason "..." [--dry-run]' ;;
+    restart) printf '%s\n' 'usage: orchid task restart <id> --reason "..." [--dry-run]' ;;
     infra-fail)  printf '%s\n' 'usage: orchid task infra-fail <id> --reason "..."' ;;
-    *)           printf '%s\n' 'usage: orchid task create|show|get|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|rebase|infra-fail'
+    *)           printf '%s\n' 'usage: orchid task create|show|get|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|rebase|revise|restart|infra-fail'
                  return 1 ;;
   esac
 }
@@ -891,6 +894,10 @@ case "$sub" in
       fi
       printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"
     done ;;
+  revise|restart)
+    source "$ORCHID_ROOT/lib/task-revise.sh"
+    task_revision "$repo" "$sub" "$@"
+    ;;
   set)
     [ $# -ge 3 ] || orchid_die "$(task_usage set)"
     verb_lock_guard "$repo"
@@ -946,6 +953,18 @@ case "$sub" in
     # write (plugins and archetypes add their own fields), and a closed list
     # here would be a second schema drifting away from the templates.
     case "$key" in
+      branch)
+        if fm_has "$f" execution_generation && [ "$val" != "$(revision_execution_branch "$f" "$id")" ]; then
+          orchid_die 'a versioned task branch must match its execution generation'
+        fi ;;
+
+      contract_revision|execution_generation|revision_id)
+        orchid_die "'$key' kernel-owned: use task revise" ;;
+      acceptance_criteria|verification_commands|depends_on)
+        if fm_has "$f" execution_generation && [ "$(fm_get "$f" status)" != pending ]; then
+          orchid_die "'$key' is versioned after execution starts: use task revise"
+        fi ;;
+
       '') orchid_die "the key is empty: 'orchid task set <id> <key> <value>' writes '<key>: <value>' as one frontmatter entry, and an entry needs a name. Nothing was written and $f is unchanged." ;;
       [A-Za-z_]*) ;;
       *) orchid_die "'$key' is not a usable frontmatter key: it must start with a letter or '_'. Frontmatter is one 'key: value' entry per line, and a line that does not start with a key name is not an entry -- writing it would leave this task unreadable to 'orchid task show', 'orchid doctor' and the driver's task walk. Nothing was written and $f is unchanged." ;;
@@ -2686,8 +2705,9 @@ case "$sub" in
     [ "$rb_action" = reuse ] \
       || orchid_die "$rb_id: refusing to rebase: $rb_detail. Inspect git -C $repo worktree list, then correct the record with orchid task set $rb_id worktree <registered-task-checkout> before retrying orchid task rebase $rb_id"
     rb_branch="$(git -C "$rb_wt" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    [ "$rb_branch" = "task/$rb_id" ] \
-      || orchid_die "$rb_id's worktree $rb_wt is on '$rb_branch', not task/$rb_id -- refusing to rebase a checkout that is not this task's"
+    rb_expected_branch="$(revision_execution_branch "$rb_f" "$rb_id")"
+    [ "$rb_branch" = "$rb_expected_branch" ] \
+      || orchid_die "$rb_id's worktree $rb_wt is on '$rb_branch', not $rb_expected_branch -- refusing to rebase a checkout that is not this task's. Inspect git worktree list, correct branch/worktree records with orchid task set, then retry orchid task rebase $rb_id."
     # A DIRTY CHECKOUT IS NOT REBASED. `git rebase` would refuse anyway, but it
     # would refuse after this verb had already said it was going to act, and an
     # uncommitted edit is the one thing in that tree that exists nowhere else.
@@ -2701,10 +2721,10 @@ case "$sub" in
     # The verb lock prevents a new jobs prepare until this rebase completes.
     rb_idle="$(orchid_task_jobs_idle "$repo" "$rb_id")" \
       || orchid_die "refusing to rebase: $rb_idle"
-    journal --task "$rb_id" --kind intervention "rebase: task/$rb_id onto $rb_integ $rb_head (was based on ${rb_base:-unrecorded})"
+    journal --task "$rb_id" --kind intervention "rebase: $rb_expected_branch onto $rb_integ $rb_head (was based on ${rb_base:-unrecorded})"
     if ! git -C "$rb_wt" rebase "$rb_head" >/dev/null 2>&1; then
       git -C "$rb_wt" rebase --abort >/dev/null 2>&1 || true
-      journal --task "$rb_id" --kind intervention "rebase aborted: task/$rb_id conflicts with $rb_integ $rb_head; the checkout is back where it was"
+      journal --task "$rb_id" --kind intervention "rebase aborted: $rb_expected_branch conflicts with $rb_integ $rb_head; the checkout is back where it was"
       orchid_die "$rb_id: the rebase onto $rb_integ conflicts and has been aborted -- $rb_wt is exactly as it was. Resolve it there (git -C $rb_wt rebase $rb_head, fix, git rebase --continue) then re-run this verb to record the new base; or leave it, and orchid merge will meet the same conflict and send the task back to rework."
     fi
     # RE-STAMPED ONLY BECAUSE A REBASE ACTUALLY HAPPENED. The dispatch arm never
@@ -2904,5 +2924,5 @@ case "$sub" in
       echo "$id: infra_failures $n/$max"
       echo "$id: no status change below the cap ($max). If this task needs to move now: $(blocked_route "$id" retry)"
     fi ;;
-  *) orchid_die "usage: orchid task create|show|get|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|rebase|infra-fail" ;;
+  *) orchid_die "usage: orchid task create|show|get|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|rebase|revise|restart|infra-fail" ;;
 esac

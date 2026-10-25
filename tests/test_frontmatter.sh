@@ -375,3 +375,45 @@ assert_eq blocked "$(fm_get "$WORK/T022.md" status)" "the producer received its 
 # No staging file is left beside the task: these land in .orchid/tasks/ itself.
 leftover_stage="$(find "$WORK" -name '*.fmprod.*' | wc -l | tr -d ' ')"
 assert_eq 0 "$leftover_stage" "fm_write_task_from removes its staging file on every path, so none are left in the tasks directory"
+
+# Characterize the read contract before batching: bare keys are present, but
+# only the first spaced value is readable, including a spaced empty value.
+printf -- 'ignored before opening\n---\nbare:\nbare: later\nbare: last\nspaced: \nspaced: later\nvalue:  leading: #hash \\literal\\n \\"quote\\" — 🪻  \n---\nbare: body\n' > "$WORK/read-contract.md"
+assert_eq later "$(fm_get "$WORK/read-contract.md" bare)" 'bare duplicate does not hide first spaced value'
+assert_eq '' "$(fm_get "$WORK/read-contract.md" spaced)" 'first spaced empty value hides later duplicate'
+fm_has "$WORK/read-contract.md" bare || fail 'bare duplicate is present'
+fm_has "$WORK/read-contract.md" spaced || fail 'spaced empty value is present'
+if fm_has "$WORK/read-contract.md" missing; then fail 'missing key is not present'; fi
+assert_eq ' leading: #hash \literal\n \"quote\" — 🪻  ' "$(fm_get "$WORK/read-contract.md" value)" 'read preserves literal punctuation, Unicode and surrounding whitespace'
+printf -- '---\nonly_bare:\ncontrol: \001\010\011\014\015\037\n---\nonly_bare: body\n' > "$WORK/read-controls.md"
+assert_eq '' "$(fm_get "$WORK/read-controls.md" only_bare)" 'bare value is empty even beside body lookalike'
+fm_has "$WORK/read-controls.md" only_bare || fail 'bare value remains present'
+assert_eq "$(printf '\001\010\011\014\015\037')" "$(fm_get "$WORK/read-controls.md" control)" 'read preserves representable control bytes'
+printf -- '---\nkey: before EOF' > "$WORK/read-open.md"
+assert_eq 'before EOF' "$(fm_get "$WORK/read-open.md" key)" 'read remains permissive on unterminated frontmatter'
+fm_has "$WORK/read-open.md" key || fail 'unterminated readable key remains present'
+printf 'key: body only\n' > "$WORK/read-no-frontmatter.md"
+assert_eq '' "$(fm_get "$WORK/read-no-frontmatter.md" key)" 'body without delimiter is not frontmatter'
+if fm_has "$WORK/read-no-frontmatter.md" key; then fail 'body-only key is not present'; fi
+rc=0; fm_get "$WORK/missing-read.md" key > "$WORK/missing-read.out" 2> "$WORK/missing-read.err" || rc=$?
+[ "$rc" -ne 0 ] || fail 'missing file read remains an error'
+red_case 'frontmatter reads reject missing files and ignore body-only and absent keys'
+green_case 'legacy reads preserve first spaced values, bare presence, whitespace, control bytes and Unicode'
+
+for fixture in read-contract read-controls read-open read-no-frontmatter; do
+  fm_json "$WORK/$fixture.md" > "$WORK/$fixture.json" || { fail 'batch frontmatter read'; exit 1; }
+  jq -e 'type == "object" and all(.[]; type == "string")' "$WORK/$fixture.json" >/dev/null || fail 'batch values remain strings'
+done
+for key in bare spaced value; do
+  assert_eq "$(fm_get "$WORK/read-contract.md" "$key")" "$(jq -r --arg key "$key" '.[$key]' "$WORK/read-contract.json")" "batch preserves scalar value for $key"
+done
+assert_eq "$(fm_get "$WORK/read-controls.md" control)" "$(jq -r .control "$WORK/read-controls.json")" 'batch escapes controls without changing decoded bytes'
+jq -e 'has("only_bare") and .only_bare == "" and (has("missing") | not)' "$WORK/read-controls.json" >/dev/null || fail 'batch distinguishes bare present key from absent key'
+assert_eq 'before EOF' "$(jq -r .key "$WORK/read-open.json")" 'batch retains permissive partial-document read'
+assert_eq '{}' "$(cat "$WORK/read-no-frontmatter.json")" 'batch ignores body-only document'
+rc=0; fm_json "$WORK/missing-read.md" > "$WORK/missing-batch.out" 2> "$WORK/missing-batch.err" || rc=$?
+[ "$rc" -ne 0 ] || fail 'batch file error cannot report success'
+standalone="$(/bin/bash -c 'unset ORCHID_ROOT; source "$1"; fm_json "$2"' standalone "$REPO_ROOT/lib/frontmatter.sh" "$WORK/read-controls.md")" || fail 'batch reader sources without ORCHID_ROOT'
+assert_eq "$(cat "$WORK/read-controls.json")" "$standalone" 'standalone batch read has no install-root dependency'
+red_case 'batch reads reject file errors and preserve absent-key distinction'
+green_case 'batch JSON roundtrips legacy scalar values, controls and Unicode without another parser'

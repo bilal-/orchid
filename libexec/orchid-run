@@ -4,6 +4,7 @@ source "$ORCHID_ROOT/lib/common.sh"
 orchid_cli_validate run "$@"
 set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
 source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/publication.sh"
 source "$ORCHID_ROOT/lib/lessons.sh"; source "$ORCHID_ROOT/lib/drive.sh"
 # plancheck.sh after lessons.sh, whose _lessons_journal_start_date it uses:
 # `advance` is one of the two verbs that can take a run OUT of planning, and
@@ -52,6 +53,9 @@ case "$sub" in
       orchid_die "not initialized — run orchid init"
     lock_msg="$(lock_acquire "$repo")" || orchid_die "cannot acquire lock"
     trap 'lock_release "$repo"' EXIT
+    verb_lock_acquire "$repo"
+    trap 'verb_lock_release "$repo"; lock_release "$repo"' EXIT
+    orchid_publication_recover "$repo" >&2 || orchid_die 'cannot recover pending durable publication'
     e=$(( $(epoch_current "$repo") + 1 ))
     echo "$e" | atomic_write "$rt/epoch"
     jq -n --arg e "$e" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -484,6 +488,7 @@ case "$sub" in
     # never landed.
     if [ "$from" = complete ]; then
       integ="$(config_get "$repo" integration_branch orchid/integration)"
+    orchid_publication_admit "$repo" "$integ" || orchid_die 'integration has a pending durable publication'
       committed_status=""
       if git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1; then
         committed_roadmap="$(mktemp)"
@@ -621,6 +626,7 @@ case "$sub" in
     new_run_id="$(printf 'r-%03d' $((10#$old_num + 1)))"
 
     integ="$(config_get "$repo" integration_branch orchid/integration)"
+    orchid_publication_admit "$repo" "$integ" || orchid_die 'integration has a pending durable publication'
     git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
       || orchid_die "integration branch '$integ' does not exist"
     # ---- SURVIVING TASK BRANCHES (dogfood F42) --------------------------
@@ -736,7 +742,7 @@ case "$sub" in
     # to runs/<old_run_id>/ verbatim -- durable history, never touched
     # again.
     mkdir -p "$wt_state/runs/$old_run_id"
-    for p in tasks reviews journal.md roadmap.md BLOCKERS.md; do
+    for p in tasks reviews revisions journal.md roadmap.md BLOCKERS.md; do
       [ -e "$wt_state/$p" ] && mv "$wt_state/$p" "$wt_state/runs/$old_run_id/$p"
     done
 
@@ -801,6 +807,7 @@ case "$sub" in
     new_sha="$(git -C "$wt" rev-parse HEAD)"
 
     # Compare-and-swap, same discipline as orchid-plan apply/orchid-merge.
+    orchid_publication_admit "$repo" "$integ" || orchid_die 'integration has a pending durable publication'
     if ! git -C "$repo" update-ref "refs/heads/$integ" "$new_sha" "$integ_head"; then
       moved_to="$(git -C "$repo" rev-parse "refs/heads/$integ" 2>/dev/null || echo "?")"
       ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind intervention \

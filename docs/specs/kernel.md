@@ -12,23 +12,87 @@ evidence or permission checks. See [agent-interface](../agent-interface.md).
 
 ## Purpose
 
-Orchid is a multi-agent orchestrator for people who hold subscriptions to
-several AI coding CLIs and want them working together on large, long-running
-tasks. **Roles — orchestrator, implementer, reviewer, arbiter, plan_critic,
-and future custom roles — are pure configuration**; any engine whose declared
-capabilities satisfy a role's requirements can hold it. The shipped defaults
-reflect the author's subscriptions (Claude Code orchestrates/arbitrates,
-Codex implements, Antigravity and a fresh Codex session review), but nothing
-in the architecture privileges them.
+Orchid adds durable delivery state and evidence gates to existing coding
+harnesses through a public CLI contract and portable skills. Claude Code,
+Codex, Pi, Antigravity/agy, Kimi, Hermes, OpenCode, and other harnesses are
+in scope; the implemented integration and qualification status is recorded
+in [frontends](../frontends.md). The host owns its interactive tools and
+approval rules; Orchid owns task transitions, run ownership, and the evidence
+required to advance work.
 
-Honestly stated, the kernel is a small **file-based workflow scheduler**:
-deterministic CLI verbs plus stateless LLM ticks over git state. Design
-principles: no daemon, no dashboard, no terminal emulation, no persistent
-runtime process. Engines are driven through their first-party headless modes,
-so billing stays on each vendor's subscription. All durable state is files in
-git — sessions are disposable; the files are the truth.
+Worker roles are separate from the interactive host. **Roles** (orchestrator,
+implementer, reviewer, arbiter, plan_critic, and custom roles) are configuration.
+An engine must declare the capabilities required by its role. The shipped
+bindings reflect the author's subscriptions; they do not privilege a vendor
+in the architecture.
 
-**Platforms:** macOS and Linux (bash 3.2+, git, jq); Windows via WSL2.
+The kernel is a file-based workflow scheduler: deterministic CLI verbs and
+bounded engine jobs over Git state. Durable files carry continuity between
+sessions. Optional unattended runners use the same procedure and require
+machine-local authorization for their target repository.
+
+The base runtime is Bash, Git, and jq. There is no resident daemon,
+dashboard, or terminal emulation. Engine adapters use vendor CLIs in their
+first-party headless modes; authentication and billing remain with each CLI.
+
+The task lifecycle supports retry, rework, reverification, guarded rebasing,
+and operator-owned task contract revision. `task revise` changes acceptance
+criteria or verification commands and restarts the idle transitive dependent
+set in new execution generations, archiving previous task records and evidence.
+Requirements remain immutable after planning. Requirement-level replanning,
+revision while affected jobs are outstanding, and nested verification graphs
+are not implemented.
+
+**Platforms:** macOS and Linux (Bash 3.2+, Git, jq); Windows via WSL2.
+
+## Task contract revisions and evidence
+
+Missing `contract_revision` and `execution_generation` fields mean 1 for legacy
+tasks. Present values must be decimal integers from 1 to 999999. `task revise`
+and `task restart` own these fields and `revision_id`. Revision increases the
+root contract revision; restart preserves every contract revision and all
+contract terms. Both increase all affected execution generations monotonically.
+A restart remains legal at the contract-revision cap, but not at the
+execution-generation cap. New generations
+use fresh `task/<id>-g<N>` branches and sibling worktree paths with `-g<N>`. A tracked
+branch record may only be set to its canonical generation branch. Rebase also
+checks that derived identity independently of the editable worktree record.
+
+Independent report-outcome tasks can represent verification branches. Restart
+invalidates only the selected node and its transitive dependents; completed
+upstream and sibling nodes retain their state and evidence. Existing dependency
+edges still require `done`, rather than an active task's candidate readiness.
+Re-pin the report task's target candidate before dispatch. Job binding rejects
+old-generation evidence even when that candidate commit is identical.
+
+Dependency impact follows `depends_on` through the existing scheduling parser.
+The root and all transitive dependents must be idle and have no outstanding jobs,
+unsafe worktrees, or unresolved objections. Revision requires a changed
+acceptance criterion or verification command; restart retains the contract.
+Both require a reason. The existing
+`orchid_commit_durable` transaction selects only durable task, evidence, archive,
+roadmap, and journal paths, preserving the live runtime directory and open log
+files. It archives affected task records and evidence,
+resets execution markers and attempts, and publishes the full set together.
+Policy fields and dependency declarations survive. An accepting run returns to
+running; accepted runs require `run new` instead. Preview only reports impact.
+
+Prepared jobs and launch requests pin `contract_revision`, `execution_generation`,
+`contract_terms` (the exact acceptance criteria and explicit verification command),
+and `input_revisions`, a map from direct dependency IDs to their contract revision,
+execution generation, candidate SHA, and contract terms. Reconciliation checks those bindings
+against current state before filing evidence. Engine-supplied version fields,
+when present, must match the trusted manifest. Filed envelopes inherit the
+manifest binding. Legacy manifests remain generation-1 compatible. Degraded
+orphan diagnostics remain historical, never approving evidence.
+
+Archives live under `.orchid/revisions/<root>-g<N>/`, with `tasks/` and `reviews/`.
+They are written by `task revise`, then carried into `runs/<run-id>/revisions/`
+by `run new`. Their recorded branches remain run-owned. This preserves original
+code, checkouts, evidence, and decision history. Revision does not revert code,
+resolve an objection, or certify that the new contract is correct. Operator
+ownership of the verb is an actor check plus the existing command-broker boundary,
+not operating-system confinement. The durable-commit crash window still applies.
 
 ## Architecture
 
@@ -155,15 +219,16 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 
 | File | Sole writer (verb) |
 |---|---|
-| `tasks/*.md` | `orchid task create/set/advance/unblock/retry/reverify/rebase/handoff/prereq-ack/infra-fail` |
-| `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status) — `plan apply` runs the carry-forward cross-check first and refuses in EVERY `run_status` while an item is unconsidered, and `run advance` does the same on every edge out of `planning`, so neither a mid-run revision nor a reordering carries an item past it (PROTOCOL.md PLANNING) |
+| `tasks/*.md` | `orchid task create/set/advance/unblock/retry/reverify/rebase/revise/handoff/prereq-ack/infra-fail` |
+| `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status), `orchid task revise` (accepting to running) — `plan apply` runs the carry-forward cross-check first and refuses in EVERY `run_status` while an item is unconsidered, and `run advance` does the same on every edge out of `planning`, so neither a mid-run revision nor a reordering carries an item past it (PROTOCOL.md PLANNING) |
 | `requirements.md` | `orchid requirements import <file>` — the operator-owned EXCEPTION: authored by hand anywhere, imported by verb, immutable after plan |
 | `orchid.config` (as committed on the integration branch) | `orchid config commit --reason "..."` (v1-m4 — SHIPPED) — operator-owned like `requirements.md`: authored by hand anywhere, but landed onto the integration branch only through this verb, never a direct hand-commit into a (possibly stale) checkout |
 | `context.md` | `orchid plan apply` / `orchid plan refresh-context` |
 | `journal.md` | `orchid journal add` (also auto-written by reason-bearing verbs) |
 | `lessons.md` | `orchid lessons add/update/retire/consolidate` |
 | `baseline.md` | `orchid init` |
-| `reviews/*` | `orchid jobs reconcile` (envelopes, including hook-point envelopes filed as `<task>-a<n>-hook-<point>.json`, and the plan-critique envelopes filed as `plan-a<n>-plan_critic.json`), `orchid verify`/`orchid merge` (evidence), `orchid run accept` (acceptance), `orchid jobs review-plan --pin\|--repin\|--adopt-evidence` (the pinned reviewer-slot plan, `<task>-a<n>.review-plan.json` — see "Independence") |
+| `reviews/*` | `orchid jobs reconcile` (envelopes, including hook-point envelopes filed as `<task>-a<n>-hook-<point>.json`, and the plan-critique envelopes filed as `plan-a<n>-plan_critic.json`), `orchid verify`/`orchid merge` (evidence), `orchid run accept` (acceptance), `orchid jobs review-plan --pin\|--repin\|--adopt-evidence` (the pinned reviewer-slot plan, `<task>-a<n>.review-plan.json` — see "Independence"); `orchid task revise` withdraws affected evidence into the revision archive |
+| `revisions/*` | `orchid task revise` creates immutable execution snapshots; `orchid run new` moves them under their run archive |
 | `plugins.lock` | `orchid plugins lock` |
 | `BLOCKERS.md` | `orchid notify` |
 | `runs/<run_id>/` | `orchid run new` (archival move of the just-finished run's `tasks/`, `reviews/`, `journal.md`, `roadmap.md`, `BLOCKERS.md` — written once, at rollover, never touched again) |
