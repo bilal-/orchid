@@ -1,51 +1,66 @@
 # Where things stand — resume point
 
-## Graph delivery implementation — 2026-10-25
+## Graph delivery completed — 2026-10-26
 
 All five requested capabilities are implemented locally: nested independent
-candidate verification, per-node envelope and committed-artifact contracts,
-bounded repair and invalidation, controlled graph/requirements replanning with
+candidate verification, node envelope and committed-artifact contracts, bounded
+repair and invalidation, controlled graph/requirements replanning with
 retained-candidate checkpoints and new nodes, and crash/replay plus live-harness
-qualification. See [graph delivery](../specs/graph-delivery.md) for the public
-commands, evidence rules and operator boundaries. The work remains on local
-feature branches; no remote, release tag, formula pin or beta version changed.
+qualification. Graph execution is opt-in. See [graph
+delivery](../specs/graph-delivery.md) for commands and operator boundaries.
 
-The foundation commit is `1749b072c266f323cde59004b5f3948742b87717`; runtime
-feature commit is `95d553d4d183a9db085ce93fa71b5f344fb9fb5d`. Runtime
-integration was checked through repeated in-session review and correction
-cycles. Canonical full local CI passed on macOS with `/bin/bash` 3.2: all 127
-test files, repeated invariant checks, documentation, portability and
-zero-warning ShellCheck. The final run used a vendor-free PATH; optional checks
-retain their recorded NOT-TESTED status. The machine-local log is
-`/tmp/orchid-r2-full-ci-vendorfree-checked.log`. Focused runtime, nested
-delivery, repair/rebase, replanning, checkpoint admission, contracts, native
-adapter context and publication recovery tests passed. Each new enforcement gate
-has a refusing RED case and an accepting GREEN twin.
+Local foundation commit: `1749b072c266f323cde59004b5f3948742b87717`. Runtime
+feature: `95d553d4d183a9db085ce93fa71b5f344fb9fb5d`. Qualification
+fixture/diagnostic corrections: `34d536625c21edd0c88d1a1e51335ef87023709b`. The
+original checkout is on `codex/graph-delivery`; pre-build edits were
+incorporated and their recovery snapshot remains at stash
+`3dbbe22491bb827b85b938758a532744ca7820c9`.
 
-An earlier native-wrapper qualification passed four Codex/Claude jobs in 179
-seconds before the final library-loading correction. A committed-source recheck
-ran three jobs in 159 seconds and was recorded as failed. Offline replay through
-the unchanged native adapter isolated two fixture false negatives: Claude's
-200-byte summary discarded a correct read token placed late in its reason, and
-the seeded-defect matcher missed a precise symbolic subtraction finding. Both
-original receipts and sanitized offline diagnosis remain under
-`.git/night-shift/`; they have not been relabeled as passes.
+Canonical full local CI passed on macOS with `/bin/bash` 3.2: all 127 test
+files, repeated invariants, documentation, portability and zero-warning
+ShellCheck. The full run used a vendor-free PATH; its log is
+`/tmp/orchid-r2-full-ci-vendorfree-checked.log`. Subsequent qualification-only
+fixes passed the expanded qualification suite (10 RED, 9 GREEN), whole-tree
+static checks and documentation checks. Those logs are
+`/tmp/orchid-qualify-diagnostics-tests-final.log`,
+`/tmp/orchid-qualify-diagnostics-static-final.log` and
+`/tmp/orchid-qualification-fix-docs.log`. The runtime kernel and native adapters
+were unchanged by that follow-through. Optional checks retain their recorded
+NOT-TESTED status.
 
-The qualification fixture now requests the read marker first, accepts the
-specific symbolic defect, and distinguishes missing proof from launch, approval
-and kernel-transition failures. Failure receipts retain the actual reviewer and
-sanitized status, verdict, scope and summary byte count. Expanded qualification
-tests passed (10 RED, 9 GREEN); whole-tree static checks passed with zero
-warnings. The runtime kernel is unchanged from full CI. Final corrected-profile
-live qualification remains pending at this checkpoint.
+Final real qualification passed from the delivered checkout at `34d5366`: Codex
+CLI `0.164.0` implemented the synthetic task and Claude Code `2.1.310`
+independently reviewed it. Four jobs completed in 145 seconds, with no retries
+or unresolved worker. All five scenarios passed: fresh postcommit program
+inputs, independent verifier hidden read, current source review, graph
+acceptance after ownership resume/replay refusal, and seeded arithmetic-defect
+review. Hashes of the kernel and adapter profiles remained stable. The bounded
+receipt is `.git/night-shift/graph-live-codex-claude.json`; the run log is
+`/tmp/orchid-live-corrected.log`.
+
+An earlier 179-second native run passed before the final loading correction. A
+later 159-second run remains recorded as failed: offline replay through the
+unchanged native adapter isolated a read token discarded by its 200-byte reason
+limit and a legitimate symbolic subtraction finding missed by the qualifier. The
+corrected fixture puts the read marker first and recognizes the precise
+expression; diagnostics now identify the actual reviewer, current sanitized
+reply and failure phase. Both earlier receipts and offline diagnoses remain in
+`.git/night-shift/`; the failed record was not relabeled as a pass.
+
+Design, foundations, runtime, qualification and correction boundaries were
+examined through eight in-session reviewer contexts and focused refactor/review
+cycles. Coverage is the requested feature and its affected boundaries; unrelated
+repository areas were not audited. Current review/validation details are in
+`.git/night-shift/log.md` and `ledger.md`.
 
 This qualifies the tested synthetic wrapper profile, not every host, adapter or
-production project. All supported hosts remain equally prominent. Host support
-for Pi, Kimi and other harnesses does not establish a native worker adapter or
-live qualification. Hosted CI, third-party beta qualification and publication
-are separate evidence. No real source operational `.orchid/` state was changed;
-all run, repair, merge and acceptance exercises used disposable repositories.
-Earlier entries below remain historical observations of their own candidates.
+production project. All supported hosts remain equally prominent. Pi, Kimi and
+other host integrations do not imply a shipped native worker adapter or live
+qualification. Hosted/Linux CI, third-party beta qualification and publication
+remain separate evidence. No remote, release tag, formula pin or beta version
+changed. All 1,621 original operational-state entries remain unchanged; every
+run, repair, merge and acceptance exercise used disposable repositories. Earlier
+handoff entries below remain historical observations.
 
 ## Historical handoff context
 
