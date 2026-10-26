@@ -10,22 +10,34 @@ qualification. See [graph delivery](../specs/graph-delivery.md) for the public
 commands, evidence rules and operator boundaries. The work remains on local
 feature branches; no remote, release tag, formula pin or beta version changed.
 
-The foundation commit is `1749b072c266f323cde59004b5f3948742b87717`. Runtime
-integration was checked through repeated in-session review and correction cycles.
-Canonical full local CI passed on macOS with `/bin/bash` 3.2: all 127 test files, repeated invariant checks, documentation, portability and zero-warning ShellCheck. The final run used a vendor-free PATH; optional checks retain their recorded NOT-TESTED status. The machine-local log is `/tmp/orchid-r2-full-ci-vendorfree-checked.log`. Focused
-runtime, nested delivery, repair/rebase, replanning, checkpoint admission,
-contracts, native adapter context and publication recovery tests passed. Each
-new enforcement gate has a refusing RED case and an accepting GREEN twin.
+The foundation commit is `1749b072c266f323cde59004b5f3948742b87717`; runtime
+feature commit is `95d553d4d183a9db085ce93fa71b5f344fb9fb5d`. Runtime
+integration was checked through repeated in-session review and correction
+cycles. Canonical full local CI passed on macOS with `/bin/bash` 3.2: all 127
+test files, repeated invariant checks, documentation, portability and
+zero-warning ShellCheck. The final run used a vendor-free PATH; optional checks
+retain their recorded NOT-TESTED status. The machine-local log is
+`/tmp/orchid-r2-full-ci-vendorfree-checked.log`. Focused runtime, nested
+delivery, repair/rebase, replanning, checkpoint admission, contracts, native
+adapter context and publication recovery tests passed. Each new enforcement gate
+has a refusing RED case and an accepting GREEN twin.
 
-A real bounded native-wrapper qualification passed on this machine: Codex CLI
-`0.164.0` implemented a synthetic task and Claude Code `2.1.310` independently
-reviewed it. Four real jobs completed in 179 seconds with no retries. Fresh
-postcommit inputs, a hidden review read, a seeded defect, ownership resume,
-replayed-result refusal and graph acceptance all passed. Hashes of the kernel and adapter profiles
-remained stable and no unresolved worker remained. This first receipt predates
-the final library-loading correction; final-candidate live qualification is pending. The machine-local receipt is
-`.git/night-shift/graph-live-codex-claude-before-library-fix.json`; it records hashes of the adapter and wrapper profile,
-versions and bound evidence without raw prompts or artifact contents.
+An earlier native-wrapper qualification passed four Codex/Claude jobs in 179
+seconds before the final library-loading correction. A committed-source recheck
+ran three jobs in 159 seconds and was recorded as failed. Offline replay through
+the unchanged native adapter isolated two fixture false negatives: Claude's
+200-byte summary discarded a correct read token placed late in its reason, and
+the seeded-defect matcher missed a precise symbolic subtraction finding. Both
+original receipts and sanitized offline diagnosis remain under
+`.git/night-shift/`; they have not been relabeled as passes.
+
+The qualification fixture now requests the read marker first, accepts the
+specific symbolic defect, and distinguishes missing proof from launch, approval
+and kernel-transition failures. Failure receipts retain the actual reviewer and
+sanitized status, verdict, scope and summary byte count. Expanded qualification
+tests passed (10 RED, 9 GREEN); whole-tree static checks passed with zero
+warnings. The runtime kernel is unchanged from full CI. Final corrected-profile
+live qualification remains pending at this checkpoint.
 
 This qualifies the tested synthetic wrapper profile, not every host, adapter or
 production project. All supported hosts remain equally prominent. Host support
@@ -34,7 +46,6 @@ live qualification. Hosted CI, third-party beta qualification and publication
 are separate evidence. No real source operational `.orchid/` state was changed;
 all run, repair, merge and acceptance exercises used disposable repositories.
 Earlier entries below remain historical observations of their own candidates.
-
 
 ## Historical handoff context
 

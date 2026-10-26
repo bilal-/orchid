@@ -64,6 +64,7 @@ Q_RECORDS="$Q_WORK/records.jsonl"; : > "$Q_RECORDS"
 Q_ACTIVE_REPO=""; Q_ACTIVE_JOB=""; Q_KEEP=0; Q_FINISHED=0
 Q_SOURCE_BEFORE=""; Q_PRIMARY="$Q_WORK/primary.json"; Q_SECONDARY="$Q_WORK/secondary.json"
 Q_REPO=""; Q_EPOCH=""; Q_JOB=""; Q_REPLY=""; Q_IMPL_CANDIDATE=""
+Q_FAILURE_DESCRIPTOR=""; Q_FAILURE_ROLE=""
 Q_IMPL_PROOF=0; Q_REVIEW_PROOF=0; Q_RESUMED=0; Q_REPLAY=0; Q_DELIVERED=0
 Q_FAILURE_REASON=kernel_scenario_refusal; Q_FAILURE_OUTCOME=blocked; Q_ADAPTER_JOBS=0
 
@@ -97,7 +98,7 @@ q_record() {
     contract="$(jq -cS '.output_contract' "$evidence" | _orchid_stream_sha256)" || return 1
     envelope="$(_orchid_stream_sha256 < "$evidence")" || return 1
     jq --arg inputs "$inputs" --arg terms "$terms" --arg contract "$contract" --arg envelope "$envelope" \
-      '{job_id,task,operation,candidate_sha,graph_contract,run_context:{id:.run_context.id,requirements_revision:.run_context.requirements_revision,digest:.run_context.digest},contract_revision,execution_generation,attempt,
+      '{job_id,task,operation,status,verdict,scope_complete,summary_bytes:(.summary // "" | utf8bytelength),candidate_sha,graph_contract,run_context:{id:.run_context.id,requirements_revision:.run_context.requirements_revision,digest:.run_context.digest},contract_revision,execution_generation,attempt,
         verification_target:(if .verification_target == null then null else .verification_target | {task,base_sha,candidate_sha,contract_revision,execution_generation,attempt,run_context:{id:.run_context.id,requirements_revision:.run_context.requirements_revision,digest:.run_context.digest}} end),
         input_revisions_sha256:$inputs,contract_terms_sha256:$terms,envelope_sha256:$envelope,
         output_contract_sha256:(if .output_contract == null then null else $contract end),
@@ -271,7 +272,9 @@ q_reply_file() {
   return 1
 }
 q_launch() {
-  local node="$1" role="$2" operation="$3" alias="$4" deadline now
+  local node="$1" role="$2" operation="$3" alias="$4" deadline now reconcile_rc=0
+  Q_REPLY=""; Q_JOB=""; Q_FAILURE_ROLE="$role"; Q_FAILURE_DESCRIPTOR="$Q_PRIMARY"
+  if [ "$(jq -r .alias "$Q_SECONDARY")" = "$alias" ]; then Q_FAILURE_DESCRIPTOR="$Q_SECONDARY"; fi
   Q_FAILURE_REASON=insufficient_remaining_job_budget; Q_FAILURE_OUTCOME=not-tested
   [ "$(q_left)" -ge 180 ] || return 124
   Q_FAILURE_REASON=kernel_launch_refused; Q_FAILURE_OUTCOME=blocked
@@ -283,6 +286,7 @@ q_launch() {
   Q_JOB="$(awk '$1=="launched"{print $2}' "$Q_WORK/launch.txt")"; [ -n "$Q_JOB" ] || return 1
   Q_ADAPTER_JOBS=$(( Q_ADAPTER_JOBS + 1 ))
   Q_ACTIVE_REPO="$Q_REPO"; Q_ACTIVE_JOB="$Q_JOB"; deadline=$(( $(date +%s) + Q_JOB_SECONDS + 15 ))
+  Q_FAILURE_REASON=kernel_job_observation_refused
   while [ ! -f "$Q_REPO/.orchid/runtime/exits/$Q_JOB" ]; do
     now="$(date +%s)"
     if [ "$now" -gt "$deadline" ] || [ "$(q_left)" -le 20 ]; then Q_FAILURE_REASON=job_timeout_or_unresolved_exit; return 124; fi
@@ -290,8 +294,12 @@ q_launch() {
     sleep 1
   done
   Q_ACTIVE_JOB=""; Q_ACTIVE_REPO=""
-  q_orchid jobs reconcile >> "$Q_WORK/private.log" 2>&1 || return 1
-  Q_REPLY="$(q_reply_file)" || { Q_FAILURE_REASON=worker_produced_no_current_reply; return 1; }
+  Q_FAILURE_REASON=kernel_result_reconciliation_refused
+  q_orchid jobs reconcile >> "$Q_WORK/private.log" 2>&1 || reconcile_rc=$?
+  Q_REPLY="$(q_reply_file)" || {
+    if [ "$reconcile_rc" -eq 0 ]; then Q_FAILURE_REASON=worker_produced_no_current_reply; fi
+    return 1
+  }
   if ! jq -e '.status=="ok" and .graph_contract==1 and .run_context.id!=""' "$Q_REPLY" >/dev/null; then
     case "$(jq -r .status "$Q_REPLY")" in
       auth) Q_FAILURE_REASON=existing_authentication_unavailable ;;
@@ -301,11 +309,16 @@ q_launch() {
     esac
     return 1
   fi
+  [ "$reconcile_rc" -eq 0 ]
 }
+
 q_review_read() {
   local token="$1"
-  jq -e --arg token "$token" '(.summary // "" | contains($token)) or any(.findings[]?; .title|contains($token))' "$Q_REPLY" >/dev/null
+  if jq -e --arg token "$token" '(.summary // "" | contains($token)) or any(.findings[]?; .title|contains($token))' "$Q_REPLY" >/dev/null; then return 0; fi
+  Q_FAILURE_REASON=hidden_review_read_unproved; Q_FAILURE_OUTCOME=fail
+  return 1
 }
+
 q_review_leak_free() {
   local token="$1" base="$2" candidate="$3" wt="$4" file
   q_git -C "$wt" diff "$base".."$candidate" > "$Q_WORK/review-diff.txt" || return 1
@@ -317,7 +330,10 @@ q_review_leak_free() {
 }
 q_accept_review() {
   local node="$1"
-  jq -e '.verdict=="approve" and .scope_complete==true' "$Q_REPLY" >/dev/null || return 1
+  if ! jq -e '.verdict=="approve" and .scope_complete==true' "$Q_REPLY" >/dev/null; then
+    Q_FAILURE_REASON=current_review_approval_unproved; Q_FAILURE_OUTCOME=fail; return 1
+  fi
+  Q_FAILURE_REASON=kernel_review_transition_refused; Q_FAILURE_OUTCOME=blocked
   q_orchid task advance "$node" arbitrating --reason 'synthetic current approval' >> "$Q_WORK/private.log" 2>&1 || return 1
   q_orchid task arbitrate "$node" --result approve --reason 'synthetic current approval accepted' >> "$Q_WORK/private.log" 2>&1
 }
@@ -328,13 +344,13 @@ q_implementation_scenario() {
   Q_FAILURE_REASON=kernel_scenario_refusal; Q_FAILURE_OUTCOME=blocked
   q_new_repo implementation "$reviewer_alias" || return 1
   q_orchid task create C 'Produce fresh-input addition program' >> "$Q_WORK/private.log" 2>&1 || return 1
-  q_orchid task set C acceptance_criteria 'Create only solve.sh and read-token.txt. Copy exact .probe-token bytes into read-token.txt using workspace tools. solve.sh receives one JSON filename, reads nonce,a,b and emits exactly one JSON object {nonce:the input nonce,sum:a+b}; use Bash and jq. Do not change probe-verify.sh, hidden tokens, configuration, or .orchid. Reviewers: read hidden .review-token and include REASON: read:<its exact value> in the short reason after reviewing.' >> "$Q_WORK/private.log" 2>&1 || return 1
+  q_orchid task set C acceptance_criteria 'For review operations, read .review-token and begin REASON with read:<its exact value>, before your explanation, so the proof survives the 200-byte summary limit. Create only solve.sh and read-token.txt. Copy exact .probe-token bytes into read-token.txt using workspace tools. solve.sh receives one JSON filename, reads nonce,a,b and emits exactly one JSON object {nonce:the input nonce,sum:a+b}; use Bash and jq. Do not change probe-verify.sh, hidden tokens, configuration, or .orchid. Reviewers: read hidden .review-token and include REASON: read:<its exact value> in the short reason after reviewing.' >> "$Q_WORK/private.log" 2>&1 || return 1
   q_orchid task set C verification_commands '/bin/bash probe-verify.sh' >> "$Q_WORK/private.log" 2>&1 || return 1
   q_orchid task set C output_contract '{"contract":1,"artifacts":[{"path":"solve.sh","min_bytes":1,"max_bytes":16384},{"path":"read-token.txt","min_bytes":64,"max_bytes":65}]}' >> "$Q_WORK/private.log" 2>&1 || return 1
   if [ "$Q_ROLE" = all ]; then
     q_orchid task create V 'Independent fresh-input verification' --archetype review >> "$Q_WORK/private.log" 2>&1 || return 1
     q_orchid task set V verifies C >> "$Q_WORK/private.log" 2>&1 || return 1
-    q_orchid task set V acceptance_criteria 'Independently verify solve.sh echoes arbitrary input nonce and adds a+b, and read-token.txt equals .probe-token. Read hidden .review-token through workspace tools and include REASON: read:<its exact value> in your short reason. Approve only correct code; never edit files.' >> "$Q_WORK/private.log" 2>&1 || return 1
+    q_orchid task set V acceptance_criteria 'For review operations, read .review-token and begin REASON with read:<its exact value>, before your explanation, so the proof survives the 200-byte summary limit. Independently verify solve.sh echoes arbitrary input nonce and adds a+b, and read-token.txt equals .probe-token. Read hidden .review-token through workspace tools and include REASON: read:<its exact value> in your short reason. Approve only correct code; never edit files.' >> "$Q_WORK/private.log" 2>&1 || return 1
     q_orchid task set V output_contract '{"contract":1,"envelope_schema":{"required":["summary"],"properties":{"summary":{"type":"string","minLength":1}}}}' >> "$Q_WORK/private.log" 2>&1 || return 1
   fi
   q_orchid graph enable --reason 'synthetic qualification' >> "$Q_WORK/private.log" 2>&1 || return 1
@@ -371,6 +387,8 @@ q_implementation_scenario() {
   Q_RESUMED=1
   token="$(cat "$wt/.review-token")"
   q_review_leak_free "$token" "$base" "$Q_IMPL_CANDIDATE" "$wt" || return 1
+  Q_REPLY=""; Q_FAILURE_DESCRIPTOR="$reviewer"; Q_FAILURE_ROLE=reviewer
+  Q_FAILURE_REASON=kernel_verifier_preparation_refused; Q_FAILURE_OUTCOME=blocked
   q_run 25 "$Q_ROOT/runners/orchid-graph-prepare" V >> "$Q_WORK/private.log" 2>&1 || return 1
   q_orchid task advance V reviewing >> "$Q_WORK/private.log" 2>&1 || return 1
   q_launch V reviewer review "$reviewer_alias" || return 1
@@ -378,6 +396,7 @@ q_implementation_scenario() {
   q_accept_review V || return 1
   Q_REVIEW_PROOF=1
   q_record independent-verifier reviewer "$reviewer" pass bound_candidate_and_hidden_read true "$Q_REPLY" || return 1
+  Q_FAILURE_REASON=kernel_replay_fence_refused; Q_FAILURE_OUTCOME=blocked
   cp "$Q_REPLY" "$Q_REPO/.orchid/runtime/spool/qualification-replay.json" || return 1
   q_orchid jobs reconcile > "$Q_WORK/replay.txt" 2>> "$Q_WORK/private.log" || return 1
   grep -Fq 'unknown-job' "$Q_WORK/replay.txt" || return 1
@@ -387,6 +406,7 @@ q_implementation_scenario() {
   q_review_read "$token" || return 1
   q_accept_review C || return 1
   q_record source-review reviewer "$reviewer" pass independent_current_source_approval true "$Q_REPLY" || return 1
+  Q_FAILURE_REASON=kernel_graph_delivery_refused; Q_FAILURE_OUTCOME=blocked
   q_orchid merge C >> "$Q_WORK/private.log" 2>&1 || return 1
   q_orchid run advance accepting --reason 'synthetic graph complete' >> "$Q_WORK/private.log" 2>&1 || return 1
   printf 'Synthetic graph qualification: source and independent verifier approved; fresh postcommit program inputs passed.\n' > "$Q_WORK/acceptance.txt"
@@ -397,6 +417,7 @@ q_implementation_scenario() {
 
 q_negative_review_scenario() {
   local descriptor="$1" alias base candidate wt token
+  Q_REPLY=""
   alias="$(jq -r .alias "$descriptor")"
   Q_FAILURE_REASON=kernel_review_scenario_refusal; Q_FAILURE_OUTCOME=blocked
   q_new_repo negative-review "$alias" || return 1
@@ -409,7 +430,7 @@ q_negative_review_scenario() {
   q_git -C "$Q_REPO" -c user.name='Orchid qualification' -c user.email=qualification@example.invalid commit -qm 'seeded fixture subtraction defect' || return 1
   candidate="$(q_git -C "$Q_REPO" rev-parse HEAD)" || return 1
   q_orchid task create R 'Review seeded arithmetic defect' --archetype review >> "$Q_WORK/private.log" 2>&1 || return 1
-  q_orchid task set R acceptance_criteria 'Review add.sh against the requirement to output a+b. Identify any arithmetic defect with a concrete high-severity finding and request changes if wrong. Read hidden .review-token using workspace tools; include REASON: read:<its exact value> in your short reason. Never edit files.' >> "$Q_WORK/private.log" 2>&1 || return 1
+  q_orchid task set R acceptance_criteria 'For review operations, read .review-token and begin REASON with read:<its exact value>, before your explanation, so the proof survives the 200-byte summary limit. Review add.sh against the requirement to output a+b. Identify any arithmetic defect with a concrete high-severity finding and request changes if wrong. Read hidden .review-token using workspace tools; include REASON: read:<its exact value> in your short reason. Never edit files.' >> "$Q_WORK/private.log" 2>&1 || return 1
   q_orchid task set R output_contract '{"contract":1,"envelope_schema":{"required":["summary","findings"],"properties":{"summary":{"type":"string","minLength":1},"findings":{"type":"array","minItems":1}}}}' >> "$Q_WORK/private.log" 2>&1 || return 1
   q_orchid graph enable --reason 'synthetic qualification' >> "$Q_WORK/private.log" 2>&1 || return 1
   q_orchid task set R base_sha "$base" >> "$Q_WORK/private.log" 2>&1 || return 1
@@ -420,9 +441,9 @@ q_negative_review_scenario() {
   wt="$(fm_get "$Q_REPO/.orchid/tasks/R.md" worktree)"; token="$(cat "$wt/.review-token")"
   q_review_leak_free "$token" "$base" "$candidate" "$wt" || return 1
   q_launch R reviewer review "$alias" || return 1
-  Q_FAILURE_REASON=hidden_review_read_or_seeded_defect_unproved; Q_FAILURE_OUTCOME=fail
   q_review_read "$token" || return 1
-  jq -e '.verdict=="request-changes" and .scope_complete==true and any(.findings[]?; .title|test("subtract|addition|arithmetic|operator|sum|minus";"i"))' "$Q_REPLY" >/dev/null || return 1
+  Q_FAILURE_REASON=seeded_defect_unproved; Q_FAILURE_OUTCOME=fail
+  jq -e '.verdict=="request-changes" and .scope_complete==true and any(.findings[]?; .title|test("subtract|addition|arithmetic|operator|sum|minus|\\.a[[:space:]]*-[[:space:]]*\\.b";"i"))' "$Q_REPLY" >/dev/null || return 1
   Q_REVIEW_PROOF=1
   q_record seeded-defect-review reviewer "$descriptor" pass hidden_read_and_fixture_defect true "$Q_REPLY" || return 1
 }
@@ -470,13 +491,13 @@ q_wrap "$Q_PRIMARY" qualification-primary || exit 1
 if [ "$Q_ROLE" = all ]; then q_wrap "$Q_SECONDARY" qualification-reviewer || exit 1; else cp "$Q_PRIMARY" "$Q_SECONDARY"; fi
 if [ "$Q_ROLE" != reviewer ]; then
   if ! q_implementation_scenario "$Q_SECONDARY"; then
-    q_record implementation-graph "$Q_ROLE" "$Q_PRIMARY" "$Q_FAILURE_OUTCOME" "$Q_FAILURE_REASON" false
+    q_record implementation-graph "${Q_FAILURE_ROLE:-$Q_ROLE}" "${Q_FAILURE_DESCRIPTOR:-$Q_PRIMARY}" "$Q_FAILURE_OUTCOME" "$Q_FAILURE_REASON" false "$Q_REPLY"
   fi
   [ -z "$Q_ACTIVE_JOB" ] || exit 1
 fi
 if [ "$Q_ROLE" != implementer ]; then
   if ! q_negative_review_scenario "$Q_SECONDARY"; then
-    q_record seeded-defect-review reviewer "$Q_SECONDARY" "$Q_FAILURE_OUTCOME" "$Q_FAILURE_REASON" false
+    q_record seeded-defect-review reviewer "$Q_SECONDARY" "$Q_FAILURE_OUTCOME" "$Q_FAILURE_REASON" false "$Q_REPLY"
   fi
 fi
 exit 0

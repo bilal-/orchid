@@ -148,4 +148,8 @@ The full probe exercises fresh postcommit program inputs, a hidden review read,
 a seeded defect, ownership resumption, replay refusal, and graph acceptance.
 It has a 900-second ceiling, 120 seconds per job, and no retries. Receipts contain
 identities, hashes and outcomes; raw prompts, review text and artifact contents
-remain private. Dry-run or fake-CLI tests do not establish vendor qualification.
+remain private. The qualification read marker leads the reason because Claude's standard
+adapter retains its first 200 bytes. Missing read proof and an unproved approval
+are reported separately from launch, reconciliation and kernel-transition
+refusals. Failure receipts expose status and scope facts without raw review text.
+Dry-run or fake-CLI tests do not establish vendor qualification.

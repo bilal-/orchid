@@ -58,11 +58,13 @@ if [ "$op" = implement ]; then
   cand="$(git -C "$wt" rev-parse HEAD)"
   jq -n --arg engine "$engine" --arg job "$job" --arg task "$task" --arg cand "$cand" '{contract:1,engine:$engine,job_id:$job,task:$task,operation:"implement",status:"ok",summary:"fixture program generated",commits:[$cand],candidate_sha:$cand}' > "$out"
 else
+  pack="$(jq -r .input_pack "$req")"
+  grep -Fq 'begin REASON with read:' "$pack/task.md" || exit 71
   token="$(cat "$wt/.review-token")"
   if [ "$mode" = no-read ]; then token=not-read; fi
-  jq -n --arg engine "$engine" --arg job "$job" --arg task "$task" --arg cand "$cand" --arg token "$token" '
+  jq -n --arg engine "$engine" --arg job "$job" --arg task "$task" --arg cand "$cand" --arg token "$token" --arg mode "$mode" '
     {contract:1,engine:$engine,job_id:$job,task:$task,operation:"review",status:"ok",scope_complete:true,candidate_sha:$cand,summary:("read:"+$token)} +
-    (if $task == "R" then {verdict:"request-changes",findings:[{severity:"high",title:"addition implemented as subtraction"}]}
+    (if $task == "R" then {verdict:"request-changes",findings:[{severity:"high",title:(if $mode=="symbolic" then "add.sh computes .a - .b instead of .a + .b" elif $mode=="unrelated" then "helper naming convention" else "addition implemented as subtraction" end)}]}
      else {verdict:"approve",findings:[]} end)' > "$out"
 fi
 ADAPTER
@@ -112,6 +114,21 @@ printf 'no-read\n' > "$WORK/engines/qreview/mode"
 run_probe no-read reviewer qreview || exit 1
 [ "$probe_rc" -ne 0 ] || fail 'an unproved workspace read cannot qualify a reviewer'
 jq -e '.outcome!="pass" and (.coverage.hidden_review_read|not)' "$WORK/no-read.json" >/dev/null || fail 'correct-looking verdict alone does not prove actual filesystem access'
+jq -e 'any(.checks[]; .reason=="hidden_review_read_unproved" and .outcome=="fail" and .evidence.status=="ok" and .evidence.scope_complete==true and .evidence.summary_bytes>0)' "$WORK/no-read.json" >/dev/null || fail 'read-proof failure keeps sanitized current reply facts'
+run_probe no-read-graph all qimpl --review-engine qreview || exit 1
+[ "$probe_rc" -ne 0 ] || fail 'missing verifier read proof blocks graph qualification'
+jq -e 'any(.checks[]; .scenario=="implementation-graph" and .role=="reviewer" and .adapter.id=="test/qreview" and .reason=="hidden_review_read_unproved" and .outcome=="fail" and .evidence.task=="V" and .evidence.verdict=="approve")' "$WORK/no-read-graph.json" >/dev/null || fail 'failure identifies actual reviewer and current V reply rather than launch or implementation'
+red_case 'postlaunch missing proof records a reviewer failure with current evidence, not a launch refusal'
+printf 'symbolic\n' > "$WORK/engines/qreview/mode"
+run_probe symbolic reviewer qreview || exit 1
+assert_eq 0 "$probe_rc" 'literal subtraction expression establishes the same seeded arithmetic defect'
+jq -e '.outcome=="pass" and .coverage.hidden_review_read' "$WORK/symbolic.json" >/dev/null || fail 'symbolic defect remains paired with actual hidden-read proof'
+green_case 'a precise symbolic arithmetic finding qualifies without requiring an English synonym'
+printf 'unrelated\n' > "$WORK/engines/qreview/mode"
+run_probe unrelated reviewer qreview || exit 1
+[ "$probe_rc" -ne 0 ] || fail 'an unrelated high finding cannot qualify the seeded arithmetic defect'
+jq -e 'any(.checks[]; .reason=="seeded_defect_unproved" and .outcome=="fail" and .evidence.verdict=="request-changes" and .evidence.scope_complete==true)' "$WORK/unrelated.json" >/dev/null || fail 'seeded-defect failure remains distinct from missing read proof'
+red_case 'a high unrelated finding still fails the same seeded-defect predicate'
 printf 'good\n' > "$WORK/engines/qreview/mode"
 red_case 'correct-looking review output cannot substitute for reading the withheld token'
 
