@@ -6,10 +6,10 @@
 class Orchid < Formula
   desc "Deterministic multi-agent orchestrator for AI coding CLIs"
   homepage "https://orchid.bilal.sh"
-  url "https://github.com/bilal-/orchid/releases/download/v1.0.0-beta.1/orchid-1.0.0-beta.1.tar.gz"
-  sha256 "3783e394b44968e656fc9170deb619af08af563934cc406cc9404e5a660fb26b"
+  url "https://github.com/bilal-/orchid/releases/download/v1.1.0-beta.1/orchid-1.1.0-beta.1.tar.gz"
+  sha256 "1cfc09ffcaae2bdb2a3a2398bdd589dcacb9db0e24f6891859d4befe9e4cfbc5"
   license "MIT"
-  version "1.0.0-beta.1"
+  version "1.1.0-beta.1"
 
   depends_on "git"
   depends_on "jq"
@@ -36,7 +36,7 @@ class Orchid < Formula
     (libexec/"roles").install Dir["roles/*"] if File.directory?("roles")
     libexec.install "PROTOCOL.md", "orchid.config.example", "install.sh"
     libexec.install "skills", "skills-external", "docs", "release"
-    (libexec/"scripts").install "scripts/beta-qualify.sh"
+    (libexec/"scripts").install "scripts/beta-qualify.sh", "scripts/graph-qualify.sh"
     prefix.install "README.md", "LICENSE"
 
     bin.install_symlink libexec/"bin/orchid" => "orchid"
@@ -67,7 +67,7 @@ class Orchid < Formula
     %w[README.md LICENSE].each { |path| assert_path_exists prefix/path }
     %w[install.sh orchid.config.example PROTOCOL.md
        skills/orchid/SKILL.md skills/orchid-plan/SKILL.md skills/orchid-resume/SKILL.md
-       skills-external/openclaw-orchid/SKILL.md docs/install.md scripts/beta-qualify.sh].each do |path|
+       skills-external/openclaw-orchid/SKILL.md docs/install.md scripts/beta-qualify.sh scripts/graph-qualify.sh].each do |path|
       assert_path_exists libexec/path
     end
     assert_equal (libexec/"bin/orchid").realpath, (bin/"orchid").realpath
