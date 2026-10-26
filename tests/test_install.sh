@@ -231,17 +231,17 @@ else
   else
     echo "  SKIP: ruby not present on this machine -- Formula/orchid.rb syntax not linted"
   fi
-  grep -q 'version "1.0.0-beta.1"' "$FORMULA" \
-    || fail "Formula/orchid.rb version is not pinned to 1.0.0-beta.1"
-  grep -q 'releases/download/v1.0.0-beta.1/orchid-1.0.0-beta.1.tar.gz' "$FORMULA" \
+  grep -q 'version "1.1.0-beta.1"' "$FORMULA" \
+    || fail "Formula/orchid.rb version is not pinned to 1.1.0-beta.1"
+  grep -q 'releases/download/v1.1.0-beta.1/orchid-1.1.0-beta.1.tar.gz' "$FORMULA" \
     || fail "Formula/orchid.rb does not reference the version-pinned release asset"
   grep -Eq 'sha256 "[0-9a-f]{64}"' "$FORMULA" || fail "Formula/orchid.rb does not contain a concrete SHA-256"
   grep -Eq 'VERSION-PLACEHOLDER|SHA256-PLACEHOLDER' "$FORMULA" \
     && fail "Formula/orchid.rb still contains a release placeholder"
   grep -qE 'class +Orchid *< *Formula' "$FORMULA" || fail "Formula/orchid.rb does not define 'class Orchid < Formula'"
 fi
-grep -q '^ORCHID_INSTALL_VERSION="1.0.0-beta.1"$' "$INSTALL" || fail "install.sh release version metadata mismatch"
-grep -q '^ORCHID_INSTALL_REF="v1.0.0-beta.1"$' "$INSTALL" || fail "install.sh stable ref is not version-pinned"
+grep -q '^ORCHID_INSTALL_VERSION="1.1.0-beta.1"$' "$INSTALL" || fail "install.sh release version metadata mismatch"
+grep -q '^ORCHID_INSTALL_REF="v1.1.0-beta.1"$' "$INSTALL" || fail "install.sh stable ref is not version-pinned"
 
 # --- Wrapper resolution: simulate exactly the directory shape Formula/
 # orchid.rb's `install` block produces (bin/, libexec/, lib/, runners/,
@@ -612,9 +612,9 @@ bs_out="$(PATH="$bs_gitbin:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/in
 bs_rc=$?
 [ "$bs_rc" -eq 0 ] || fail "bootstrap (fresh clone): install.sh exits 0 (got rc=$bs_rc, output: $bs_out)"
 bs_clone_line="$(grep '^clone' "$bs_gitlog")"
-assert_match '^clone --depth 1 --branch v1\.0\.0-beta\.1 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_clone_line" \
+assert_match '^clone --depth 1 --branch v1\.1\.0-beta\.1 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_clone_line" \
   "bootstrap (fresh clone): git invoked with the immutable stable tag"
-assert_match '\-C .* rev-parse --verify refs/tags/v1\.0\.0-beta\.1\^\{commit\}' "$(cat "$bs_gitlog")" \
+assert_match '\-C .* rev-parse --verify refs/tags/v1\.1\.0-beta\.1\^\{commit\}' "$(cat "$bs_gitlog")" \
   "bootstrap (fresh clone): resolves the stable name specifically through refs/tags"
 assert_match '\-C .* checkout --detach 1111111111111111111111111111111111111111' "$(cat "$bs_gitlog")" \
   "bootstrap (fresh clone): detaches at the stable tag's peeled commit"
@@ -634,7 +634,7 @@ $bs_work/customprefix" "$(cat "$bs_work/record1.txt")" \
 # A real curl-to-bash invocation has no BASH_SOURCE filename. Its $0 names
 # bash, so dirname "$0" is just the caller's cwd. Make that cwd adversarial:
 # it looks exactly like an Orchid checkout, is backed by Git, and is dirty.
-# The piped stable installer must ignore it completely, clone v1.0.0-beta.1
+# The piped stable installer must ignore it completely, clone v1.1.0-beta.1
 # into the canonical ORCHID_HOME, peel the tag, and execute only that cloned
 # installer.
 bs_pipe_cwd="$bs_work/dirty-caller-checkout"
@@ -658,9 +658,9 @@ bs_pipe_rc=$?
 [ "$bs_pipe_rc" -eq 0 ] \
   || fail "bootstrap (piped from dirty checkout): stable install exits 0 (rc=$bs_pipe_rc, output: $bs_pipe_out)"
 bs_pipe_clone_line="$(grep '^clone' "$bs_pipe_gitlog")"
-assert_match '^clone --depth 1 --branch v1\.0\.0-beta\.1 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_pipe_clone_line" \
-  "bootstrap (piped from dirty checkout): ignores cwd and clones immutable v1.0.0-beta.1"
-assert_match '\-C .* rev-parse --verify refs/tags/v1\.0\.0-beta\.1\^\{commit\}' "$(cat "$bs_pipe_gitlog")" \
+assert_match '^clone --depth 1 --branch v1\.1\.0-beta\.1 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_pipe_clone_line" \
+  "bootstrap (piped from dirty checkout): ignores cwd and clones immutable v1.1.0-beta.1"
+assert_match '\-C .* rev-parse --verify refs/tags/v1\.1\.0-beta\.1\^\{commit\}' "$(cat "$bs_pipe_gitlog")" \
   "bootstrap (piped from dirty checkout): peels the stable tag"
 assert_match '\-C .* checkout --detach 1111111111111111111111111111111111111111' "$(cat "$bs_pipe_gitlog")" \
   "bootstrap (piped from dirty checkout): detaches at the pinned commit"
@@ -781,7 +781,7 @@ bs_out_stable="$(PATH="$bs_gitbin_stable:$PATH" ORCHID_HOME="$bs_home" "$bs_work
 bs_rc_stable=$?
 [ "$bs_rc_stable" -eq 0 ] || fail "bootstrap (existing stable clone): install.sh exits 0 (got rc=$bs_rc_stable, output: $bs_out_stable)"
 grep -q '^clone' "$bs_gitlog_stable" && fail "bootstrap (existing stable clone): must not re-clone"
-assert_match '\-C .* fetch --depth 1 origin refs/tags/v1\.0\.0-beta\.1:refs/tags/v1\.0\.0-beta\.1' "$(cat "$bs_gitlog_stable")" \
+assert_match '\-C .* fetch --depth 1 origin refs/tags/v1\.1\.0-beta\.1:refs/tags/v1\.1\.0-beta\.1' "$(cat "$bs_gitlog_stable")" \
   "bootstrap (existing stable clone): fetches only the immutable stable tag"
 assert_match '\-C .* checkout --detach 1111111111111111111111111111111111111111' "$(cat "$bs_gitlog_stable")" \
   "bootstrap (existing stable clone): detaches at the verified tag object"
@@ -852,7 +852,7 @@ assert_match "[Nn]ext steps" "$bs_out5" "inside-checkout install.sh (with bootst
 # a second package file list. Real Homebrew/download qualification is separate.
 if [ -f "$FORMULA" ] && command -v ruby >/dev/null 2>&1; then
   formula_exact="$WORK/formula-exact"
-  formula_cellar="$formula_exact/Cellar/orchid/1.0.0-beta.1"
+  formula_cellar="$formula_exact/Cellar/orchid/1.1.0-beta.1"
   formula_opt="$formula_exact/opt/orchid"
   formula_home="$formula_exact/user"
   formula_nogit="$formula_exact/nogit"
@@ -920,9 +920,12 @@ RUBY
   done
   for package_path in install.sh orchid.config.example PROTOCOL.md release/metadata.conf \
     skills/orchid/SKILL.md skills/orchid-plan/SKILL.md skills/orchid-resume/SKILL.md \
-    skills-external/openclaw-orchid/SKILL.md docs/install.md scripts/beta-qualify.sh; do
+    skills-external/openclaw-orchid/SKILL.md docs/install.md scripts/beta-qualify.sh scripts/graph-qualify.sh; do
     [ -f "$formula_cellar/libexec/$package_path" ] || fail "exact Formula omits $package_path"
   done
+  graph_help="$(HOME="$formula_home" "$formula_cellar/libexec/scripts/graph-qualify.sh" --help)" || fail 'installed graph qualifier help failed'
+  assert_match 'graph-qualify.sh --live' "$graph_help" 'installed graph qualifier is executable'
+
   # RED: metadata omitted from an installed payload must fail the public fast
 # version contract; source-only tests cannot exercise Homebrew's file manifest.
 # GREEN: the exact Formula payload supplies the immutable metadata and all
@@ -935,7 +938,7 @@ assert_match 'release version is missing' "$fast_out" 'installed version missing
 red_case 'installed Formula payload without release metadata cannot satisfy the public fast-version contract'
 mv "$formula_cellar/libexec/release/metadata.hidden" "$formula_cellar/libexec/release/metadata.conf" || exit 1
 for fast_flag in --version -v -V; do
-  assert_eq 1.0.0-beta.1 "$(HOME="$formula_home" "$formula_cellar/bin/orchid" "$fast_flag")" 'installed payload supports each bare fast version flag'
+  assert_eq 1.1.0-beta.1 "$(HOME="$formula_home" "$formula_cellar/bin/orchid" "$fast_flag")" 'installed payload supports each bare fast version flag'
 done
 green_case 'restored exact Formula release metadata satisfies all public fast-version flags'
 ln -s "$formula_cellar" "$formula_opt"
@@ -962,7 +965,7 @@ ln -s "$formula_cellar" "$formula_opt"
     assert_eq 0 "$formula_rc" 'packaged setup accepts a repeat invocation'
     cmp -s "$formula_exact/config.before" "$formula_home/.orchid/config" || fail 'packaged setup overwrote existing user config'
     # Model a Cellar replacement: user-owned links must still work when opt moves.
-    formula_next="$formula_exact/Cellar/orchid/1.0.0-beta.1_1"
+    formula_next="$formula_exact/Cellar/orchid/1.1.0-beta.1_1"
     formula_rc=0
     HOME="$formula_home" ORCHID_REPO="$formula_nogit" ruby "$formula_exact/install-formula.rb" \
       "$REPO_ROOT" "$FORMULA" "$formula_next" "$formula_opt" > "$formula_exact/upgrade.log" 2>&1 || formula_rc=$?
@@ -971,7 +974,7 @@ ln -s "$formula_cellar" "$formula_opt"
     for skill in orchid orchid-plan orchid-resume; do
       [ -f "$formula_home/.claude/skills/$skill/SKILL.md" ] || fail "stable opt $skill link broke on Cellar replacement"
     done
-    assert_eq 'orchid 1.0.0-beta.1' "$(HOME="$formula_home" "$formula_home/.local/bin/orchid" version)" \
+    assert_eq 'orchid 1.1.0-beta.1' "$(HOME="$formula_home" "$formula_home/.local/bin/orchid" version)" \
       'stable user binary runs after Cellar replacement'
     formula_rc=0; formula_setup > "$formula_exact/after-upgrade.log" 2>&1 || formula_rc=$?
     assert_eq 0 "$formula_rc" 'packaged setup accepts the replacement opt prefix'
@@ -1002,7 +1005,7 @@ git -C "$bootstrap_source" init -q .
 git -C "$bootstrap_source" add .
 git -C "$bootstrap_source" commit -qm 'disposable installer payload'
 bootstrap_commit="$(git -C "$bootstrap_source" rev-parse HEAD)"
-git -C "$bootstrap_source" branch v1.0.0-beta.1
+git -C "$bootstrap_source" branch v1.1.0-beta.1
 git config -f "$bootstrap_git_config" "url.file://$bootstrap_source/.insteadOf" 'https://github.com/bilal-/orchid.git'
 bootstrap_pipe() (
   unset CLAUDE_SKILLS_DIR ORCHID_BIN_DIR ORCHID_REPO ORCHID_EPOCH ORCHID_ROOT
@@ -1018,14 +1021,14 @@ bootstrap_rc=0; bootstrap_out="$(bootstrap_pipe 2>&1)" || bootstrap_rc=$?
 assert_match 'refs/tags' "$bootstrap_out" 'real piped bootstrap names the missing tag reference'
 [ ! -e "$bootstrap_checkout" ] || fail 'refused real bootstrap left a canonical checkout'
 red_case 'real piped bootstrap refuses a branch masquerading as the pinned beta tag'
-git -C "$bootstrap_source" branch -D v1.0.0-beta.1 >/dev/null
-git -C "$bootstrap_source" tag v1.0.0-beta.1
+git -C "$bootstrap_source" branch -D v1.1.0-beta.1 >/dev/null
+git -C "$bootstrap_source" tag v1.1.0-beta.1
 bootstrap_rc=0; bootstrap_out="$(bootstrap_pipe 2>&1)" || bootstrap_rc=$?
 assert_eq 0 "$bootstrap_rc" "real piped beta-tag bootstrap succeeds ($bootstrap_out)"
 assert_eq "$bootstrap_commit" "$(git -C "$bootstrap_checkout" rev-parse HEAD)" 'piped install selects the exact tagged fixture commit'
 bootstrap_attached=0; git -C "$bootstrap_checkout" symbolic-ref -q HEAD >/dev/null || bootstrap_attached=$?
 [ "$bootstrap_attached" -ne 0 ] || fail 'piped beta install left an attached branch'
-assert_eq 'orchid 1.0.0-beta.1' "$(HOME="$bootstrap_home" "$bootstrap_prefix/bin/orchid" version)" 'real piped custom-prefix binary runs'
+assert_eq 'orchid 1.1.0-beta.1' "$(HOME="$bootstrap_home" "$bootstrap_prefix/bin/orchid" version)" 'real piped custom-prefix binary runs'
 for skill in orchid orchid-plan orchid-resume; do
   [ -f "$bootstrap_home/.claude/skills/$skill/SKILL.md" ] || fail "real piped install did not wire $skill"
 done

@@ -35,8 +35,8 @@ set -euo pipefail
 # cross-checks them against release/metadata.conf, the tag, and the formula.
 # ShellCheck rationale: release tooling reads this public metadata assignment from the tagged file.
 # shellcheck disable=SC2034
-ORCHID_INSTALL_VERSION="1.0.0-beta.1"
-ORCHID_INSTALL_REF="v1.0.0-beta.1"
+ORCHID_INSTALL_VERSION="1.1.0-beta.1"
+ORCHID_INSTALL_REF="v1.1.0-beta.1"
 ORCHID_INSTALL_REPOSITORY="https://github.com/bilal-/orchid.git"
 
 BOOTSTRAP_CHANNEL="stable"
@@ -63,7 +63,7 @@ case "$BOOTSTRAP_CHANNEL" in
 esac
 if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
   # Same shape rule scripts/release.sh enforces on the tag: vMAJOR.MINOR.PATCH
-  # with an optional semver prerelease suffix (the shipped 1.0.0-beta.1), and
+  # with an optional semver prerelease suffix (the shipped 1.1.0-beta.1), and
   # nothing that could name a moving ref.
   #
   # A HERESTRING, never `printf ... | grep -Eq`, which is how this was written.

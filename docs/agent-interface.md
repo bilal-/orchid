@@ -87,5 +87,5 @@ Tests exercise native Claude/Codex hook JSON, actual host-owned Hermes PyYAML an
 actual OpenCode Node callbacks with isolated profiles. They prove registration,
 contract shape, read-only context, failure handling and uninstall ownership.
 They do not prove third-party usage, authenticated live model completion, or that
-a host grants a command approval. The release remains in `1.0.0-beta.x` until the
-separate stable-release prerequisites are met.
+a host grants a command approval. Source releases remain beta until the separate stable-release prerequisites
+are met; a minor-version bump does not establish qualification.

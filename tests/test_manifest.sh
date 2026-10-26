@@ -265,7 +265,7 @@ role_eligible implementer "$WORK/p16" || fail "role_eligible must still recogniz
 # -- requires_orchid (Task 8) -------------------------------------------
 # `requires_orchid=>=X.Y` is checked against the running kernel's
 # ORCHID_VERSION (lib/common.sh), major.minor only. p1's mk_valid already
-# carries `requires_orchid=>=1.0` and passes (ORCHID_VERSION=1.0.0-beta.1
+# carries `requires_orchid=>=1.0` and passes (ORCHID_VERSION=1.1.0-beta.1
 # satisfies it -- _manifest_version_mm strips the `-beta.1` prerelease
 # suffix before extracting major.minor) -- covered implicitly above, and
 # asserted directly below. Here: an unsatisfiable requirement must reject
@@ -281,7 +281,7 @@ entrypoint=run
 '
 printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/p17/run"; chmod +x "$WORK/p17/run"
 out="$(manifest_validate "$WORK/p17" 2>&1)"
-assert_eq 13 "$?" "requires_orchid '>=2.0' unmet by orchid 1.0.0-beta.1 rejects with exit 13"
+assert_eq 13 "$?" "requires_orchid '>=2.0' unmet by orchid 1.1.0-beta.1 rejects with exit 13"
 assert_match "FAIL.*requires_orchid" "$out" "FAIL printed naming requires_orchid"
 
 # a manifest with no requires_orchid key at all is unaffected (optional key)
@@ -298,10 +298,10 @@ out="$(manifest_validate "$WORK/p18" 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] || fail "no requires_orchid key at all must still validate clean (rc=$rc): $out"
 
 # -- requires_orchid: numeric (not lexical) minor-version compare -----------
-# p17 above only exercised a major-version bump (>=2.0 vs 1.0.0-beta.1),
+# p17 above only exercised a major-version bump (>=2.0 vs 1.1.0-beta.1),
 # which rejects the same way under numeric OR naive string comparison. Cover a
 # two-digit minor version too: requires_orchid=>=1.10 against the running
-# ORCHID_VERSION 1.0.0-beta.1 (minor 0) must still reject (0 < 10 numerically).
+# ORCHID_VERSION 1.1.0-beta.1 (minor 1) must still reject (1 < 10 numerically).
 mk_conf "$WORK/p19" 'manifest_version=1
 id=orchid/sample
 version=0.1.0
@@ -313,12 +313,20 @@ entrypoint=run
 '
 printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/p19/run"; chmod +x "$WORK/p19/run"
 out="$(manifest_validate "$WORK/p19" 2>&1)"
-assert_eq 13 "$?" "requires_orchid '>=1.10' unmet by orchid 1.0.0-beta.1 rejects with exit 13"
+assert_eq 13 "$?" "requires_orchid '>=1.10' unmet by orchid 1.1.0-beta.1 rejects with exit 13"
 assert_match "FAIL.*requires_orchid" "$out" "FAIL printed naming requires_orchid for '>=1.10'"
 
+# The shipped minor admits its own requirement and rejects the next minor.
+if ! _manifest_orchid_satisfies ">=1.1"; then
+  fail 'shipped kernel satisfies >=1.1'
+fi
+if _manifest_orchid_satisfies ">=1.2"; then
+  fail 'shipped kernel rejects >=1.2'
+fi
+
 # -- _manifest_orchid_satisfies: prove the compare is NUMERIC, not lexical ---
-# ORCHID_VERSION is fixed at 1.0.0 for the rest of this suite, so its
-# minor (0) can't distinguish numeric from string ordering (both agree "0" <
+# ORCHID_VERSION is fixed at 1.1.0-beta.1 for the rest of this suite, so its
+# minor (1) can't distinguish numeric from string ordering (both agree "1" <
 # "10"). Call the compare helper directly in a subshell with ORCHID_VERSION
 # overridden, using a minor-version pair where lexical and numeric ordering
 # diverge: string-wise "9" > "10" (first char '9' > '1'), but numerically

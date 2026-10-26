@@ -28,6 +28,11 @@ never manages vendor auth itself; see
 [docs/engines/](./engines/) for the per-engine login flow. `git`, `jq`,
 and bash 3.2+ (macOS's shipped `/bin/bash` is fine).
 
+The source candidate is `1.1.0-beta.1`; the pinned install below selects the
+latest published beta, `1.0.0-beta.1`. The new graph delivery features require
+the [development checkout](./install.md#git-clone-for-hacking-on-orchid-itself)
+until the candidate is published.
+
 ## 1. Clone and install
 
 ```sh

@@ -1,11 +1,10 @@
 # Repository guidance for coding agents
 
 This file applies to the entire repository. Orchid is a Bash 3.2+, Git, and
-`jq` orchestration kernel. It is still in the `1.0.0-beta.x` series: the
-author has dogfooded it on Orchid and on external application repositories,
-and the status recorded at snapshot preparation was: no genuine third-party
-beta or public release has happened. Check GitHub releases for current
-publication status and SESSION-STATE.md for subsequent observations.
+`jq` orchestration kernel. The source candidate is `1.1.0-beta.1`; the latest
+published beta is `1.0.0-beta.1`. Author-operated dogfood and local qualification
+do not establish genuine third-party qualification. Check GitHub releases for
+current publication status and SESSION-STATE.md for subsequent observations.
 
 ## Start here
 
@@ -83,7 +82,7 @@ gate:
   observations, and operator-owned/unproved work.
 - Historical dogfood reports remain historical evidence; add resolution status
   rather than rewriting what the run observed.
-- Keep the version in `1.0.0-beta.x` until the documented 1.0 prerequisites are
-  actually satisfied.
+- Keep source versions in beta until the documented stable-release prerequisites
+  are actually satisfied. A minor-version bump does not satisfy that bar.
 - Never turn local tests, author-operated dogfood, or a prepared installer into
   a claim of hosted CI, third-party qualification, publication, or release.

@@ -1,5 +1,27 @@
 # Where things stand — resume point
 
+## Minor source candidate — 2026-10-26
+
+The operator requested merging and pushing the completed graph delivery with a
+minor version bump. The assembled source candidate is `1.1.0-beta.1`, retaining
+beta status and the separate stable-release qualification bar. Kernel, installer,
+release metadata, and in-repository Formula identify that candidate. The Formula
+also packages the opt-in graph qualifier. Its checksum is pinned from the final
+assembled source content by the integration-owned pinning script.
+
+The latest published beta verified for this preparation is `v1.0.0-beta.1`.
+Public installation links continue to select that published version; graph
+features require the development checkout until another release is published.
+This source integration does not create a tag, publish a release, update the
+external Homebrew tap, or accept a live Orchid run.
+
+Focused version, manifest compatibility, packaging, and documentation checks
+passed. Final pre-push canonical local CI is recorded in
+`/tmp/orchid-release-1-1-ci.log`; inspect its terminal status rather than assuming
+that a log path proves success. Hosted CI and publication require separate
+remote evidence. The earlier graph-delivery entry below records the feature
+snapshot before this version and integration preparation.
+
 ## Graph delivery completed — 2026-10-26
 
 All five requested capabilities are implemented locally: nested independent

@@ -21,6 +21,11 @@ Claude Code, Codex, Antigravity, and Hermes, subject to their capabilities.
 See [frontend and engine status](./docs/frontends.md) for what has been tested.
 Orchid is independent of these vendors.
 
+**Source candidate: `1.1.0-beta.1`.** The latest published beta is
+`1.0.0-beta.1`, which the pinned installer below selects. Use the
+[development checkout](./docs/install.md#git-clone-for-hacking-on-orchid-itself)
+for the new graph delivery features until the candidate is published.
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
 ```
@@ -44,7 +49,7 @@ The second command sets up skills for your installed agent frontends and
 seeds user configuration. Homebrew provides Git and `jq`; the curl installer
 requires them to be installed already.
 
-> **This release remains `1.0.0-beta.1`, not `1.0.0`.** Orchid has now
+> **The published release remains `1.0.0-beta.1`, not `1.0.0`.** Orchid has now
 > been dogfooded on itself and on the webBooks and wasiyyat application
 > repositories, but every run was operated by Orchid's author. That is useful
 > external-repository evidence, not a genuine third-party beta. A `1.0.0`

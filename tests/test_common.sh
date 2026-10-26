@@ -62,11 +62,11 @@ green_case 'atomic write accepts complete input and a successful rename, replaci
 # against lib/common.sh (tests/test_dispatcher.sh covers the same fact
 # through the CLI's `orchid version` verb; this is the library-level source
 # of truth both that verb and every manifest's `requires_orchid` check read).
-# T008: the shipped version is the semver prerelease 1.0.0-beta.1. A bare
+# T008: the shipped version is the semver prerelease 1.1.0-beta.1. A bare
 # 1.0.0 requires genuine third-party beta evidence; author-operated external-
 # repository dogfood does not supply it. Asserted exactly, so a silent re-bump
 # to 1.0.0 fails here.
-assert_eq "1.0.0-beta.1" "$ORCHID_VERSION" "ORCHID_VERSION is 1.0.0-beta.1"
+assert_eq "1.1.0-beta.1" "$ORCHID_VERSION" "ORCHID_VERSION is 1.1.0-beta.1"
 
 # layered config
 mkdir -p "$WORK/repo"; cd_scratch "$WORK/repo" || exit 1; git init -q .

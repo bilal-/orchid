@@ -14,6 +14,11 @@ plain git clone (best if you're hacking on orchid itself). All three end up
 running the same bash+git+jq kernel — see [quickstart.md](./quickstart.md)
 for what happens after any of them.
 
+**Source candidate: `1.1.0-beta.1`.** The latest published beta remains
+`1.0.0-beta.1`; the pinned commands below install that published version.
+Use the [git checkout](#git-clone-for-hacking-on-orchid-itself) for the new
+graph delivery features until a new release is published.
+
 ## One-line install (recommended)
 
 Requires Bash 3.2 or newer, Git, and `jq`.

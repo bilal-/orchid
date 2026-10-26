@@ -61,20 +61,14 @@ if [ "${__orchid_entry_defer_restore:-0}" != 1 ]; then
   _orchid_entry_restore_operator_path
 fi
 
-# The kernel version. `orchid version` (libexec/orchid-version) prints it
-# verbatim; `manifest_validate` (lib/manifest.sh) compares a plugin's
-# `requires_orchid=>=X.Y` against it (major.minor only -- semver-ish, per
-# docs/specs/plugins.md's Manifest section). Bump alongside a milestone,
-# never mid-milestone. The `-mN` milestone-suffix era ended at v1-m4; what
-# ships now is the semver prerelease `1.0.0-beta.1`. A bare `1.0.0` would
-# claim the kernel is hardened and in use, and neither is true yet: nothing
-# outside this repository has run orchid, and no external beta has happened.
-# 1.0.0 is what that beta earns. `_manifest_version_mm` (lib/manifest.sh)
-# strips the `-beta.1` suffix before comparing, so `requires_orchid=>=1.0`
-# is still satisfied by this value.
+# The kernel version is printed verbatim by orchid version. Plugin manifests
+# compare its major.minor components (see docs/specs/plugins.md).
+# This graph-delivery minor remains a beta: author-operated qualification does
+# not establish third-party readiness or satisfy the stable-release bar.
+# _manifest_version_mm strips the prerelease suffix before comparison.
 # ShellCheck rationale: this public constant is consumed by scripts that source this library.
 # shellcheck disable=SC2034
-ORCHID_VERSION="1.0.0-beta.1"
+ORCHID_VERSION="1.1.0-beta.1"
 # A conditional caller suppresses errexit throughout this function, so every
 # staging step must check its own status. Never publish a partial copy or leave
 # a failed rename's temporary file beside the destination. This checks the
