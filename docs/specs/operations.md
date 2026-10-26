@@ -16,6 +16,13 @@ Orchid records the run and enforces transition and evidence rules. Worker
 engine bindings are independent of the host. Unattended operation is an
 optional execution mode with separate target-repository authorization.
 
+Graph delivery uses `orchid graph enable` during planning, `graph replan` for
+operator-owned semantic changes, and `graph repair` for declared bounded failure
+routes. `graph show` and `graph validate` expose the current model. Every mutation
+uses the current epoch and existing verb serialization. See
+[graph delivery](graph-delivery.md) for definitions, checkpoint semantics, and the
+distinction between regression and live harness evidence.
+
 ## Task contract revision
 
 Use `orchid task restart <id> --reason "..."` to re-execute an unchanged

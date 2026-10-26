@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/graph-integration.sh"
 orchid_cli_validate run "$@"
 set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
 source "$ORCHID_ROOT/lib/frontmatter.sh"
@@ -506,6 +507,7 @@ case "$sub" in
       # evidence file, unlike the bare `run advance complete` escape hatch
       # above.
       [ "$from" = accepting ] || orchid_die "run accept requires run_status accepting (current: $from)"
+    orchid_graph_run_gate "$repo" || orchid_die 'run has incomplete or obsolete graph verification'
 
       mkdir -p "$state/reviews"
       cat "$evidence" | atomic_write "$state/reviews/acceptance.log"
@@ -745,6 +747,10 @@ case "$sub" in
     for p in tasks reviews revisions journal.md roadmap.md BLOCKERS.md; do
       [ -e "$wt_state/$p" ] && mv "$wt_state/$p" "$wt_state/runs/$old_run_id/$p"
     done
+    # Keep accepted requirements history and the next run's starting text.
+    if [ -f "$wt_state/requirements.md" ]; then
+      cp -p "$wt_state/requirements.md" "$wt_state/runs/$old_run_id/requirements.md" || orchid_die 'cannot archive final requirements'
+    fi
 
     # 2. context.md carries forward untouched (already sitting in
     # wt_state/context.md from the full copy above -- nothing to do).

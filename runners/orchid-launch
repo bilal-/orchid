@@ -19,6 +19,8 @@ source "$ORCHID_ROOT/lib/hooks.sh"
 # but it is the only process that sees the refusal on the paths nobody wraps.
 # See the exit-19 arm below.
 source "$ORCHID_ROOT/lib/capability.sh"
+source "$ORCHID_ROOT/lib/publication.sh"
+source "$ORCHID_ROOT/lib/graph-runtime.sh"
 
 task="${1:-}"; role="${2:-}"; operation="${3:-}"
 [ -n "$task" ] && [ -n "$role" ] && [ -n "$operation" ] \
@@ -139,7 +141,7 @@ fi
 # `local rc=$?` on its own line, before anything else runs: it is the launcher's
 # pending exit status and any command in front of it would replace it.
 mark_launch_failure() {
-  local rc=$?
+  local rc="${1:-$?}"
   local upd
   [ "$rc" -ne 0 ] || return 0
   [ -f "$manifest" ] || return 0
@@ -152,7 +154,19 @@ mark_launch_failure() {
   printf '%s\n' "$upd" | atomic_write "$manifest" || true
   return 0
 }
-trap mark_launch_failure EXIT
+launch_graph_mode=0; launch_graph_tmp=""; launch_graph_binding=""; launch_graph_workspace=""
+launch_cleanup() {
+  local rc=$?
+  mark_launch_failure "$rc"
+  if [ -n "$launch_graph_tmp" ]; then
+    if ! rm -rf "$launch_graph_tmp"; then rc=1; fi
+  fi
+  if [ "$launch_graph_mode" -eq 1 ]; then
+    verb_lock_release "$repo" || rc=1
+  fi
+  return "$rc"
+}
+trap launch_cleanup EXIT
 
 job_id="$(jq -r .job_id "$manifest")"; engine="$(jq -r .engine "$manifest")"
 attempt="$(jq -r .attempt "$manifest")"; output="$(jq -r .output "$manifest")"
@@ -161,6 +175,35 @@ base_sha="$(jq -r .base_sha "$manifest")"; candidate_sha="$(jq -r .candidate_sha
 # hook_point: read back from the manifest (prepare's own recording), not the
 # locally-parsed flag -- authoritative, and "" for every non-hook job.
 hook_point="$(jq -r '.hook_point // empty' "$manifest")"
+
+# Graph launch holds the existing verb lock through admission, immutable pack
+# construction, and PID publication; kernel state cannot retarget the request.
+if graph_runtime_enabled "$repo"; then
+  launch_graph_mode=1
+  source "$ORCHID_ROOT/lib/archetype.sh"
+  source "$ORCHID_ROOT/lib/schedule.sh"
+  source "$ORCHID_ROOT/lib/review.sh"
+  source "$ORCHID_ROOT/lib/handoff.sh"
+  source "$ORCHID_ROOT/lib/drive.sh"
+  verb_lock_acquire "$repo" || orchid_die 'cannot serialize graph launch'
+  epoch_require "$repo"
+  launch_graph_tmp="$(mktemp -d "${TMPDIR:-/tmp}/orchid-launch-graph.XXXXXX")" || orchid_die 'cannot stage graph launch'
+  graph_snapshot_file "$repo" "$launch_graph_tmp/snapshot.json" || orchid_die 'cannot read graph launch context'
+  graph_manifest_current "$repo" "$manifest" "$launch_graph_tmp/snapshot.json" || orchid_die 'prepared graph job context is obsolete'
+  graph_job_prepare_gate "$repo" "$task" "$launch_graph_tmp/snapshot.json" "$operation" "$hook_point" "$job_id" || orchid_die 'graph launch admission refused'
+  launch_graph_workspace="$(graph_job_workspace "$repo" "$task" "$launch_graph_tmp/snapshot.json" "$operation" "$hook_point")" || orchid_die 'graph launch workspace refused'
+  [ "$launch_graph_workspace" = "$(jq -r '.worktree // ""' "$manifest")" ] || orchid_die 'graph launch workspace differs from its prepared checkout'
+  if [ "$operation" = implement ]; then
+    [ "$(git -C "$launch_graph_workspace" rev-parse --verify HEAD)" = "$(jq -r '.start_head_sha // ""' "$manifest")" ] || orchid_die 'implementation checkout moved after job preparation'
+  fi
+  launch_graph_binding="$launch_graph_tmp/binding.json"
+  graph_job_binding "$repo" "$task" "$launch_graph_binding" "$launch_graph_tmp/snapshot.json" || orchid_die 'cannot bind graph launch inputs'
+  jq --arg worktree "$launch_graph_workspace" --argjson attempt "$attempt" --slurpfile manifest "$manifest" \
+    '. + {worktree:$worktree,attempt:$attempt,start_head_sha:$manifest[0].start_head_sha}' "$launch_graph_binding" > "$launch_graph_binding.next"
+  mv -f "$launch_graph_binding.next" "$launch_graph_binding"
+elif jq -e 'has("graph_contract")' "$manifest" >/dev/null; then
+  orchid_die 'prepared graph job cannot launch outside its graph run'
+fi
 
 # v1-m4 Task 3 (worktree-read review packs): the engine + its plugin dir are
 # resolved HERE, BEFORE pack_build, not down at the spawn site below -- this
@@ -191,21 +234,24 @@ if [ "$operation" = review ] || [ "$operation" = critique ]; then
 fi
 
 pack_dir="$rt/packs/$job_id"
-pack_build "$repo" "$task" "$operation" "$pack_dir" "$pack_extra"
+pack_build "$repo" "$task" "$operation" "$pack_dir" "$pack_extra" "$launch_graph_binding"
 
 # `plan` (v1-m3): the reserved task id has no `.orchid/tasks/plan.md` to
 # read at all -- `fm_get` on a nonexistent file is an awk open-failure, not
 # an empty read, which under `set -e` would abort this launch outright.
 # Guarded the same way pack_build/jobs prepare special-case the id: skip the
 # read entirely and fall through to the repo default below.
-task_file="$state/tasks/$task.md"
-if [ -f "$task_file" ]; then
-  worktree="$(fm_get "$task_file" worktree)"
+if [ "$launch_graph_mode" -eq 1 ]; then
+  worktree="$launch_graph_workspace"
 else
-  worktree=""
+  task_file="$state/tasks/$task.md"
+  if [ -f "$task_file" ]; then
+    worktree="$(fm_get "$task_file" worktree)"
+  else
+    worktree=""
+  fi
+  [ -n "$worktree" ] || worktree="$repo"
 fi
-[ -n "$worktree" ] || worktree="$repo"
-
 # hook ops get their own budget (hook_timeout_s, default 600) instead of the
 # ordinary implement/review timeout_minutes -- hook handlers are typically
 # short-lived middleware (e.g. a guidance lookup), not a full engine session.
@@ -223,7 +269,9 @@ model="$(config_get "$repo" model "")"
 effort="$(config_get "$repo" effort medium)"
 
 mkdir -p "$rt/requests"; req_file="$rt/requests/$job_id.json"
-jq -n --slurpfile revision_manifest "$manifest" --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
+launch_request_binding="$manifest"
+[ "$launch_graph_mode" -eq 0 ] || launch_request_binding="$pack_dir/delivery-context.json"
+jq -n --slurpfile revision_manifest "$launch_request_binding" --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
   --arg role "$role" --arg operation "$operation" \
   --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
   --arg worktree "$worktree" --arg input_pack "$pack_dir" --arg output "$output" \
@@ -233,7 +281,7 @@ jq -n --slurpfile revision_manifest "$manifest" --arg job_id "$job_id" --arg tas
     operation:$operation, base_sha:$base_sha, candidate_sha:$candidate_sha,
     worktree:$worktree, input_pack:$input_pack, output:$output,
     deadline_s:$deadline_s, policy:$policy, model:$model, effort:$effort,
-    hook_point:$hook_point} + ($revision_manifest[0] | {contract_revision,execution_generation,input_revisions,contract_terms})' \
+    hook_point:$hook_point} + ($revision_manifest[0] | if .graph_contract == 1 then . else {contract_revision,execution_generation,input_revisions,contract_terms} end)' \
   | atomic_write "$req_file"
 
 # exe/plugin_dir already resolved above (before pack_build) -- reused here

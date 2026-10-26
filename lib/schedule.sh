@@ -160,13 +160,18 @@ schedule_active_tasks() {
 #                                       one id per space).
 #
 # <task> is a task ID, not a path (mirrors archetype_transitions <name>).
+source "${BASH_SOURCE[0]%/*}/graph-integration.sh"
+
 schedule_dispatch_blockers() {
   local repo="$1" id="$2" state f
   state="$(orchid_state "$repo")"
   f="$state/tasks/$id.md"
 
   local cap n active a_id
-  active="$(schedule_active_tasks "$repo" | grep -vxF "$id" || true)"
+  if orchid_graph_active "$repo"; then
+    graph_dispatch_ready "$repo" "$id" || echo 'waiting-graph-candidate'
+  fi
+  active="$(orchid_graph_dispatch_active "$repo" "$id")" || return 1
   n=0
   for a_id in $active; do n=$((n + 1)); done
   cap="$(config_get "$repo" concurrency 2)"
@@ -266,4 +271,17 @@ schedule_attempt_budget() {
     ''|*[!0-9]*|0*) orchid_die "attempt budget must be a positive integer (got '$v')" ;;
   esac
   echo "$v"
+}
+
+# All task budget observers share graph wait accounting. This reads durable
+# annotations only; it must never inspect jobs, whose listing uses this helper.
+schedule_task_budget_pct() {
+  local repo="$1" id="$2" status="$3" started="$4" budget="$5" now="$6" paused=0
+  if orchid_graph_active "$repo"; then
+    paused="$(graph_wait_seconds "$repo" "$id" "$now")" || return 1
+    case "$paused" in ''|*[!0-9]*) return 1 ;; esac
+    case "$started" in ''|*[!0-9]*) return 1 ;; esac
+    started=$((started + paused))
+  fi
+  schedule_budget_pct "$status" "$started" "$budget" "$now"
 }

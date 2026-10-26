@@ -36,12 +36,29 @@ dashboard, or terminal emulation. Engine adapters use vendor CLIs in their
 first-party headless modes; authentication and billing remain with each CLI.
 
 The task lifecycle supports retry, rework, reverification, guarded rebasing,
-and operator-owned task contract revision. `task revise` changes acceptance
-criteria or verification commands and restarts the idle transitive dependent
-set in new execution generations, archiving previous task records and evidence.
-Requirements remain immutable after planning. Requirement-level replanning,
-revision while affected jobs are outstanding, and nested verification graphs
-are not implemented.
+and selective execution restart. Graph mode adds candidate-bound required
+verifiers, nested completion gates, bounded output contracts, declared repair
+routes, and operator-owned semantic replanning. The canonical graph remains in
+task frontmatter, with no second mutable graph store.
+
+Graph job evidence must match the run and requirements digest, contract revision,
+execution generation, attempt, input revisions, contract terms, and target
+candidate. Required verification cannot be bypassed through direct approval,
+merge, or run acceptance. Contract changes propagate through verification
+obligations; execution changes invalidate the old and new input closure. Machine
+repair never clears an existing objection or resets its cross-generation budget.
+Retained graph checkpoints may remain in `testing` or `reviewing` while
+queued for admission. Their validated lineage and empty execution clock denote
+an unadmitted checkpoint; they hold no capacity or resource reservation yet.
+The existing verb lock serializes admission through ordinary dependency,
+concurrency, exclusivity and resource checks before setup or worker effects.
+Admission anchors the budget once. A checkpoint cannot expose a candidate to
+its verifiers before admission. Repeated preparation and crash recovery retain
+the original anchor; direct timestamp edits cannot bypass this gate.
+
+Affected jobs must be quiescent and recorded checkouts owned and clean before a
+revision transaction publishes. See [graph delivery](graph-delivery.md) for the
+schema, checkpoint rules, and recovery contract.
 
 **Platforms:** macOS and Linux (Bash 3.2+, Git, jq); Windows via WSL2.
 
@@ -221,7 +238,7 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 |---|---|
 | `tasks/*.md` | `orchid task create/set/advance/unblock/retry/reverify/rebase/revise/handoff/prereq-ack/infra-fail` |
 | `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status), `orchid task revise` (accepting to running) — `plan apply` runs the carry-forward cross-check first and refuses in EVERY `run_status` while an item is unconsidered, and `run advance` does the same on every edge out of `planning`, so neither a mid-run revision nor a reordering carries an item past it (PROTOCOL.md PLANNING) |
-| `requirements.md` | `orchid requirements import <file>` — the operator-owned EXCEPTION: authored by hand anywhere, imported by verb, immutable after plan |
+| `requirements.md` | `orchid requirements import <file>` during planning; operator-owned `orchid graph replan --requirements <file> --reason "..."` versions requirements during execution |
 | `orchid.config` (as committed on the integration branch) | `orchid config commit --reason "..."` (v1-m4 — SHIPPED) — operator-owned like `requirements.md`: authored by hand anywhere, but landed onto the integration branch only through this verb, never a direct hand-commit into a (possibly stale) checkout |
 | `context.md` | `orchid plan apply` / `orchid plan refresh-context` |
 | `journal.md` | `orchid journal add` (also auto-written by reason-bearing verbs) |
@@ -470,7 +487,19 @@ buying a fresh implementation pass to reach the same tree.
   a textually clean rebase is not semantically safe against parallel
   changes. On a current base: merge in a temp worktree, run the suite,
   advance the integration ref on pass; `validation_failed` returns that
-  exact candidate to rework with logs. **v0 baseline semantics:** the suite
+  exact candidate to rework with logs.   **Graph integration progress:** a forward integration history containing
+  only reserved `.orchid/` changes can preserve the reviewed candidate without
+  another rebase. A retained candidate already present on integration can also
+  be revalidated without manufacturing a new implementation commit, provided
+  integration still has exactly the same project tree. Both paths require
+  recorded base ancestry and an explicit comparison of the actual merged
+  project tree against the reviewed candidate before validation/publication.
+  Project identity excludes only `.orchid/`, and includes file modes, symlinks,
+  deletions and gitlinks. Comparison errors refuse publication. Real upstream
+  application changes retain the rebase and fresh-verification procedure.
+  Every candidate SHA replacement still invalidates its required checks.
+
+**v0 baseline semantics:** the suite
   must pass, full stop; `baseline.md` records pre-existing failures for
   humans. Baseline-aware comparison is post-v1.
   **The repo-wide gate (`merge_gate`, T007, lesson L016).** "The suite" above

@@ -4,7 +4,7 @@
   "commands": [
     {
       "path": [],
-      "usage": "usage: orchid protocol [preamble|boundaries|planning|tick|revision|resume|headless|completion|discrepancies]",
+      "usage": "usage: orchid protocol [preamble|boundaries|planning|tick|graph|revision|resume|headless|completion|discrepancies]",
       "options": {},
       "min_args": 0,
       "max_args": 1,
@@ -19,7 +19,8 @@
       "examples": [
         "orchid protocol",
         "orchid protocol resume --full",
-        "orchid protocol boundaries --full"
+        "orchid protocol boundaries --full",
+        "orchid protocol graph --full"
       ],
       "next": []
     }

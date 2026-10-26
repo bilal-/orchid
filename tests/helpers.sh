@@ -238,12 +238,24 @@ PROOF_ENROLLED_FILES=(
   tests/test_plugin_digest.sh
   tests/test_plugin_entrypoints.sh
   tests/test_run_recovery.sh
+  tests/test_task_inputs.sh
   tests/test_task_revise.sh
 tests/test_task_restart.sh
 tests/test_graph.sh
+  tests/test_graph_checkpoint.sh
+  tests/test_graph_checkpoint_admission.sh
+  tests/test_graph_engine_context.sh
+  tests/test_graph_merge.sh
+  tests/test_graph_qualify.sh
+  tests/test_graph_jobs.sh
+  tests/test_graph_runtime.sh
+  tests/test_graph_repair.sh
+  tests/test_graph_replan.sh
+  tests/test_graph_delivery.sh
 tests/test_output_contract.sh
 tests/test_json.sh
 tests/test_publication.sh
+  tests/test_graph_drive.sh
   tests/test_publication_hooks.sh
   tests/test_spawn_env.sh
   tests/test_timeout_group.sh

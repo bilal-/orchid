@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/graph-integration.sh"
 orchid_cli_validate task "$@"
 set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
@@ -16,7 +17,7 @@ source "$ORCHID_ROOT/lib/rework.sh"
 source "$ORCHID_ROOT/lib/revision.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; tasks="$state/tasks"
 sub="${1:-}"; shift || true
-tf() { echo "$tasks/$1.md"; }
+tf() { orchid_task_file "$repo" "$1"; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 journal() { ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add "$@"; }
 
@@ -453,8 +454,7 @@ reverify_edge_gate() {
   printf '%s\n' "$rvh"
 }
 
-rank() { case "$1" in low) echo 0;; medium) echo 1;; high) echo 2;; *) echo -1;; esac; }
-
+rank() { orchid_risk_rank "$1"; }
 # refresh_briefs <task-file> <id> -- the task body as the NEXT implementer
 # should read it, printed for the caller to pipe into fm_write_task: every
 # rework brief bound to a candidate other than the current one collapsed to a
@@ -711,6 +711,9 @@ warn_rework_nonconverged() {
 
 case "$sub" in
   create)
+    if orchid_graph_active "$repo"; then
+      [ "$(fm_get "$state/roadmap.md" run_status)" = planning ] || orchid_die 'graph membership changes require graph replan'
+    fi
     [ $# -ge 2 ] || orchid_die "$(task_usage create)"
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; title="$2"; shift 2 || true
@@ -737,6 +740,7 @@ case "$sub" in
     # guard is here so the message is about the id or the title they typed.
     _no_newline "task id" "$id" "$_CREATE_NEWLINE_REMEDY"
     _no_newline "task title" "$title" "$_CREATE_NEWLINE_REMEDY"
+    orchid_task_id_valid "$id" || orchid_die 'task id must use only letters, digits, underscores, and hyphens'
     # --archetype <name> (default: feature) -- the ONLY new flag; a bare
     # `task create <id> <title>` behaves exactly as before this arm gained
     # option parsing.
@@ -929,6 +933,12 @@ case "$sub" in
     # record prose in a task body are legal only from `blocked`/`rework`, and
     # this refusal fires most often while a task is still `pending`. See
     # _body_prose_remedy.
+    if [ "$key" = output_contract ] && [ -n "$val" ]; then
+      source "$ORCHID_ROOT/lib/output-contract.sh"
+      val="$(output_contract_validate "$val")" || orchid_die 'invalid output contract'
+    fi
+    orchid_graph_task_set_gate "$repo" "$id" "$key" "$val" || exit 3
+    orchid_graph_identity_set_gate "$repo" "$id" "$key" "$val" || exit 3
     _no_newline "the value for '$key'" "$val" \
       "$(_body_prose_remedy "$id" "$(fm_get "$f" status)")"
     # THE KEY MUST BE ONE THAT CAN BE READ BACK (T034 rework). `set` takes its
@@ -953,12 +963,17 @@ case "$sub" in
     # write (plugins and archetypes add their own fields), and a closed list
     # here would be a second schema drifting away from the templates.
     case "$key" in
+      started_at)
+        if orchid_graph_active "$repo"; then
+          orchid_die 'started_at is kernel-owned in graph mode; dispatch admits execution'
+        fi
+        ;;
       branch)
-        if fm_has "$f" execution_generation && [ "$val" != "$(revision_execution_branch "$f" "$id")" ]; then
+        if { fm_has "$f" execution_generation || orchid_graph_active "$repo"; } && [ "$val" != "$(revision_execution_branch "$f" "$id")" ]; then
           orchid_die 'a versioned task branch must match its execution generation'
         fi ;;
 
-      contract_revision|execution_generation|revision_id)
+      contract_revision|execution_generation|revision_id|verification_target|candidate_reuse_from|graph_wait|repair_obligation|repair_rounds)
         orchid_die "'$key' kernel-owned: use task revise" ;;
       acceptance_criteria|verification_commands|depends_on)
         if fm_has "$f" execution_generation && [ "$(fm_get "$f" status)" != pending ]; then
@@ -1107,6 +1122,13 @@ case "$sub" in
       journal --task "$id" --kind risk_change "$old -> $val: $reason (blocking_severity -> $bsev)"
       fm_set "$f" blocking_severity "$bsev"
     fi
+    case "$key" in
+      branch|worktree|base_sha|candidate_sha)
+        if orchid_graph_active "$repo" && [ "$val" != "$(fm_get "$f" "$key")" ]; then
+          graph_wait_close "$repo" "$id" || exit 3
+        fi
+        ;;
+    esac
     fm_set "$f" "$key" "$val"; fm_set "$f" updated "$(now)" ;;
   advance)
     [ $# -ge 2 ] || orchid_die "$(task_usage advance)"
@@ -1128,6 +1150,12 @@ case "$sub" in
     if ! archetype_validate "$arch" >/dev/null 2>&1; then
       echo "orchid: archetype '$arch' failed validation (rejected, fail closed)" >&2
       exit 13
+    fi
+    case "$to" in
+      merging|done) orchid_graph_completion_gate "$repo" "$id" || exit 3 ;;
+    esac
+    if [ "$from:$to" = testing:reviewing ] && orchid_graph_active "$repo"; then
+      graph_verify_current "$repo" "$id" || orchid_die 'verification binding is missing or obsolete'
     fi
     legal "$from" "$to" "$arch" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
     # AN ARBITRATION OUTCOME IS RECORDED BY ONE VERB (T032, dogfood F33).
@@ -1567,6 +1595,7 @@ case "$sub" in
         if [ -z "$gate_cand" ] || [ "$gate_rf_cand" != "$gate_cand" ]; then
           gate_skip_cand=$((gate_skip_cand + 1)); continue
         fi
+        orchid_graph_review_current "$repo" "$id" "$gate_rf" || continue
         gate_have=$((gate_have + 1))
       done
       if [ "$gate_have" -lt "$gate_need" ]; then
@@ -1629,7 +1658,7 @@ case "$sub" in
     # over budget and been escalated straight back to `blocked`, rebuilding
     # the unconvergent recovery loop that gate's own comment records fixing.
     if ! schedule_is_active_status "$from" && schedule_is_active_status "$to"; then
-      fm_set "$f" started_at "$(now)"
+      orchid_task_start_clock "$f" || exit 3
     fi
     # `merging -> rework` is exempt from the charge BY DEFAULT and not by
     # rule: this candidate was independently verified once already, so a merge
@@ -1873,6 +1902,11 @@ case "$sub" in
     fi
     to=""
     if [ "$result" = approve ]; then
+      orchid_graph_completion_gate "$repo" "$id" || exit 3
+      if orchid_graph_active "$repo"; then
+        source "$ORCHID_ROOT/lib/graph-repair.sh"
+        graph_repair_approval_gate "$repo" "$id" || exit 3
+      fi
       if legal arbitrating merging "$arch"; then
         to=merging
       elif legal arbitrating "done" "$arch"; then
@@ -2061,6 +2095,11 @@ case "$sub" in
     # so it is set for this one child and for nothing else in this process --
     # and carrying the id, so it can only ever admit the edge this arbitration
     # is actually taking.
+    if [ "$result" = approve ] && orchid_graph_active "$repo"; then
+      # Fresh verifier approval already discharges the machine obligation.
+      # Do this before advancing so a crash cannot strand it on a done node.
+      graph_repair_approval_complete "$repo" "$id" || exit 3
+    fi
     ORCHID_ARBITRATION_ID="$id" ORCHID_REPO="$repo" \
       "$ORCHID_ROOT/bin/orchid" task advance "${adv_args[@]}" >/dev/null
     if [ "$result" = approve ] && [ -n "$obj_prev" ]; then
@@ -2311,6 +2350,7 @@ case "$sub" in
       # below: a candidate moving is the event an operator reading the trail
       # needs to see on its own, not a detail folded into an ack line.
       journal --task "$id" --kind intervention "operator hand-off advanced candidate_sha $cand -> $hhead (hand-off commits landed after the candidate was captured): $reason"
+      if orchid_graph_active "$repo"; then graph_wait_close "$repo" "$id" || exit 3; fi
       fm_set "$f" candidate_sha "$hhead"; fm_set "$f" updated "$(now)"
       echo "$id: candidate_sha advanced $cand -> $hhead (the hand-off's own commits)"
       cand="$hhead"
@@ -2722,6 +2762,7 @@ case "$sub" in
     rb_idle="$(orchid_task_jobs_idle "$repo" "$rb_id")" \
       || orchid_die "refusing to rebase: $rb_idle"
     journal --task "$rb_id" --kind intervention "rebase: $rb_expected_branch onto $rb_integ $rb_head (was based on ${rb_base:-unrecorded})"
+    if orchid_graph_active "$repo"; then graph_wait_close "$repo" "$rb_id" || exit 3; fi
     if ! git -C "$rb_wt" rebase "$rb_head" >/dev/null 2>&1; then
       git -C "$rb_wt" rebase --abort >/dev/null 2>&1 || true
       journal --task "$rb_id" --kind intervention "rebase aborted: $rb_expected_branch conflicts with $rb_integ $rb_head; the checkout is back where it was"
@@ -2834,6 +2875,7 @@ case "$sub" in
     journal --task "$id" --kind intervention "reverify: $reason"
     if [ "$rv_head" != "$rv_old" ]; then
       journal --task "$id" --kind intervention "reverify: candidate_sha ${rv_old:-none} -> $rv_head (HEAD of the task worktree)"
+      if orchid_graph_active "$repo"; then graph_wait_close "$repo" "$id" || exit 3; fi
       fm_set "$f" candidate_sha "$rv_head"
       # AND THE HAND-OFF IS WITHDRAWN, NOT CARRIED (T026 rework). `handoff_ack`
       # asserts one thing about one commit: that an OPERATOR looked at that tree

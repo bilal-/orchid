@@ -3065,6 +3065,45 @@ one-pass driver could otherwise stop progressing in silence:
   auto-blocks at `infra_max` — and relaunches for as long as that cap has not
   blocked the task. Same ladder, same bound, one counter, no hidden state.
 
+## GRAPH DELIVERY
+
+For candidate-bound independent verification, use report nodes with `verifies`
+to name their target. Keep `depends_on` for inputs that must already be done.
+A verifier may itself have required verifiers. Validate the combined milestone
+DAG with `orchid graph validate`, then enable an unstarted plan with
+`orchid graph enable --reason "..."`. Every required verifier must finish with
+current evidence before the parent can be approved or merged.
+
+`output_contract` declares bounded envelope and committed-artifact checks.
+Graph jobs pin run and requirements context, contract and execution versions,
+input bindings, and the target candidate. Use `graph prepare` for each owned
+candidate checkout; do not repoint a verifier to a live parent checkout.
+`graph wait` records a completed node waiting for its required checks, and the
+driver resumes that graph through the same public commands.
+
+The deterministic repair route is `orchid graph repair <verifier>` and requires
+a declared immediate `repair_target`, remaining source `repair_budget`, current
+blocking evidence, and a quiescent affected closure. It records an obligation
+and preserves objections. Use operator-owned `graph replan --patch <file>
+--reason "..."` for semantic changes, or `--requirements <file>` for revised
+requirements. Replanning can retain immutable candidates as checkpoints while
+requiring fresh evidence in new generations. `--dry-run` previews impact.
+Retained testing/reviewing checkpoints may wait without acquiring capacity
+until admission validates current inputs and resources under the verb lock.
+Admission starts the execution clock once; prepare/bind/resume never reset it.
+Their verifiers must wait until that admission. Keep queued checkpoints queued
+when an ordinary dependency is unfinished; do not turn that wait into a human
+worktree-conflict boundary.
+
+The generic stale-base merge rule has a graph exception: forward integration
+changes confined to reserved `.orchid/` state can preserve the unchanged
+candidate. An already integrated candidate with an equal project tree can also
+finish fresh revalidation without a new implementation commit. Compare the
+actual merged project tree with the reviewed candidate before validation or
+publication, retain the final mechanical gate and CAS, and reject comparison
+errors. Actual candidate replacement always requires fresh bound checks.
+See [the graph contract](docs/specs/graph-delivery.md) for the full definitions.
+
 ## TASK CONTRACT REVISION
 
 Use `orchid task restart <id> --reason "..."` when the contract is unchanged
@@ -3080,8 +3119,9 @@ Independent verification can use existing report-outcome tasks connected by
 tasks while retaining completed upstream and sibling checks. Re-pin the target
 candidate through the normal report-task procedure; even an identical candidate
 requires fresh evidence for the new execution. These dependency edges still
-wait for `done`; they do not introduce candidate-ready edges or nested verifier
-graphs within an active implementation task.
+In legacy mode these edges wait for `done`. Enable graph mode to introduce
+candidate-ready `verifies` edges and nested required verification; use graph
+replanning to change an executing graph.
 
 This is an operator-owned change within the current run requirements. The
 headless judgment broker does not admit it. Requirements themselves remain

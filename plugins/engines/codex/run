@@ -13,6 +13,7 @@ ORCHID_ROOT="$(cd "$(dirname "$self")/../../.." && pwd)"
 source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/heartbeat.sh"
+source "$ORCHID_ROOT/lib/engine-context.sh"
 
 # The stale-root gate, fired explicitly (INV-15). An engine adapter lives
 # outside bin/, libexec/ and runners/, so lib/common.sh's source-time fire does
@@ -159,6 +160,9 @@ if [ "$operation" = orchestrate ]; then
   # is alive -- log mtime now advances for the WHOLE run regardless of
   # when/whether codex itself flushes.
   stdout=""; rc=0
+  if [ -e "$input_pack/delivery-context.json" ] || [ -L "$input_pack/delivery-context.json" ]; then
+    prompt="$(orchid_engine_context_prompt "$input_pack" "$prompt")"
+  fi
   orchid_run_engine_cli "$err_file" stdout rc "$worktree" "$prompt" \
     codex exec --sandbox workspace-write -c approval_policy='"never"' --skip-git-repo-check -
   stderr="$(cat "$err_file")"
@@ -222,6 +226,9 @@ if [ "$operation" = implement ]; then
   # redirect instead of a `printf | codex` pipe -- a pipe would cost us
   # codex's own real pid, which the heartbeat needs for a truthful `cpu`
   # reading) and runs a liveness heartbeat alongside it.
+  if [ -e "$input_pack/delivery-context.json" ] || [ -L "$input_pack/delivery-context.json" ]; then
+    prompt="$(orchid_engine_context_prompt "$input_pack" "$prompt")"
+  fi
   orchid_run_engine_cli "$err_file" stdout rc "$worktree" "$prompt" \
     codex exec --sandbox workspace-write -c approval_policy='"never"' --skip-git-repo-check -
   stderr="$(cat "$err_file")"
@@ -383,6 +390,9 @@ fi
 # lib/heartbeat.sh's header comment for the full design and the accepted
 # trade-off (a hung-but-alive engine now runs to the request's own
 # deadline_s rather than being stall-killed early).
+if [ -e "$input_pack/delivery-context.json" ] || [ -L "$input_pack/delivery-context.json" ]; then
+  prompt="$(orchid_engine_context_prompt "$input_pack" "$prompt")"
+fi
 orchid_run_engine_cli "$err_file" stdout rc "$worktree" "$prompt" \
   codex exec --sandbox read-only --skip-git-repo-check -
 stderr="$(cat "$err_file")"

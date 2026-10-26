@@ -1,5 +1,43 @@
 # Where things stand — resume point
 
+## Graph delivery implementation — 2026-10-25
+
+All five requested capabilities are implemented locally: nested independent
+candidate verification, per-node envelope and committed-artifact contracts,
+bounded repair and invalidation, controlled graph/requirements replanning with
+retained-candidate checkpoints and new nodes, and crash/replay plus live-harness
+qualification. See [graph delivery](../specs/graph-delivery.md) for the public
+commands, evidence rules and operator boundaries. The work remains on local
+feature branches; no remote, release tag, formula pin or beta version changed.
+
+The foundation commit is `1749b072c266f323cde59004b5f3948742b87717`. Runtime
+integration was checked through repeated in-session review and correction cycles.
+Canonical full local CI passed on macOS with `/bin/bash` 3.2: all 127 test files, repeated invariant checks, documentation, portability and zero-warning ShellCheck. The final run used a vendor-free PATH; optional checks retain their recorded NOT-TESTED status. The machine-local log is `/tmp/orchid-r2-full-ci-vendorfree-checked.log`. Focused
+runtime, nested delivery, repair/rebase, replanning, checkpoint admission,
+contracts, native adapter context and publication recovery tests passed. Each
+new enforcement gate has a refusing RED case and an accepting GREEN twin.
+
+A real bounded native-wrapper qualification passed on this machine: Codex CLI
+`0.164.0` implemented a synthetic task and Claude Code `2.1.310` independently
+reviewed it. Four real jobs completed in 179 seconds with no retries. Fresh
+postcommit inputs, a hidden review read, a seeded defect, ownership resume,
+replayed-result refusal and graph acceptance all passed. Hashes of the kernel and adapter profiles
+remained stable and no unresolved worker remained. This first receipt predates
+the final library-loading correction; final-candidate live qualification is pending. The machine-local receipt is
+`.git/night-shift/graph-live-codex-claude-before-library-fix.json`; it records hashes of the adapter and wrapper profile,
+versions and bound evidence without raw prompts or artifact contents.
+
+This qualifies the tested synthetic wrapper profile, not every host, adapter or
+production project. All supported hosts remain equally prominent. Host support
+for Pi, Kimi and other harnesses does not establish a native worker adapter or
+live qualification. Hosted CI, third-party beta qualification and publication
+are separate evidence. No real source operational `.orchid/` state was changed;
+all run, repair, merge and acceptance exercises used disposable repositories.
+Earlier entries below remain historical observations of their own candidates.
+
+
+## Historical handoff context
+
 Written 2026-09-13. This file is the hand-off between working sessions and is
 deliberately agent-agnostic: read it before doing anything else, whatever tool
 you are. It records state that the code and git history do not make obvious,

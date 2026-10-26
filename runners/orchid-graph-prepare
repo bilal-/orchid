@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Tier 2: materialize a graph node own checkout before tier-1 binding.
+set -euo pipefail
+self="$0"
+while [ -L "$self" ]; do target="$(readlink "$self")"; case "$target" in /*) self="$target" ;; *) self="$(dirname "$self")/$target" ;; esac; done
+ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd -P)"; export ORCHID_ROOT
+source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/graph-runtime.sh"
+repo="${ORCHID_REPO:-$PWD}"; repo="$(orchid_physical_dir "$repo")"
+id="${1:-}"; shift || true
+case "$id" in ''|plan|*[!A-Za-z0-9_-]*) orchid_die 'usage: orchid-graph-prepare <id> [--operation <operation>] [--hook-point <point>]' ;; esac
+operation=review; point=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --operation) [ "$#" -ge 2 ] || orchid_die 'operation requires value'; operation="$2"; shift 2 ;;
+    --hook-point) [ "$#" -ge 2 ] || orchid_die 'hook point requires value'; point="$2"; shift 2 ;;
+    *) orchid_die 'unknown graph prepare option' ;; esac
+done
+epoch_require "$repo"
+graph_runtime_enabled "$repo" || orchid_die 'graph prepare requires graph mode'
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/orchid-graph-prepare.XXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+# Setup mutates a task checkout. Use the existing verb fence so another
+# launcher cannot claim that same workspace between idle proof and setup.
+verb_lock_acquire "$repo" || orchid_die 'cannot acquire graph preparation verb lock'
+trap 'verb_lock_release "$repo"; rm -rf "$scratch"' EXIT
+idle="$(orchid_task_jobs_idle "$repo" "$id")" || orchid_die "$idle"
+graph_snapshot_file "$repo" "$scratch/snapshot.json"
+_graph_runtime_dependencies_ready "$scratch/snapshot.json" "$id" || orchid_die "$id waits for done dependencies"
+_graph_runtime_operation_ready "$scratch/snapshot.json" "$id" "$operation" || orchid_die "$id cannot prepare $operation in its current phase"
+_graph_runtime_workspace_helpers
+_graph_runtime_spec "$repo" "$id" "$scratch/snapshot.json" > "$scratch/spec.json"
+plan="$(drive_worktree_plan "$repo" "$id")"
+IFS=$'\t' read -r action path <<< "$plan"
+case "$action" in create|reuse|adopt) ;; *) orchid_die "$id checkout preparation refused: $path" ;; esac
+graph_checkpoint_admit "$repo" "$id" "$scratch/snapshot.json"
+graph_wait_close "$repo" "$id"
+case "$action" in
+  create)
+    branch="$(jq -r .branch "$scratch/spec.json")"
+    candidate="$(jq -r .checkout_sha "$scratch/spec.json")"
+    git -C "$repo" worktree add -q "$path" -b "$branch" "$candidate" || orchid_die "cannot create $id generation checkout; existing refs were preserved"
+    ;;
+  reuse|adopt) ;;
+  *) orchid_die "$id checkout preparation refused: $path" ;;
+esac
+if [ "$action" != reuse ] || [ "$operation" != implement ] || ! _graph_jq 'require_node($id)|.outcome == "code" and .verifies == null' "$scratch/snapshot.json" -e --arg id "$id" >/dev/null; then
+  [ "$(git -C "$path" rev-parse HEAD)" = "$(jq -r .checkout_sha "$scratch/spec.json")" ] || orchid_die "$id existing checkout differs from the requested immutable candidate"
+fi
+dirty="$(handoff_worktree_dirty "$path")"
+[ -z "$dirty" ] || orchid_die "$id existing checkout has uncommitted work"
+epoch_require "$repo"
+prepared="$(worktree_prepare "$repo" "$path" "$id")"
+IFS=$'\t' read -r prepared_state prepared_detail <<< "$prepared"
+case "$prepared_state" in ok|skip) ;; *) orchid_die "$id worktree_prepare failed: $prepared_detail" ;; esac
+# Binding reloads current state under the existing verb lock. A stale prepare
+# never resets a ref or silently reuses a checkout for a different generation.
+graph_bind "$repo" "$id"
+printf 'prepared %s for %s%s\n' "$id" "$operation" "${point:+/$point}"

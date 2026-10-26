@@ -47,6 +47,10 @@ revision_inputs() {
 revision_affected() {
   local repo="$1" root="$2" state f id dep changed=1 ids
   state="$(orchid_state "$repo")"
+  if [ "$(fm_get "$state/roadmap.md" graph_contract)" = 1 ]; then
+    _revision_graph_affected "$repo" "$root"
+    return
+  fi
   [ "$root" != plan ] && [ -f "$state/tasks/$root.md" ] || return 1
   for f in "$state/tasks"/*.md; do
     [ -e "$f" ] || continue
@@ -74,6 +78,15 @@ revision_affected() {
   done
 }
 
+_revision_graph_affected() (
+  local repo="$1" root="$2" snapshot
+  source "$ORCHID_ROOT/lib/graph-runtime.sh"
+  snapshot="$(mktemp "${TMPDIR:-/tmp}/orchid-restart-graph.XXXXXX")" || return 1
+  trap 'rm -f "$snapshot"' EXIT
+  graph_snapshot_file "$repo" "$snapshot" || return 1
+  graph_affected "$snapshot" "$root"
+)
+
 # Pins come from the kernel manifest, not an engine's claims. A missing binding
 # is legacy generation 1, never permission to file into a revised generation.
 revision_manifest_current() {
@@ -100,16 +113,20 @@ revision_manifest_current() {
 }
 
 revision_preflight() {
-  local repo="$1" ids="$2" state id f status gen branch plan action path dirty idle
+  local repo="$1" ids="$2" policy="${3:-idle}" state id f status gen branch plan action path dirty idle
   state="$(orchid_state "$repo")"
   while IFS= read -r id; do
+    [ -n "$id" ] || continue
     f="$state/tasks/$id.md"
     status="$(fm_get "$f" status)"
-    case "$status" in pending|rework|blocked|done) ;; *)
+    case "$policy:$status" in
+      graph:pending|graph:implementing|graph:testing|graph:reviewing|graph:arbitrating|graph:merging|graph:rework|graph:blocked|graph:done|\
+      repair:pending|repair:implementing|repair:testing|repair:reviewing|repair:arbitrating|repair:merging|repair:rework|repair:blocked|repair:done|\
+      idle:pending|idle:rework|idle:blocked|idle:done) ;; *)
       printf 'orchid: revision refused: %s is %s; stop and reconcile its execution first\n' "$id" "$status" >&2
       return 1 ;;
     esac
-    if [ -n "$(fm_get "$f" unresolved_objection)" ]; then
+    if [ "$policy" != graph ] && [ -n "$(fm_get "$f" unresolved_objection)" ]; then
       printf 'orchid: revision refused: %s has an unresolved objection; resolve it through arbitration first\n' "$id" >&2
       return 1
     fi
@@ -138,14 +155,11 @@ revision_preflight() {
 
 # Runs only inside orchid_commit_durable's detached staging checkout. The
 # caller has already journalled the reason there. No source checkout is reset.
-revision_apply() {
-  local repo="$1" root="$2" ids="$3" archive="$4" criteria_set="$5" criteria="$6" verify_set="$7" verify="$8" action="$9"
-  local state id f gen rev field evidence at owner name attempt suffix
-  state="$(orchid_state "$repo")"; at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  mkdir -p "$state/revisions/$archive/tasks" "$state/revisions/$archive/reviews"
-  while IFS= read -r id; do
-    f="$state/tasks/$id.md"
-    cp "$f" "$state/revisions/$archive/tasks/$id.md" || return 1
+revision_archive_task() {
+  local repo="$1" id="$2" archive="$3" state f evidence owner name attempt suffix
+  state="$(orchid_state "$repo")"; f="$state/tasks/$id.md"
+  mkdir -p "$state/revisions/$archive/tasks" "$state/revisions/$archive/reviews" || return 1
+  cp "$f" "$state/revisions/$archive/tasks/$id.md" || return 1
     for evidence in "$state/reviews/$id-"*; do
       [ -e "$evidence" ] || continue
       [ -f "$evidence" ] && [ ! -L "$evidence" ] || return 1
@@ -167,29 +181,106 @@ revision_apply() {
       esac
       mv "$evidence" "$state/revisions/$archive/reviews/" || return 1
     done
-    gen="$(fm_version "$f" execution_generation)" || return 1
-    rev="$(fm_version "$f" contract_revision)" || return 1
+}
+
+# The one owner of execution reset. Both manual and graph transactions use it.
+revision_reset_task() {
+  local repo="$1" id="$2" archive="$3" state f gen rev field at
+  state="$(orchid_state "$repo")"; f="$state/tasks/$id.md"
+  gen="$(fm_version "$f" execution_generation)" || return 1
+  rev="$(fm_version "$f" contract_revision)" || return 1
+  at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  fm_set "$f" contract_revision "$rev" || return 1
+  fm_set "$f" execution_generation "$((gen + 1))" || return 1
+  fm_set "$f" revision_id "$archive" || return 1
+  fm_set "$f" branch "task/$id-g$((gen + 1))" || return 1
+  fm_set "$f" status pending || return 1
+  # Policy and dependency declarations survive; execution authority does not.
+  for field in worktree base_sha candidate_sha started_at handoff_ack prerequisite_ack \
+    verify_fail_pending refused_envelopes implement_floor implementer_engine_id \
+    verification_target candidate_reuse_from graph_wait; do
+    if fm_has "$f" "$field"; then fm_set "$f" "$field" "" || return 1; fi
+  done
+  for field in attempts infra_failures rework_rounds rework_signature_repeats; do
+    if fm_has "$f" "$field"; then fm_set "$f" "$field" 0 || return 1; fi
+  done
+  if fm_has "$f" rework_signature; then fm_set "$f" rework_signature "" || return 1; fi
+  fm_set "$f" updated "$at"
+}
+
+revision_apply() {
+  local repo="$1" root="$2" ids="$3" archive="$4" criteria_set="$5" criteria="$6" verify_set="$7" verify="$8" action="$9"
+  local state id f rev
+  state="$(orchid_state "$repo")"
+  while IFS= read -r id; do
+    revision_archive_task "$repo" "$id" "$archive" || return 1
+    f="$state/tasks/$id.md"
     if [ "$id" = "$root" ] && [ "$action" = revise ]; then
-      rev=$((rev + 1))
+      rev="$(fm_version "$f" contract_revision)" || return 1
       [ "$criteria_set" -eq 0 ] || fm_set "$f" acceptance_criteria "$criteria" || return 1
       [ "$verify_set" -eq 0 ] || fm_set "$f" verification_commands "$verify" || return 1
+      fm_set "$f" contract_revision "$((rev + 1))" || return 1
     fi
-    fm_set "$f" contract_revision "$rev" || return 1
-    fm_set "$f" execution_generation "$((gen + 1))" || return 1
-    fm_set "$f" revision_id "$archive" || return 1
-    fm_set "$f" branch "task/$id-g$((gen + 1))" || return 1
-    fm_set "$f" status pending || return 1
-    # Policy and dependency declarations survive; execution authority does not.
-    for field in worktree base_sha candidate_sha started_at handoff_ack prerequisite_ack \
-      verify_fail_pending refused_envelopes implement_floor implementer_engine_id; do
-      if fm_has "$f" "$field"; then fm_set "$f" "$field" "" || return 1; fi
-    done
-    for field in attempts infra_failures rework_rounds rework_signature_repeats; do
-      if fm_has "$f" "$field"; then fm_set "$f" "$field" 0 || return 1; fi
-    done
-    if fm_has "$f" rework_signature; then fm_set "$f" rework_signature "" || return 1; fi
-    fm_set "$f" updated "$at" || return 1
+    revision_reset_task "$repo" "$id" "$archive" || return 1
   done <<< "$ids"
+  if [ "$(fm_get "$state/roadmap.md" run_status)" = accepting ]; then
+    fm_set "$state/roadmap.md" run_status running || return 1
+  fi
+}
+
+# A validated graph plan may change semantics, delete nodes, or retain an
+# immutable candidate for new-contract revalidation. Only this reset owner
+# moves execution generations; no caller relabels historical model evidence.
+revision_apply_plan() {
+  local repo="$1" plan="$2" archive="$3" new_tasks="${4:-}" state id f key value checkpoint evidence path expected digest
+  repo="$(orchid_physical_dir "$repo")" || return 1
+  state="$(orchid_state "$repo")"
+  while IFS= read -r id; do
+    f="$state/tasks/$id.md"
+    if jq -e --arg id "$id" '.nodes[$id].new_task == true' "$plan" >/dev/null; then
+      [ -n "$new_tasks" ] && [ -f "$new_tasks/$id.md" ] && [ ! -L "$new_tasks/$id.md" ] && [ ! -e "$f" ] || return 1
+      fm_check "$new_tasks/$id.md" id >/dev/null || return 1
+      [ "$(fm_get "$new_tasks/$id.md" id)" = "$id" ] || return 1
+      mkdir -p "$state/tasks" || return 1
+      cp "$new_tasks/$id.md" "$f" || return 1
+      fm_set "$f" contract_revision 1 || return 1
+      fm_set "$f" execution_generation 1 || return 1
+    else
+      revision_archive_task "$repo" "$id" "$archive" || return 1
+      if jq -e --arg id "$id" '.nodes[$id].delete == true' "$plan" >/dev/null; then
+        rm "$f" || return 1
+        continue
+      fi
+      revision_reset_task "$repo" "$id" "$archive" || return 1
+    fi
+    while IFS= read -r key; do
+      value="$(jq -r --arg id "$id" --arg key "$key" '.nodes[$id].fields[$key] | if type == "object" or type == "array" then tojson elif . == null then "" else tostring end' "$plan")" || return 1
+      fm_set "$f" "$key" "$value" || return 1
+    done < <(jq -r --arg id "$id" '.nodes[$id].fields | keys[]' "$plan")
+    if jq -e --arg id "$id" '.nodes[$id].resolve_repair == true' "$plan" >/dev/null; then
+      fm_set "$f" repair_obligation '' || return 1
+    fi
+    checkpoint="$(jq -c --arg id "$id" '.nodes[$id].checkpoint // null' "$plan")" || return 1
+    if [ "$checkpoint" != null ]; then
+      fm_set "$f" candidate_reuse_from "$checkpoint" || return 1
+      for key in base_sha candidate_sha implementer_engine_id; do
+        value="$(jq -r --arg key "$key" '.[$key] // ""' <<< "$checkpoint")" || return 1
+        fm_set "$f" "$key" "$value" || return 1
+      done
+      value="$(jq -r --arg id "$id" '.nodes[$id].outcome | if . == "code" then "testing" else "reviewing" end' "$plan")" || return 1
+      fm_set "$f" status "$value" || return 1
+    fi
+  done < <(jq -r '.nodes | keys[]' "$plan")
+  # The obligation describes the archived bytes, not a racing live review.
+  while IFS= read -r evidence; do
+    path="$(jq -r .path <<< "$evidence")" || return 1
+    expected="$(jq -r .sha256 <<< "$evidence")" || return 1
+    case "$path" in ".orchid/revisions/$archive/reviews/"*) ;; *) echo 'orchid: repair evidence is outside its archive' >&2; return 1 ;; esac
+    _orchid_agent_context_input_owned "$repo" "$repo" "$path" file || return 1
+    [ -f "$repo/$path" ] || { echo 'orchid: repair evidence was not archived' >&2; return 1; }
+    digest="$(_orchid_stream_sha256 < "$repo/$path")" || return 1
+    [ "$digest" = "$expected" ] || { echo 'orchid: archived repair evidence differs from the obligation' >&2; return 1; }
+  done < <(jq -c '.nodes[].fields.repair_obligation.failed_evidence[]?' "$plan")
   if [ "$(fm_get "$state/roadmap.md" run_status)" = accepting ]; then
     fm_set "$state/roadmap.md" run_status running || return 1
   fi

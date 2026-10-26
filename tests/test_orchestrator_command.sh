@@ -141,6 +141,17 @@ rc=0; out="$(ORCHID_OUTPUT=toon "$BROKER" run boundary clear --help --reason fix
 assert_eq 0 "$rc" 'AXI broker: nested clear help is available'
 assert_eq "$broker_before" "$(broker_digest)" 'AXI broker: reads and help preserve the standing decision and every state file'
 red_case 'canonical agent reads and presentation/help were admitted through shared normalization before the broker action allowlist, without state writes'
+rc=0; out="$(ORCHID_OUTPUT=toon "$BROKER" protocol graph --full --json 2>&1)" || rc=$?
+assert_eq 0 "$rc" 'broker admits canonical graph procedure'
+if [ "$rc" -eq 0 ]; then assert_eq graph "$(jq -r .section <<< "$out")" 'graph procedure is scoped'; fi
+rc=0; out="$(ORCHID_OUTPUT=toon "$BROKER" graph show --json 2>&1)" || rc=$?
+assert_eq 0 "$rc" 'broker admits current graph observation'
+if [ "$rc" -eq 0 ]; then jq -e '.contract == 1 and (.nodes | type == "object")' <<< "$out" >/dev/null || fail 'broker graph is typed JSON'; fi
+refuse 'graph mutation remains outside judgment broker' graph enable --reason fixture
+refuse 'graph validation cannot read an arbitrary broker file' graph validate /etc/passwd
+assert_eq "$broker_before" "$(broker_digest)" 'graph reads and refused writes preserve state'
+green_case 'scoped graph observations and procedure use the same read-only broker boundary'
+
 refuse 'protocol traversal' protocol ../../etc/passwd
 refuse 'skill traversal' skill ../../etc/passwd
 refuse 'command metadata traversal' ../../etc/passwd --help

@@ -1,0 +1,15 @@
+{
+  "description":"Inspect and execute candidate-bound graph obligations.",
+  "default":["show"],
+  "commands":[
+    {"path":["show"],"kind":"json","usage":"usage: orchid graph show [id]","min_args":0,"max_args":1,"options":{},"examples":["orchid graph show","orchid graph show T001"]},
+    {"path":["validate"],"kind":"json","usage":"usage: orchid graph validate [snapshot-file]","min_args":0,"max_args":1,"options":{},"examples":["orchid graph validate"]},
+    {"path":["enable"],"kind":"text","usage":"usage: orchid graph enable --reason text","min_args":0,"max_args":0,"options":{"--reason":1},"required_options":["--reason"],"examples":["orchid graph enable --reason \"Use declared verifier obligations\""]},
+    {"path":["bind"],"kind":"text","usage":"usage: orchid graph bind id","min_args":1,"max_args":1,"options":{},"examples":["orchid graph bind T001"]},
+    {"path":["prepare"],"kind":"text","usage":"usage: orchid graph prepare id [--operation operation] [--hook-point point]","min_args":1,"max_args":1,"options":{"--operation":1,"--hook-point":1},"examples":["orchid graph prepare T001 --operation review"]},
+    {"path":["wait"],"kind":"text","usage":"usage: orchid graph wait id [--close]","min_args":1,"max_args":1,"options":{"--close":0},"examples":["orchid graph wait T001","orchid graph wait T001 --close"]},
+    {"path":["replan"],"kind":"text","usage":"usage: orchid graph replan [--patch file] --reason text [--requirements file] [--resolve-repairs ids] [--dry-run]","min_args":0,"max_args":0,"options":{"--patch":1,"--reason":1,"--requirements":1,"--resolve-repairs":1,"--dry-run":0},"required_options":["--reason"],"examples":["orchid graph replan --patch plan.json --reason \"Update obligations\" --dry-run"]},
+    {"path":["invalidate"],"kind":"text","usage":"usage: orchid graph invalidate id --reason text [--dry-run]","min_args":1,"max_args":1,"options":{"--reason":1,"--dry-run":0},"required_options":["--reason"],"examples":["orchid graph invalidate T001 --reason \"Candidate changed\" --dry-run"]},
+    {"path":["repair"],"kind":"text","usage":"usage: orchid graph repair verifier [--dry-run]","min_args":1,"max_args":1,"options":{"--dry-run":0},"examples":["orchid graph repair V001 --dry-run"]}
+  ]
+}

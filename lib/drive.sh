@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "${BASH_SOURCE[0]%/*}/graph-integration.sh"
 # lib/drive.sh -- the deterministic drive POLICY layer (Track 2).
 #
 # Pure library: every function here only READS (task frontmatter, reconciled
@@ -1354,6 +1355,7 @@ drive_review_decision() {
     ecand="$(envelope_field "$f" '.candidate_sha // empty' 2>/dev/null || true)"
     [ -n "$ecand" ] || continue
     [ "$ecand" = "$cand" ] || continue
+    orchid_graph_review_current "$repo" "$id" "$f" || continue
     # Step 2 -- within that set, only a VALID, `ok` envelope carries a
     # verdict. A malformed or non-ok one is skipped, never boundaried: it is
     # the residue of a slot that errored, and the relaunch that replaces it
@@ -2121,6 +2123,7 @@ drive_reviewer_envelope_count() {
       [ -e "$f" ] || continue
       [ "$(envelope_field "$f" '.status // empty' 2>/dev/null || true)" = ok ] || continue
       [ "$(envelope_field "$f" '.candidate_sha // empty' 2>/dev/null || true)" = "$cand" ] || continue
+      orchid_graph_review_current "$repo" "$id" "$f" || continue
       n=$(( n + 1 ))
     done
   fi
@@ -2201,13 +2204,30 @@ _drive_common_dir() {
 # `<repo-basename>-<task-id>`. Deterministic (so a crashed pass can find the
 # orphan it already created) and outside the repository (so a task checkout
 # is never nested inside the integration checkout).
+# Derive the actual fork point when adopting a branch created before its
+# base stamp. A newer integration HEAD must not rewrite that history.
+drive_worktree_base() {
+  local repo="$1" branch="$2" integration_head="$3" action="$4" base_sha=''
+  if [ "$action" != create ]; then
+    base_sha="$(git -C "$repo" merge-base "$integration_head" "$branch" 2>/dev/null || true)"
+  fi
+  [ -n "$base_sha" ] || base_sha="$integration_head"
+  printf '%s\n' "$base_sha"
+}
+
 drive_worktree_path() {
   local repo="$1" id="$2" phys parent base
   phys="$(_drive_physical "$repo")" || return 1
   parent="$(dirname "$phys")"
   base="$(basename "$phys")"
   local generation
-  generation="$(fm_version "$(orchid_state "$repo")/tasks/$id.md" execution_generation)" || return 1
+  if [ "$#" -eq 3 ]; then
+    generation="$3"
+    case "$generation" in ''|*[!0-9]*|0*) return 1 ;; esac
+    [ "$generation" -le 999999 ] || return 1
+  else
+    generation="$(fm_version "$(orchid_state "$repo")/tasks/$id.md" execution_generation)" || return 1
+  fi
   if [ "$generation" -gt 1 ]; then id="$id-g$generation"; fi
   printf '%s/%s-%s\n' "$parent" "$base" "$id"
 }

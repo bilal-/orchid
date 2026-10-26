@@ -8,6 +8,7 @@
 _ORCHID_GRAPH_SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 _ORCHID_GRAPH_JQ='
+  def semantic_keys: ["id","title","archetype","acceptance_criteria","verification_commands","depends_on","verifies","output_contract","repair_target","repair_budget","resources","exclusive","risk_tier","stop_condition","operator_prerequisite"];
   def graph_error($message): error("graph: " + $message);
   def ensure($condition; $message): if $condition then . else graph_error($message) end;
   def id_ok: type == "string" and test("^[A-Za-z0-9_-]+$") and . != "plan";
@@ -58,6 +59,7 @@ _ORCHID_GRAPH_JQ='
       attempts:number_field($r;"attempts";0;true;999999;true),
       branch:text($r;"branch";("task/"+$id)),worktree:text($r;"worktree";""),
       base_sha:text($r;"base_sha";""),candidate_sha:text($r;"candidate_sha";""),
+      started_at:text($r;"started_at";""),
       acceptance_criteria:text($r;"acceptance_criteria";""),verification_commands:text($r;"verification_commands";""),
       output_contract:object_field($r;"output_contract"),
       repair_target:(text($r;"repair_target";"") | if . == "" then null else . end),
@@ -98,6 +100,8 @@ _ORCHID_GRAPH_JQ='
             [$node.verifies+":candidate",$node.id+":candidate"],
             [$node.id+":done",$node.verifies+":done"] end)] | unique)};
   def safe_counter: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
+  def started_ok:
+    type == "string" and (. == "" or test("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"));
   def wait_ok:
     type == "object" and (.started_at|safe_counter) and (.seconds|safe_counter)
     and (.candidate_sha|type) == "string"
@@ -119,6 +123,7 @@ _ORCHID_GRAPH_JQ='
     | ensure(all(.nodes[]; .verifies == null or (.verifies != .id and .outcome == "report")); "self verification or non-report verifier")
     | ensure(all(.nodes[]; .graph_wait == null or (.graph_wait|wait_ok)); "invalid graph_wait accounting")
     | ensure((.graph_enabled|type) == "boolean"; "invalid graph_enabled flag")
+    | ensure(all(.nodes[]; (.started_at|type) == "string") and ((.graph_enabled|not) or all(.nodes[]; .started_at|started_ok)); "invalid started_at admission clock")
     | ensure(.graph_enabled or (all(.nodes[]; .verifies == null and .output_contract == null and (.repair_declared|not))); "graph features require graph_enabled")
     | ensure(all(.nodes[]; (.contract_revision|type) == "number" and .contract_revision >= 1 and .contract_revision <= 999999 and (.contract_revision|floor) == .contract_revision
         and (.execution_generation|type) == "number" and .execution_generation >= 1 and .execution_generation <= 999999 and (.execution_generation|floor) == .execution_generation); "invalid node version")
@@ -233,7 +238,7 @@ graph_snapshot() (
       elif $entry.value == null then
         if has($entry.key) then del(.[$entry.key]) else graph_error("overlay deletes unknown task") end
       elif ($entry.value|type) != "object" then graph_error("overlay task must be an object or null")
-      elif ([$entry.value|keys[]] - ["id","title","archetype","acceptance_criteria","verification_commands","depends_on","verifies","output_contract","repair_target","repair_budget","resources","exclusive","risk_tier","stop_condition","operator_prerequisite"]|length) > 0 then graph_error("overlay contains runtime or unknown fields")
+      elif ([$entry.value|keys[]] - semantic_keys|length) > 0 then graph_error("overlay contains runtime or unknown fields")
       elif any($entry.value|to_entries[]|select(.key != "output_contract")|.value|..|strings; contains("\n") or contains("\u0000")) then graph_error("overlay FM scalar fields must be single-line and NUL-free; use literal escapes")
       elif ($entry.value|has("id")) and $entry.value.id != $entry.key then graph_error("overlay ID differs from its key")
       else .[$entry.key] = ((.[$entry.key] // {id:$entry.key}) + $entry.value) end)
@@ -332,3 +337,27 @@ graph_required() {
   ' "$1" -r --arg id "$2"
 }
 graph_target_binding() { _graph_jq 'target_binding(.;$id)' "$1" -c --arg id "$2"; }
+
+# Replanning follows both the old and proposed input edges. Removing an edge
+# cannot spare executions that consumed its previous meaning. Contract changes
+# additionally travel upward through required-verifier membership once.
+graph_replan_impact() {
+  local old="$1" proposed="$2" roots="$3"
+  graph_validate "$old" || return 1
+  graph_validate "$proposed" || return 1
+  orchid_json_file_valid "$roots" || return 1
+  jq -n "$_ORCHID_GRAPH_JQ"'
+    $old[0] as $old | $proposed[0] as $new | $roots[0] as $roots |
+    ensure(($roots|type) == "array" and all($roots[]; . as $id | ($old.nodes|has($id)) or ($new.nodes|has($id))); "unknown replan root") |
+    [$old.nodes[], $new.nodes[]] as $nodes |
+    (reduce $nodes[] as $node ({};
+      if $node.verifies == null then . else
+        .[$node.id] = ((.[$node.id] // []) + [$node.verifies] | unique)
+      end)) as $parents |
+    closure($roots; $parents) as $contracts |
+    (reduce $nodes[] as $node ({}; reduce input_ids($node)[] as $input (.;
+      .[$input] = ((.[$input] // []) + [$node.id] | unique)))) as $inputs |
+    {contracts:$contracts,affected:closure($contracts;$inputs)}
+  ' --slurpfile old "$old" --slurpfile proposed "$proposed" --slurpfile roots "$roots"
+}
+graph_semantic_key() { _graph_jq 'semantic_keys | index($key) != null' /dev/null -ne --arg key "$1" >/dev/null; }

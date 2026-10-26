@@ -19,6 +19,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rework.sh"
 
 # Direct library callers use the same frontmatter reader as the tier-1 verbs.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/frontmatter.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json.sh"
 
 # _pack_rework_brief <state> <task> [section] -- the rework brief, on stdout,
 # or nothing at all when this task has no captured failure to feed back (its
@@ -179,9 +180,10 @@ _pack_rework_brief() {
 # along, budget-permitting, when present. No task.md/diff.patch -- there is
 # no single task and nothing has been committed yet.
 _pack_build_plan() {
-  local repo="$1" state="$2" dest="$3"
+  local repo="$1" state="$2" dest="$3" reserve="${4:-0}"
   local budget used=0 items="" omitted="" req="$state/requirements.md" roadmap="$state/roadmap.md"
   budget="$(config_get "$repo" pack_budget_bytes 65536)"
+  budget=$(( budget - reserve ))
   [ -f "$req" ] || { echo "orchid: no requirements.md — run orchid requirements import first" >&2; return 1; }
   [ -f "$roadmap" ] || { echo "orchid: no roadmap.md — run orchid init first" >&2; return 1; }
   mkdir -p "$dest"
@@ -273,9 +275,10 @@ _pack_build_plan() {
 # truncatable tail-first (`head -c`, the same convention tasks.md/context.md
 # already use elsewhere in this file), per the v1-m3 plan's pack rule.
 _pack_build_hook() {
-  local repo="$1" state="$2" task="$3" dest="$4" point="$5"
+  local repo="$1" state="$2" task="$3" dest="$4" point="$5" reserve="${6:-0}"
   local budget used=0 items="" omitted="" tf="$state/tasks/$task.md"
   budget="$(config_get "$repo" pack_budget_bytes 65536)"
+  budget=$(( budget - reserve ))
   [ -f "$tf" ] || { echo "orchid: no task $task" >&2; return 1; }
   mkdir -p "$dest"
 
@@ -381,7 +384,7 @@ _pack_build_hook() {
     "$budget" "$used" "$items" "$omitted" | jq . > "$dest/pack.json"
 }
 
-pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = input_overflow
+_pack_build_base() {  # repo task op dest [hook-point|workspace_read=1] [reserved-bytes] ; exit 12 = input_overflow
   # The 5th positional arg is overloaded exactly like the hook branch's own
   # `point` already is: `op=hook` reads it as the hook point (_pack_build_
   # hook below); `op=review|critique` instead reads it as the caller's
@@ -392,7 +395,7 @@ pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = in
   # slot serves both, same as m3's hook-point precedent. pack.sh stays
   # resolver-dumb on purpose: it is handed a already-resolved FACT, never a
   # plugin dir or engine name to go look up itself (v1-m4 Task 3).
-  local repo="$1" task="$2" op="$3" dest="$4" point="${5:-}"
+  local repo="$1" task="$2" op="$3" dest="$4" point="${5:-}" reserve="${6:-0}"
   local state tf budget used=0 items="" omitted="" symbols_tmp=""
   state="$(orchid_state "$repo")"
   # `plan` (v1-m3): reserved task id, no task file exists at all (`orchid
@@ -402,19 +405,20 @@ pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = in
   # receives the PLAN pack here, by design, never the per-point hook pack --
   # there is no task.md for _pack_build_hook to read in the first place.
   if [ "$task" = plan ]; then
-    _pack_build_plan "$repo" "$state" "$dest"
+    _pack_build_plan "$repo" "$state" "$dest" "$reserve"
     return $?
   fi
   # `hook` op (v1-m3): task.md + exactly one point-specific artifact --
   # routed to its own builder instead of the review/critique/implement path
   # below (see _pack_build_hook's header comment for the per-point rules).
   if [ "$op" = hook ]; then
-    _pack_build_hook "$repo" "$state" "$task" "$dest" "$point"
+    _pack_build_hook "$repo" "$state" "$task" "$dest" "$point" "$reserve"
     return $?
   fi
   tf="$state/tasks/$task.md"
   [ -f "$tf" ] || { echo "orchid: no task $task" >&2; return 1; }
   budget="$(config_get "$repo" pack_budget_bytes 65536)"
+  budget=$(( budget - reserve ))
   mkdir -p "$dest"
 
   cp "$tf" "$dest/task.md"
@@ -712,4 +716,77 @@ pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = in
 
   printf '{"budget":%s,"total_bytes":%s,"items":[%s],"omitted":[%s]}\n' \
     "$budget" "$used" "$items" "$omitted" | jq . > "$dest/pack.json"
+}
+
+# Read one kernel-owned instruction object using the shared metadata/JSON owners.
+_pack_repair_obligation() {
+  local state="$1" id="$2" destination="$3" file
+  case "$id" in ''|*[!A-Za-z0-9_-]*) printf 'orchid: invalid repair instruction source\n' >&2; return 1 ;; esac
+  file="$state/tasks/$id.md"
+  if [ "$id" = plan ] || [ ! -f "$file" ]; then printf 'null\n' > "$destination"; return 0; fi
+  if ! orchid_utf8_file_valid "$file" || ! fm_json "$file" > "$destination.metadata"; then
+    printf 'orchid: invalid repair instruction metadata\n' >&2
+    return 1
+  fi
+  if ! jq -c '
+      (.repair_obligation // "") as $raw |
+      if $raw == "" then null else
+        ($raw | if type == "string" then fromjson else . end) |
+        if type == "object" and .contract == 1 then . else error("invalid repair obligation") end
+      end
+    ' "$destination.metadata" > "$destination" 2>/dev/null; then
+    printf 'orchid: invalid repair instruction record\n' >&2
+    return 1
+  fi
+}
+
+# Binding is supplied by the runtime caller, never reconstructed from adapter
+# claims or independently resolved here. Reserve it before trimming other inputs.
+_pack_build_graph() (
+  local repo="$1" dest="$4" binding="$6" work bytes budget rc repair_source
+  work="$(mktemp -d "${TMPDIR:-/tmp}/orchid-pack-graph.XXXXXX")" || return 1
+  trap 'rm -rf "$work"' EXIT
+  if [ ! -f "$binding" ] || [ -L "$binding" ] ||
+     ! jq -cesS 'if length == 1 and (.[0] | type == "object" and .graph_contract == 1) then .[0] else error("invalid graph binding") end' \
+       "$binding" > "$work/context.json"; then
+    printf 'orchid: input pack requires a trusted graph binding\n' >&2
+    return 1
+  fi
+  # Repair instructions are outside freshness authority. A nested verifier may
+  # answer its own child while still helping answer its parent's obligation.
+  _pack_repair_obligation "$(orchid_state "$repo")" "$2" "$work/own-obligation.json" || return 1
+  repair_source="$(jq -r '.verification_target.task // ""' "$work/context.json")" || return 1
+  printf 'null\n' > "$work/target-obligation.json"
+  if [ -n "$repair_source" ]; then
+    _pack_repair_obligation "$(orchid_state "$repo")" "$repair_source" "$work/target-obligation.json" || return 1
+  fi
+  jq --slurpfile own "$work/own-obligation.json" --slurpfile target "$work/target-obligation.json" '
+    (if $own[0] != null then $own[0] else $target[0] end) as $primary |
+    . + (if $primary == null then {} else {repair_obligation:$primary} end) +
+        (if $target[0] == null then {} else {target_repair_obligation:$target[0]} end)
+  ' "$work/context.json" > "$work/instructions.json" || return 1
+  mv -f "$work/instructions.json" "$work/context.json" || return 1
+  bytes="$(wc -c < "$work/context.json")"
+  budget="$(config_get "$repo" pack_budget_bytes 65536)"
+  if [ "$bytes" -gt "$budget" ]; then
+    printf 'orchid: input_overflow — delivery context (%s bytes) exceeds pack budget (%s)\n' "$bytes" "$budget" >&2
+    return 12
+  fi
+  _pack_build_base "$1" "$2" "$3" "$4" "${5:-}" "$bytes"
+  rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  cp "$work/context.json" "$dest/delivery-context.json" || return 1
+  jq --argjson bytes "$bytes" \
+    '.budget += $bytes | .total_bytes += $bytes |
+     .items += [{name:"delivery-context.json",bytes:$bytes,truncated:false}]' \
+    "$dest/pack.json" > "$work/pack.json" || return 1
+  atomic_write "$dest/pack.json" < "$work/pack.json"
+)
+
+pack_build() { # repo task op dest [hook-point|workspace_read=1] [trusted-graph-binding]
+  if [ -n "${6:-}" ]; then
+    _pack_build_graph "$@"
+  else
+    _pack_build_base "$@"
+  fi
 }

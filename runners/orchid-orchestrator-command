@@ -78,7 +78,9 @@ usage: orchid-orchestrator-command <admitted orchid verb form>
 The brokered, judgment-only command surface. Admitted forms:
 
   context [--ambient]
-  protocol [preamble|boundaries|planning|tick|resume|headless|completion|discrepancies]
+  protocol [preamble|boundaries|planning|tick|graph|revision|resume|headless|completion|discrepancies]
+  graph show [id]
+  graph validate
   skill [orchid|orchid-plan|orchid-resume]
   task show <id>                     task list
   task get <id> <key>
@@ -207,6 +209,15 @@ case "$verb" in
     elif [ "$#" -ne 1 ]; then
       refuse "context takes no positional arguments"
     fi
+    ;;
+  graph)
+    case "${2:-}" in
+      show)
+        [ "$#" -eq 2 ] || { [ "$#" -eq 3 ] && is_id "$3"; } || refuse 'graph show takes at most one flat task id'
+        ;;
+      validate) [ "$#" -eq 2 ] || refuse 'broker graph validation reads the current model only' ;;
+      *) refuse 'graph mutations are not judgment-only commands' ;;
+    esac
     ;;
   protocol)
     [ "$#" -le 2 ] || refuse "protocol takes at most one canonical section"

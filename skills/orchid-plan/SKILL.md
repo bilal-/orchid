@@ -8,3 +8,10 @@ Read `orchid` first. Load `orchid protocol planning --full` for the canonical pr
 On a new repository, the user-authorized `orchid start requirements.md --verify "<real test command>"` performs preflight, initialization, integration worktree setup, ownership and requirements import, then returns the planning handoff. On existing work, inspect the current run and ownership before issuing a mutation. Pass `ORCHID_REPO` and the returned `ORCHID_EPOCH` explicitly. Preserve unrelated working trees and files.
 
 Follow the planning procedure's independent critique and evidence gates. Use scoped task and requirement records, not a full protocol dump. Do not author or rewrite durable `.orchid/` state outside Orchid verbs. The kernel's refusal and stderr are evidence; inspect them before trying a different command. User choices, unresolved discrepancies and completion acceptance remain operator decisions. Hand off established work to the `orchid` skill.
+
+For candidate-bound independent checks, declare report nodes with `verifies`
+and reserve `depends_on` for completed inputs. Add bounded `output_contract`
+definitions and opt-in repair routes with finite source budgets. Use
+`orchid graph validate`, then `orchid graph enable --reason "..."` before the
+plan starts. Required checks can nest; avoid milestone cycles. Inspect
+`orchid graph --help` and the graph-delivery specification for exact forms.

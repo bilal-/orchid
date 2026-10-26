@@ -4,7 +4,7 @@ task_revision() {
   local repo state revision_root revision_reason revision_criteria revision_verify
   local revision_criteria_set revision_verify_set revision_dry_run revision_file
   local revision_changed revision_ids revision_rev revision_gen revision_archive
-  local ORCHID_COMMIT_DURABLE_HOOK revision_path revision_action revision_kind revision_label
+  local ORCHID_COMMIT_DURABLE_HOOK ORCHID_COMMIT_DURABLE_RECOVERABLE revision_path revision_action revision_kind revision_label
   repo="$(orchid_physical_dir "$1")" || return 1
   revision_action="$2"; shift 2
   case "$revision_action" in
@@ -36,6 +36,23 @@ task_revision() {
   if [ "$revision_verify_set" -eq 1 ]; then
     [ -n "$revision_verify" ] || orchid_die 'verification commands must be nonempty'
     _no_newline 'verification commands' "$revision_verify"
+  fi
+  if [ "$revision_action" = revise ] && [ "$(fm_get "$state/roadmap.md" graph_contract)" = 1 ]; then
+    local graph_patch graph_rc=0
+    source "$ORCHID_ROOT/lib/graph-replan.sh"
+    graph_patch="$(mktemp "${TMPDIR:-/tmp}/orchid-task-replan.XXXXXX")" || return 1
+    jq -n --arg id "$revision_root" --arg criteria "$revision_criteria" --arg verify "$revision_verify" \
+      --argjson criteria_set "$revision_criteria_set" --argjson verify_set "$revision_verify_set" '
+      {($id):((if $criteria_set == 1 then {acceptance_criteria:$criteria} else {} end) +
+        (if $verify_set == 1 then {verification_commands:$verify} else {} end))}
+    ' > "$graph_patch" || { rm -f "$graph_patch"; return 1; }
+    if [ "$revision_dry_run" -eq 1 ]; then
+      graph_replan_command "$repo" --patch "$graph_patch" --reason "$revision_reason" --dry-run || graph_rc=$?
+    else
+      graph_replan_command "$repo" --patch "$graph_patch" --reason "$revision_reason" || graph_rc=$?
+    fi
+    rm -f "$graph_patch"
+    return "$graph_rc"
   fi
   if [ "$revision_dry_run" -eq 0 ]; then
     verb_lock_guard "$repo"
@@ -84,13 +101,25 @@ task_revision() {
         "task $revision_label $revision_archive; affected: $(printf '%s' "$revision_ids" | tr '\n' ' '); reason: $revision_reason" || return 1
       rm -rf "$wt/.orchid/runtime" || return 1
       revision_apply "$wt" "$revision_root" "$revision_ids" "$revision_archive" \
-        "$revision_criteria_set" "$revision_criteria" "$revision_verify_set" "$revision_verify" "$revision_action"
+      "$revision_criteria_set" "$revision_criteria" "$revision_verify_set" "$revision_verify" "$revision_action" || return 1
+    if [ "$(fm_get "$wt/.orchid/roadmap.md" graph_contract)" = 1 ]; then
+      source "$ORCHID_ROOT/lib/graph-runtime.sh"
+      graph_snapshot "$wt" >/dev/null || return 1
+    fi
     }
     # ShellCheck rationale: orchid_commit_durable invokes this hook in lib/common.sh.
     # shellcheck disable=SC2034
     ORCHID_COMMIT_DURABLE_HOOK=task_revision_hook
+  if [ "$(fm_get "$state/roadmap.md" graph_contract)" = 1 ]; then
+    # ShellCheck rationale: common.sh consumes the graph publication mode.
+    # shellcheck disable=SC2034
+    ORCHID_COMMIT_DURABLE_RECOVERABLE=1
+    orchid_commit_durable "$repo" "orchid: task $revision_label $revision_archive" \
+      .orchid/tasks .orchid/reviews ".orchid/revisions/$revision_archive" .orchid/roadmap.md .orchid/journal.md
+  else
     orchid_commit_durable "$repo" "orchid: task $revision_label $revision_archive" \
       .orchid/tasks .orchid/reviews .orchid/revisions .orchid/roadmap.md .orchid/journal.md
+  fi
     unset ORCHID_COMMIT_DURABLE_HOOK
     if [ "$revision_action" = revise ]; then
     printf 'revised %s: contract %s -> %s; archive .orchid/revisions/%s\nrestarted:\n%s\n' \

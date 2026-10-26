@@ -14,6 +14,7 @@ ORCHID_ROOT="$(cd "$(dirname "$self")/../../.." && pwd)"
 source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/heartbeat.sh"
+source "$ORCHID_ROOT/lib/engine-context.sh"
 
 # The stale-root gate, fired explicitly (INV-15). An engine adapter lives
 # outside bin/, libexec/ and runners/, so lib/common.sh's source-time fire does
@@ -166,6 +167,9 @@ err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
 # trade-off (a hung-but-alive engine now runs to the request's own
 # deadline_s rather than being stall-killed early).
 stdout=""; rc=0
+if [ -e "$input_pack/delivery-context.json" ] || [ -L "$input_pack/delivery-context.json" ]; then
+  prompt="$(orchid_engine_context_prompt "$input_pack" "$prompt")"
+fi
 orchid_run_engine_cli "$err_file" stdout rc "-" "-" agy -p "$prompt"
 stderr="$(cat "$err_file")"
 

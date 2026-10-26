@@ -43,9 +43,13 @@ receive a new execution generation while retaining their own contract revision.
 Prepared jobs bind both values and the direct input versions; obsolete results
 cannot become current evidence. This operator-owned revision path requires
 idle affected tasks with no outstanding jobs or unresolved objections.
-Requirements remain immutable after planning. Requirement-level replanning,
-live job cancellation during revision, and nested verification graphs remain
-outside the implemented slice.
+Graph mode adds candidate-ready verification edges alongside completed-input
+dependencies. Required verifiers can nest, and their current bound completion
+is a gate on parent approval and merge. Semantic replanning can revise graph
+contracts and requirements while retaining immutable candidates as checkpoints.
+Machine repair uses declared routes and persistent finite budgets. Revisions
+require quiescence; they do not cancel live workers. See the
+[graph contract](specs/graph-delivery.md).
 
 `task restart` reuses the same transaction and safety gates while retaining
 every contract revision and contract term. It increments execution generations
@@ -206,7 +210,7 @@ stateDiagram-v2
     arbitrating --> rework: request-changes - journaled reason required
     merging --> done: orchid merge re-runs the suite in a temp worktree, then advances the ref
     merging --> rework: validation failed
-    merging --> testing: base moved - rebase, then re-verify and re-review (INV-07)
+    merging --> testing: application base moved - rebase, then re-verify and re-review (INV-07)
     rework --> implementing: rework spec written (3 attempts max)
     testing --> blocked: attempts exhausted - a human is pinged
     blocked --> rework: answer arrives - orchid task unblock or retry, reason recorded
@@ -245,7 +249,7 @@ arbitrable one instead, since the actor that raised it is in the loop and a
 stop nothing can answer parks the run (T032,
 dogfood F33); `merging → done`
 re-runs the whole suite in a temp worktree before advancing the integration
-ref, and a moved base forces re-verify plus re-review (INV-07). Every
+ref, and a moved application base forces re-verify plus re-review (INV-07). Every
 reason-bearing transition journals its why before the state change (INV-08),
 and the state itself is `tasks/<id>.md` frontmatter committed on the
 `orchid/integration` branch — which is why a crash anywhere loses at most
@@ -262,6 +266,15 @@ attempt. The command admits only `rework` and `implementing`, requires a clean
 task checkout registered in this repository, and refuses outstanding jobs for that task, including prepared
 launches. It updates `base_sha` after a successful rebase. Dispatch does not
 call it automatically.
+
+Graph mode preserves an unchanged reviewed candidate across forward
+reserved-state publications, and can revalidate an already integrated candidate
+whose project tree remains unchanged. The actual merged project tree must equal
+the reviewed candidate outside `.orchid/`; final mechanical checks and the
+integration CAS still run. Application changes take the ordinary rebase path.
+Queued retained checkpoints acquire capacity and start their execution clock
+only when their inputs and resources permit admission. Legacy stale-base
+behavior is unchanged.
 
 ## 3. The blocker round trip
 

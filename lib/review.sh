@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "${BASH_SOURCE[0]%/*}/graph-integration.sh"
 # Dual-review routing (v1-m2 Task 3) — see docs/specs/kernel.md's
 # "Independence" section for the policy this encodes: `risk_tier` drives
 # review ROUTING and independence requirements; `low` wants a single
@@ -915,6 +916,7 @@ review_filed_engines() {
     [ -n "$f" ] || continue
     [ "$(envelope_field "$f" '.status // empty' 2>/dev/null || true)" = ok ] || continue
     [ "$(envelope_field "$f" '.candidate_sha // empty' 2>/dev/null || true)" = "$cand" ] || continue
+    orchid_graph_review_current "$repo" "$id" "$f" || continue
     e="$(envelope_field "$f" '.engine // empty' 2>/dev/null || true)"
     printf '%s\n' "${e:--}"
   done < <(_review_filed_order "$state/reviews/$id-a$attempt-reviewer")

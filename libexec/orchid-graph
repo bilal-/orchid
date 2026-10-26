@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+orchid_cli_validate graph "$@"
+set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
+source "$ORCHID_ROOT/lib/graph-runtime.sh"
+repo="${ORCHID_REPO:-$PWD}"
+sub="${1:-show}"; shift || true
+case "$sub" in
+  show|validate)
+    scratch="$(mktemp "${TMPDIR:-/tmp}/orchid-graph-read.XXXXXX")"
+    trap 'rm -f "$scratch"' EXIT
+    if [ "$sub" = validate ] && [ "$#" -eq 1 ]; then
+      graph_validate "$1"
+      jq -n '{contract:1,valid:true}'
+    else
+      graph_snapshot_file "$repo" "$scratch"
+      if [ "$sub" = validate ]; then jq -n '{contract:1,valid:true}'
+      elif [ "$#" -eq 0 ]; then cat "$scratch"
+      else _graph_jq 'require_node($id)' "$scratch" --arg id "$1"; fi
+    fi ;;
+  prepare) exec "$ORCHID_ROOT/runners/orchid-graph-prepare" "$@" ;;
+  bind|wait|enable)
+    verb_lock_guard "$repo"
+    case "$sub" in
+      bind) graph_bind "$repo" "$1" ;;
+      wait) id="$1"; shift; if [ "${1:-}" = --close ]; then graph_wait_close "$repo" "$id"; else graph_wait_sync "$repo" "$id"; fi ;;
+      enable) graph_enable "$repo" "$2" ;;
+    esac ;;
+  replan|invalidate)
+    source "$ORCHID_ROOT/lib/graph-replan.sh"
+    if [ "$sub" = replan ]; then graph_replan_command "$repo" "$@"; else graph_invalidate_command "$repo" "$@"; fi ;;
+  repair) source "$ORCHID_ROOT/lib/graph-repair.sh"; graph_repair_command "$repo" "$@" ;;
+  *) orchid_die 'unknown graph command' ;;
+esac

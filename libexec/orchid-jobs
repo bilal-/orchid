@@ -16,6 +16,8 @@ source "$ORCHID_ROOT/lib/revision.sh"
 # capability.sh owns the kernel's step-to-capability table. Prepare is where
 # a resolved actor is finally bound to an operation, so it is the routing gate.
 source "$ORCHID_ROOT/lib/capability.sh"
+source "$ORCHID_ROOT/lib/publication.sh"
+source "$ORCHID_ROOT/lib/graph-runtime.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$state/runtime"
 jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
 # T035: the append-only record of jobs that are no longer outstanding, so
@@ -23,6 +25,131 @@ jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
 # long did each take" after the fact. See history_append below.
 hist_file="$rt/jobs-history.tsv"
 sub="${1:-}"; shift || true
+
+# A graph invocation holds the existing verb lock and reuses one validated
+# semantic snapshot; filing replies changes evidence, never that snapshot.
+jobs_graph_mode=0; jobs_graph_tmp=""; jobs_graph_snapshot=""; jobs_graph_loaded=0
+jobs_graph_cleanup() {
+  local rc=$?
+  if [ -n "$jobs_graph_tmp" ]; then
+    if ! rm -rf "$jobs_graph_tmp"; then rc=1; fi
+  fi
+  verb_lock_release "$repo" || rc=1
+  return "$rc"
+}
+jobs_graph_load() {
+  [ "$jobs_graph_loaded" -eq 0 ] || return 0
+  source "$ORCHID_ROOT/lib/archetype.sh"
+  source "$ORCHID_ROOT/lib/handoff.sh"
+  source "$ORCHID_ROOT/lib/drive.sh"
+  jobs_graph_loaded=1
+}
+jobs_graph_start() {
+  if graph_runtime_enabled "$repo"; then
+    jobs_graph_mode=1
+    jobs_graph_load
+    jobs_graph_tmp="$(mktemp -d "${TMPDIR:-/tmp}/orchid-jobs-graph.XXXXXX")" || return 1
+    trap jobs_graph_cleanup EXIT
+    jobs_graph_snapshot="$jobs_graph_tmp/snapshot.json"
+    graph_snapshot_file "$repo" "$jobs_graph_snapshot" || return 1
+  fi
+}
+jobs_manifest_current() {
+  if [ "$jobs_graph_mode" -eq 1 ]; then
+    graph_manifest_current "$repo" "$1" "$jobs_graph_snapshot"
+  elif jq -e 'has("graph_contract")' "$1" >/dev/null; then
+    return 1
+  else
+    revision_manifest_current "$repo" "$1"
+  fi
+}
+jobs_graph_binding() {
+  local manifest="$1" destination="$2" task
+  task="$(jq -r .task "$manifest")" || return 1
+  graph_job_binding "$repo" "$task" "$destination" "$jobs_graph_snapshot" || return 1
+  jq --slurpfile manifest "$manifest" \
+    '. + {worktree:$manifest[0].worktree,attempt:$manifest[0].attempt,start_head_sha:$manifest[0].start_head_sha}' \
+    "$destination" > "$destination.next" || return 1
+  mv -f "$destination.next" "$destination"
+}
+jobs_graph_reply_claims() {
+  jq -e --slurpfile binding "$2" '
+    . as $reply | $binding[0] as $binding |
+    (has("contract_failure") or has("output_contract_evidence") or has("repair_obligation") or has("target_repair_obligation") | not) and
+    all($binding | to_entries[]; . as $entry |
+      (($reply | has($entry.key)) | not) or $reply[$entry.key] == $entry.value)
+  ' "$1" >/dev/null
+}
+jobs_graph_attach_binding() {
+  jq --slurpfile binding "$2" '. + $binding[0]' "$1" > "$1.graph-bound" || return 1
+  mv -f "$1.graph-bound" "$1"
+}
+
+# The reply remains the model's original document during schema evaluation.
+# Kernel context/evidence is appended only after its claims and output pass.
+jobs_graph_output() {
+  local reply="$1" manifest="$2" binding="$3" task operation point status
+  local contract workspace expected candidate claimed diagnostic kind report_mode candidate_bound=0
+  task="$(jq -r .task "$manifest")"; operation="$(jq -r .operation "$manifest")"
+  point="$(jq -r '.hook_point // ""' "$manifest")"; status="$(jq -r .status "$reply")"
+  contract="$(jq -c '.output_contract // null' "$binding")"
+  diagnostic="$jobs_graph_tmp/contract-diagnostic.json"
+  candidate="$(jq -r '.candidate_sha // ""' "$manifest")"
+  if [ "$status" = ok ] && [ "$task" != plan ]; then
+    expected="$(jq -r '.worktree // ""' "$manifest")"
+    if ! workspace="$(graph_job_workspace "$repo" "$task" "$jobs_graph_snapshot" "$operation" "$point")" ||
+       [ "$workspace" != "$expected" ]; then
+      printf '{"contract":1,"passed":false,"kind":"candidate","reason":"job workspace no longer matches its prepared owned checkout"}\n' > "$diagnostic"
+    elif [ "$operation" = implement ]; then
+      if ! candidate="$(git -C "$workspace" rev-parse --verify HEAD 2>/dev/null)"; then
+        printf '{"contract":1,"passed":false,"kind":"candidate","reason":"cannot inspect the produced owned candidate"}\n' > "$diagnostic"
+      else
+        candidate_bound=1
+        claimed="$(jq -r '.candidate_sha // ""' "$reply")"
+        if [ -n "$claimed" ] && [ "$claimed" != "$candidate" ]; then
+          printf '{"contract":1,"passed":false,"kind":"candidate","reason":"worker candidate differs from its owned checkout HEAD"}\n' > "$diagnostic"
+        fi
+      fi
+    elif [ -z "$candidate" ]; then
+      candidate="$(git -C "$workspace" rev-parse --verify HEAD 2>/dev/null)" || {
+        printf '{"contract":1,"passed":false,"kind":"candidate","reason":"cannot inspect the bound hook workspace"}\n' > "$diagnostic"
+      }
+    fi
+  fi
+  if [ ! -f "$diagnostic" ] && [ "$contract" != null ]; then
+    if output_contract_evaluate "$repo" "$candidate" "$contract" "$reply" > "$jobs_graph_tmp/contract-result.json"; then
+      jq --slurpfile evidence "$jobs_graph_tmp/contract-result.json" \
+        '.output_contract_evidence=$evidence[0]' "$reply" > "$reply.contract-next" || return 1
+      mv -f "$reply.contract-next" "$reply" || return 1
+    else
+      mv -f "$jobs_graph_tmp/contract-result.json" "$diagnostic" || return 1
+    fi
+  fi
+  if [ -f "$diagnostic" ]; then
+    jq --slurpfile reply "$reply" \
+      '. + {reported_status:$reply[0].status} +
+       (if $reply[0] | has("verdict") then {reported_verdict:$reply[0].verdict} else {} end)' \
+      "$diagnostic" > "$diagnostic.next" || return 1
+    mv -f "$diagnostic.next" "$diagnostic" || return 1
+    kind="$(jq -r .kind "$diagnostic")"
+    report_mode=0
+    case "$operation:$kind" in review:artifact|critique:artifact) report_mode=1 ;; esac
+    jq --slurpfile diagnostic "$diagnostic" --argjson report_mode "$report_mode" '
+      .contract_failure=$diagnostic[0] |
+      .summary=("Output contract failed: " + $diagnostic[0].reason) |
+      if $report_mode == 1 then
+        .verdict="request-changes" |
+        .findings=((.findings // []) + [{severity:"high",source:"kernel",title:("Output contract artifact violation: " + $diagnostic[0].reason)}])
+      else .status="failed" end
+    ' "$reply" > "$reply.contract-next" || return 1
+    mv -f "$reply.contract-next" "$reply" || return 1
+  fi
+  if [ "$candidate_bound" -eq 1 ]; then
+    jq --arg candidate "$candidate" '.candidate_sha=$candidate' "$reply" > "$reply.candidate-next" || return 1
+    mv -f "$reply.candidate-next" "$reply" || return 1
+  fi
+  rm -f "$diagnostic"
+}
 
 # jobs_usage [sub] -- the one usage line per subverb, and the same three-caller
 # rule libexec/orchid-task's task_usage carries: the `--help` gate below, the
@@ -781,7 +908,7 @@ jobs_rows() {
       t_status="$(fm_get "$tf" status)"
       t_started="$(fm_get "$tf" started_at)"
       t_budget="$(fm_get "$tf" wallclock_budget_s)"
-      pct="$(schedule_budget_pct "$t_status" "$(iso_to_epoch "$t_started")" "$t_budget" "$now")" \
+      pct="$(schedule_task_budget_pct "$repo" "$jtask" "$t_status" "$(iso_to_epoch "$t_started")" "$t_budget" "$now")" \
         || pct=-1
       case "$pct" in ''|*[!0-9]*) pct=-1 ;; esac
     fi
@@ -1053,6 +1180,7 @@ prepare_chain_capability_gate() {
 
 case "$sub" in
   ls)
+    if graph_runtime_enabled "$repo"; then jobs_graph_load; fi
     # See the block comment above. Read-only: no verb lock, no epoch fence,
     # no kill, no write anywhere.
     show_all=0; ls_mode=table; watch=0; interval=5; ls_strict=0
@@ -1109,7 +1237,9 @@ case "$sub" in
     [ $# -ge 3 ] || orchid_die "$(jobs_usage prepare)"
     verb_lock_guard "$repo"
     epoch_require "$repo"
-    task="$1"; role="$2"; operation="$3"; shift 3
+    jobs_graph_start || orchid_die 'cannot establish graph job context'
+    task="$1"; role="$2"; operation="$3"
+    orchid_task_id_valid "$task" || orchid_die 'task id must use only letters, digits, underscores, and hyphens'; shift 3
     override_engine=""; hook_point=""
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -1339,7 +1469,17 @@ case "$sub" in
     [ -n "$launched_by" ] || launched_by=operator
 
     job_contract_revision=1; job_execution_generation=1; job_input_revisions='{}'; job_contract_terms='{}'
-    if [ "$task" != plan ]; then
+    jobs_graph_binding_file=""
+    if [ "$jobs_graph_mode" -eq 1 ]; then
+      graph_job_prepare_gate "$repo" "$task" "$jobs_graph_snapshot" "$operation" "$hook_point" || orchid_die 'graph job admission refused'
+      jobs_graph_binding_file="$jobs_graph_tmp/binding.json"
+      graph_job_binding "$repo" "$task" "$jobs_graph_binding_file" "$jobs_graph_snapshot" || orchid_die 'cannot bind graph job inputs'
+      jobs_graph_workspace="$(graph_job_workspace "$repo" "$task" "$jobs_graph_snapshot" "$operation" "$hook_point")" || orchid_die 'graph job workspace refused'
+      jobs_graph_start_head="$(git -C "$jobs_graph_workspace" rev-parse --verify HEAD)" || orchid_die 'cannot bind prepared workspace HEAD'
+      jq --arg worktree "$jobs_graph_workspace" --argjson attempt "$attempt" --arg start_head "$jobs_graph_start_head" \
+        '. + {worktree:$worktree,attempt:$attempt,start_head_sha:$start_head}' "$jobs_graph_binding_file" > "$jobs_graph_binding_file.next"
+      mv -f "$jobs_graph_binding_file.next" "$jobs_graph_binding_file"
+    elif [ "$task" != plan ]; then
       job_contract_terms="$(revision_terms "$tf")" || exit 1
       job_contract_revision="$(fm_version "$tf" contract_revision)" || exit 1
       job_execution_generation="$(fm_version "$tf" execution_generation)" || exit 1
@@ -1350,20 +1490,30 @@ case "$sub" in
       || orchid_die "cannot reserve an unused job id after $ORCHID_JOB_ID_RESERVE_TRIES draws; existing job ownership and artifacts are preserved"
     mkdir -p "$jobs_dir" "$spool_dir"
     manifest="$jobs_dir/$job_id.json"; output="$spool_dir/$job_id.json"
-    jq -n --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
+    jobs_graph_manifest_args=()
+    jobs_manifest_filter='{job_id:$job_id, task:$task, attempt:$attempt, role:$role, operation:$operation,
+        engine:$engine, pid:0, pgid:0, started_at:0, log:$log, output:$output,
+        base_sha:$base_sha, candidate_sha:$candidate_sha, hook_point:$hook_point,
+        launched_by:$launched_by, contract_revision:$contract_revision, execution_generation:$execution_generation, input_revisions:$input_revisions, contract_terms:$contract_terms}'
+    if [ "$jobs_graph_mode" -eq 1 ]; then
+      jobs_graph_manifest_args=(--slurpfile graph_binding "$jobs_graph_binding_file")
+      jobs_manifest_filter="$jobs_manifest_filter + \$graph_binding[0]"
+      if [ "$task" != plan ]; then
+        graph_wait_close "$repo" "$task" || orchid_die 'cannot close graph wait before job publication'
+      fi
+    fi
+    jq -n ${jobs_graph_manifest_args[@]+"${jobs_graph_manifest_args[@]}"} --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
       --arg role "$role" --arg operation "$operation" --arg engine "$engine" \
       --arg log "$rt/logs/$job_id.log" --arg output "$output" \
       --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
       --arg hook_point "$hook_point" --arg launched_by "$launched_by" \
       --argjson contract_revision "$job_contract_revision" --argjson execution_generation "$job_execution_generation" \
       --argjson input_revisions "$job_input_revisions" --argjson contract_terms "$job_contract_terms" \
-      '{job_id:$job_id, task:$task, attempt:$attempt, role:$role, operation:$operation,
-        engine:$engine, pid:0, pgid:0, started_at:0, log:$log, output:$output,
-        base_sha:$base_sha, candidate_sha:$candidate_sha, hook_point:$hook_point,
-        launched_by:$launched_by, contract_revision:$contract_revision, execution_generation:$execution_generation, input_revisions:$input_revisions, contract_terms:$contract_terms}' | atomic_write "$manifest"
+      "$jobs_manifest_filter" | atomic_write "$manifest"
     echo "$manifest"
     ;;
   check)
+    if graph_runtime_enabled "$repo"; then jobs_graph_load; fi
     # Read-and-runtime-only: reports/kills by pgid, never mutates durable state.
     stall_s="$(_jobs_stall_seconds)" || exit 1
     timeout_s="$(_jobs_config_minutes_seconds timeout_minutes 60)" || exit 1
@@ -1418,7 +1568,7 @@ case "$sub" in
             # than a second copy of the same arithmetic that could drift from
             # it. The reported condition is unchanged: a task whose attempt has
             # consumed its whole wall-clock budget.
-            t_pct="$(schedule_budget_pct "$t_status" "$(iso_to_epoch "$t_started")" \
+            t_pct="$(schedule_task_budget_pct "$repo" "$task" "$t_status" "$(iso_to_epoch "$t_started")" \
               "$t_budget" "$now")" || t_pct=""
             case "$t_pct" in ''|*[!0-9]*) t_pct="" ;; esac
             if [ -n "$t_pct" ] && [ "$t_pct" -ge 100 ]; then
@@ -1497,6 +1647,7 @@ case "$sub" in
     # being otherwise read-and-runtime-only like `check` — this is fenced too.
     verb_lock_guard "$repo"
     epoch_require "$repo"
+    jobs_graph_start || orchid_die 'cannot establish graph job context'
     mkdir -p "$quarantine_dir" "$state/reviews"
     # v0b2: a spool file bigger than this is quarantined on size alone,
     # before any JSON parsing — a cheap, early defense against a runaway or
@@ -1546,7 +1697,7 @@ case "$sub" in
         echo "quarantined: $base (unknown-job)"
         continue
       fi
-      if ! revision_manifest_current "$repo" "$manifest"; then
+      if ! jobs_manifest_current "$manifest"; then
         quarantine_file "$f" obsolete-revision
         echo "quarantined: $base (obsolete-revision)"
         continue
@@ -1663,12 +1814,24 @@ case "$sub" in
         echo "quarantined: $base (mismatch)"
         continue
       fi
-      if ! revision_bound="$(revision_bind_envelope "$f" "$manifest")"; then
-        quarantine_file "$f" revision-mismatch
-        echo "quarantined: $base (revision-mismatch)"
-        continue
+      if [ "$jobs_graph_mode" -eq 1 ]; then
+        graph_reply_binding="$jobs_graph_tmp/reply-binding.json"
+        jobs_graph_binding "$manifest" "$graph_reply_binding" || orchid_die 'cannot bind graph reply context'
+        if ! jobs_graph_reply_claims "$f" "$graph_reply_binding"; then
+          quarantine_file "$f" graph-mismatch
+          echo "quarantined: $base (graph-mismatch)"
+          continue
+        fi
+        jobs_graph_output "$f" "$manifest" "$graph_reply_binding" || orchid_die 'cannot record graph output contract diagnostic'
+        jobs_graph_attach_binding "$f" "$graph_reply_binding" || orchid_die 'cannot file trusted graph reply binding'
+      else
+        if ! revision_bound="$(revision_bind_envelope "$f" "$manifest")"; then
+          quarantine_file "$f" revision-mismatch
+          echo "quarantined: $base (revision-mismatch)"
+          continue
+        fi
+        printf '%s\n' "$revision_bound" | atomic_write "$f"
       fi
-      printf '%s\n' "$revision_bound" | atomic_write "$f"
       attempt="$(jq -r .attempt "$manifest")"; role="$(jq -r .role "$manifest")"
       status="$(envelope_field "$f" .status)"
       verdict="$(envelope_field "$f" '.verdict // "n/a"')"
@@ -1733,7 +1896,13 @@ case "$sub" in
       # self-reported one, even when present -- the cross-check above
       # already quarantined any envelope whose reported engine disagreed,
       # but this is our own durable record, not forgeable input).
-      ledger_mark "$repo" "$m_engine" "$status" "$retry_after" "$failure_kind"
+      graph_ledger_skip=0
+      if [ "$jobs_graph_mode" -eq 1 ]; then
+        case "$(jq -r '.contract_failure.kind // ""' "$dest")" in artifact|candidate|definition) graph_ledger_skip=1 ;; esac
+      fi
+      if [ "$graph_ledger_skip" -eq 0 ]; then
+        ledger_mark "$repo" "$m_engine" "$status" "$retry_after" "$failure_kind"
+      fi
       # Printed under the durable name, never the spool one: the operator who
       # reads this line goes and looks at the file it names.
       case "$synth" in
@@ -1860,7 +2029,7 @@ case "$sub" in
       s_exit=""; s_exit="$(job_exit_code "$s_jid" || true)"
       s_salvage="$(envelope_salvage_json "$s_log")"
 
-      if ! revision_manifest_current "$repo" "$mf"; then
+      if ! jobs_manifest_current "$mf"; then
         echo "salvage-skip: $(basename "$mf") (obsolete-revision)"
         continue
       fi
@@ -1883,6 +2052,12 @@ case "$sub" in
           + (if $base == "" then {} else {base_sha:$base} end)
           + (if $cand == "" then {} else {candidate_sha:$cand} end)
           + (if $salv.verdict == null then {} else {verdict:$salv.verdict} end)')"
+        if [ "$jobs_graph_mode" -eq 1 ]; then
+          printf '%s\n' "$s_env" > "$jobs_graph_tmp/salvage-env.json"
+          jobs_graph_binding "$mf" "$jobs_graph_tmp/salvage-binding.json" || orchid_die 'cannot bind graph salvage context'
+          jobs_graph_attach_binding "$jobs_graph_tmp/salvage-env.json" "$jobs_graph_tmp/salvage-binding.json" || orchid_die 'cannot record graph salvage context'
+          s_env="$(cat "$jobs_graph_tmp/salvage-env.json")"
+        fi
         # Never `producer | atomic_write "$dest"`: a jq that fails mid-pipe
         # leaves the destination created and empty, which reads downstream as
         # a malformed envelope rather than as the absence of one.

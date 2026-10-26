@@ -114,31 +114,24 @@ observation. It is not a general completion-time guarantee.
 Full walkthroughs: [existing repository](./docs/quickstart.md) and
 [new product](./docs/quickstart-greenfield.md).
 
-## Scope and recovery
+## Graph delivery and selective recovery
 
-`orchid task restart <id> --reason "..."` reruns an unchanged task contract
-and its downstream dependency subgraph. It preserves completed upstream and
-sibling tasks, archives prior executions, and requires fresh evidence even for
-the same candidate commit. Report-outcome tasks can represent independent
-verification branches; restarting one branch does not rerun the others.
-Use `--dry-run` to preview the affected set.
+Orchid can coordinate candidate-bound verification graphs, including nested
+checks, while your existing harness hosts the session. A verifier can inspect a
+candidate before its parent completes; the parent must wait for every required
+check. Per-node contracts validate worker replies and committed artifacts.
 
-The shipped kernel schedules tasks through an explicit lifecycle. Result
-contracts check structured replies, while verification and review gates
-supply evidence about a candidate. A valid reply alone does not establish
-that the requested outcome is correct.
+`orchid task restart <id> --reason "..."` repeats an unchanged contract and its
+affected input closure. Graph replanning changes contracts, dependencies, or
+requirements while archiving obsolete evidence. Existing candidates can resume
+at verification in fresh execution generations. Declared repair routes use
+finite budgets and preserve outstanding judgment boundaries.
 
-Current recovery includes session resumption, task retry, rework,
-reverification, and guarded rebasing. `orchid task revise` versions a task's
-acceptance criteria or verification command and restarts its transitive
-dependents once they are idle. Previous task records and evidence are archived;
-new execution branches preserve code that has already merged.
-
-This first revision path is operator-owned and refuses outstanding affected
-jobs, uncommitted worktrees, and unresolved objections. Requirements remain
-immutable after planning. Requirement-level replanning and nested verification
-graphs are not implemented. See [contract revision](./docs/frontends.md#task-contract-revision)
-and [the architecture](./docs/architecture.md) for the current boundaries.
+See [graph delivery](./docs/specs/graph-delivery.md),
+[operator workflows](./docs/specs/operations.md), and
+[the architecture](./docs/architecture.md). Local tests and synthetic live
+qualification receipts describe different evidence; neither implies broad
+third-party qualification or release.
 
 ## What makes orchid different
 

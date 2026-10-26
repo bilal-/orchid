@@ -100,12 +100,12 @@ orchid_runtime() { local r="$1/.orchid/runtime"; mkdir -p "$r"; echo "$r"; }
 # The caller holds the verb/run lock so no new job can be prepared concurrently.
 # On refusal, stdout is a diagnostic; jobs' own stderr remains visible.
 orchid_task_jobs_idle() {
-  local repo="$1" task="$2" jobs owners
+  local repo="$1" task="$2" ignore_job="${3:-}" jobs owners
   jobs="$(ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" jobs ls --tsv --strict)" || {
     printf '%s\n' "$task: cannot inspect outstanding jobs; run orchid jobs ls before retrying"
     return 1
   }
-  owners="$(awk -F '\t' -v task="$task" '$2 == task { print $1 " (" $8 ")" }' <<< "$jobs")" || return 1
+  owners="$(awk -F '\t' -v task="$task" -v ignore_job="$ignore_job" '$2 == task && $1 != ignore_job { print $1 " (" $8 ")" }' <<< "$jobs")" || return 1
   if [ -n "$owners" ]; then
     printf '%s\n' "$task: checkout has outstanding jobs: $owners. Wait for them to finish, then run orchid jobs reconcile and orchid jobs gc before retrying"
     return 1
@@ -5076,4 +5076,29 @@ fi
 orchid_cli_validate() {
   source "${BASH_SOURCE[0]%/*}/cli.sh"
   orchid_cli_validate_impl "$@"
+}
+
+# Shared risk ordering for task setters and semantic graph replanning.
+orchid_risk_rank() {
+  case "$1" in low) echo 0 ;; medium) echo 1 ;; high) echo 2 ;; *) echo -1 ;; esac
+}
+
+# The execution budget anchor has one writer, shared by ordinary dispatch
+# and admission of retained graph checkpoints.
+orchid_task_start_clock() {
+  local stamp
+  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  fm_set "$1" started_at "$stamp"
+}
+
+# Public task names share the graph model's flat identifier namespace.
+orchid_task_id_valid() {
+  case "${1:-}" in ''|*[!A-Za-z0-9_-]*) return 1 ;; *) return 0 ;; esac
+}
+orchid_task_file() {
+  orchid_task_id_valid "${2:-}" || {
+    echo 'orchid: task id must use only letters, digits, underscores, and hyphens' >&2
+    return 1
+  }
+  printf '%s/tasks/%s.md\n' "$(orchid_state "$1")" "$2"
 }

@@ -11,12 +11,13 @@ if [ -z "$section" ]; then
     {id:"boundaries",purpose:"Judgment and operator ownership"},
     {id:"planning",purpose:"Prepare a run"},
     {id:"tick",purpose:"Manual state-machine procedure"},
+    {id:"graph",purpose:"Candidate-bound verification, contracts, repair and replanning"},
     {id:"revision",purpose:"Revise contracts or restart unchanged task subgraphs"},
     {id:"resume",purpose:"Recover session context"},
     {id:"headless",purpose:"Supervised operation"},
     {id:"completion",purpose:"Accept and hand off"},
     {id:"discrepancies",purpose:"Historical documentation notes"}
-  ],count:9,total:9,fields:["id","purpose"],next:["orchid protocol <id> --full","orchid context"]}'
+  ],count:10,total:10,fields:["id","purpose"],next:["orchid protocol <id> --full","orchid context"]}'
   exit 0
 fi
 if ! orchid_protocol_heading "$section" >/dev/null; then

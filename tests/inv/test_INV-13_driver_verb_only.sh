@@ -433,17 +433,49 @@ green_case 'same reader audit accepts inert diagnostic text and shipped pure rea
 # never reconfigure the machine, grant trust, install a schedule, execute a
 # plugin lifecycle, or accept a run.
 # ===========================================================================
-admitted=" run jobs task verify merge notify journal status "
+admitted=" run jobs task verify merge notify journal status graph "
+driver_verb_admitted() {
+  case "$admitted" in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+# Execution may wait, repair, or invalidate existing definitions. Enabling or
+# replanning a graph remains operator-owned; namespace admission cannot grant it.
+driver_graph_unadmitted() {
+  local reference action
+  while IFS= read -r reference; do
+    IFS=$' \t' read -r action <<< "${reference#*graph}"
+    case "$action" in
+      wait|repair|invalidate) ;;
+      *) printf '%s\n' "$reference" ;;
+    esac
+  done < <(code_of "$1" | grep -oE '\$ORCHID_BIN"?[[:space:]]+graph([[:space:]]+[^[:space:];|&()]+)?')
+}
+if driver_verb_admitted imaginary; then fail 'INV-13: unknown verbs remain refused'; fi
+graph_bad_probe="$WORK/inv13-graph-bad.sh"
+printf '%s\n' '"$ORCHID_BIN" graph replan --reason fixture' \
+  '"$ORCHID_BIN" graph enable --reason fixture' \
+  '"$ORCHID_BIN" graph "$action"' > "$graph_bad_probe"
+graph_bad="$(driver_graph_unadmitted "$graph_bad_probe")"
+assert_match 'graph replan' "$graph_bad" 'INV-13: driver cannot rewrite graph definitions'
+assert_match 'graph enable' "$graph_bad" 'INV-13: driver cannot adopt graph mode'
+assert_match '\$action' "$graph_bad" 'INV-13: dynamic graph actions cannot bypass admission'
+red_case 'driver admission refuses unknown verbs and operator-owned or dynamic graph actions'
+graph_good_probe="$WORK/inv13-graph-good.sh"
+printf '%s\n' '"$ORCHID_BIN" graph wait "$id"' \
+  '"$ORCHID_BIN" graph repair "$id"' \
+  '"$ORCHID_BIN" graph invalidate "$id" --reason fixture' > "$graph_good_probe"
+driver_verb_admitted graph || fail 'INV-13: declared graph namespace is admitted'
+assert_eq '' "$(driver_graph_unadmitted "$graph_good_probe")" 'INV-13: mechanical graph actions are admitted'
+green_case 'the same admission gate accepts only declared mechanical graph actions'
+
 used=""
 while IFS= read -r verb; do
   [ -n "$verb" ] || continue
-  case "$admitted" in
-    *" $verb "*) ;;
-    *) fail "INV-13: the driver invokes verb '$verb', which is not in its admitted set" ;;
-  esac
+  driver_verb_admitted "$verb" || fail "INV-13: driver invokes unadmitted verb: $verb"
   used="$used $verb"
 done < <(code_of "$DRIVER" | grep -oE '\$ORCHID_BIN"?[[:space:]]+[a-z-]+' | sed -E 's/.*[[:space:]]//' | sort -u)
 [ -n "$used" ] || fail "INV-13: no verb invocations found in the driver — the extraction regex broke"
+graph_unadmitted="$(driver_graph_unadmitted "$DRIVER")"
+[ -z "$graph_unadmitted" ] || fail "INV-13: driver invokes unadmitted graph actions: $graph_unadmitted"
 
 for forbidden in trust service config plugins init start plan requirements answer doctor lessons; do
   if grep -qE "\\\$ORCHID_BIN\"?[[:space:]]+$forbidden([[:space:]]|\$)" <<<"$drv_code"; then

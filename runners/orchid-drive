@@ -43,6 +43,7 @@ ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd -P)"
 export ORCHID_ROOT
 
 source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/graph-integration.sh"
 orchid_cli_validate drive "$@"
 set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
 source "$ORCHID_ROOT/lib/frontmatter.sh"
@@ -1318,7 +1319,7 @@ drive_hook_gate() {
 drive_dispatch() {
   local id="$1" arch="$2" from="$3"
   local tf target outcome blockers plan action path branch integ integ_head base_stamp arc lrc role_line role op wtmiss prep prep_why
-  local rework_engine reps last_engine last_name lnrc rjrc
+  local rework_engine reps last_engine last_name lnrc rjrc graph_op
   tf="$state/tasks/$id.md"
   target="$(drive_dispatch_target "$arch" "$from")"
   if [ -z "$target" ]; then
@@ -1383,7 +1384,10 @@ drive_dispatch() {
     return 0
   fi
 
-  blockers="$(schedule_dispatch_blockers "$repo" "$id" 2>/dev/null || true)"
+  blockers="$(schedule_dispatch_blockers "$repo" "$id")" || {
+    set_boundary operator-decision "$id" 'cannot establish dispatch conditions'
+    return 0
+  }
   if [ -n "$blockers" ]; then
     drive_note "$id: not dispatchable yet — $(printf '%s' "$blockers" | tr '\n' ';')"
     return 0
@@ -1396,6 +1400,14 @@ drive_dispatch() {
   fi
 
   outcome="$(archetype_outcome "$arch")"
+  if orchid_graph_active "$repo"; then
+    graph_op=review; [ "$outcome" != code ] || graph_op=implement
+    if ! "$ORCHID_ROOT/runners/orchid-graph-prepare" "$id" --operation "$graph_op"; then
+      set_boundary worktree-conflict "$id" 'graph candidate checkout preparation refused'
+      return 0
+    fi
+  fi
+  if ! orchid_graph_active "$repo"; then
   if [ "$outcome" = code ]; then
     # A code-producing archetype needs an isolated checkout to build a
     # candidate in. Idempotent and crash-safe by construction: the plan below
@@ -1464,10 +1476,7 @@ drive_dispatch() {
     # that is merely stale makes `merge` rebase and re-verify, which is the
     # safe direction, while no base at all blocks entry to `testing` outright.
     if [ -z "$(fm_get "$tf" base_sha)" ]; then
-      base_stamp=""
-      [ "$action" = create ] \
-        || base_stamp="$(git -C "$repo" merge-base "$integ_head" "$branch" 2>/dev/null || true)"
-      [ -n "$base_stamp" ] || base_stamp="$integ_head"
+      base_stamp="$(drive_worktree_base "$repo" "$branch" "$integ_head" "$action")" || return 1
       "$ORCHID_BIN" task set "$id" base_sha "$base_stamp"
     fi
     # The checkout exists; now make it USABLE. A fresh worktree holds only
@@ -1573,6 +1582,7 @@ drive_dispatch() {
   # this: `drive_reviewing` recomputes the routing table and relaunches the
   # slots that are missing on EVERY pass, so a reviewing task with no job is
   # always picked back up.
+  fi
   role_line="$(drive_role_for_status "$target")"
   role=""; op=""
   if [ -n "$role_line" ]; then
@@ -1824,7 +1834,7 @@ drive_dispatch() {
 # ---------------------------------------------------------------------------
 drive_implementing() {
   local id="$1" arch="$2" tf envf envb wt cand floor arc why
-  local dirty drc verdict
+  local dirty drc verdict contract_failure_file contract_failure_kind
   local advreason="implementer envelope ok"
   tf="$state/tasks/$id.md"
   why=""; envb=""
@@ -1914,6 +1924,27 @@ drive_implementing() {
   fi
 
   envf="$(drive_implement_envelope "$repo" "$id")"
+  if [ -z "$envf" ] && orchid_graph_active "$repo"; then
+    contract_failure_file="$(graph_contract_failure_envelope "$repo" "$id")" || {
+      set_boundary worktree-conflict "$id" 'cannot establish current contract failure binding'
+      return 0
+    }
+    if [ -n "$contract_failure_file" ]; then
+      contract_failure_kind="$(jq -r '.contract_failure.kind' "$contract_failure_file")"
+      case "$contract_failure_kind" in
+        artifact)
+          # Delivery produced a committed candidate. The single publication
+          # path below sends it to the mechanical artifact gate and rework.
+          envf="$contract_failure_file"
+          advreason='committed artifact contract failed; route through candidate verification'
+          ;;
+        candidate|definition)
+          set_boundary worktree-conflict "$id" "contract evaluation $contract_failure_kind failure requires repair before worker retry"
+          return 0
+          ;;
+      esac
+    fi
+  fi
 
   # AN OK ENVELOPE IS NOT EVIDENCE THAT WORK HAPPENED. A dispatch can report
   # `ok` with a summary that is pure commentary -- the findings it was handed,
@@ -2227,6 +2258,40 @@ drive_rework_nonconvergence_stop() {
   return 0
 }
 
+# Existing bound checkouts need only observation. Preparation is an effect,
+# so run it once when a checkpoint has no recorded workspace, before work starts.
+drive_graph_workspace() {
+  local id="$1" operation="$2" tf="$state/tasks/$1.md" blockers
+  if ! graph_dispatch_ready "$repo" "$id"; then
+    drive_note "$id: waiting for current graph inputs and target candidate"
+    return 1
+  fi
+  if graph_checkpoint_pending "$repo" "$id"; then
+    blockers="$(schedule_dispatch_blockers "$repo" "$id")" || {
+      set_boundary operator-decision "$id" 'cannot establish checkpoint dispatch conditions'
+      return 1
+    }
+    if [ -n "$blockers" ]; then
+      drive_note "$id: checkpoint queued for admission — $blockers"
+      return 1
+    fi
+    "$ORCHID_ROOT/runners/orchid-graph-prepare" "$id" --operation "$operation" || {
+      set_boundary worktree-conflict "$id" 'checkpoint preparation refused after admission checks'
+      return 1
+    }
+  elif [ -n "$(fm_get "$tf" worktree)" ]; then
+    graph_job_workspace "$repo" "$id" "" "$operation" >/dev/null || {
+      set_boundary worktree-conflict "$id" 'current graph candidate checkout is unsafe'
+      return 1
+    }
+  else
+    "$ORCHID_ROOT/runners/orchid-graph-prepare" "$id" --operation "$operation" || {
+      set_boundary worktree-conflict "$id" 'graph candidate checkout preparation refused'
+      return 1
+    }
+  fi
+}
+
 drive_testing() {
   local id="$1" arch="$2" tf vrc attempt cand hg guidance attempts budget arc
   local hstate hdetail
@@ -2237,6 +2302,9 @@ drive_testing() {
   wmark="$(drive_waiver_mark)"
   tf="$state/tasks/$id.md"
   cls=""; cls_line=""; evidence_digest=""
+  if orchid_graph_active "$repo"; then
+    drive_graph_workspace "$id" verify || return 0
+  fi
 
   # THE OPERATOR HAND-OFF (PROTOCOL.md, THE TICK's implementing arm). Between
   # the implementer's envelope reconciling and `orchid verify` running there
@@ -2332,7 +2400,7 @@ drive_testing() {
   vrc=0
   if [ "$resume_failure" -eq 0 ]; then
     drive_lease_heartbeat_start
-    "$ORCHID_BIN" verify "$id" >/dev/null 2>&1 || vrc=$?
+    "$ORCHID_BIN" verify "$id" >/dev/null || vrc=$?
     drive_lease_heartbeat_stop
     # `orchid verify` independently enforces the same gate. State can change
     # after the preflight above; exit 16 is still an operator stop, never a
@@ -2723,6 +2791,9 @@ drive_reviewing() {
   local pin_rc pin_detail pin_output pin_line src
   tf="$state/tasks/$id.md"
   [ "$(fm_get "$tf" status)" = reviewing ] || return 0
+  if orchid_graph_active "$repo"; then
+    drive_graph_workspace "$id" review || return 0
+  fi
   tier="$(fm_get "$tf" risk_tier)"; [ -n "$tier" ] || tier=low
   need="$(review_required_count "$tier")"
   have="$(drive_reviewer_envelope_count "$repo" "$id")"
@@ -2930,6 +3001,18 @@ drive_arbitrating() {
   decision="$(drive_review_decision "$repo" "$id")"
   verdict="$(printf '%s' "$decision" | cut -f1)"
   detail="$(printf '%s' "$decision" | cut -f2-)"
+  if orchid_graph_active "$repo"; then
+    if [ "$verdict" = approve ] && ! graph_completion_ready "$repo" "$id"; then
+      "$ORCHID_BIN" graph wait "$id" >/dev/null || set_boundary operator-decision "$id" 'cannot record graph verification wait'
+      return 0
+    fi
+    if [ "$verdict" = conflict ] && [ -n "$(fm_get "$tf" repair_target)" ]; then
+      if "$ORCHID_BIN" graph repair "$id"; then
+        drive_note "$id: routed blocking verification to bounded source repair"
+        return 0
+      fi
+    fi
+  fi
   case "$verdict" in
     approve)
       arc=0
@@ -3355,6 +3438,17 @@ if [ "$run_status" != planning ]; then
 else
   planning_reap_out="$("$ORCHID_BIN" jobs gc --reap-prepared --older-than-s "$_prepared_bound_s")"
   [ -z "$planning_reap_out" ] || printf '%s\n' "$planning_reap_out"
+fi
+
+# Replay incomplete candidate invalidation after job reconciliation has retired
+# old results. Public invalidation owns the archive/reset transaction.
+if orchid_graph_active "$repo"; then
+  stale_targets="$(orchid_graph_stale_targets "$repo" | sort -u)" || orchid_die 'cannot validate graph target bindings'
+  while IFS= read -r stale_target; do
+    [ -n "$stale_target" ] || continue
+    "$ORCHID_BIN" graph invalidate "$stale_target" --reason 'resume obsolete candidate binding' || \
+      set_boundary operator-decision "$stale_target" 'candidate verification invalidation is not quiescent'
+  done <<< "$stale_targets"
 fi
 
 # ---------------------------------------------------------------------------

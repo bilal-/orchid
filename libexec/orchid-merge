@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/graph-integration.sh"
 orchid_cli_validate merge "$@"
 set -- ${ORCHID_CLI_ARGS[@]+"${ORCHID_CLI_ARGS[@]}"}
 source "$ORCHID_ROOT/lib/frontmatter.sh"
@@ -26,8 +27,10 @@ export ORCHID_EPOCH
 
 id="${1:-}"
 [ -n "$id" ] || orchid_die "usage: orchid merge <task-id>"
-tf="$state/tasks/$id.md"
+tf="$(orchid_task_file "$repo" "$id")" || exit 2
 [ -f "$tf" ] || orchid_die "no task $id"
+orchid_graph_completion_gate "$repo" "$id" || exit 3
+orchid_graph_effect_admission "$repo" "$id" merge || exit 3
 
 # FIRST check, ahead of even the status gate below: a `outcome=report`
 # archetype (e.g. `review`) declares no transition into `merging` at all
@@ -311,7 +314,24 @@ fi
 
 integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")"
 
-if [ "$integ_head" != "$base_sha" ]; then
+graph_state_progress=0
+graph_merge_basis=current
+if [ "$integ_head" != "$base_sha" ] && orchid_graph_active "$repo"; then
+  graph_progress_status=0
+  graph_merge_basis="$(orchid_graph_merge_basis "$repo" "$base_sha" "$candidate_sha" "$integ_head")" || graph_progress_status=$?
+  case "$graph_progress_status" in
+    0)
+      case "$graph_merge_basis" in
+        state_progress) graph_state_progress=1 ;;
+        already_integrated) ;;
+        *) orchid_die 'unknown graph merge basis' ;;
+      esac
+      ;;
+    1) graph_merge_basis=current ;;
+    *) orchid_die 'cannot establish integration project history for graph merge' ;;
+  esac
+fi
+if [ "$integ_head" != "$base_sha" ] && [ "$graph_merge_basis" = current ]; then
   # Stale base: rebase the task branch onto integ HEAD. On a clean rebase
   # this always mints a new commit SHA (new parent), which is exactly what
   # makes the old candidate's reviews detectably stale (INV-07).
@@ -371,8 +391,8 @@ if [ "$integ_head" != "$base_sha" ]; then
   # unconditional `rm -f` two lines down invalidates prior evidence
   # regardless, so the INV-11 sha-binding gate still forces a re-verify even
   # when the candidate identity happened not to move.
-  "$ORCHID_ROOT/bin/orchid" task set "$id" base_sha "$integ_head"
-  "$ORCHID_ROOT/bin/orchid" task set "$id" candidate_sha "$new_candidate"
+  ORCHID_GRAPH_REBASE_ID="$id" "$ORCHID_ROOT/bin/orchid" task set "$id" base_sha "$integ_head"
+  ORCHID_GRAPH_REBASE_ID="$id" "$ORCHID_ROOT/bin/orchid" task set "$id" candidate_sha "$new_candidate"
   # Rebase minted a new candidate SHA, so any prior verify/merge evidence is
   # now evidence about a candidate that no longer exists. merge is the one
   # actor that invalidates it this way, so merge must delete it here — this
@@ -419,6 +439,9 @@ if [ "$integ_head" != "$base_sha" ]; then
   ORCHID_ACTOR="${ORCHID_ACTOR:-orchestrator}" "$ORCHID_ROOT/bin/orchid" journal add --task "$id" --kind rebase_review \
     "base $base_sha -> $integ_head, candidate $candidate_sha -> $new_candidate; evidence invalidated"
   "$ORCHID_ROOT/bin/orchid" task advance "$id" testing
+  if orchid_graph_active "$repo"; then
+    "$ORCHID_ROOT/bin/orchid" graph invalidate "$id" --reason 'merge rebase replaced verification candidate' || exit 3
+  fi
   echo "rebase_rereview_required $id: base $base_sha -> $integ_head, candidate $candidate_sha -> $new_candidate"
   exit 5
 fi
@@ -495,6 +518,10 @@ if ! git -C "$wt" merge --no-ff -q -m "orchid: merge $id" "$candidate_sha" >/dev
   exit 1
 fi
 merged_sha="$(git -C "$wt" rev-parse HEAD)"
+if [ "$graph_merge_basis" != current ]; then
+  orchid_graph_project_equal "$repo" "$candidate_sha" "$merged_sha" || \
+    orchid_die 'graph merge changed the reviewed project tree; publication refused'
+fi
 
 # This temp checkout runs the task's whole verification suite in a moment,
 # and it holds only what is committed — so it needs the same `worktree_prepare`
@@ -748,6 +775,8 @@ fi
 {
   echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "sha: $merged_sha"
+  echo "graph_state_progress: $graph_state_progress"
+  echo "graph_merge_basis: $graph_merge_basis"
   # sha-binding, same contract as `orchid verify`'s log (T010). `sha:` above
   # is the MERGED tree, which exists nowhere but this temp worktree and names
   # no candidate; without this line the log carries no claim about WHICH
